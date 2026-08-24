@@ -1,3 +1,7 @@
+#if defined(__SDCC)
+#pragma bank 1
+#endif
+
 #include "vfx_lab.h"
 
 #define SCENE_BULLETS_FRAMES 240u
@@ -53,6 +57,7 @@ void vfx_lab_init(VfxLab *lab, uint16_t seed) {
     lab->scene_frame = 0u;
     lab->total_frame = 0u;
     lab->rng = seed ? seed : 0xA5E1u;
+    lab->phase3 = 0u;
     clear_projectiles(lab);
     clear_beam(lab);
     clear_debris(lab);
@@ -70,6 +75,7 @@ void vfx_lab_init(VfxLab *lab, uint16_t seed) {
     lab->raster_warp_center_y = 0u;
     lab->raster_warp_radius = 0u;
     lab->raster_warp_strength = 0;
+    lab->ai_tick_div_hint = 1u;
     lab->work_units_hint = 2u;
     lab->vram_budget_hint = 96u;
     for (i = 0u; i < VFX_BEAM_MAX_CELLS; ++i) {
@@ -96,13 +102,15 @@ void vfx_lab_set_scene(VfxLab *lab, uint8_t scene) {
     lab->blackout = 0u;
     lab->blackout_white = 0u;
     lab->raster_warp_active = 0u;
+    lab->ai_tick_div_hint = 1u;
 }
 
 void vfx_lab_next_scene(VfxLab *lab) {
-    vfx_lab_set_scene(lab, (uint8_t)((lab->scene + 1u) % VFX_SCENE_COUNT));
+    vfx_lab_set_scene(lab, (uint8_t)((lab->scene + 1u) == VFX_SCENE_COUNT ? 0u : lab->scene + 1u));
 }
 
-static void spawn_projectile(VfxLab *lab, int16_t sx, int16_t sy, int16_t tx, int16_t ty, uint8_t slot) {
+static void spawn_projectile(VfxLab *lab, int16_t sx, int16_t sy,
+                             int16_t tx, int16_t ty, uint8_t slot) {
     int16_t dx = (int16_t)(tx - sx);
     int16_t dy = (int16_t)(ty - sy);
     int16_t mag = iabs16(dx) > iabs16(dy) ? iabs16(dx) : iabs16(dy);
@@ -114,13 +122,11 @@ static void spawn_projectile(VfxLab *lab, int16_t sx, int16_t sy, int16_t tx, in
     if (frames > 36u) frames = 36u;
     vx = (int16_t)((dx << FX_FP_SHIFT) / frames);
     vy = (int16_t)((dy << FX_FP_SHIFT) / frames);
-    fx_projectile_init(&lab->projectiles[slot], (int16_t)(sx << FX_FP_SHIFT), (int16_t)(sy << FX_FP_SHIFT),
-                       vx, vy, (uint8_t)(frames + 5u), (uint8_t)(lab->rng & 0xffu));
+    fx_projectile_init(&lab->projectiles[slot], (int16_t)(sx << FX_FP_SHIFT),
+                       (int16_t)(sy << FX_FP_SHIFT), vx, vy,
+                       (uint8_t)(frames + 5u), (uint8_t)lab->rng);
 }
 
-/* Record the rasterized global line into a compact sequence of hardware 8x8 cells.
-   This one-time O(line pixels) pass is bounded by the 184x96 project world and
-   avoids expensive per-cell clipping later. */
 static void build_beam_cells(VfxBeam *b, int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
     int16_t dx = iabs16((int16_t)(x1 - x0));
     int16_t sx = x0 < x1 ? 1 : -1;
@@ -129,7 +135,6 @@ static void build_beam_cells(VfxBeam *b, int16_t x0, int16_t y0, int16_t x1, int
     int16_t err = (int16_t)(dx + dy);
     uint8_t last_bx = 0xffu, last_by = 0xffu;
     b->cell_count = 0u;
-
     for (;;) {
         if (x0 >= 0 && y0 >= 0) {
             uint8_t bx = (uint8_t)(x0 >> 3);
@@ -182,27 +187,29 @@ static void spawn_debris(VfxLab *lab, int16_t x, int16_t y) {
     uint8_t i;
     for (i = 0u; i < FX_MAX_DEBRIS; ++i) {
         uint8_t cls;
-        int16_t speed;
-        int16_t vx, vy, vz;
+        int16_t speed, vx, vy, vz;
         lab->rng = fx_lfsr16(lab->rng);
-        cls = ((i + (uint8_t)lab->rng) % 4u) == 0u ? FX_DEBRIS_CHUNK : FX_DEBRIS_SMALL;
-        if (cls == FX_DEBRIS_CHUNK) speed = (int16_t)(38 + (lab->rng & 15u));
-        else speed = (int16_t)(58 + (lab->rng & 31u));
-        vx = (int16_t)(((int16_t)dirs[i & 15u][0] * speed) >> 4);
-        vy = (int16_t)(((int16_t)dirs[i & 15u][1] * speed) >> 4);
+        cls = ((i + (uint8_t)lab->rng) & 3u) == 0u ? FX_DEBRIS_CHUNK : FX_DEBRIS_SMALL;
+        speed = cls == FX_DEBRIS_CHUNK ? (int16_t)(38 + (lab->rng & 15u))
+                                       : (int16_t)(58 + (lab->rng & 31u));
+        vx = (int16_t)(((int16_t)dirs[i][0] * speed) >> 4);
+        vy = (int16_t)(((int16_t)dirs[i][1] * speed) >> 4);
         vz = cls == FX_DEBRIS_CHUNK ? (int16_t)(40 + ((lab->rng >> 4) & 15u))
                                     : (int16_t)(56 + ((lab->rng >> 4) & 31u));
-        fx_debris_init(&lab->debris[i], cls, (int16_t)(x << FX_FP_SHIFT), (int16_t)(y << FX_FP_SHIFT),
-                       vx, vy, vz, cls == FX_DEBRIS_CHUNK ? 150u : 105u, (uint8_t)lab->rng);
+        fx_debris_init(&lab->debris[i], cls,
+                       (int16_t)(x << FX_FP_SHIFT), (int16_t)(y << FX_FP_SHIFT),
+                       vx, vy, vz, cls == FX_DEBRIS_CHUNK ? 150u : 105u,
+                       (uint8_t)lab->rng);
     }
 }
 
-void vfx_lab_detonate_grenade(VfxLab *lab, int16_t x, int16_t y, int8_t impulse_x, int8_t impulse_y) {
+void vfx_lab_detonate_grenade(VfxLab *lab, int16_t x, int16_t y,
+                              int8_t impulse_x, int8_t impulse_y) {
     lab->grenade_age = 1u;
     lab->ring_x = x; lab->ring_y = y;
     lab->ring_active = 1u;
     lab->ring_radius = 1u;
-    lab->ring_phase = 0u;
+    lab->ring_phase = lab->phase3;
     lab->impact_x = x; lab->impact_y = y;
     lab->impact_active = 8u;
     lab->shake_impulse_x = impulse_x;
@@ -212,6 +219,7 @@ void vfx_lab_detonate_grenade(VfxLab *lab, int16_t x, int16_t y, int8_t impulse_
     lab->flicker_age = 1u;
     lab->flicker_duration = 120u;
     lab->blackout_run = 0u;
+    lab->ai_tick_div_hint = 0u;
     spawn_debris(lab, x, y);
 }
 
@@ -226,6 +234,7 @@ void vfx_lab_trigger_flashbang(VfxLab *lab, int16_t x, int16_t y) {
     lab->shake_impulse_y = -2;
     lab->shake_age = 1u;
     lab->shake_duration = 50u;
+    lab->ai_tick_div_hint = 0u;
 }
 
 static void update_beam(VfxLab *lab) {
@@ -233,7 +242,6 @@ static void update_beam(VfxLab *lab) {
     if (b->phase == VFX_BEAM_OFF) return;
     ++b->phase_tick;
     if (b->phase == VFX_BEAM_FORMING) {
-        /* One cell every frame on purpose: the hardware workload becomes the effect. */
         if (b->formed_count < b->cell_count) ++b->formed_count;
         if (b->formed_count >= b->cell_count) {
             b->phase = VFX_BEAM_HOLD;
@@ -250,7 +258,7 @@ static void update_beam(VfxLab *lab) {
         }
     } else {
         if (b->phase_tick > 15u) b->duty_numer = 1u;
-        if ((b->phase_tick & 1u) == 0u && b->decay_count < b->cell_count) ++b->decay_count;
+        if (!(b->phase_tick & 1u) && b->decay_count < b->cell_count) ++b->decay_count;
         if (b->decay_count >= b->cell_count) clear_beam(lab);
     }
 }
@@ -262,6 +270,8 @@ static void update_projectiles(VfxLab *lab) {
 
 static void update_debris(VfxLab *lab, Sim *sim) {
     uint8_t i;
+    /* fx_debris_tick and world_solid are deliberately co-located in bank 1 on GG.
+       The function pointer is therefore a same-bank address, not a far pointer. */
     for (i = 0u; i < FX_MAX_DEBRIS; ++i)
         if (lab->debris[i].active) fx_debris_tick(&lab->debris[i], world_solid, sim);
 }
@@ -293,13 +303,20 @@ static void update_shake(VfxLab *lab) {
 static void update_flicker(VfxLab *lab) {
     uint8_t threshold;
     uint8_t sample;
+    uint8_t quarter;
     lab->blackout = 0u;
     lab->blackout_white = 0u;
     if (!lab->flicker_age || lab->flicker_age > lab->flicker_duration) return;
     lab->rng = fx_lfsr16(lab->rng);
     sample = (uint8_t)lab->rng;
-    /* Starts around 45% off, then decays toward rare single-frame dropouts. */
-    threshold = (uint8_t)(12u + ((uint16_t)(lab->flicker_duration - lab->flicker_age) * 104u) / lab->flicker_duration);
+
+    /* Piecewise decay avoids a 16-bit divide every frame on Z80. */
+    quarter = (uint8_t)(lab->flicker_duration >> 2);
+    if (lab->flicker_age <= quarter) threshold = 112u;
+    else if (lab->flicker_age <= (uint8_t)(quarter << 1)) threshold = 76u;
+    else if (lab->flicker_age <= (uint8_t)(quarter + (quarter << 1))) threshold = 42u;
+    else threshold = 16u;
+
     if (sample < threshold && lab->blackout_run < 2u) {
         lab->blackout = 1u;
         ++lab->blackout_run;
@@ -310,6 +327,7 @@ static void update_flicker(VfxLab *lab) {
 static void update_grenade(VfxLab *lab) {
     uint8_t a = lab->grenade_age;
     if (!a) return;
+
     if (a <= 2u) lab->exposure = VFX_EXPOSURE_FLASH;
     else if (a <= 16u) lab->exposure = VFX_EXPOSURE_DARK;
     else if (a <= 70u) lab->exposure = VFX_EXPOSURE_DIM;
@@ -317,15 +335,23 @@ static void update_grenade(VfxLab *lab) {
     if (a <= 14u) {
         lab->ring_active = 1u;
         lab->ring_radius = (uint8_t)(1u + (a >> 1));
-        lab->ring_phase = (uint8_t)(a % 3u);
+        lab->ring_phase = lab->phase3;
     } else lab->ring_active = 0u;
 
+    /* State remains available for the isolated raster experiment, but the main
+       validation ROM does not install repeated line interrupts. */
     if (a <= 8u) {
         lab->raster_warp_active = 1u;
         lab->raster_warp_center_y = (uint8_t)lab->ring_y;
-        lab->raster_warp_radius = (uint8_t)(8u + a * 2u);
+        lab->raster_warp_radius = (uint8_t)(8u + (a << 1));
         lab->raster_warp_strength = (int8_t)(5 - (a >> 1));
     }
+
+    /* Perceptual hit-stop doubles as CPU scheduling headroom. */
+    if (a <= 14u) lab->ai_tick_div_hint = 0u;
+    else if (a <= 45u) lab->ai_tick_div_hint = 4u;
+    else if (a <= 90u) lab->ai_tick_div_hint = 2u;
+
     ++lab->grenade_age;
     if (lab->grenade_age > 150u) lab->grenade_age = 0u;
 }
@@ -335,19 +361,25 @@ static void update_flashbang(VfxLab *lab) {
     if (!a) return;
     if (a <= 3u) {
         lab->exposure = VFX_EXPOSURE_FLASH;
-        /* First flash frame may deliberately blank to a white backdrop in GG backend. */
         if (a == 2u) { lab->blackout = 1u; lab->blackout_white = 1u; }
     } else if (a <= 34u) lab->exposure = VFX_EXPOSURE_DARK;
     else if (a <= 100u) lab->exposure = VFX_EXPOSURE_DIM;
+
+    if (a <= 10u) lab->ai_tick_div_hint = 0u;
+    else if (a <= 45u) lab->ai_tick_div_hint = 4u;
+    else if (a <= 90u) lab->ai_tick_div_hint = 2u;
+
     ++lab->flashbang_age;
     if (lab->flashbang_age > 145u) lab->flashbang_age = 0u;
 }
 
 static void reset_frame_outputs(VfxLab *lab) {
     lab->exposure = VFX_EXPOSURE_NORMAL;
+    lab->blackout = 0u;
     lab->blackout_white = 0u;
     lab->raster_warp_active = 0u;
     lab->raster_warp_strength = 0;
+    lab->ai_tick_div_hint = 1u;
     lab->work_units_hint = 2u;
     lab->vram_budget_hint = 96u;
 }
@@ -369,7 +401,8 @@ static void script_scene_events(VfxLab *lab) {
         if (f == 42u) vfx_lab_trigger_flashbang(lab, cell_px(27u), cell_px(8u));
     } else {
         if (f == 22u || f == 92u || f == 182u || f == 272u)
-            spawn_projectile(lab, cell_px(22u), cell_px(11u), cell_px(31u), cell_px(3u), (uint8_t)((f >> 5) & 1u));
+            spawn_projectile(lab, cell_px(22u), cell_px(11u), cell_px(31u), cell_px(3u),
+                             (uint8_t)((f >> 5) & 1u));
         if (f == 58u || f == 230u)
             vfx_lab_fire_beam(lab, cell_px(22u), cell_px(11u), cell_px(31u), cell_px(3u));
         if (f == 138u)
@@ -395,8 +428,12 @@ void vfx_lab_tick(VfxLab *lab, Sim *sim) {
         lab->exposure = VFX_EXPOSURE_DIM;
 
     if (lab->blackout) {
+        lab->ai_tick_div_hint = 0u;
         lab->work_units_hint = 8u;
         lab->vram_budget_hint = 768u;
+    } else if (lab->grenade_age && lab->grenade_age <= 28u) {
+        lab->work_units_hint = 8u;
+        lab->vram_budget_hint = 320u;
     } else if (lab->beam.phase == VFX_BEAM_FORMING || lab->ring_active) {
         lab->work_units_hint = 4u;
         lab->vram_budget_hint = 160u;
@@ -404,6 +441,8 @@ void vfx_lab_tick(VfxLab *lab, Sim *sim) {
 
     ++lab->scene_frame;
     ++lab->total_frame;
+    ++lab->phase3;
+    if (lab->phase3 == 3u) lab->phase3 = 0u;
     if (lab->scene_frame >= scene_duration(lab->scene)) vfx_lab_next_scene(lab);
 }
 
@@ -425,7 +464,7 @@ void vfx_lab_apply_demo_agents(VfxLab *lab, Sim *sim) {
         sim->agents[i].hit_flash = 0u;
         sim->agents[i].suppressed = 0u;
     }
-    sim->agent_count = 6u; /* includes RED ids 4 and 5 */
+    sim->agent_count = 6u;
     sim->red_count = 2u;
     sim->done = 0u;
 
@@ -452,11 +491,18 @@ uint8_t vfx_lab_beam_cell_active(const VfxLab *lab, uint8_t index) {
     return index < (uint8_t)(b->cell_count - b->decay_count);
 }
 
+static uint8_t mod3_small(uint8_t v) {
+    while (v >= 3u) v = (uint8_t)(v - 3u);
+    return v;
+}
+
 uint8_t vfx_lab_beam_cell_visible_this_frame(const VfxLab *lab, uint8_t index) {
+    uint8_t bucket;
     const VfxBeam *b = &lab->beam;
     if (!vfx_lab_beam_cell_active(lab, index)) return 0u;
     if (b->duty_numer >= 3u) return 1u;
-    return fx_dither_on(index, b->cells[index].by, (uint8_t)lab->total_frame, b->duty_numer);
+    bucket = mod3_small((uint8_t)(mod3_small(index) + mod3_small((uint8_t)(b->cells[index].by << 1)) + lab->phase3));
+    return bucket < b->duty_numer;
 }
 
 uint8_t vfx_lab_active_debris(const VfxLab *lab) {
@@ -472,4 +518,17 @@ const char *vfx_scene_name(uint8_t scene) {
     if (scene == VFX_SCENE_FLASHBANG) return "FLASH";
     if (scene == VFX_SCENE_STRESS) return "STRESS";
     return "?";
+}
+
+void vfx_lab_target_init(VfxLab *lab, uint16_t seed) BANKED {
+    vfx_lab_init(lab, seed);
+}
+
+void vfx_lab_target_step(VfxLab *lab, Sim *sim) BANKED {
+    vfx_lab_tick(lab, sim);
+    vfx_lab_apply_demo_agents(lab, sim);
+}
+
+void vfx_lab_target_set_scene(VfxLab *lab, uint8_t scene) BANKED {
+    vfx_lab_set_scene(lab, scene);
 }
