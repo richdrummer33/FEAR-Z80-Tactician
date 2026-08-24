@@ -11,21 +11,24 @@ ROM_BASENAME := $(PROJECT)-v$(VERSION)
 HOST_BIN := build/host_preview
 TEST_BIN := build/test_sim
 FX_TEST_BIN := build/test_fx
+VFX_LAB_TEST_BIN := build/test_vfx_lab
 GG_ROM := build/$(ROM_BASENAME)-seed2.gg
 GG_SEED42_ROM := build/$(ROM_BASENAME)-seed42.gg
+GG_VFX_ROM := build/$(ROM_BASENAME)-vfxlab.gg
 ROM_DIR := roms
 RELEASE_ROM := $(ROM_DIR)/$(ROM_BASENAME)-seed2.gg
 RELEASE_SEED42_ROM := $(ROM_DIR)/$(ROM_BASENAME)-seed42.gg
 GG_SRC_FIXED := src/main_gg.c src/sim.c src/tiles.c
 GG_SRC_BANKED := src/brain.c
 GG_OBJS := build/main_gg.o build/sim.o build/tiles.o build/brain.o
+VFX_OBJS := build/main_gg_vfx.o build/sim.o build/tiles.o build/gg_world.o build/brain.o build/fx_gg.o build/vfx_queue_gg.o build/vfx_lab_gg.o build/gg_vfx.o
 SMOKE_ROM := build/gg_smoke.gg
 
 # 64 KB / four 16 KB banks. Stage 5 deliberately uses the Sega mapper even
 # though only one switchable code bank is currently needed.
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 
-.PHONY: all host test fx-test gg gg-seed42 release smoke gear-tools emu-smoke clean
+.PHONY: all host test fx-test vfx-test gg gg-seed42 gg-vfx release smoke gear-tools emu-smoke clean
 all: host test
 
 build:
@@ -39,10 +42,16 @@ test: build
 	./$(TEST_BIN)
 	$(CC) $(CFLAGS) -Isrc src/fx.c tests/test_fx.c -o $(FX_TEST_BIN)
 	./$(FX_TEST_BIN)
+	$(CC) $(CFLAGS) -Isrc src/fx.c src/vfx_queue.c src/vfx_lab.c src/sim.c src/brain.c tests/test_vfx_lab.c -o $(VFX_LAB_TEST_BIN)
+	./$(VFX_LAB_TEST_BIN)
 
 fx-test: build
 	$(CC) $(CFLAGS) -Isrc src/fx.c tests/test_fx.c -o $(FX_TEST_BIN)
 	./$(FX_TEST_BIN)
+
+vfx-test: build
+	$(CC) $(CFLAGS) -Isrc src/fx.c src/vfx_queue.c src/vfx_lab.c src/sim.c src/brain.c tests/test_vfx_lab.c -o $(VFX_LAB_TEST_BIN)
+	./$(VFX_LAB_TEST_BIN)
 
 build/main_gg.o: src/main_gg.c | build
 	$(LCC) $(GGFLAGS) -DDEFAULT_SEED=2u -c -o $@ $<
@@ -50,11 +59,27 @@ build/sim.o: src/sim.c | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
 build/tiles.o: src/tiles.c | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
+build/gg_world.o: src/gg_world.c | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
 build/brain.o: src/brain.c | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
 
 gg: $(GG_OBJS)
 	$(LCC) $(GGFLAGS) -o $(GG_ROM) $(GG_OBJS)
+
+build/main_gg_vfx.o: src/main_vfx_gg.c | build
+	$(LCC) $(GGFLAGS) -DVFX_DEMO=1 -DDEFAULT_SEED=2u -c -o $@ $<
+build/fx_gg.o: src/fx.c | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+build/vfx_queue_gg.o: src/vfx_queue.c | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+build/vfx_lab_gg.o: src/vfx_lab.c | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+build/gg_vfx.o: src/gg_vfx.c | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+
+gg-vfx: $(VFX_OBJS)
+	$(LCC) $(GGFLAGS) -o $(GG_VFX_ROM) $(VFX_OBJS)
 
 # Separate fixed-main object so seed 42 can be built without poisoning the
 # default max-population object in incremental builds.
