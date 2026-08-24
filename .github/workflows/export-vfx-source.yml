@@ -2,6 +2,8 @@ name: export-vfx-source
 on:
   push:
     branches: [tmp-vfx-export5]
+  pull_request:
+    branches: [tmp-vfx-export5]
 
 jobs:
   export:
