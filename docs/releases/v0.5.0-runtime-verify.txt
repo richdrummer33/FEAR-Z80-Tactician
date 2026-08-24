@@ -1,0 +1,133 @@
+FEAR-Z80-TACTICIAN v0.5.0 — BANKED GOAP RUNTIME VERIFICATION
+=======================================================
+
+Target
+------
+Sega Game Gear
+GBDK 4.5.0 Linux x64 toolchain
+Gearsystem 3.9.16 libretro core
+NTSC 60 Hz / 160 x 144 framebuffer
+
+Primary ROM
+-----------
+File: roms/FEAR-Z80-Tactician-v0.5.0-seed2.gg
+Seed: 2
+Population: BLUE 4, RED 7, total 11
+ROM size: 65,536 bytes / four 16 KiB banks
+Mapper observed by Gearsystem: SEGA
+Cartridge header: VALID
+
+Bank assignment
+---------------
+Generated NOI symbols:
+  ___bank_brain_bank          = 0x1
+  b_brain_act_agent           = 0x1
+  b_brain_run_actor_round     = 0x1
+  _brain_act_agent            = 0x14DD9
+  _brain_run_actor_round      = 0x14DEE
+
+GBDK romusage -p:SMS_GG -B:
+  ROM_0 : 12,684 used /  3,700 free
+  ROM_1 :  3,766 used / 12,618 free
+  RAM   :  1,908 used /  6,284 free
+
+Map / navigation compaction
+---------------------------
+Logical map: 46 x 24 = 1,104 cells
+Static wall mask: 138 ROM bytes (one bit per cell)
+Door presence accelerator: 138 ROM bytes
+Dynamic door state: one byte for seven doors
+Navigation visited mask: 138 RAM bytes
+Navigation parent directions: 276 RAM bytes (two bits/cell)
+Bounded local BFS X/Y queue: 256 + 256 RAM bytes
+
+Host seed-2 reference
+---------------------
+winner: RED
+tick: 59
+BLUE: 0 alive / 0 HP
+RED : 5 alive / 13 HP
+replans: 273
+persistent plan reuses: 269
+
+Actual Gearsystem / GG RAM progression
+--------------------------------------
+frame   64 : tick  0, done 0
+frame  128 : tick  3, done 0
+frame  256 : tick  7, done 0
+frame  512 : tick 14, done 0
+frame  768 : tick 21, done 0
+frame 1024 : tick 27, done 0
+frame 1536 : tick 39, done 0
+frame 2048 : tick 53, done 0
+frame 2236 : tick 59, done 0
+frame 2237 : tick 59, done 1, winner RED
+
+Final GG counters from g_sim RAM:
+  total_replans     = 273
+  total_plan_reuses = 269
+These exactly match the host seed-2 reference.
+
+All-actor evidence
+------------------
+At frame 91 during tick 1, last_acted_mask = 0x07FF while all 4 BLUE and 7 RED
+actors were alive. All eleven actor bits are therefore present in the round.
+
+Persistent-plan evidence from actual GG RAM
+-------------------------------------------
+BLUE agent 0:
+
+frame 380 / tick 11
+  position         = (9,11)
+  goal             = SEARCH_LOST
+  plan_goal        = SEARCH_LOST
+  plan_target      = RED agent 10
+  plan_destination = (20,16)
+  plan             = MOVE_TO_LAST_SEEN
+  plan_pos         = 0 / 1
+  replan_count     = 7
+  reuse_count      = 4
+
+frame 420 / tick 12
+  position         = (10,11)
+  same goal, target, destination and primitive
+  replan_count     = 7 (unchanged)
+  reuse_count      = 5 (incremented)
+
+This demonstrates a retained plan executing across world ticks rather than a fresh plan
+being regenerated every tick.
+
+At frame 1024 / tick 27 the same agent holds a two-action KILL_ENEMY plan:
+  RELOAD -> SHOOT
+The first primitive has completed:
+  ammo = 3
+  plan_pos = 1 / 2
+  current facts = TARGET_KNOWN | IN_SHOT_RANGE | WEAPON_READY (0x0007)
+
+Performance
+-----------
+First banked prototype before the final bank-call/context optimizations:
+  completion around frame 3156
+Final build:
+  completion frame 2237
+Improvement:
+  919 fewer video frames, about 29.1 percent
+Full-match average:
+  2237 / 59 = 37.9 video frames per logical tick
+  about 1.58 full eleven-agent world ticks per second at 60 Hz
+
+Seed-42 cross-check
+-------------------
+File: roms/FEAR-Z80-Tactician-v0.5.0-seed42.gg
+Population: BLUE 4, RED 6, total 10
+Host: RED winner, tick 69
+Gearsystem: first done=1 at frame 2154, tick 69, RED winner
+
+FFmpeg capture
+--------------
+Local verification capture: build/cqb_goap_11actors_seed2.mp4
+Frames: 2260
+Rate: 60 fps
+Duration: 37.666667 s
+Encoded display size: 640 x 576 nearest-neighbor upscale from 160 x 144
+Audio: none

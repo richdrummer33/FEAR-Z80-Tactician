@@ -1,0 +1,43 @@
+
+Bank              Used     Free  Free% 
+--------       -------  -------  -----
+ROM_0            12684     3700    23%
+|
+| Name                            Start  -> End      Size 
+| ---------------------           ----------------   -----
++ -?-                             0x0001 -> 0x0B0D    2829
++ main                            0x0B0E -> 0x0BB9     172
++ -?-                             0x0BBA -> 0x0C68     175
++ sim_agent_team                  0x0C69 -> 0x0C71       9
++ -?-                             0x0C72 -> 0x2C3A    8137
++ sim_init                        0x2C3B -> 0x2EA7     621
++ sim_tick                        0x2EA8 -> 0x302C     389
++ sim_goal_name                   0x302D -> 0x3066      58
++ -?-                             0x3067 -> 0x308D      39
++ sim_action_name                 0x308E -> 0x30CF      66
++ -?-                             0x30D0 -> 0x3109      58
++ gg_font_tile                    0x310A -> 0x318C     131
+
+ROM_1/1           3766    12618    77%
+|
+| Name                            Start  -> End      Size 
+| ---------------------           ----------------   -----
++ -?-                             0x4001 -> 0x4DD8    3544
++ brain_act_agent                 0x4DD9 -> 0x4DED      21
++ brain_run_actor_round           0x4DEE -> 0x4EB6     201
+
+RAM               1908     6284    77%
+|
+| Name                            Start  -> End      Size 
+| ---------------------           ----------------   -----
++ -?-                             0xC001 -> 0xC2E0     736
++ g_last_hud                      0xC2E1 -> 0xC330      80
++ -?-                             0xC331 -> 0xC335       5
++ g_marker_tiles                  0xC336 -> 0xC3B5     128
++ g_world_pattern_keys            0xC3B6 -> 0xC3D5      32
++ -?-                             0xC3D6 -> 0xC3D6       1
++ nav_visited                     0xC3D7 -> 0xC460     138
++ nav_parent2                     0xC461 -> 0xC574     276
++ nav_qx                          0xC575 -> 0xC674     256
++ nav_qy                          0xC675 -> 0xC774     256
+

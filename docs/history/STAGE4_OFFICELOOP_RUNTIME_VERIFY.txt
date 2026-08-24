@@ -1,0 +1,146 @@
+GAME GEAR CQB STAGE 4 — OFFICE-LOOP RUNTIME VERIFICATION
+========================================================
+
+Target:
+  Sega Game Gear
+  GBDK 4.5.0 Linux x64 toolchain
+  Gearsystem 3.9.16 libretro core
+  NTSC 60 Hz / 160 x 144 framebuffer
+
+Primary ROM
+-----------
+File: build/cqb_officeloop.gg
+SHA-256: 05eb1942d67084487d01d5c4bdc8361079fdf4c393bc6d8cc78d811c91154888
+Seed: 42
+Population: BLUE 4, RED 6, total 10
+
+Observed Gearsystem RAM progression (selected frames):
+  frame   96 : tick  2, done 0, BLUE 4, RED 6
+  frame  256 : tick 13, done 0
+  frame  512 : tick 24, done 0
+  frame  768 : tick 33, done 0
+  frame 1024 : tick 49, done 0
+  frame 1114 : tick 57, done 0
+  frame 1115 : tick 57, done 1, winner BLUE
+
+Final state at frame 1115:
+  BLUE: 3 alive / 15 combined lightweight HP
+  RED : 0 alive /  0 combined lightweight HP
+
+Host C reference:
+  seed 42 -> BLUE, tick 57, BLUE 3/15, RED 0/0
+
+Maximum-population stress ROM
+-----------------------------
+File: build/cqb_officeloop_11actors.gg
+SHA-256: f348d8351997f54dfc64ea1f33a36bd928d95beb23ea3ec7dfb2623b8159aec1
+Seed: 2
+Population: BLUE 4, RED 7, total 11
+
+Observed:
+  first logical tick completed: frame 70
+  frame  512 : tick 23
+  frame  768 : tick 30
+  frame  995 : tick 38, done 0
+  frame  996 : tick 38, done 1, winner RED
+
+Host C reference:
+  seed 2 -> RED, tick 38
+
+Camera diagnostic
+-----------------
+A seed-7 diagnostic run advanced BLUE far enough right to reach the camera limit.
+At emulator frame 1024 RAM reported camera_x=24 / target=24. The captured framebuffer
+shows the battlefield horizontally shifted while the two HUD rows remain fixed.
+
+Rendering
+---------
+Logical world: 46 x 24 cells
+Cell size: 4 x 4 pixels
+World pixel size: 184 x 96
+Visible horizontal logical span: 40 cells
+Horizontal camera range: 0..24 pixels (six logical columns)
+Vertical scrolling: unnecessary for office-loop
+
+Terrain is packed four logical cells per 8 x 8 VDP background pattern. Runtime pattern
+caching found only fourteen distinct 2 x 2 terrain combinations on the authored map,
+which eliminated the original multi-second startup cost of uploading 276 unique patterns.
+
+HUD scrolling fix
+-----------------
+The SMS/GG VDP's R0 horizontal-scroll inhibit only applies when the absolute VDP scanline
+is below 16. Game Gear's visible 144-line window is vertically cropped from the SMS image,
+so those lines are above the visible Game Gear HUD. Stage 4 therefore uses a scanline
+interrupt: VBlank sets horizontal scroll to zero for the HUD, then the line interrupt
+applies camera scroll for the battlefield below it.
+
+Performance notes
+-----------------
+The first naive 46 x 24 / many-agent implementation spent hundreds of video frames per
+logical tick because long-range movement repeatedly searched the entire 1104-cell map.
+
+The final stage uses the six-room / seven-door authored graph for long-range waypoints,
+greedy local movement for obvious steps, and tile BFS only as fallback. Cached paths also
+wait rather than rebuilding when another actor temporarily blocks the next cell.
+
+Primary seed 42:
+  first tick complete at frame 70
+  done at frame 1115 / tick 57
+  approximately 18.7 video frames per logical tick after the first tick
+  approximately 3.2 logical ticks/sec at a 60 Hz Game Gear display rate
+
+11-actor seed 2:
+  first tick complete at frame 70
+  done at frame 996 / tick 38
+  approximately 25 video frames per logical tick after the first tick
+  approximately 2.4 logical ticks/sec while exercising the maximum actor population
+
+Memory / ROM
+------------
+Final seed-42 linker map:
+  _CODE        14,101 bytes
+  _HOME         1,027 bytes
+  _GSINIT          12 bytes
+  _GSFINAL           1 byte
+  highest used fixed-bank address: 0x3C47
+  fixed bank free to 0x4000: 953 bytes
+
+  _DATA          5,004 bytes
+  _INITIALIZED      34 bytes
+  shadow OAM       192 bytes before _DATA
+  approximate static WRAM before stack: 5,230 / 8,192 bytes
+
+FFmpeg captures
+---------------
+Primary:
+  build/cqb_officeloop_seed42.mp4
+  640 x 576 nearest-neighbor upscale
+  60 fps
+  1235 frames
+  20.583333 seconds
+  SHA-256: 843a9649c81ea65082c7b5504c3756ad14ffc6fa20c4401710264b0507390857
+
+11 actor stress:
+  build/cqb_officeloop_11actors_seed2.mp4
+  640 x 576 nearest-neighbor upscale
+  60 fps
+  1116 frames
+  18.600000 seconds
+  SHA-256: 52a2daca907e172789ce78d35295048b19103f24669aad04f45fcc9706d811e3
+
+Scope / known differences from desktop FEAR sim
+------------------------------------------------
+Preserved now:
+  - office-loop geometry and connector/obstacle coordinates
+  - four friendlies / five-to-seven hostile population shape
+  - doors, LOS, cover, suppression, memory, shooting, death
+  - every living actor acts each logical tick (unless the match ends mid-tick)
+
+Not transplanted yet:
+  - full desktop GOAP
+  - squad HTN / tactical role assignment
+  - weapon-specific desktop stats and large HP values
+  - grenades / smoke / flash
+  - morale / medkits / ammo-reload semantics
+  - locked-door / breach semantics (the authored locked door is currently ordinary closed)
+  - desktop RNG identity

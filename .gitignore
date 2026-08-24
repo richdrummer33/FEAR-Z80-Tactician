@@ -53,3 +53,20 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# GBDK / emulator generated debug & capture files
+build/*.cdb
+build/*.noi
+build/*.rel
+build/*.lst
+build/*.sym
+build/*.lk
+build/*.ihx
+build/*.ppm
+build/*.png
+build/*.mp4
+build/libretro_*
+build/gearsystem_core_runner*
+
+# Curated Game Gear ROM snapshots (*.gg) are intentionally tracked.
+# Do not add a global *.gg ignore rule.

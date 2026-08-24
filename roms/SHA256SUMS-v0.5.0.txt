@@ -1,0 +1,2 @@
+5bf93b4da582572d731033c995497895c165bc09cd6c0eafe5c08ba1ea3c1241  roms/FEAR-Z80-Tactician-v0.5.0-seed2.gg
+11a2277b7a5926f73b416368f681ca9f0f5c6dd264e4785b5aa0bc248f1e08ac  roms/FEAR-Z80-Tactician-v0.5.0-seed42.gg
