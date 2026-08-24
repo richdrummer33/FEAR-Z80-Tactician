@@ -10,6 +10,7 @@ ROM_BASENAME := $(PROJECT)-v$(VERSION)
 
 HOST_BIN := build/host_preview
 TEST_BIN := build/test_sim
+FX_TEST_BIN := build/test_fx
 GG_ROM := build/$(ROM_BASENAME)-seed2.gg
 GG_SEED42_ROM := build/$(ROM_BASENAME)-seed42.gg
 ROM_DIR := roms
@@ -24,7 +25,7 @@ SMOKE_ROM := build/gg_smoke.gg
 # though only one switchable code bank is currently needed.
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke clean
+.PHONY: all host test fx-test gg gg-seed42 release smoke gear-tools emu-smoke clean
 all: host test
 
 build:
@@ -36,6 +37,12 @@ host: build
 test: build
 	$(CC) $(CFLAGS) -Isrc src/sim.c src/brain.c tests/test_sim.c -o $(TEST_BIN)
 	./$(TEST_BIN)
+	$(CC) $(CFLAGS) -Isrc src/fx.c tests/test_fx.c -o $(FX_TEST_BIN)
+	./$(FX_TEST_BIN)
+
+fx-test: build
+	$(CC) $(CFLAGS) -Isrc src/fx.c tests/test_fx.c -o $(FX_TEST_BIN)
+	./$(FX_TEST_BIN)
 
 build/main_gg.o: src/main_gg.c | build
 	$(LCC) $(GGFLAGS) -DDEFAULT_SEED=2u -c -o $@ $<
