@@ -14,3 +14,7 @@ Durable decisions for future work:
 8. Versioning follows `vMAJOR.MINOR.PATCH`; pre-1.0 capability stages map to the minor number. Current Stage 5 is `v0.5.0`; patch releases are bug/perf/build-only changes.
 9. Deterministic reference seeds: seed 2 exercises max 4v7 / eleven actors; seed 42 is the secondary cross-check.
 10. Current next direction: enrich autonomous individual combat/GOAP semantics while retaining the compact room-graph foundation; task bindings and shallow squad HTN come afterward.
+
+## VFX lab branch convention
+
+`feature/gg-vfx-lab` is an experimental rendering branch based on the same Stage 5 world/simulation. It may bypass autonomous behavior for selected deterministic scenarios, but should not fork the simulation architecture. Preserve gameplay correctness, degrade cosmetics under load, and keep VFX work time-sliced through CPU/VRAM budgets. The durable design/context and exact current implementation status live in `docs/VFX_LAB_HANDOFF.md`.
