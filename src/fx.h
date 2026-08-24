@@ -28,6 +28,7 @@ typedef struct {
     uint8_t seed;
     uint8_t size_class;
     uint8_t grounded;
+    uint8_t settle_age;
     uint8_t active;
 } FxDebris;
 
@@ -38,6 +39,7 @@ void fx_tile_set_pixel(uint8_t *tile, uint8_t x, uint8_t y, uint8_t color);
 uint8_t fx_tile_get_pixel(const uint8_t *tile, uint8_t x, uint8_t y);
 void fx_tile_draw_line(uint8_t *tile, int8_t x0, int8_t y0, int8_t x1, int8_t y1, uint8_t color);
 void fx_tile_draw_ring(uint8_t *tile, uint8_t radius, uint8_t color, uint8_t phase);
+void fx_tile_draw_ring16_quadrant(uint8_t *tile, uint8_t quadrant, uint8_t radius, uint8_t color, uint8_t phase);
 void fx_tile_draw_tracer(uint8_t *tile, int8_t dx, int8_t dy, uint8_t phase, uint8_t seed,
                          uint8_t head_color, uint8_t tail_color);
 void fx_tile_apply_highbit_glow(uint8_t *tile, uint8_t x, uint8_t y);
