@@ -78,6 +78,24 @@ void fx_tile_draw_ring(uint8_t *tile, uint8_t radius, uint8_t color, uint8_t pha
     }
 }
 
+void fx_tile_draw_ring16_quadrant(uint8_t *tile, uint8_t quadrant, uint8_t radius, uint8_t color, uint8_t phase) {
+    int8_t x, y;
+    int8_t ox = (quadrant & 1u) ? 8 : 0;
+    int8_t oy = (quadrant & 2u) ? 8 : 0;
+    int16_t r2 = (int16_t)radius * radius;
+    int16_t inner = radius > 1u ? (int16_t)(radius - 2u) * (radius - 2u) : 0;
+    fx_tile_clear(tile);
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            int16_t dx = (int16_t)(x + ox) - 7;
+            int16_t dy = (int16_t)(y + oy) - 7;
+            int16_t d2 = (int16_t)(dx * dx + dy * dy);
+            if (d2 <= r2 && d2 >= inner && fx_dither_on((uint8_t)(x + ox), (uint8_t)(y + oy), phase, 2u))
+                fx_tile_set_pixel(tile, (uint8_t)x, (uint8_t)y, color);
+        }
+    }
+}
+
 void fx_tile_draw_tracer(uint8_t *tile, int8_t dx, int8_t dy, uint8_t phase, uint8_t seed,
                          uint8_t head_color, uint8_t tail_color) {
     int8_t x0 = 4, y0 = 4;
@@ -99,7 +117,7 @@ void fx_tile_draw_tracer(uint8_t *tile, int8_t dx, int8_t dy, uint8_t phase, uin
             fx_tile_set_pixel(tile, (uint8_t)x, (uint8_t)y, tail_color);
     }
     fx_tile_set_pixel(tile, 4u, 4u, head_color);
-    if (4u < 7u) fx_tile_set_pixel(tile, 5u, 4u, head_color);
+    fx_tile_set_pixel(tile, 5u, 4u, head_color);
 }
 
 uint16_t fx_lfsr16(uint16_t state) {
@@ -129,7 +147,7 @@ void fx_debris_init(FxDebris *p, uint8_t size_class, int16_t x, int16_t y,
     p->x = x; p->y = y; p->z = 0;
     p->vx = vx; p->vy = vy; p->vz = vz;
     p->life = life; p->seed = seed; p->size_class = size_class;
-    p->grounded = 0u; p->active = 1u;
+    p->grounded = 0u; p->settle_age = 0u; p->active = 1u;
 }
 
 static int16_t damp(int16_t v, uint8_t num, uint8_t den) {
@@ -176,5 +194,10 @@ void fx_debris_tick(FxDebris *p, FxSolidFn solid, void *ctx) {
     p->vy = damp(p->vy, drag_num, 16u);
 
     if (p->life) --p->life;
-    if (!p->life || (p->grounded && fx_abs16(p->vx) < 2 && fx_abs16(p->vy) < 2)) p->active = 0u;
+    if (p->grounded && fx_abs16(p->vx) < 2 && fx_abs16(p->vy) < 2) {
+        p->vx = p->vy = 0;
+        if (p->settle_age < 255u) ++p->settle_age;
+    } else p->settle_age = 0u;
+
+    if (!p->life || p->settle_age > 24u) p->active = 0u;
 }
