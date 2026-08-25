@@ -9,15 +9,15 @@ ROOT="$(cd "$GEAR" && pwd)"
 PORT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$PORT/build/coredbg"
 
-echo "[1/3] Building Gearsystem libretro core (no SDL required)..."
+echo "[1/4] Building Gearsystem libretro core (no SDL required)..."
 make -C "$ROOT/platforms/libretro" -j"$(nproc)"
 
-echo "[2/3] Building tiny libretro frame runner..."
+echo "[2/4] Building tiny libretro frame runner..."
 g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
   -I"$ROOT/platforms/libretro" \
   "$PORT/tools/libretro_runner.cpp" -ldl -o "$PORT/build/libretro_runner"
 
-echo "[3/3] Building native Gearsystem core debugger runner..."
+echo "[3/4] Building native Gearsystem core debugger runner..."
 INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
 gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/src/audio/emu2413/emu2413.c" -o "$PORT/build/coredbg/emu2413.o"
 gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/platforms/shared/dependencies/miniz/miniz.c" -o "$PORT/build/coredbg/miniz.o"
@@ -33,12 +33,18 @@ SRCS=(
 )
 ARGS=()
 for s in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$s"); done
+COMMON=("${ARGS[@]}" "$PORT/build/coredbg/emu2413.o" "$PORT/build/coredbg/miniz.o" -lm)
 g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
-  "$PORT/tools/gearsystem_core_runner_native.cpp" "${ARGS[@]}" \
-  "$PORT/build/coredbg/emu2413.o" "$PORT/build/coredbg/miniz.o" -lm \
+  "$PORT/tools/gearsystem_core_runner_native.cpp" "${COMMON[@]}" \
   -o "$PORT/build/gearsystem_core_runner"
+
+echo "[4/4] Building TileSector instruction profiler..."
+g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
+  "$PORT/tools/tilesector_profile_runner.cpp" "${COMMON[@]}" \
+  -o "$PORT/build/tilesector_profile_runner"
 
 echo "Built:"
 echo "  $ROOT/platforms/libretro/gearsystem_libretro.so"
 echo "  $PORT/build/libretro_runner"
 echo "  $PORT/build/gearsystem_core_runner"
+echo "  $PORT/build/tilesector_profile_runner"
