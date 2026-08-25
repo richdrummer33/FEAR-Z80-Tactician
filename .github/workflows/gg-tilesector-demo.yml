@@ -25,13 +25,33 @@ jobs:
         run: make tilesector-test tilesector-host
 
       - name: Build Game Gear ROM
-        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+        run: |
+          make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+          ls -lh build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym
+
+      - name: Build cycle-aware Gearsystem profiler
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Profile emulated Z80 phases
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/tilesector-profile.txt
+          ./build/gearsystem_core_runner build/gg-tilesector-demo.gg 180 build/gg-tilesector-emulator.ppm | tee build/tilesector-emulator.txt
 
       - name: ROM checksum
-        run: sha256sum build/gg-tilesector-demo.gg
+        run: sha256sum build/gg-tilesector-demo.gg | tee build/gg-tilesector-demo.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: gg-tilesector-demo
-          path: build/gg-tilesector-demo.gg
+          path: |
+            build/gg-tilesector-demo.gg
+            build/gg-tilesector-demo.sym
+            build/gg-tilesector-demo.sha256
+            build/tilesector-profile.txt
+            build/tilesector-emulator.txt
+            build/gg-tilesector-emulator.ppm
           if-no-files-found: error
