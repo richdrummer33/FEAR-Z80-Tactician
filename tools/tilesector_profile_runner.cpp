@@ -1,0 +1,127 @@
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <string>
+#include <vector>
+#include "GearsystemCore.h"
+#include "Memory.h"
+
+bool g_mcp_stdio_mode = false;
+
+static bool find_symbol(const char* path,const char* wanted,u16& addr) {
+    std::ifstream f(path);
+    std::string line;
+    if(!f) return false;
+    while(std::getline(f,line)) {
+        unsigned bank=0,a=0;
+        char sym[256]={0};
+        if(std::sscanf(line.c_str(),"%x:%x %255s",&bank,&a,sym)==3) {
+            if(std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+        }
+        if(std::sscanf(line.c_str(),"%x %255s",&a,sym)==2) {
+            if(std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+        }
+    }
+    return false;
+}
+
+struct Stat {
+    uint64_t sum=0,min=std::numeric_limits<uint64_t>::max(),max=0;
+    unsigned n=0;
+    void add(uint64_t v) { sum+=v; min=std::min(min,v); max=std::max(max,v); ++n; }
+    double avg() const { return n?(double)sum/n:0.0; }
+};
+
+int main(int argc,char**argv) {
+    if(argc<3) {
+        std::fprintf(stderr,"usage: %s rom.gg rom.sym [loops=120] [warmup=8]\n",argv[0]);
+        return 2;
+    }
+    const char* rom=argv[1];
+    const char* sym=argv[2];
+    unsigned target=(argc>3)?(unsigned)std::strtoul(argv[3],nullptr,0):120u;
+    unsigned warmup=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):8u;
+    u16 phase_addr=0,dirty_addr=0;
+    if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
+        std::fprintf(stderr,"phase symbol not found in %s\n",sym); return 3;
+    }
+    bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
+
+    GearsystemCore core;
+    core.Init(GS_PIXEL_RGBA8888);
+    if(!core.LoadROM(rom)) { std::fprintf(stderr,"LoadROM failed\n"); return 4; }
+    std::vector<u8> fb(GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN*GS_RESOLUTION_MAX_HEIGHT_WITH_OVERSCAN*4);
+    std::vector<s16> audio(16384);
+    int samples=0;
+    GearsystemCore::GS_Debug_Run dbg{};
+    dbg.step_debugger=true;
+    dbg.stop_on_breakpoint=false;
+    dbg.stop_on_run_to_breakpoint=false;
+    dbg.stop_on_irq=false;
+    Memory* mem=core.GetMemory();
+
+    uint8_t last_phase=mem->DebugRetrieve(phase_addr);
+    uint64_t last_cycle=core.GetMasterClockCycles();
+    uint64_t loop_start=0;
+    bool have_loop_start=false;
+    std::array<Stat,6> phase_stats{};
+    Stat loop_stats,dirty_stats;
+    unsigned loops_seen=0,loops_measured=0;
+    uint64_t instructions=0;
+    const uint64_t instruction_limit=50000000ull;
+
+    while(loops_measured<target&&instructions<instruction_limit) {
+        samples=0;
+        core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false);
+        ++instructions;
+        uint8_t p=mem->DebugRetrieve(phase_addr);
+        if(p!=last_phase) {
+            uint64_t now=core.GetMasterClockCycles();
+            if(last_phase<=5u&&p<=5u&&last_phase!=0u) {
+                if(loops_seen>=warmup) phase_stats[last_phase].add(now-last_cycle);
+            }
+            if(p==1u) {
+                if(have_loop_start) {
+                    if(loops_seen>=warmup) { loop_stats.add(now-loop_start); ++loops_measured; }
+                    ++loops_seen;
+                } else have_loop_start=true;
+                loop_start=now;
+            }
+            if(p==5u&&have_dirty&&loops_seen>=warmup) {
+                uint16_t dirty=(uint16_t)mem->DebugRetrieve(dirty_addr)|
+                               ((uint16_t)mem->DebugRetrieve((u16)(dirty_addr+1u))<<8);
+                dirty_stats.add(dirty);
+            }
+            last_phase=p;
+            last_cycle=now;
+        }
+    }
+
+    if(!loop_stats.n) {
+        std::fprintf(stderr,"no measured loops; instructions=%llu phase=%u addr=%04X\n",
+                     (unsigned long long)instructions,last_phase,phase_addr);
+        return 5;
+    }
+
+    const double cpu_hz=3579545.0;
+    std::printf("TileSector Gearsystem profile: loops=%u warmup=%u instructions=%llu phase_addr=%04X\n",
+                loop_stats.n,warmup,(unsigned long long)instructions,phase_addr);
+    const char* names[6]={"startup","input+motion","render/build","vsync-wait","VRAM-upload","loop-tail"};
+    for(unsigned p=1;p<=5;++p) if(phase_stats[p].n) {
+        std::printf("  %-12s avg=%8.1f T min=%5llu max=%5llu n=%u\n",names[p],phase_stats[p].avg(),
+                    (unsigned long long)phase_stats[p].min,(unsigned long long)phase_stats[p].max,phase_stats[p].n);
+    }
+    std::printf("  loop         avg=%8.1f T min=%5llu max=%5llu -> %.2f updates/s\n",
+                loop_stats.avg(),(unsigned long long)loop_stats.min,(unsigned long long)loop_stats.max,
+                cpu_hz/loop_stats.avg());
+    double work=phase_stats[1].avg()+phase_stats[2].avg()+phase_stats[4].avg()+phase_stats[5].avg();
+    std::printf("  active-work  avg=%8.1f T (%.1f%% of loop)\n",work,100.0*work/loop_stats.avg());
+    if(dirty_stats.n) std::printf("  dirty words  avg=%8.1f min=%5llu max=%5llu\n",dirty_stats.avg(),
+                                  (unsigned long long)dirty_stats.min,(unsigned long long)dirty_stats.max);
+    return 0;
+}
