@@ -89,7 +89,7 @@ build/tilesector_core_gg.o: src/tilesector_core.c | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
 
 gg-tilesector: $(TILESECTOR_GG_OBJS)
-	$(LCC) $(GGFLAGS) -o $(TILESECTOR_ROM) $(TILESECTOR_GG_OBJS)
+	$(LCC) $(GGFLAGS) -Wm-yS -o $(TILESECTOR_ROM) $(TILESECTOR_GG_OBJS)
 
 clean:
 	rm -rf build/*
