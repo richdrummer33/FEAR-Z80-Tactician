@@ -20,11 +20,14 @@ GG_SRC_BANKED := src/brain.c
 GG_OBJS := build/main_gg.o build/sim.o build/tiles.o build/brain.o
 SMOKE_ROM := build/gg_smoke.gg
 
-# 64 KB / four 16 KB banks. Stage 5 deliberately uses the Sega mapper even
-# though only one switchable code bank is currently needed.
+TILESECTOR_TEST_BIN := build/test_tilesector
+TILESECTOR_HOST_BIN := build/tilesector_preview
+TILESECTOR_ROM := build/gg-tilesector-demo.gg
+TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o
+
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector clean
 all: host test
 
 build:
@@ -49,8 +52,6 @@ build/brain.o: src/brain.c | build
 gg: $(GG_OBJS)
 	$(LCC) $(GGFLAGS) -o $(GG_ROM) $(GG_OBJS)
 
-# Separate fixed-main object so seed 42 can be built without poisoning the
-# default max-population object in incremental builds.
 build/main_gg_seed42.o: src/main_gg.c | build
 	$(LCC) $(GGFLAGS) -DDEFAULT_SEED=42u -c -o $@ $<
 
@@ -73,6 +74,22 @@ gear-tools: build
 emu-smoke: smoke gear-tools
 	./build/libretro_runner "$(GEARSYSTEM_DIR)/platforms/libretro/gearsystem_libretro.so" $(SMOKE_ROM) 30 build/gg_smoke.ppm
 	./build/gearsystem_core_runner $(SMOKE_ROM) 30
+
+tilesector-test: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_core.c tests/test_tilesector.c -o $(TILESECTOR_TEST_BIN)
+	./$(TILESECTOR_TEST_BIN)
+
+tilesector-host: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_core.c host/tilesector_host.c -o $(TILESECTOR_HOST_BIN)
+
+build/main_tilesector_gg.o: src/main_tilesector_gg.c | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+
+build/tilesector_core_gg.o: src/tilesector_core.c | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+
+gg-tilesector: $(TILESECTOR_GG_OBJS)
+	$(LCC) $(GGFLAGS) -o $(TILESECTOR_ROM) $(TILESECTOR_GG_OBJS)
 
 clean:
 	rm -rf build/*
