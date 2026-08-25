@@ -249,12 +249,15 @@ void ts_render_columns(const TSState *s, TSColumn cols[TS_COLS]) {
 
         if (z0 < TS_NEAR_Z && z1 < TS_NEAR_Z) continue;
 
+        /* Near-plane clipping deliberately stays signed 16-bit on Z80. The
+         * Q7 interpolation factor is 0..128 and |dx| <= 254, so the product
+         * remains <= 32512 and does not pull a 16x16->32 helper into the ROM. */
         if (z0 < TS_NEAR_Z) {
             int16_t den = (int16_t)(z1 - z0);
             if (!den) continue;
             {
-                int16_t t = (int16_t)((((int32_t)(TS_NEAR_Z - z0)) << 8) / den);
-                x0 = (int16_t)(x0 + (int16_t)(((int32_t)(x1 - x0) * t) >> 8));
+                int16_t t_q7 = (int16_t)(((TS_NEAR_Z - z0) << 7) / den);
+                x0 = (int16_t)(x0 + (int16_t)(((x1 - x0) * t_q7) >> 7));
                 z0 = TS_NEAR_Z;
             }
         }
@@ -262,8 +265,8 @@ void ts_render_columns(const TSState *s, TSColumn cols[TS_COLS]) {
             int16_t den = (int16_t)(z0 - z1);
             if (!den) continue;
             {
-                int16_t t = (int16_t)((((int32_t)(TS_NEAR_Z - z1)) << 8) / den);
-                x1 = (int16_t)(x1 + (int16_t)(((int32_t)(x0 - x1) * t) >> 8));
+                int16_t t_q7 = (int16_t)(((TS_NEAR_Z - z1) << 7) / den);
+                x1 = (int16_t)(x1 + (int16_t)(((x0 - x1) * t_q7) >> 7));
                 z1 = TS_NEAR_Z;
             }
         }
