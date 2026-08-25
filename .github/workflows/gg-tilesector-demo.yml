@@ -1,0 +1,37 @@
+name: GG TileSector demo
+
+on:
+  push:
+    branches:
+      - feature/gg-tilesector-demo
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Host checks
+        run: make tilesector-test tilesector-host
+
+      - name: Build Game Gear ROM
+        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+
+      - name: ROM checksum
+        run: sha256sum build/gg-tilesector-demo.gg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gg-tilesector-demo
+          path: build/gg-tilesector-demo.gg
+          if-no-files-found: error
