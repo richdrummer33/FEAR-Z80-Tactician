@@ -35,7 +35,7 @@ jobs:
         run: |
           .toolchain/gbdk/bin/lcc -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc -Wf--opt-code-speed \
             -S -o build/tilesector_core_stage7.s src/tilesector_core.c
-          grep -n -A260 -B8 '_raster_surface_column' build/tilesector_core_stage7.s \
+          grep -n -A260 -B8 '_ts_raster_surface_column_fast' src/tilesector_raster_gg.s \
             > build/raster_surface_column.asm.txt || true
           ls -lh build/tilesector_core_stage7.s build/raster_surface_column.asm.txt
 
@@ -76,4 +76,4 @@ jobs:
             build/raster_surface_column.asm.txt
           if-no-files-found: error
 
-# Stage 7 direct-pixel profile math + direct GG VDP uploader acceptance profile.
+# Stage 8 hand-written GG raster-kernel acceptance profile.
