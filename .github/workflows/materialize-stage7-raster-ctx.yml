@@ -19,6 +19,8 @@ jobs:
         run: python3 tools/apply_stage7_raster_ctx.py
       - name: Apply static-scratch Z80 hot path
         run: python3 tools/apply_stage7_static_scratch.py
+      - name: Apply shared-vertex projection cache
+        run: python3 tools/apply_stage7_vertex_projection_cache.py
       - name: Commit materialized renderer
         shell: bash
         run: |
@@ -29,5 +31,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/tilesector_core.c
-          git commit -m "renderer: move Z80 raster scratch out of stack frame"
+          git commit -m "renderer: cache shared vertex projections per frame"
           git push
