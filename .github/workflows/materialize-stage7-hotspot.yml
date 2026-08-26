@@ -1,0 +1,41 @@
+name: Materialize TileSector stage7 hotspot instrumentation
+
+on:
+  push:
+    branches:
+      - feature/gg-tilesector-visibility-v2
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Split renderer hotspot stages
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/tilesector_core.c')
+          s = p.read_text()
+          old = '''static void render_sector(uint8_t sector, uint8_t parent_portal, uint8_t depth,\n                          uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]) {\n    uint8_t p;\n    build_sector_candidates(sector);\n    render_sector_candidates(sector,depth,out_map,cols);\n    for(p=0u;p<TS_PORTALS;++p) {\n        if (p==parent_portal || !portal_touches(p,sector)) continue;\n        render_portal(p,sector,depth,out_map,cols);\n    }\n}\n'''
+          new = '''static void render_sector(uint8_t sector, uint8_t parent_portal, uint8_t depth,\n                          uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]) {\n    uint8_t p;\n    g_ts_render_stage=3u;\n    build_sector_candidates(sector);\n    g_ts_render_stage=4u;\n    render_sector_candidates(sector,depth,out_map,cols);\n    g_ts_render_stage=5u;\n    for(p=0u;p<TS_PORTALS;++p) {\n        if (p==parent_portal || !portal_touches(p,sector)) continue;\n        render_portal(p,sector,depth,out_map,cols);\n        g_ts_render_stage=5u;\n    }\n}\n'''
+          if old not in s:
+              raise SystemExit('render_sector pattern not found')
+          s = s.replace(old, new, 1)
+          old = '''    /* The near portal frame is drawn before the farther sector and reduces the\n     * child's vertical aperture. Stage 4 can later composite shared boundary cells. */\n    raster_portal_face(k_portals[portal].lintel_seg,child_depth,out_map,cols);\n    if (k_portals[portal].riser_seg!=TS_NO_WALL)\n        raster_portal_face(k_portals[portal].riser_seg,child_depth,out_map,cols);\n\n    child_sector=portal_other_sector(portal,sector);\n    render_sector(child_sector,portal,child_depth,out_map,cols);\n'''
+          new = '''    /* The near portal frame is drawn before the farther sector and reduces the\n     * child's vertical aperture. Stage 4 can later composite shared boundary cells. */\n    g_ts_render_stage=6u;\n    raster_portal_face(k_portals[portal].lintel_seg,child_depth,out_map,cols);\n    if (k_portals[portal].riser_seg!=TS_NO_WALL)\n        raster_portal_face(k_portals[portal].riser_seg,child_depth,out_map,cols);\n\n    g_ts_render_stage=5u;\n    child_sector=portal_other_sector(portal,sector);\n    render_sector(child_sector,portal,child_depth,out_map,cols);\n'''
+          if old not in s:
+              raise SystemExit('render_portal pattern not found')
+          p.write_text(s)
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/materialize-stage7-hotspot.yml
+          git add src/tilesector_core.c
+          git commit -m 'profiler: instrument candidate raster and portal phases'
+          git push
