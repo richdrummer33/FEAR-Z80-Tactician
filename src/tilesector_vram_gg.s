@@ -13,14 +13,14 @@
 ;   visible map        = 20 x 18 words
 ; Therefore visible row zero begins at 0x1800 + 3*64 + 6*2 = 0x18CC.
 ;
-; This deliberately bypasses generic set_tile_map().  It performs one linear
+; This deliberately bypasses generic set_tile_map(). It performs one linear
 ; compare against the RAM shadow and writes only changed 16-bit name-table
-; entries directly to the VDP.  Each changed word gets its own VDP address
+; entries directly to the VDP. Each changed word gets its own VDP address
 ; command in this first acceptance experiment: that keeps the routine simple
-; and makes the timing result conservative.  A later run-coalesced variant can
+; and makes the timing result conservative. A later run-coalesced variant can
 ; remove those commands if the profiler says they matter.
 ;
-; No arguments: the hot demo buffers are persistent globals.  This also avoids
+; No arguments: the hot demo buffers are persistent globals. This also avoids
 ; ABI/stack traffic entirely.
 _ts_upload_dirty_map_fast::
         push    ix
@@ -41,8 +41,8 @@ row_loop$:
         ld      c, #20
 
 col_loop$:
-        ; Compare the 16-bit name-table word.  On the equal path HL/DE finish
-        ; already advanced to the next word.  On a high-byte mismatch they are
+        ; Compare the 16-bit name-table word. On the equal path HL/DE finish
+        ; already advanced to the next word. On a high-byte mismatch they are
         ; rewound so changed$ always starts on the low byte.
         ld      a, (de)
         cp      (hl)
@@ -61,13 +61,16 @@ changed_high$:
         dec     hl
 
 changed$:
-        ; VDP write command = VRAM address with command bits 01 in bits 15..14.
-        ; Keep command + two data bytes atomic against the VBlank ISR so the VDP
-        ; internal address latch cannot be stolen halfway through this word.
+        ; asxxxx/GBDK does not expose IXL/IXH as byte registers. Save the row /
+        ; column counters, copy IX through the stack into BC, then use C/B as
+        ; the low/high bytes of the VDP address command.
+        push    bc
+        push    ix
+        pop     bc
         di
-        ld      a, ixl
+        ld      a, c
         out     (#0xBF), a
-        ld      a, ixh
+        ld      a, b
         or      #0x40
         out     (#0xBF), a
 
@@ -86,6 +89,7 @@ vdp_delay_done$:
         ei
         inc     hl
         inc     de
+        pop     bc
 
         ; 16-bit dirty-word counter (the first invalidated frame can reach 360).
         ld      a, (_g_ts_dirty_words)
@@ -104,12 +108,11 @@ word_done$:
         jr      nz, col_loop$
 
         ; We consumed 40 bytes; hardware row stride is 64 bytes. Skip 24.
-        ld      a, ixl
-        add     #24
-        ld      ixl, a
-        jr      nc, row_no_carry$
-        inc     ixh
-row_no_carry$:
+        ; Use the full IX add form accepted by the GBDK assembler.
+        push    de
+        ld      de, #24
+        add     ix, de
+        pop     de
         dec     b
         jr      nz, row_loop$
 
