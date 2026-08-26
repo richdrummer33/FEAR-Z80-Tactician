@@ -23,15 +23,38 @@ jobs:
         run: python3 tools/apply_stage7_vertex_projection_cache.py
       - name: Apply direct pixel-profile hot path
         run: python3 tools/apply_stage7_profile_pixels.py
+      - name: Apply Stage 8 assembly raster bridge
+        run: python3 tools/apply_stage8_asm_raster.py
+      - name: Link Stage 8 GG raster object
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Makefile')
+          s=p.read_text()
+          old='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o'
+          new='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o build/tilesector_raster_gg.o'
+          if new not in s:
+              if old not in s:
+                  raise SystemExit('TileSector object list pattern not found')
+              s=s.replace(old,new,1)
+          rule='''\nbuild/tilesector_raster_gg.o: src/tilesector_raster_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+          if 'build/tilesector_raster_gg.o:' not in s:
+              anchor='''\nbuild/tilesector_vram_gg.o: src/tilesector_vram_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+              if anchor not in s:
+                  raise SystemExit('VRAM object rule pattern not found')
+              s=s.replace(anchor,anchor+rule,1)
+          p.write_text(s)
+          PY
       - name: Commit materialized renderer
         shell: bash
         run: |
-          if git diff --quiet -- src/tilesector_core.c; then
+          if git diff --quiet -- src/tilesector_core.c Makefile; then
             echo "No renderer changes needed."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/tilesector_core.c
-          git commit -m "renderer: simplify projected profile pixel math"
+          git add src/tilesector_core.c Makefile
+          git commit -m "renderer: wire hand-written GG raster kernel"
           git push
