@@ -26,6 +26,9 @@ TILESECTOR_ROM := build/gg-tilesector-demo.gg
 TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o
 
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
+# GBDK recommends max-allocs-per-node for user code; speed mode is secondary.
+# Keep these scoped to the profiling renderer rather than silently changing the AI ROM.
+TILESECTOR_FASTFLAGS := -Wf--max-allocs-per-node50000 -Wf--opt-code-speed
 
 .PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector clean
 all: host test
@@ -83,10 +86,10 @@ tilesector-host: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_core.c host/tilesector_host.c -o $(TILESECTOR_HOST_BIN)
 
 build/main_tilesector_gg.o: src/main_tilesector_gg.c | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
 
 build/tilesector_core_gg.o: src/tilesector_core.c | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
 
 gg-tilesector: $(TILESECTOR_GG_OBJS)
 	$(LCC) $(GGFLAGS) -Wm-yS -o $(TILESECTOR_ROM) $(TILESECTOR_GG_OBJS)
