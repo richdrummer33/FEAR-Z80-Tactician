@@ -599,18 +599,44 @@ static inline void draw_edge_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
     }
 }
 
+typedef struct TSRasterCtx {
+    uint16_t *out_map;
+#ifndef __SDCC
+    TSColumn *cols;
+#endif
+    uint8_t seg_id;
+    int16_t inv_l_q6, inv_r_q6;
+    int16_t top_l, top_r, bot_l, bot_r;
+    uint8_t snap_top, snap_bottom, border;
+    uint8_t *clip_top, *clip_bottom;
+} TSRasterCtx;
+
+/* Persistent hot-path context. The pointer is deliberately not passed: under
+ * Z80 __sdcccall(1), a lone uint8_t column arrives in A with zero stack args.
+ * Loop-stable pointers are written once by the caller; only per-column geometry
+ * is updated before entering the raster kernel. */
+static TSRasterCtx g_raster_ctx;
+
 /* Raster one already-visible surface column. The caller supplies connected
  * edge endpoints; this function only writes the small set of tile rows that the
  * surface actually occupies. No depth compare and no row*20 multiply remain. */
-static inline void raster_surface_column(uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS],
-                                  uint8_t col, uint8_t seg_id,
-                                  int16_t inv_l_q6, int16_t inv_r_q6,
-                                  int16_t top_l, int16_t top_r,
-                                  int16_t bot_l, int16_t bot_r,
-                                  uint8_t snap_top, uint8_t snap_bottom,
-                                  uint8_t border,
-                                  uint8_t *clip_top, uint8_t *clip_bottom,
-                                  uint8_t mutate_clip) {
+static void raster_surface_column(uint8_t col) {
+    uint16_t *out_map = g_raster_ctx.out_map;
+#ifndef __SDCC
+    TSColumn *cols = g_raster_ctx.cols;
+#endif
+    uint8_t seg_id = g_raster_ctx.seg_id;
+    int16_t inv_l_q6 = g_raster_ctx.inv_l_q6;
+    int16_t inv_r_q6 = g_raster_ctx.inv_r_q6;
+    int16_t top_l = g_raster_ctx.top_l;
+    int16_t top_r = g_raster_ctx.top_r;
+    int16_t bot_l = g_raster_ctx.bot_l;
+    int16_t bot_r = g_raster_ctx.bot_r;
+    uint8_t snap_top = g_raster_ctx.snap_top;
+    uint8_t snap_bottom = g_raster_ctx.snap_bottom;
+    uint8_t border = g_raster_ctx.border;
+    uint8_t *clip_top = g_raster_ctx.clip_top;
+    uint8_t *clip_bottom = g_raster_ctx.clip_bottom;
     const TSSegment *seg = &k_segments[seg_id];
     uint8_t shade = shade_for((uint8_t)(((inv_l_q6 + inv_r_q6) >> 1) >> 6),seg->shade_bias);
     uint8_t clip_first, clip_last;
@@ -664,7 +690,6 @@ static inline void raster_surface_column(uint16_t out_map[TS_MAP_CELLS], TSColum
     (void)cols;
 #endif
 
-    if (!mutate_clip) return;
     if (seg->profile == TS_PROFILE_FULL || seg->profile == TS_PROFILE_RAISED_FULL) {
         *clip_top = 1u;
         *clip_bottom = 0u; /* ray closed: farther sectors cannot matter here */
@@ -739,6 +764,12 @@ static void render_sector_candidates(uint8_t depth,uint8_t view_c0,uint8_t view_
     uint8_t prev_seg=TS_NO_WALL;
     int16_t carry_top=0,carry_bottom=0;
 
+    g_raster_ctx.out_map=out_map;
+#ifndef __SDCC
+    g_raster_ctx.cols=cols;
+#else
+    (void)cols;
+#endif
     for (c=view_c0;c<=view_c1;++c) {
         uint8_t seg_id=g_best_seg[c];
         int16_t tlq,trq,blq,brq;
@@ -762,11 +793,17 @@ static void render_sector_candidates(uint8_t depth,uint8_t view_c0,uint8_t view_
         top_r=connected_end(top_l,top_target);
         bot_r=connected_end(bot_l,bot_target);
         carry_top=top_r; carry_bottom=bot_r; prev_seg=seg_id;
-        raster_surface_column(out_map,cols,c,seg_id,
-                              g_best_inv_l_q6[c],g_best_inv_r_q6[c],
-                              top_l,top_r,bot_l,bot_r,
-                              (uint8_t)(stl||str),(uint8_t)(sbl||sbr),g_best_border[c],
-                              &g_clip_top[depth][c],&g_clip_bottom[depth][c],1u);
+        g_raster_ctx.seg_id=seg_id;
+        g_raster_ctx.inv_l_q6=g_best_inv_l_q6[c];
+        g_raster_ctx.inv_r_q6=g_best_inv_r_q6[c];
+        g_raster_ctx.top_l=top_l; g_raster_ctx.top_r=top_r;
+        g_raster_ctx.bot_l=bot_l; g_raster_ctx.bot_r=bot_r;
+        g_raster_ctx.snap_top=(uint8_t)(stl||str);
+        g_raster_ctx.snap_bottom=(uint8_t)(sbl||sbr);
+        g_raster_ctx.border=g_best_border[c];
+        g_raster_ctx.clip_top=&g_clip_top[depth][c];
+        g_raster_ctx.clip_bottom=&g_clip_bottom[depth][c];
+        raster_surface_column(c);
     }
 }
 
@@ -782,6 +819,12 @@ static void raster_portal_face(uint8_t seg_id,const TSProjectedSpan *p,uint8_t d
     int16_t carry_top=0,carry_bottom=0;
     uint8_t have_carry=0u;
     if (seg_id==TS_NO_WALL) return;
+    g_raster_ctx.out_map=out_map;
+#ifndef __SDCC
+    g_raster_ctx.cols=cols;
+#else
+    (void)cols;
+#endif
     while (c0<(int8_t)view_c0) { inv_q6=(int16_t)(inv_q6+p->step_q6); ++c0; }
     if (c1>(int8_t)view_c1) c1=(int8_t)view_c1;
     for (c=c0;c<=c1;++c) {
@@ -807,10 +850,16 @@ static void raster_portal_face(uint8_t seg_id,const TSProjectedSpan *p,uint8_t d
             carry_top=top_r; carry_bottom=bot_r; have_carry=1u;
             if (c==p->original_c0&&p->original_c0>=0) border|=1u;
             if (c==p->original_c1&&p->original_c1<(int8_t)TS_COLS) border|=2u;
-            raster_surface_column(out_map,cols,uc,seg_id,inv_q6,next_q6,
-                                  top_l,top_r,bot_l,bot_r,
-                                  (uint8_t)(stl||str),(uint8_t)(sbl||sbr),border,
-                                  &g_clip_top[depth][uc],&g_clip_bottom[depth][uc],1u);
+            g_raster_ctx.seg_id=seg_id;
+            g_raster_ctx.inv_l_q6=inv_q6; g_raster_ctx.inv_r_q6=next_q6;
+            g_raster_ctx.top_l=top_l; g_raster_ctx.top_r=top_r;
+            g_raster_ctx.bot_l=bot_l; g_raster_ctx.bot_r=bot_r;
+            g_raster_ctx.snap_top=(uint8_t)(stl||str);
+            g_raster_ctx.snap_bottom=(uint8_t)(sbl||sbr);
+            g_raster_ctx.border=border;
+            g_raster_ctx.clip_top=&g_clip_top[depth][uc];
+            g_raster_ctx.clip_bottom=&g_clip_bottom[depth][uc];
+            raster_surface_column(uc);
         } else have_carry=0u;
         inv_q6=next_q6;
     }
