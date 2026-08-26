@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stage 16 semantic equivalence
+        run: python3 tools/test_stage16_opaque_equivalence.py
+
       - name: Apply Stage 10 transform LUT
         run: python3 tools/apply_stage10_vertex_rot_lut.py
 
