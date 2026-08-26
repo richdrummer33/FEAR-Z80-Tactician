@@ -76,4 +76,4 @@ jobs:
             build/raster_surface_column.asm.txt
           if-no-files-found: error
 
-# Stage 7 col-plus-context ABI/profile + generated-assembly trigger.
+# Stage 7 persistent-context + fixed-RAM scratch profile/assembly trigger.
