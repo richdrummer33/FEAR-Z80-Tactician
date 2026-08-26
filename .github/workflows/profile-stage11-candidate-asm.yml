@@ -1,0 +1,67 @@
+name: Profile Stage 11 candidate assembly
+
+on:
+  push:
+    branches:
+      - feature/gg-tilesector-visibility-v2
+  workflow_dispatch:
+
+jobs:
+  profile:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply Stage 10 transform LUT
+        run: python3 tools/apply_stage10_vertex_rot_lut.py
+      - name: Apply Stage 11 candidate bridge
+        run: python3 tools/apply_stage11_candidate_asm.py
+      - name: Link Stage 11 candidate object
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Makefile')
+          s=p.read_text()
+          old='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o build/tilesector_raster_gg.o'
+          new=old+' build/tilesector_candidate_gg.o'
+          if new not in s:
+              if old not in s: raise SystemExit('TileSector object list pattern not found')
+              s=s.replace(old,new,1)
+          rule='''\nbuild/tilesector_candidate_gg.o: src/tilesector_candidate_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+          if 'build/tilesector_candidate_gg.o:' not in s:
+              anchor='''\nbuild/tilesector_raster_gg.o: src/tilesector_raster_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+              if anchor not in s: raise SystemExit('raster rule pattern not found')
+              s=s.replace(anchor,anchor+rule,1)
+          p.write_text(s)
+          PY
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+      - name: Host acceptance
+        run: make tilesector-test tilesector-host
+      - name: Build Stage 11 ROM
+        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+      - name: Build cycle profiler
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+      - name: Profile Stage 11
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage11-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage11-rom.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gg-tilesector-stage11-candidate-asm
+          path: |
+            build/gg-tilesector-demo.gg
+            build/gg-tilesector-demo.sym
+            build/stage11-profile.txt
+            build/stage11-rom.sha256
+          if-no-files-found: error
