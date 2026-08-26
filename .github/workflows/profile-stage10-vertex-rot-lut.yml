@@ -1,0 +1,46 @@
+name: Profile Stage 10 vertex rotation LUT
+
+on:
+  push:
+    branches:
+      - feature/gg-tilesector-visibility-v2
+  workflow_dispatch:
+
+jobs:
+  profile:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply Stage 10 variant
+        run: python3 tools/apply_stage10_vertex_rot_lut.py
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+      - name: Host acceptance
+        run: make tilesector-test tilesector-host
+      - name: Build Stage 10 ROM
+        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+      - name: Build cycle profiler
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+      - name: Profile Stage 10
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage10-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage10-rom.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gg-tilesector-stage10-vertex-rot-lut
+          path: |
+            build/gg-tilesector-demo.gg
+            build/gg-tilesector-demo.sym
+            build/stage10-profile.txt
+            build/stage10-rom.sha256
+          if-no-files-found: error
