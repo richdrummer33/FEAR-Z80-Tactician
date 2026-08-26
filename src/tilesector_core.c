@@ -383,17 +383,17 @@ static int16_t project_x_q4(int16_t cam_x_q4, int16_t cam_z_q4) {
     return (int16_t)(80 + px);
 }
 
-static int8_t screen_col_floor(int16_t px) {
+static inline int8_t screen_col_floor(int16_t px) {
     if (px >= 0) return (int8_t)(px >> 3);
     return (int8_t)-(((-px) + 7) >> 3);
 }
 
-static int8_t row_floor(int16_t py) {
+static inline int8_t row_floor(int16_t py) {
     if (py >= 0) return (int8_t)(py >> 3);
     return (int8_t)-(((-py) + 7) >> 3);
 }
 
-static uint8_t shade_for(uint8_t inv, int8_t bias) {
+static inline uint8_t shade_for(uint8_t inv, int8_t bias) {
     int8_t shade;
     if (inv >= 82u) shade = 2;
     else if (inv >= 46u) shade = 1;
@@ -500,12 +500,12 @@ static const TSProjectedSpan *project_segment_span(uint8_t seg_id) {
 
 /* ----- tile edge/fill raster ----- */
 
-static int16_t q6_round_px(int16_t v) {
+static inline int16_t q6_round_px(int16_t v) {
     if (v >= 0) return (int16_t)((v + 32) >> 6);
     return (int16_t)-(((-v) + 32) >> 6);
 }
 
-static void profile_y_q6(uint8_t profile, int16_t inv_q6,
+static inline void profile_y_q6(uint8_t profile, int16_t inv_q6,
                          int16_t *top_q6, int16_t *bottom_q6,
                          uint8_t *snap_top, uint8_t *snap_bottom) {
     int16_t half = (int16_t)(inv_q6 >> 1);
@@ -527,7 +527,7 @@ static void profile_y_q6(uint8_t profile, int16_t inv_q6,
 /* The pattern ROM stores only positive rises. A negative line is the same
  * pattern H-flipped with its starting phase shifted by -magnitude. Bottom edges
  * reuse the same geometry V-flipped plus palette 1 (outside -> floor). */
-static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom) {
+static inline uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom) {
     uint16_t attr = 0u;
     uint8_t mag;
     int8_t off;
@@ -550,7 +550,7 @@ static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint
     return (uint16_t)(TS_TILE_EDGE(shade,(uint8_t)(off-TS_EDGE_OFF_MIN),mag) | attr);
 }
 
-static void draw_full_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
+static inline void draw_full_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
                            int8_t first, int8_t last, uint8_t shade, uint8_t border,
                            uint8_t cap_first, uint8_t cap_last,
                            uint8_t clip_first, uint8_t clip_last) {
@@ -582,7 +582,7 @@ static void draw_full_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
     if (cap_last) out_map[idx]=TS_TILE_FULL(shade,TS_CAP_BOTTOM,border);
 }
 
-static void draw_edge_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
+static inline void draw_edge_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
                            int16_t left_y, int16_t right_y, uint8_t shade, uint8_t bottom,
                            uint8_t clip_first, uint8_t clip_last) {
     int8_t slope=clamp_s8((int16_t)(right_y-left_y),-7,7);
@@ -602,7 +602,7 @@ static void draw_edge_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
 /* Raster one already-visible surface column. The caller supplies connected
  * edge endpoints; this function only writes the small set of tile rows that the
  * surface actually occupies. No depth compare and no row*20 multiply remain. */
-static void raster_surface_column(uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS],
+static inline void raster_surface_column(uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS],
                                   uint8_t col, uint8_t seg_id,
                                   int16_t inv_l_q6, int16_t inv_r_q6,
                                   int16_t top_l, int16_t top_r,
@@ -685,7 +685,7 @@ static void raster_surface_column(uint16_t out_map[TS_MAP_CELLS], TSColumn cols[
 /* Quantize one tile's ideal right endpoint while forcing its left endpoint to
  * equal the previous tile's actual endpoint. The residual geometric error is
  * therefore carried into the next tile automatically: tile-scale Bresenham. */
-static int16_t connected_end(int16_t actual_left, int16_t ideal_right) {
+static inline int16_t connected_end(int16_t actual_left, int16_t ideal_right) {
     int16_t d = (int16_t)(ideal_right - actual_left);
     if (d > 7) d = 7;
     if (d < -7) d = -7;
