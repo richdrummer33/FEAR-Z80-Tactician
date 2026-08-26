@@ -19,9 +19,10 @@ jobs:
         shell: bash
         run: |
           python3 tools/gen_stage12_run_asm.py
-          # The closed-aperture fast path jumps over the whole visible-column
-          # body, which is intentionally larger than JR's +/-128-byte reach.
-          sed -i 's/        jr      nr_advance$/        jp      nr_advance$/' src/tilesector_run_gg.s
+          # Ceiling experiment first: force long jumps throughout the new run
+          # kernel so assembler reach never blocks profiling. Tighten local JRs
+          # only after the architecture proves worth keeping.
+          sed -i 's/        jr      /        jp      /g' src/tilesector_run_gg.s
       - name: Link Stage 12 kernels
         shell: bash
         run: |
