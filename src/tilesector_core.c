@@ -86,6 +86,13 @@ static const TSPortal k_portals[TS_PORTALS] = {
     {1u,2u,15u,16u}
 };
 
+/* Direct sector -> portal adjacency avoids rescanning every portal at every
+ * recursion level. The demo topology is a chain: room A <-> connector <-> room B. */
+static const uint8_t k_sector_portal_count[TS_SECTORS] = {1u,2u,1u};
+static const uint8_t k_sector_portals[TS_SECTORS][2] = {
+    {0u,TS_NO_PORTAL}, {0u,1u}, {1u,TS_NO_PORTAL}
+};
+
 /* Recorded player path. */
 static const TSDemoPhase k_demo[] = {
     {145u,   0u, 1},
@@ -144,9 +151,16 @@ static const uint16_t k_row_base[TS_ROWS] = {
 static int16_t g_cam_x_q4[TS_VERTICES];
 static int16_t g_cam_z_q4[TS_VERTICES];
 
+/* Projection is invariant for a world segment during one rendered frame. Cache
+ * the 17 tiny spans so portals/candidate passes never redo clipping, reciprocal
+ * interpolation and perspective projection for the same segment. */
+static TSProjectedSpan g_span_cache[TS_SEGMENTS];
+static uint8_t g_span_state[TS_SEGMENTS]; /* 0 unknown, 1 rejected, 2 visible */
+
 /* Per-sector nearest solid candidate for each 8px screen column. This replaces
  * the old 20x18 generalized Z field: no vertical-cell depth disputes. */
 static uint8_t g_best_seg[TS_COLS];
+static uint8_t g_best_inv[TS_COLS];
 static uint8_t g_best_border[TS_COLS];
 static int16_t g_best_inv_l_q6[TS_COLS];
 static int16_t g_best_inv_r_q6[TS_COLS];
@@ -426,7 +440,7 @@ static int16_t clip_x_near_q4(int16_t x0, int16_t z0, int16_t x1, int16_t z1) {
     return (int16_t)(x0 + scale_q8_s16((int16_t)(x1 - x0), t_q8));
 }
 
-static uint8_t project_segment_span(uint8_t seg_id, TSProjectedSpan *p) {
+static uint8_t project_segment_span_uncached(uint8_t seg_id, TSProjectedSpan *p) {
     const TSSegment *seg = &k_segments[seg_id];
     int16_t x0 = g_cam_x_q4[seg->a], z0 = g_cam_z_q4[seg->a];
     int16_t x1 = g_cam_x_q4[seg->b], z1 = g_cam_z_q4[seg->b];
@@ -473,6 +487,15 @@ static uint8_t project_segment_span(uint8_t seg_id, TSProjectedSpan *p) {
     p->c0 = c0;
     p->c1 = c1;
     return 1u;
+}
+
+static const TSProjectedSpan *project_segment_span(uint8_t seg_id) {
+    uint8_t state=g_span_state[seg_id];
+    if (state==0u) {
+        state=project_segment_span_uncached(seg_id,&g_span_cache[seg_id]) ? 2u : 1u;
+        g_span_state[seg_id]=state;
+    }
+    return state==2u ? &g_span_cache[seg_id] : (const TSProjectedSpan *)0;
 }
 
 /* ----- tile edge/fill raster ----- */
@@ -527,42 +550,52 @@ static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint
     return (uint16_t)(TS_TILE_EDGE(shade,(uint8_t)(off-TS_EDGE_OFF_MIN),mag) | attr);
 }
 
-static void put_tile(uint16_t out_map[TS_MAP_CELLS], uint8_t col, int8_t row, uint16_t entry,
-                     uint8_t first_row, uint8_t last_row) {
-    if (row < 0 || row >= (int8_t)TS_ROWS) return;
-    if ((uint8_t)row < first_row || (uint8_t)row > last_row) return;
-    out_map[k_row_base[(uint8_t)row] + col] = entry;
-}
-
 static void draw_full_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
                            int8_t first, int8_t last, uint8_t shade, uint8_t border,
                            uint8_t cap_first, uint8_t cap_last,
                            uint8_t clip_first, uint8_t clip_last) {
-    int8_t r;
-    uint16_t idx;
+    int8_t r,plain_last;
+    uint16_t idx,plain;
     if (first < (int8_t)clip_first) first = (int8_t)clip_first;
     if (last > (int8_t)clip_last) last = (int8_t)clip_last;
     if (first > last) return;
-    idx = (uint16_t)(k_row_base[(uint8_t)first] + col);
-    for (r = first; r <= last; ++r) {
-        uint8_t cap = TS_CAP_NONE;
-        if (r == first && cap_first) cap = TS_CAP_TOP;
-        if (r == last && cap_last) cap = TS_CAP_BOTTOM;
-        out_map[idx] = TS_TILE_FULL(shade,cap,border);
-        idx = (uint16_t)(idx + TS_COLS);
+    idx=(uint16_t)(k_row_base[(uint8_t)first]+col);
+
+    /* Interior rows are overwhelmingly the common case. Compute that tile ID
+     * once, then make the hot loop one store + one constant stride. */
+    plain=TS_TILE_FULL(shade,TS_CAP_NONE,border);
+    if (first==last) {
+        uint8_t cap=cap_last ? TS_CAP_BOTTOM : (cap_first ? TS_CAP_TOP : TS_CAP_NONE);
+        out_map[idx]=cap==TS_CAP_NONE ? plain : TS_TILE_FULL(shade,cap,border);
+        return;
     }
+    if (cap_first) {
+        out_map[idx]=TS_TILE_FULL(shade,TS_CAP_TOP,border);
+        idx=(uint16_t)(idx+TS_COLS);
+        ++first;
+    }
+    plain_last=cap_last ? (int8_t)(last-1) : last;
+    for (r=first;r<=plain_last;++r) {
+        out_map[idx]=plain;
+        idx=(uint16_t)(idx+TS_COLS);
+    }
+    if (cap_last) out_map[idx]=TS_TILE_FULL(shade,TS_CAP_BOTTOM,border);
 }
 
 static void draw_edge_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
                            int16_t left_y, int16_t right_y, uint8_t shade, uint8_t bottom,
                            uint8_t clip_first, uint8_t clip_last) {
-    int8_t slope = clamp_s8((int16_t)(right_y-left_y), -7, 7);
-    int8_t r0 = row_floor(left_y < right_y ? left_y : right_y);
-    int8_t r1 = row_floor(left_y > right_y ? left_y : right_y);
+    int8_t slope=clamp_s8((int16_t)(right_y-left_y),-7,7);
+    int8_t r0=row_floor(left_y<right_y?left_y:right_y);
+    int8_t r1=row_floor(left_y>right_y?left_y:right_y);
     int8_t r;
-    for (r = r0; r <= r1; ++r) {
-        int16_t local = (int16_t)(left_y - ((int16_t)r << 3));
-        put_tile(out_map,col,r,edge_entry(shade,local,slope,bottom),clip_first,clip_last);
+    if (r0 < (int8_t)clip_first) r0=(int8_t)clip_first;
+    if (r1 > (int8_t)clip_last) r1=(int8_t)clip_last;
+    if (r0<0) r0=0;
+    if (r1>=(int8_t)TS_ROWS) r1=(int8_t)(TS_ROWS-1u);
+    for (r=r0;r<=r1;++r) {
+        int16_t local=(int16_t)(left_y-((int16_t)r<<3));
+        out_map[k_row_base[(uint8_t)r]+col]=edge_entry(shade,local,slope,bottom);
     }
 }
 
@@ -612,7 +645,9 @@ static void raster_surface_column(uint16_t out_map[TS_MAP_CELLS], TSColumn cols[
     draw_full_rows(out_map,col,(int8_t)(top_max_row+1),(int8_t)(bot_min_row-1),shade,border,0u,0u,
                    clip_first,clip_last);
 
-    /* TSColumn is only diagnostic/host-observable nearest-wall metadata. */
+    /* Host tests expose nearest-wall diagnostics, but the Game Gear display never
+     * consumes TSColumn. Do not pay these 16-bit comparisons/stores on SDCC. */
+#ifndef __SDCC
     {
         uint8_t inv = (uint8_t)(((inv_l_q6 + inv_r_q6) >> 1) >> 6);
         if (inv > cols[col].invz) {
@@ -625,6 +660,9 @@ static void raster_surface_column(uint16_t out_map[TS_MAP_CELLS], TSColumn cols[
             cols[col].bottom_step = clamp_s8((int16_t)(bot_r-bot_l),-7,7);
         }
     }
+#else
+    (void)cols;
+#endif
 
     if (!mutate_clip) return;
     if (seg->profile == TS_PROFILE_FULL || seg->profile == TS_PROFILE_RAISED_FULL) {
@@ -654,126 +692,105 @@ static int16_t connected_end(int16_t actual_left, int16_t ideal_right) {
     return (int16_t)(actual_left + d);
 }
 
-static void candidate_reset(void) {
+static void candidate_reset(uint8_t view_c0,uint8_t view_c1) {
     uint8_t c;
-    for (c=0u;c<TS_COLS;++c) {
-        g_best_seg[c]=TS_NO_WALL;
-        g_best_border[c]=0u;
-        g_best_inv_l_q6[c]=0;
-        g_best_inv_r_q6[c]=0;
-    }
+    for (c=view_c0;c<=view_c1;++c) g_best_seg[c]=TS_NO_WALL;
 }
 
-static void candidate_add_segment(uint8_t seg_id) {
-    TSProjectedSpan p;
-    int8_t c;
+static void candidate_add_segment(uint8_t seg_id,uint8_t view_c0,uint8_t view_c1) {
+    const TSProjectedSpan *p=project_segment_span(seg_id);
+    int8_t c,c0,c1;
     int16_t inv_q6;
-    if (!project_segment_span(seg_id,&p)) return;
-    inv_q6 = p.inv_q6;
-    for (c=p.c0;c<=p.c1;++c) {
-        int16_t next_q6 = (int16_t)(inv_q6 + p.step_q6);
-        uint8_t inv = (uint8_t)(((inv_q6 + next_q6) >> 1) >> 6);
-        uint8_t old = 0u;
-        if (g_best_seg[(uint8_t)c] != TS_NO_WALL)
-            old = (uint8_t)(((g_best_inv_l_q6[(uint8_t)c] + g_best_inv_r_q6[(uint8_t)c]) >> 1) >> 6);
-        if (g_best_seg[(uint8_t)c] == TS_NO_WALL || inv > old) {
+    if (!p) return;
+    c0=p->c0;
+    c1=p->c1;
+    inv_q6=p->inv_q6;
+    while (c0<(int8_t)view_c0) { inv_q6=(int16_t)(inv_q6+p->step_q6); ++c0; }
+    if (c1>(int8_t)view_c1) c1=(int8_t)view_c1;
+    if (c0>c1) return;
+    for (c=c0;c<=c1;++c) {
+        uint8_t uc=(uint8_t)c;
+        int16_t next_q6=(int16_t)(inv_q6+p->step_q6);
+        uint8_t inv=(uint8_t)(((inv_q6+next_q6)>>1)>>6);
+        if (g_best_seg[uc]==TS_NO_WALL || inv>g_best_inv[uc]) {
             uint8_t border=0u;
-            if (c == p.original_c0 && p.original_c0 >= 0) border|=1u;
-            if (c == p.original_c1 && p.original_c1 < (int8_t)TS_COLS) border|=2u;
-            g_best_seg[(uint8_t)c]=seg_id;
-            g_best_border[(uint8_t)c]=border;
-            g_best_inv_l_q6[(uint8_t)c]=inv_q6;
-            g_best_inv_r_q6[(uint8_t)c]=next_q6;
+            if (c==p->original_c0 && p->original_c0>=0) border|=1u;
+            if (c==p->original_c1 && p->original_c1<(int8_t)TS_COLS) border|=2u;
+            g_best_seg[uc]=seg_id;
+            g_best_inv[uc]=inv;
+            g_best_border[uc]=border;
+            g_best_inv_l_q6[uc]=inv_q6;
+            g_best_inv_r_q6[uc]=next_q6;
         }
-        inv_q6 = next_q6;
+        inv_q6=next_q6;
     }
 }
 
-static void build_sector_candidates(uint8_t sector) {
+static void build_sector_candidates(uint8_t sector,uint8_t view_c0,uint8_t view_c1) {
     uint8_t i;
-    candidate_reset();
+    candidate_reset(view_c0,view_c1);
     for (i=0u;i<k_sector_count[sector];++i)
-        candidate_add_segment(k_sector_segments[sector][i]);
+        candidate_add_segment(k_sector_segments[sector][i],view_c0,view_c1);
 }
 
-static void render_sector_candidates(uint8_t sector, uint8_t depth,
+static void render_sector_candidates(uint8_t depth,uint8_t view_c0,uint8_t view_c1,
                                      uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]) {
     uint8_t c;
     uint8_t prev_seg=TS_NO_WALL;
     int16_t carry_top=0,carry_bottom=0;
-    (void)sector;
 
-    for (c=0u;c<TS_COLS;++c) {
+    for (c=view_c0;c<=view_c1;++c) {
         uint8_t seg_id=g_best_seg[c];
         int16_t tlq,trq,blq,brq;
         int16_t top_l,top_target,top_r,bot_l,bot_target,bot_r;
         uint8_t stl,sbl,str,sbr;
-        if (seg_id==TS_NO_WALL || g_clip_top[depth][c] > g_clip_bottom[depth][c]) {
+        if (seg_id==TS_NO_WALL || g_clip_top[depth][c]>g_clip_bottom[depth][c]) {
             prev_seg=TS_NO_WALL;
             continue;
         }
-
         profile_y_q6(k_segments[seg_id].profile,g_best_inv_l_q6[c],&tlq,&blq,&stl,&sbl);
         profile_y_q6(k_segments[seg_id].profile,g_best_inv_r_q6[c],&trq,&brq,&str,&sbr);
         if (stl||str) {
             top_l=(int16_t)((q6_round_px(tlq)+4)&~7);
             top_target=(int16_t)((q6_round_px(trq)+4)&~7);
-        } else {
-            top_l=q6_round_px(tlq);
-            top_target=q6_round_px(trq);
-        }
+        } else { top_l=q6_round_px(tlq); top_target=q6_round_px(trq); }
         if (sbl||sbr) {
             bot_l=(int16_t)(((q6_round_px(blq)+4)&~7)-1);
             bot_target=(int16_t)(((q6_round_px(brq)+4)&~7)-1);
-        } else {
-            bot_l=q6_round_px(blq);
-            bot_target=q6_round_px(brq);
-        }
-
-        if (prev_seg==seg_id) {
-            top_l=carry_top;
-            bot_l=carry_bottom;
-        }
+        } else { bot_l=q6_round_px(blq); bot_target=q6_round_px(brq); }
+        if (prev_seg==seg_id) { top_l=carry_top; bot_l=carry_bottom; }
         top_r=connected_end(top_l,top_target);
         bot_r=connected_end(bot_l,bot_target);
-        carry_top=top_r;
-        carry_bottom=bot_r;
-        prev_seg=seg_id;
-
+        carry_top=top_r; carry_bottom=bot_r; prev_seg=seg_id;
         raster_surface_column(out_map,cols,c,seg_id,
                               g_best_inv_l_q6[c],g_best_inv_r_q6[c],
                               top_l,top_r,bot_l,bot_r,
-                              (uint8_t)(stl||str),(uint8_t)(sbl||sbr),
-                              g_best_border[c],
+                              (uint8_t)(stl||str),(uint8_t)(sbl||sbr),g_best_border[c],
                               &g_clip_top[depth][c],&g_clip_bottom[depth][c],1u);
     }
 }
 
-static uint8_t portal_other_sector(uint8_t portal, uint8_t sector) {
-    if (k_portals[portal].sector_a==sector) return k_portals[portal].sector_b;
-    return k_portals[portal].sector_a;
+static uint8_t portal_other_sector(uint8_t portal,uint8_t sector) {
+    return k_portals[portal].sector_a==sector ? k_portals[portal].sector_b : k_portals[portal].sector_a;
 }
 
-static uint8_t portal_touches(uint8_t portal, uint8_t sector) {
-    return (uint8_t)(k_portals[portal].sector_a==sector || k_portals[portal].sector_b==sector);
-}
-
-static void raster_portal_face(uint8_t seg_id, uint8_t depth,
-                               uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]) {
-    TSProjectedSpan p;
-    int8_t c;
-    int16_t inv_q6;
+static void raster_portal_face(uint8_t seg_id,const TSProjectedSpan *p,uint8_t depth,
+                               uint8_t view_c0,uint8_t view_c1,
+                               uint16_t out_map[TS_MAP_CELLS],TSColumn cols[TS_COLS]) {
+    int8_t c,c0=p->c0,c1=p->c1;
+    int16_t inv_q6=p->inv_q6;
     int16_t carry_top=0,carry_bottom=0;
     uint8_t have_carry=0u;
-    if (seg_id==TS_NO_WALL || !project_segment_span(seg_id,&p)) return;
-    inv_q6=p.inv_q6;
-    for (c=p.c0;c<=p.c1;++c) {
-        int16_t next_q6=(int16_t)(inv_q6+p.step_q6);
+    if (seg_id==TS_NO_WALL) return;
+    while (c0<(int8_t)view_c0) { inv_q6=(int16_t)(inv_q6+p->step_q6); ++c0; }
+    if (c1>(int8_t)view_c1) c1=(int8_t)view_c1;
+    for (c=c0;c<=c1;++c) {
+        int16_t next_q6=(int16_t)(inv_q6+p->step_q6);
         int16_t tlq,trq,blq,brq;
         int16_t top_l,top_target,top_r,bot_l,bot_target,bot_r;
-        uint8_t stl,sbl,str,sbr;
-        uint8_t border=0u;
-        if (g_clip_top[depth][(uint8_t)c] <= g_clip_bottom[depth][(uint8_t)c]) {
+        uint8_t stl,sbl,str,sbr,border=0u;
+        uint8_t uc=(uint8_t)c;
+        if (g_clip_top[depth][uc]<=g_clip_bottom[depth][uc]) {
             profile_y_q6(k_segments[seg_id].profile,inv_q6,&tlq,&blq,&stl,&sbl);
             profile_y_q6(k_segments[seg_id].profile,next_q6,&trq,&brq,&str,&sbr);
             if (stl||str) {
@@ -788,58 +805,66 @@ static void raster_portal_face(uint8_t seg_id, uint8_t depth,
             top_r=connected_end(top_l,top_target);
             bot_r=connected_end(bot_l,bot_target);
             carry_top=top_r; carry_bottom=bot_r; have_carry=1u;
-            if (c==p.original_c0&&p.original_c0>=0) border|=1u;
-            if (c==p.original_c1&&p.original_c1<(int8_t)TS_COLS) border|=2u;
-            raster_surface_column(out_map,cols,(uint8_t)c,seg_id,inv_q6,next_q6,
+            if (c==p->original_c0&&p->original_c0>=0) border|=1u;
+            if (c==p->original_c1&&p->original_c1<(int8_t)TS_COLS) border|=2u;
+            raster_surface_column(out_map,cols,uc,seg_id,inv_q6,next_q6,
                                   top_l,top_r,bot_l,bot_r,
                                   (uint8_t)(stl||str),(uint8_t)(sbl||sbr),border,
-                                  &g_clip_top[depth][(uint8_t)c],&g_clip_bottom[depth][(uint8_t)c],1u);
+                                  &g_clip_top[depth][uc],&g_clip_bottom[depth][uc],1u);
         } else have_carry=0u;
         inv_q6=next_q6;
     }
 }
 
-static void render_sector(uint8_t sector, uint8_t parent_portal, uint8_t depth,
-                          uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]);
+static void render_sector(uint8_t sector,uint8_t parent_portal,uint8_t depth,
+                          uint8_t view_c0,uint8_t view_c1,
+                          uint16_t out_map[TS_MAP_CELLS],TSColumn cols[TS_COLS]);
 
-static void render_portal(uint8_t portal, uint8_t sector, uint8_t depth,
-                          uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]) {
-    TSProjectedSpan p;
-    uint8_t child_depth=(uint8_t)(depth+1u);
-    uint8_t child_sector;
-    uint8_t c;
-    if (child_depth>=TS_MAX_PORTAL_DEPTH) return;
-    if (!project_segment_span(k_portals[portal].lintel_seg,&p)) return;
+static void render_portal(uint8_t portal,uint8_t sector,uint8_t depth,
+                          uint8_t view_c0,uint8_t view_c1,
+                          uint16_t out_map[TS_MAP_CELLS],TSColumn cols[TS_COLS]) {
+    const TSProjectedSpan *p=project_segment_span(k_portals[portal].lintel_seg);
+    uint8_t child_depth=(uint8_t)(depth+1u),child_sector,c,child_c0,child_c1;
+    uint8_t found=0u;
+    if (child_depth>=TS_MAX_PORTAL_DEPTH || !p) return;
+    child_c0=(uint8_t)(p->c0>(int8_t)view_c0?p->c0:(int8_t)view_c0);
+    child_c1=(uint8_t)(p->c1<(int8_t)view_c1?p->c1:(int8_t)view_c1);
+    if (child_c0>child_c1) return;
 
-    /* Child starts closed everywhere except the portal's projected horizontal
-     * interval. Within that interval it inherits the parent's surviving aperture. */
-    for(c=0u;c<TS_COLS;++c) { g_clip_top[child_depth][c]=1u; g_clip_bottom[child_depth][c]=0u; }
-    for(c=(uint8_t)p.c0;c<=(uint8_t)p.c1;++c) {
+    /* Initialize only the horizontal interval that the child traversal will
+     * actually inspect. Closed parent columns are copied as closed; no 20-column reset. */
+    for (c=child_c0;c<=child_c1;++c) {
         g_clip_top[child_depth][c]=g_clip_top[depth][c];
         g_clip_bottom[child_depth][c]=g_clip_bottom[depth][c];
+        if (g_clip_top[child_depth][c]<=g_clip_bottom[child_depth][c]) found=1u;
     }
+    if (!found) return;
 
-    /* The near portal frame is drawn before the farther sector and reduces the
-     * child's vertical aperture. Stage 4 can later composite shared boundary cells. */
-    raster_portal_face(k_portals[portal].lintel_seg,child_depth,out_map,cols);
+    /* Lintel and riser share portal endpoints, so the one cached projected span
+     * drives both faces instead of projecting the opening two or three times. */
+    g_ts_render_stage=6u;
+    raster_portal_face(k_portals[portal].lintel_seg,p,child_depth,child_c0,child_c1,out_map,cols);
     if (k_portals[portal].riser_seg!=TS_NO_WALL)
-        raster_portal_face(k_portals[portal].riser_seg,child_depth,out_map,cols);
+        raster_portal_face(k_portals[portal].riser_seg,p,child_depth,child_c0,child_c1,out_map,cols);
 
+    g_ts_render_stage=5u;
     child_sector=portal_other_sector(portal,sector);
-    render_sector(child_sector,portal,child_depth,out_map,cols);
+    render_sector(child_sector,portal,child_depth,child_c0,child_c1,out_map,cols);
 }
 
-static void render_sector(uint8_t sector, uint8_t parent_portal, uint8_t depth,
-                          uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]) {
-    uint8_t p;
+static void render_sector(uint8_t sector,uint8_t parent_portal,uint8_t depth,
+                          uint8_t view_c0,uint8_t view_c1,
+                          uint16_t out_map[TS_MAP_CELLS],TSColumn cols[TS_COLS]) {
+    uint8_t i,portal;
     g_ts_render_stage=3u;
-    build_sector_candidates(sector);
+    build_sector_candidates(sector,view_c0,view_c1);
     g_ts_render_stage=4u;
-    render_sector_candidates(sector,depth,out_map,cols);
+    render_sector_candidates(depth,view_c0,view_c1,out_map,cols);
     g_ts_render_stage=5u;
-    for(p=0u;p<TS_PORTALS;++p) {
-        if (p==parent_portal || !portal_touches(p,sector)) continue;
-        render_portal(p,sector,depth,out_map,cols);
+    for (i=0u;i<k_sector_portal_count[sector];++i) {
+        portal=k_sector_portals[sector][i];
+        if (portal==parent_portal) continue;
+        render_portal(portal,sector,depth,view_c0,view_c1,out_map,cols);
         g_ts_render_stage=5u;
     }
 }
@@ -889,10 +914,11 @@ void ts_build_tilemap(const TSState *s, uint16_t out_map[TS_MAP_CELLS], TSColumn
 
     g_ts_render_stage=2u;
     transform_vertices_q4(s);
+    memset(g_span_state,0,sizeof(g_span_state));
 
     g_ts_render_stage=3u;
     sector=current_sector(s);
-    render_sector(sector,TS_NO_PORTAL,0u,out_map,cols);
+    render_sector(sector,TS_NO_PORTAL,0u,0u,(uint8_t)(TS_COLS-1u),out_map,cols);
 
     g_ts_render_stage=0u;
 }
