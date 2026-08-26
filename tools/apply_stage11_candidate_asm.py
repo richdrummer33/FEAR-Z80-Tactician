@@ -8,9 +8,17 @@ if 'g_candidate_ctx' in s:
     print('Stage 11 candidate assembly bridge already applied')
     raise SystemExit(0)
 
-# Assembly needs direct names for the five hot candidate arrays.
-for name in ('g_best_seg','g_best_inv','g_best_border','g_best_inv_l_q6','g_best_inv_r_q6'):
-    s2=re.sub(rf'^static (uint(?:8|16)_t {name}\[TS_COLS\];)',r'\1',s,flags=re.M)
+# Assembly needs direct names for the five hot candidate arrays. The winner
+# IDs/depth/border are bytes; interpolated reciprocal endpoints are signed Q6.
+types={
+    'g_best_seg':'uint8_t',
+    'g_best_inv':'uint8_t',
+    'g_best_border':'uint8_t',
+    'g_best_inv_l_q6':'int16_t',
+    'g_best_inv_r_q6':'int16_t',
+}
+for name,ctype in types.items():
+    s2=re.sub(rf'^static ({ctype} {name}\[TS_COLS\];)',r'\1',s,flags=re.M)
     if s2==s:
         raise SystemExit(f'candidate array declaration not found: {name}')
     s=s2
