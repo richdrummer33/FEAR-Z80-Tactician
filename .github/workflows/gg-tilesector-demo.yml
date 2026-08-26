@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/gg-tilesector-demo
+      - feature/gg-tilesector-visibility-v2
   workflow_dispatch:
 
 jobs:
@@ -41,6 +42,13 @@ jobs:
           ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/tilesector-profile.txt
           ./build/gearsystem_core_runner build/gg-tilesector-demo.gg 180 build/gg-tilesector-emulator.ppm | tee build/tilesector-emulator.txt
 
+      - name: Host reference frames
+        shell: bash
+        run: |
+          for f in 0 50 70 90 120 150 180 210 250; do
+            ./build/tilesector_preview "$f" "build/tilesector-host-${f}.ppm"
+          done
+
       - name: ROM checksum
         run: sha256sum build/gg-tilesector-demo.gg | tee build/gg-tilesector-demo.sha256
 
@@ -54,4 +62,5 @@ jobs:
             build/tilesector-profile.txt
             build/tilesector-emulator.txt
             build/gg-tilesector-emulator.ppm
+            build/tilesector-host-*.ppm
           if-no-files-found: error
