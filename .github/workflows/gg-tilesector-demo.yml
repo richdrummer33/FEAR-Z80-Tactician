@@ -65,4 +65,4 @@ jobs:
             build/tilesector-host-*.ppm
           if-no-files-found: error
 
-# Stage 7 persistent raster-context ABI/profile trigger.
+# Stage 7 fixed persistent raster-context ABI/profile trigger.
