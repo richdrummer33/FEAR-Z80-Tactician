@@ -1,0 +1,96 @@
+name: Profile Stage 14 span-amortized name-table state
+
+on:
+  push:
+    branches:
+      - feature/gg-tilesector-nametable-native
+  workflow_dispatch:
+
+jobs:
+  profile:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply Stage 10 transform LUT
+        run: python3 tools/apply_stage10_vertex_rot_lut.py
+
+      - name: Apply Stage 12 compact run bridge
+        run: python3 tools/apply_stage12_nametable_runs.py
+
+      - name: Generate Stage 12 run kernel
+        shell: bash
+        run: |
+          python3 tools/gen_stage12_run_asm.py
+          sed -i 's/        jr      /        jp      /g' src/tilesector_run_gg.s
+
+      - name: Apply Stage 13 authoritative state
+        run: python3 tools/apply_stage13_ntstate.py
+
+      - name: Apply Stage 14 span bookkeeping
+        run: python3 tools/apply_stage14_span_dirty.py
+
+      - name: Link Stage 14 kernels
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Makefile')
+          s=p.read_text()
+          old='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o build/tilesector_raster_gg.o'
+          new='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_raster_gg.o build/tilesector_candidate_lite_gg.o build/tilesector_run_gg.o build/tilesector_ntstate_gg.o'
+          if old not in s: raise SystemExit('TileSector object list pattern not found')
+          s=s.replace(old,new,1)
+          anchor='''\nbuild/tilesector_raster_gg.o: src/tilesector_raster_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+          rules='''\nbuild/tilesector_candidate_lite_gg.o: src/tilesector_candidate_lite_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n\nbuild/tilesector_run_gg.o: src/tilesector_run_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n\nbuild/tilesector_ntstate_gg.o: src/tilesector_ntstate_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+          if anchor not in s: raise SystemExit('raster rule pattern not found')
+          s=s.replace(anchor,anchor+rules,1)
+          p.write_text(s)
+          PY
+
+      - name: Verify Stage 14 representation
+        shell: bash
+        run: |
+          ! grep -q 'g_prev_map' src/main_tilesector_gg.c
+          grep -q 'STAGE14_SPAN_COVERAGE' src/tilesector_raster_gg.s
+          grep -q '_ts_nt_mark_span' src/tilesector_ntstate_gg.s
+          grep -q '_ts_nt_mark_dirty' src/tilesector_ntstate_gg.s
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Host acceptance
+        run: make tilesector-test tilesector-host
+
+      - name: Build Stage 14 ROM
+        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+
+      - name: Build cycle profiler
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Profile Stage 14
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage14-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage14-rom.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gg-tilesector-stage14-span-dirty
+          path: |
+            build/gg-tilesector-demo.gg
+            build/gg-tilesector-demo.sym
+            build/stage14-profile.txt
+            build/stage14-rom.sha256
+            src/tilesector_ntstate_gg.s
+            src/tilesector_raster_gg.s
+          if-no-files-found: error
