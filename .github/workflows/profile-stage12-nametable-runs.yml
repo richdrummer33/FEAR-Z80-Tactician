@@ -16,7 +16,12 @@ jobs:
       - name: Apply Stage 12 compact run bridge
         run: python3 tools/apply_stage12_nametable_runs.py
       - name: Generate Stage 12 run kernel
-        run: python3 tools/gen_stage12_run_asm.py
+        shell: bash
+        run: |
+          python3 tools/gen_stage12_run_asm.py
+          # The closed-aperture fast path jumps over the whole visible-column
+          # body, which is intentionally larger than JR's +/-128-byte reach.
+          sed -i 's/        jr      nr_advance$/        jp      nr_advance$/' src/tilesector_run_gg.s
       - name: Link Stage 12 kernels
         shell: bash
         run: |
