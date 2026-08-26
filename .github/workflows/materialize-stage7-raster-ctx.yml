@@ -1,4 +1,4 @@
-name: Materialize TileSector Stage 7 raster context
+name: Materialize TileSector renderer experiments
 
 on:
   push:
@@ -21,6 +21,8 @@ jobs:
         run: python3 tools/apply_stage7_static_scratch.py
       - name: Apply shared-vertex projection cache
         run: python3 tools/apply_stage7_vertex_projection_cache.py
+      - name: Apply direct pixel-profile hot path
+        run: python3 tools/apply_stage7_profile_pixels.py
       - name: Commit materialized renderer
         shell: bash
         run: |
@@ -31,5 +33,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/tilesector_core.c
-          git commit -m "renderer: cache shared vertex projections per frame"
+          git commit -m "renderer: simplify projected profile pixel math"
           git push
