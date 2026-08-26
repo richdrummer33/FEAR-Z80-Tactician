@@ -3,7 +3,7 @@ name: Profile Stage 16 direct opaque materializer
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage16-direct
+      - feature/gg-tilesector-nametable-native
   workflow_dispatch:
 
 jobs:
