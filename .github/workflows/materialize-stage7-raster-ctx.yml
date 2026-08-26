@@ -17,6 +17,8 @@ jobs:
           fetch-depth: 0
       - name: Apply persistent raster context
         run: python3 tools/apply_stage7_raster_ctx.py
+      - name: Apply col-plus-context ABI variant
+        run: python3 tools/apply_stage7_col_ctx_variant.py
       - name: Commit materialized renderer
         shell: bash
         run: |
@@ -27,5 +29,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/tilesector_core.c
-          git commit -m "renderer: use persistent Z80 raster context"
+          git commit -m "renderer: test register-passed col plus raster context"
           git push
