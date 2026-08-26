@@ -133,23 +133,36 @@ static void invalidate_map(void) {
     for(i=0u;i<TS_MAP_CELLS;++i) g_prev_map[i]=0xffffu;
 }
 
+/* One linear RAM walk does both dirty detection and shadow maintenance.
+ * GBDK's set_tile_map backend is already hand-written Z80/OUTI code; the old
+ * expense here was indexed 16-bit C over g_map/g_prev_map, followed by a second
+ * copy pass over every dirty span. Advancing pointers remove row*20+x address
+ * arithmetic and every cell is touched once. */
 static uint16_t upload_dirty_map(void) {
     uint8_t y;
     uint16_t words=0u;
+    uint16_t *cur=g_map;
+    uint16_t *old=g_prev_map;
+
     for(y=0u;y<TS_ROWS;++y) {
-        uint8_t x,first=TS_COLS,last=0u;
-        uint16_t row=(uint16_t)y*TS_COLS;
-        for(x=0u;x<TS_COLS;++x) {
-            if(g_map[row+x]!=g_prev_map[row+x]) {
+        uint8_t x=0u,first=TS_COLS,last=0u;
+        uint16_t *row_cur=cur;
+
+        do {
+            uint16_t v=*cur++;
+            if(v!=*old) {
+                *old=v;
                 if(first==TS_COLS) first=x;
                 last=x;
             }
-        }
+            ++old;
+            ++x;
+        } while(x!=TS_COLS);
+
         if(first!=TS_COLS) {
             uint8_t w=(uint8_t)(last-first+1u);
-            set_tile_map(first,y,w,1u,(const uint8_t *)&g_map[row+first]);
+            set_tile_map(first,y,w,1u,(const uint8_t *)(row_cur+first));
             words=(uint16_t)(words+w);
-            for(x=first;x<=last;++x) g_prev_map[row+x]=g_map[row+x];
         }
     }
     return words;
