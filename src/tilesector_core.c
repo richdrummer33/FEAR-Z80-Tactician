@@ -832,11 +832,15 @@ static void render_portal(uint8_t portal, uint8_t sector, uint8_t depth,
 static void render_sector(uint8_t sector, uint8_t parent_portal, uint8_t depth,
                           uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]) {
     uint8_t p;
+    g_ts_render_stage=3u;
     build_sector_candidates(sector);
+    g_ts_render_stage=4u;
     render_sector_candidates(sector,depth,out_map,cols);
+    g_ts_render_stage=5u;
     for(p=0u;p<TS_PORTALS;++p) {
         if (p==parent_portal || !portal_touches(p,sector)) continue;
         render_portal(p,sector,depth,out_map,cols);
+        g_ts_render_stage=5u;
     }
 }
 
