@@ -36,8 +36,10 @@ static const int8_t k_edge_lut[8][8] = {
 
 static TSState g_state;
 static TSColumn g_cols[TS_COLS];
-static uint16_t g_map[TS_MAP_CELLS];
-static uint16_t g_prev_map[TS_MAP_CELLS];
+/* These two buffers are intentionally externally visible to the dedicated
+ * Z80 uploader.  The hot upload path takes no C arguments at all. */
+uint16_t g_map[TS_MAP_CELLS];
+uint16_t g_prev_map[TS_MAP_CELLS];
 static uint8_t g_tile[32u];
 static uint8_t g_prev_pad;
 
@@ -45,6 +47,9 @@ static uint8_t g_prev_pad;
 volatile uint8_t g_ts_prof_phase;
 volatile uint16_t g_ts_loop_count;
 volatile uint16_t g_ts_dirty_words;
+
+/* Purpose-built GG name-table uploader in tilesector_vram_gg.s. */
+void ts_upload_dirty_map_fast(void);
 
 static uint8_t shade_color(uint8_t shade) {
     if (shade == 0u) return C_FAR;
@@ -133,39 +138,12 @@ static void invalidate_map(void) {
     for(i=0u;i<TS_MAP_CELLS;++i) g_prev_map[i]=0xffffu;
 }
 
-/* One linear RAM walk does both dirty detection and shadow maintenance.
- * GBDK's set_tile_map backend is already hand-written Z80/OUTI code; the old
- * expense here was indexed 16-bit C over g_map/g_prev_map, followed by a second
- * copy pass over every dirty span. Advancing pointers remove row*20+x address
- * arithmetic and every cell is touched once. */
+/* Major-step experiment: the whole dirty scan + hardware map upload is one
+ * fixed-geometry Z80 routine.  No row-wise C calls, no generic XY arithmetic,
+ * no function arguments, and no second RAM copy pass. */
 static uint16_t upload_dirty_map(void) {
-    uint8_t y;
-    uint16_t words=0u;
-    uint16_t *cur=g_map;
-    uint16_t *old=g_prev_map;
-
-    for(y=0u;y<TS_ROWS;++y) {
-        uint8_t x=0u,first=TS_COLS,last=0u;
-        uint16_t *row_cur=cur;
-
-        do {
-            uint16_t v=*cur++;
-            if(v!=*old) {
-                *old=v;
-                if(first==TS_COLS) first=x;
-                last=x;
-            }
-            ++old;
-            ++x;
-        } while(x!=TS_COLS);
-
-        if(first!=TS_COLS) {
-            uint8_t w=(uint8_t)(last-first+1u);
-            set_tile_map(first,y,w,1u,(const uint8_t *)(row_cur+first));
-            words=(uint16_t)(words+w);
-        }
-    }
-    return words;
+    ts_upload_dirty_map_fast();
+    return g_ts_dirty_words;
 }
 
 static uint8_t read_input(void) {
