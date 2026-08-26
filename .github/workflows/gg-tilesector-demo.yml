@@ -64,3 +64,5 @@ jobs:
             build/gg-tilesector-emulator.ppm
             build/tilesector-host-*.ppm
           if-no-files-found: error
+
+# Stage 7 fine-grained hotspot profile trigger.
