@@ -14,3 +14,7 @@ Durable decisions for future work:
 8. Versioning follows `vMAJOR.MINOR.PATCH`; pre-1.0 capability stages map to the minor number. Current Stage 5 is `v0.5.0`; patch releases are bug/perf/build-only changes.
 9. Deterministic reference seeds: seed 2 exercises max 4v7 / eleven actors; seed 42 is the secondary cross-check.
 10. Current next direction: enrich autonomous individual combat/GOAP semantics while retaining the compact room-graph foundation; task bindings and shallow squad HTN come afterward.
+
+Deferred renderer TODOs:
+
+- Explore **selective generative 8x8 line/composite tiles** only for rare sub-tile conflicts where precomputed edge/corner tiles cannot represent the visible split cleanly (for example overlapping pillar/wall boundaries or unusual arch/corner junctions). Keep precomputed LUT-selected tiles as the normal fast path; gate any generative path by projected visual significance / resolvable screen-space separation and profile its CPU + VRAM cost before adopting it.
