@@ -611,32 +611,33 @@ typedef struct TSRasterCtx {
     uint8_t *clip_top, *clip_bottom;
 } TSRasterCtx;
 
-/* Persistent hot-path context. The pointer is deliberately not passed: under
- * Z80 __sdcccall(1), a lone uint8_t column arrives in A with zero stack args.
- * Loop-stable pointers are written once by the caller; only per-column geometry
- * is updated before entering the raster kernel. */
+/* Persistent hot-path context. ABI experiment: the raster kernel receives
+ * (uint8_t col, TSRasterCtx *ctx). Under Z80 __sdcccall(1), col is eligible for
+ * A and the following 16-bit pointer for DE, so neither argument needs stack
+ * transport. Gearsystem profiling and generated assembly decide whether the
+ * extra pointer beats direct static/global addressing. */
 static TSRasterCtx g_raster_ctx;
 
 /* Raster one already-visible surface column. The caller supplies connected
  * edge endpoints; this function only writes the small set of tile rows that the
  * surface actually occupies. No depth compare and no row*20 multiply remain. */
-static void raster_surface_column(uint8_t col) {
-    uint16_t *out_map = g_raster_ctx.out_map;
+static void raster_surface_column(uint8_t col, TSRasterCtx *ctx) {
+    uint16_t *out_map = ctx->out_map;
 #ifndef __SDCC
-    TSColumn *cols = g_raster_ctx.cols;
+    TSColumn *cols = ctx->cols;
 #endif
-    uint8_t seg_id = g_raster_ctx.seg_id;
-    int16_t inv_l_q6 = g_raster_ctx.inv_l_q6;
-    int16_t inv_r_q6 = g_raster_ctx.inv_r_q6;
-    int16_t top_l = g_raster_ctx.top_l;
-    int16_t top_r = g_raster_ctx.top_r;
-    int16_t bot_l = g_raster_ctx.bot_l;
-    int16_t bot_r = g_raster_ctx.bot_r;
-    uint8_t snap_top = g_raster_ctx.snap_top;
-    uint8_t snap_bottom = g_raster_ctx.snap_bottom;
-    uint8_t border = g_raster_ctx.border;
-    uint8_t *clip_top = g_raster_ctx.clip_top;
-    uint8_t *clip_bottom = g_raster_ctx.clip_bottom;
+    uint8_t seg_id = ctx->seg_id;
+    int16_t inv_l_q6 = ctx->inv_l_q6;
+    int16_t inv_r_q6 = ctx->inv_r_q6;
+    int16_t top_l = ctx->top_l;
+    int16_t top_r = ctx->top_r;
+    int16_t bot_l = ctx->bot_l;
+    int16_t bot_r = ctx->bot_r;
+    uint8_t snap_top = ctx->snap_top;
+    uint8_t snap_bottom = ctx->snap_bottom;
+    uint8_t border = ctx->border;
+    uint8_t *clip_top = ctx->clip_top;
+    uint8_t *clip_bottom = ctx->clip_bottom;
     const TSSegment *seg = &k_segments[seg_id];
     uint8_t shade = shade_for((uint8_t)(((inv_l_q6 + inv_r_q6) >> 1) >> 6),seg->shade_bias);
     uint8_t clip_first, clip_last;
@@ -801,7 +802,7 @@ static void render_sector_candidates(uint8_t depth,uint8_t view_c0,uint8_t view_
         g_raster_ctx.border=g_best_border[c];
         g_raster_ctx.clip_top=&g_clip_top[depth][c];
         g_raster_ctx.clip_bottom=&g_clip_bottom[depth][c];
-        raster_surface_column(c);
+        raster_surface_column(c,&g_raster_ctx);
     }
 }
 
@@ -857,7 +858,7 @@ static void raster_portal_face(uint8_t seg_id,const TSProjectedSpan *p,uint8_t d
             g_raster_ctx.border=border;
             g_raster_ctx.clip_top=&g_clip_top[depth][uc];
             g_raster_ctx.clip_bottom=&g_clip_bottom[depth][uc];
-            raster_surface_column(uc);
+            raster_surface_column(uc,&g_raster_ctx);
         } else have_carry=0u;
         inv_q6=next_q6;
     }
