@@ -1,6 +1,12 @@
 #include "tilesector_core.h"
 #include <string.h>
 
+#ifdef __SDCC
+#define TS_FAST_LOCAL static
+#else
+#define TS_FAST_LOCAL
+#endif
+
 #define TS_NEAR_Z 10
 #define TS_FAR_Z 127
 #define TS_NEAR_Z_Q4 (TS_NEAR_Z << 4)
@@ -528,9 +534,10 @@ static inline void profile_y_q6(uint8_t profile, int16_t inv_q6,
  * pattern H-flipped with its starting phase shifted by -magnitude. Bottom edges
  * reuse the same geometry V-flipped plus palette 1 (outside -> floor). */
 static inline uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom) {
-    uint16_t attr = 0u;
-    uint8_t mag;
-    int8_t off;
+    TS_FAST_LOCAL uint16_t attr;
+    TS_FAST_LOCAL uint8_t mag;
+    TS_FAST_LOCAL int8_t off;
+    attr = 0u;
 
     if (bottom) {
         local_left = (int16_t)(7 - local_left);
@@ -554,8 +561,8 @@ static inline void draw_full_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
                            int8_t first, int8_t last, uint8_t shade, uint8_t border,
                            uint8_t cap_first, uint8_t cap_last,
                            uint8_t clip_first, uint8_t clip_last) {
-    int8_t r,plain_last;
-    uint16_t idx,plain;
+    TS_FAST_LOCAL int8_t r,plain_last;
+    TS_FAST_LOCAL uint16_t idx,plain;
     if (first < (int8_t)clip_first) first = (int8_t)clip_first;
     if (last > (int8_t)clip_last) last = (int8_t)clip_last;
     if (first > last) return;
@@ -565,7 +572,8 @@ static inline void draw_full_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
      * once, then make the hot loop one store + one constant stride. */
     plain=TS_TILE_FULL(shade,TS_CAP_NONE,border);
     if (first==last) {
-        uint8_t cap=cap_last ? TS_CAP_BOTTOM : (cap_first ? TS_CAP_TOP : TS_CAP_NONE);
+        TS_FAST_LOCAL uint8_t cap;
+        cap=cap_last ? TS_CAP_BOTTOM : (cap_first ? TS_CAP_TOP : TS_CAP_NONE);
         out_map[idx]=cap==TS_CAP_NONE ? plain : TS_TILE_FULL(shade,cap,border);
         return;
     }
@@ -585,16 +593,17 @@ static inline void draw_full_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
 static inline void draw_edge_rows(uint16_t out_map[TS_MAP_CELLS], uint8_t col,
                            int16_t left_y, int16_t right_y, uint8_t shade, uint8_t bottom,
                            uint8_t clip_first, uint8_t clip_last) {
-    int8_t slope=clamp_s8((int16_t)(right_y-left_y),-7,7);
-    int8_t r0=row_floor(left_y<right_y?left_y:right_y);
-    int8_t r1=row_floor(left_y>right_y?left_y:right_y);
-    int8_t r;
+    TS_FAST_LOCAL int8_t slope,r0,r1,r;
+    slope=clamp_s8((int16_t)(right_y-left_y),-7,7);
+    r0=row_floor(left_y<right_y?left_y:right_y);
+    r1=row_floor(left_y>right_y?left_y:right_y);
     if (r0 < (int8_t)clip_first) r0=(int8_t)clip_first;
     if (r1 > (int8_t)clip_last) r1=(int8_t)clip_last;
     if (r0<0) r0=0;
     if (r1>=(int8_t)TS_ROWS) r1=(int8_t)(TS_ROWS-1u);
     for (r=r0;r<=r1;++r) {
-        int16_t local=(int16_t)(left_y-((int16_t)r<<3));
+        TS_FAST_LOCAL int16_t local;
+        local=(int16_t)(left_y-((int16_t)r<<3));
         out_map[k_row_base[(uint8_t)r]+col]=edge_entry(shade,local,slope,bottom);
     }
 }
@@ -611,41 +620,44 @@ typedef struct TSRasterCtx {
     uint8_t *clip_top, *clip_bottom;
 } TSRasterCtx;
 
-/* Persistent hot-path context. ABI experiment: the raster kernel receives
- * (uint8_t col, TSRasterCtx *ctx). Under Z80 __sdcccall(1), col is eligible for
- * A and the following 16-bit pointer for DE, so neither argument needs stack
- * transport. Gearsystem profiling and generated assembly decide whether the
- * extra pointer beats direct static/global addressing. */
+/* Persistent hot-path context. Measured winner: only the changing column is
+ * passed (A under Z80 __sdcccall(1)); related state stays persistent. The SDCC
+ * hot kernel also uses fixed RAM scratch to avoid a large IX-relative frame. */
 static TSRasterCtx g_raster_ctx;
 
 /* Raster one already-visible surface column. The caller supplies connected
  * edge endpoints; this function only writes the small set of tile rows that the
  * surface actually occupies. No depth compare and no row*20 multiply remain. */
-static void raster_surface_column(uint8_t col, TSRasterCtx *ctx) {
-    uint16_t *out_map = ctx->out_map;
+static void raster_surface_column(uint8_t col) {
+    TS_FAST_LOCAL uint16_t *out_map;
 #ifndef __SDCC
-    TSColumn *cols = ctx->cols;
+    TS_FAST_LOCAL TSColumn *cols;
 #endif
-    uint8_t seg_id = ctx->seg_id;
-    int16_t inv_l_q6 = ctx->inv_l_q6;
-    int16_t inv_r_q6 = ctx->inv_r_q6;
-    int16_t top_l = ctx->top_l;
-    int16_t top_r = ctx->top_r;
-    int16_t bot_l = ctx->bot_l;
-    int16_t bot_r = ctx->bot_r;
-    uint8_t snap_top = ctx->snap_top;
-    uint8_t snap_bottom = ctx->snap_bottom;
-    uint8_t border = ctx->border;
-    uint8_t *clip_top = ctx->clip_top;
-    uint8_t *clip_bottom = ctx->clip_bottom;
-    const TSSegment *seg = &k_segments[seg_id];
-    uint8_t shade = shade_for((uint8_t)(((inv_l_q6 + inv_r_q6) >> 1) >> 6),seg->shade_bias);
-    uint8_t clip_first, clip_last;
-    int8_t top_min_row, top_max_row, bot_min_row, bot_max_row;
-    int16_t top_min = top_l < top_r ? top_l : top_r;
-    int16_t top_max = top_l > top_r ? top_l : top_r;
-    int16_t bot_min = bot_l < bot_r ? bot_l : bot_r;
-    int16_t bot_max = bot_l > bot_r ? bot_l : bot_r;
+    TS_FAST_LOCAL uint8_t seg_id;
+    TS_FAST_LOCAL int16_t inv_l_q6,inv_r_q6;
+    TS_FAST_LOCAL int16_t top_l,top_r,bot_l,bot_r;
+    TS_FAST_LOCAL uint8_t snap_top,snap_bottom,border;
+    TS_FAST_LOCAL uint8_t *clip_top,*clip_bottom;
+    TS_FAST_LOCAL const TSSegment *seg;
+    TS_FAST_LOCAL uint8_t shade,clip_first,clip_last;
+    TS_FAST_LOCAL int8_t top_min_row,top_max_row,bot_min_row,bot_max_row;
+    TS_FAST_LOCAL int16_t top_min,top_max,bot_min,bot_max;
+
+    out_map=g_raster_ctx.out_map;
+#ifndef __SDCC
+    cols=g_raster_ctx.cols;
+#endif
+    seg_id=g_raster_ctx.seg_id;
+    inv_l_q6=g_raster_ctx.inv_l_q6; inv_r_q6=g_raster_ctx.inv_r_q6;
+    top_l=g_raster_ctx.top_l; top_r=g_raster_ctx.top_r;
+    bot_l=g_raster_ctx.bot_l; bot_r=g_raster_ctx.bot_r;
+    snap_top=g_raster_ctx.snap_top; snap_bottom=g_raster_ctx.snap_bottom;
+    border=g_raster_ctx.border;
+    clip_top=g_raster_ctx.clip_top; clip_bottom=g_raster_ctx.clip_bottom;
+    seg=&k_segments[seg_id];
+    shade=shade_for((uint8_t)(((inv_l_q6+inv_r_q6)>>1)>>6),seg->shade_bias);
+    top_min=top_l<top_r?top_l:top_r; top_max=top_l>top_r?top_l:top_r;
+    bot_min=bot_l<bot_r?bot_l:bot_r; bot_max=bot_l>bot_r?bot_l:bot_r;
 
     if (*clip_top > *clip_bottom) return;
     clip_first = (uint8_t)((*clip_top + 7u) >> 3);
@@ -696,13 +708,15 @@ static void raster_surface_column(uint8_t col, TSRasterCtx *ctx) {
         /* Stage 4 will selectively composite within a shared 8x8 cell. Until
          * then, advance to the next whole tile row so far geometry never
          * overwrites the near lintel boundary tile. */
-        int16_t y = bot_max;
-        int16_t next = (int16_t)(((y >> 3) + 1) << 3);
-        if (next > *clip_top) *clip_top = clamp_u8(next,143u);
+        TS_FAST_LOCAL int16_t y,next;
+        y=bot_max;
+        next=(int16_t)(((y>>3)+1)<<3);
+        if (next>*clip_top) *clip_top=clamp_u8(next,143u);
     } else if (seg->profile == TS_PROFILE_RISER) {
-        int16_t y = top_min;
-        int16_t prev = (int16_t)(((y >> 3) << 3) - 1);
-        if (prev < (int16_t)*clip_bottom) *clip_bottom = clamp_u8(prev,143u);
+        TS_FAST_LOCAL int16_t y,prev;
+        y=top_min;
+        prev=(int16_t)(((y>>3)<<3)-1);
+        if (prev<(int16_t)*clip_bottom) *clip_bottom=clamp_u8(prev,143u);
     }
 }
 
@@ -802,7 +816,7 @@ static void render_sector_candidates(uint8_t depth,uint8_t view_c0,uint8_t view_
         g_raster_ctx.border=g_best_border[c];
         g_raster_ctx.clip_top=&g_clip_top[depth][c];
         g_raster_ctx.clip_bottom=&g_clip_bottom[depth][c];
-        raster_surface_column(c,&g_raster_ctx);
+        raster_surface_column(c);
     }
 }
 
@@ -858,7 +872,7 @@ static void raster_portal_face(uint8_t seg_id,const TSProjectedSpan *p,uint8_t d
             g_raster_ctx.border=border;
             g_raster_ctx.clip_top=&g_clip_top[depth][uc];
             g_raster_ctx.clip_bottom=&g_clip_bottom[depth][uc];
-            raster_surface_column(uc,&g_raster_ctx);
+            raster_surface_column(uc);
         } else have_carry=0u;
         inv_q6=next_q6;
     }
