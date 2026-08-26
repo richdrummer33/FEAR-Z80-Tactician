@@ -30,6 +30,15 @@ jobs:
           make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
           ls -lh build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym
 
+      - name: Capture generated Z80 assembly
+        shell: bash
+        run: |
+          .toolchain/gbdk/bin/lcc -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc -Wf--opt-code-speed \
+            -S -o build/tilesector_core_stage7.s src/tilesector_core.c
+          grep -n -A260 -B8 '_raster_surface_column' build/tilesector_core_stage7.s \
+            > build/raster_surface_column.asm.txt || true
+          ls -lh build/tilesector_core_stage7.s build/raster_surface_column.asm.txt
+
       - name: Build cycle-aware Gearsystem profiler
         shell: bash
         run: |
@@ -63,6 +72,8 @@ jobs:
             build/tilesector-emulator.txt
             build/gg-tilesector-emulator.ppm
             build/tilesector-host-*.ppm
+            build/tilesector_core_stage7.s
+            build/raster_surface_column.asm.txt
           if-no-files-found: error
 
-# Stage 7 fixed persistent raster-context ABI/profile trigger.
+# Stage 7 col-plus-context ABI/profile + generated-assembly trigger.
