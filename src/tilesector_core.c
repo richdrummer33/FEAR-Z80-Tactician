@@ -686,8 +686,6 @@ static void raster_surface_column(uint8_t col) {
             cols[col].bottom_step = clamp_s8((int16_t)(bot_r-bot_l),-7,7);
         }
     }
-#else
-    (void)cols;
 #endif
 
     if (seg->profile == TS_PROFILE_FULL || seg->profile == TS_PROFILE_RAISED_FULL) {
