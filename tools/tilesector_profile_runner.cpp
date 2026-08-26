@@ -46,11 +46,12 @@ int main(int argc,char**argv) {
     const char* sym=argv[2];
     unsigned target=(argc>3)?(unsigned)std::strtoul(argv[3],nullptr,0):120u;
     unsigned warmup=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):8u;
-    u16 phase_addr=0,dirty_addr=0;
+    u16 phase_addr=0,dirty_addr=0,stage_addr=0;
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
         std::fprintf(stderr,"phase symbol not found in %s\n",sym); return 3;
     }
     bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
+    bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
 
     GearsystemCore core;
     core.Init(GS_PIXEL_RGBA8888);
@@ -66,10 +67,13 @@ int main(int argc,char**argv) {
     Memory* mem=core.GetMemory();
 
     uint8_t last_phase=mem->DebugRetrieve(phase_addr);
+    uint8_t last_stage=have_stage?mem->DebugRetrieve(stage_addr):0u;
     uint64_t last_cycle=core.GetMasterClockCycles();
+    uint64_t last_stage_cycle=last_cycle;
     uint64_t loop_start=0;
     bool have_loop_start=false;
     std::array<Stat,6> phase_stats{};
+    std::array<Stat,4> stage_stats{};
     Stat loop_stats,dirty_stats;
     unsigned loops_seen=0,loops_measured=0;
     uint64_t instructions=0;
@@ -79,9 +83,18 @@ int main(int argc,char**argv) {
         samples=0;
         core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false);
         ++instructions;
+        uint64_t now=core.GetMasterClockCycles();
         uint8_t p=mem->DebugRetrieve(phase_addr);
+        uint8_t st=have_stage?mem->DebugRetrieve(stage_addr):0u;
+
+        if(have_stage&&st!=last_stage) {
+            if(last_stage>=1u&&last_stage<=3u&&loops_seen>=warmup)
+                stage_stats[last_stage].add(now-last_stage_cycle);
+            last_stage=st;
+            last_stage_cycle=now;
+        }
+
         if(p!=last_phase) {
-            uint64_t now=core.GetMasterClockCycles();
             if(last_phase<=5u&&p<=5u&&last_phase!=0u) {
                 if(loops_seen>=warmup) phase_stats[last_phase].add(now-last_cycle);
             }
@@ -109,12 +122,22 @@ int main(int argc,char**argv) {
     }
 
     const double cpu_hz=3579545.0;
-    std::printf("TileSector Gearsystem profile: loops=%u warmup=%u instructions=%llu phase_addr=%04X\n",
+    std::printf("TileSector Gearsystem profile: loops=%u warmup=%u instructions=%llu phase_addr=%04X",
                 loop_stats.n,warmup,(unsigned long long)instructions,phase_addr);
+    if(have_stage) std::printf(" render_stage_addr=%04X",stage_addr);
+    std::printf("\n");
     const char* names[6]={"startup","input+motion","render/build","vsync-wait","VRAM-upload","loop-tail"};
-    for(unsigned p=1;p<=5;++p) if(phase_stats[p].n) {
-        std::printf("  %-12s avg=%8.1f T min=%5llu max=%5llu n=%u\n",names[p],phase_stats[p].avg(),
-                    (unsigned long long)phase_stats[p].min,(unsigned long long)phase_stats[p].max,phase_stats[p].n);
+    for(unsigned pidx=1;pidx<=5;++pidx) if(phase_stats[pidx].n) {
+        std::printf("  %-12s avg=%8.1f T min=%5llu max=%5llu n=%u\n",names[pidx],phase_stats[pidx].avg(),
+                    (unsigned long long)phase_stats[pidx].min,(unsigned long long)phase_stats[pidx].max,phase_stats[pidx].n);
+    }
+    if(have_stage) {
+        const char* snames[4]={"idle","clear-map","q4-transform","portal+raster"};
+        std::printf("  render/build subphases:\n");
+        for(unsigned s=1;s<=3;++s) if(stage_stats[s].n) {
+            std::printf("    %-13s avg=%8.1f T min=%5llu max=%5llu n=%u\n",snames[s],stage_stats[s].avg(),
+                        (unsigned long long)stage_stats[s].min,(unsigned long long)stage_stats[s].max,stage_stats[s].n);
+        }
     }
     std::printf("  loop         avg=%8.1f T min=%5llu max=%5llu -> %.2f updates/s\n",
                 loop_stats.avg(),(unsigned long long)loop_stats.min,(unsigned long long)loop_stats.max,
