@@ -390,18 +390,40 @@ static uint8_t shade_for(uint8_t inv, int8_t bias) {
     return (uint8_t)shade;
 }
 
-/* Rare near-plane clipping is allowed a 32-bit numerator. It occurs once per
- * clipped segment, never in the hot tile loops. */
+/* Q8 fraction a/b for 0<=a<b. Eight shift/subtract steps avoid the
+ * compiler's 32-bit multiply/divide helpers; this path is rare anyway. */
+static uint8_t ratio_q8(uint16_t a, uint16_t b) {
+    uint8_t i, q = 0u;
+    uint16_t r = a;
+    if (b == 0u || a == 0u) return 0u;
+    if (a >= b) return 255u;
+    for (i = 0u; i < 8u; ++i) {
+        r = (uint16_t)(r << 1);
+        q = (uint8_t)(q << 1);
+        if (r >= b) { r = (uint16_t)(r - b); q |= 1u; }
+    }
+    return q;
+}
+
+/* (signed v * unsigned q8) >> 8 using only 16-bit products. Split the
+ * magnitude into whole 256s + an 8-bit remainder so neither product exceeds
+ * 65535. */
+static int16_t scale_q8_s16(int16_t v, uint8_t q8) {
+    uint16_t a = (uint16_t)(v < 0 ? -v : v);
+    uint16_t hi = (uint16_t)(a >> 8);
+    uint16_t lo = (uint16_t)(a & 255u);
+    uint16_t out = (uint16_t)(hi * q8 + ((lo * q8) >> 8));
+    return v < 0 ? -(int16_t)out : (int16_t)out;
+}
+
 static int16_t clip_x_near_q4(int16_t x0, int16_t z0, int16_t x1, int16_t z1) {
     int16_t den = (int16_t)(z1 - z0);
-    int32_t num;
-    int16_t t_q8;
+    uint16_t a;
+    uint8_t t_q8;
     if (den <= 0) return x0;
-    num = (int32_t)(TS_NEAR_Z_Q4 - z0) << 8;
-    t_q8 = (int16_t)(num / den);
-    if (t_q8 < 0) t_q8 = 0;
-    if (t_q8 > 256) t_q8 = 256;
-    return (int16_t)(x0 + (int16_t)(((int32_t)(x1 - x0) * t_q8) >> 8));
+    a = (uint16_t)(TS_NEAR_Z_Q4 - z0);
+    t_q8 = ratio_q8(a, (uint16_t)den);
+    return (int16_t)(x0 + scale_q8_s16((int16_t)(x1 - x0), t_q8));
 }
 
 static uint8_t project_segment_span(uint8_t seg_id, TSProjectedSpan *p) {
