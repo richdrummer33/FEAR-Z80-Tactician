@@ -11,7 +11,7 @@
 
 /* Palette zero maps C_OUT to ceiling; palette one maps the same pixel index to
  * floor. Bottom wall-edge tiles are therefore the top-edge tile V-flipped plus
- * palette 1: one geometric LUT serves both halves of the wall. */
+ * palette 1: one geometric family serves both wall boundaries. */
 static const palette_color_t k_palettes[32] = {
     RGB(0,0,0), RGB(1,1,3), RGB(2,2,3), RGB(3,4,6), RGB(6,7,9), RGB(10,11,13),
     RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
@@ -21,13 +21,17 @@ static const palette_color_t k_palettes[32] = {
     RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0)
 };
 
-/* Precomputed within-tile line shapes for -2..+2 px of rise over eight pixels. */
-static const int8_t k_edge_lut[5][8] = {
-    { 0, 0,-1,-1,-1,-1,-2,-2 },
-    { 0, 0, 0, 0,-1,-1,-1,-1 },
-    { 0, 0, 0, 0, 0, 0, 0, 0 },
-    { 0, 0, 0, 0, 1, 1, 1, 1 },
-    { 0, 0, 1, 1, 1, 1, 2, 2 }
+/* Positive rise over eight pixels. Negative projected slopes use H-flip plus
+ * a phase correction, so eight patterns cover signed -7..+7. */
+static const int8_t k_edge_lut[8][8] = {
+    {0,0,0,0,0,0,0,0},
+    {0,0,0,0,1,1,1,1},
+    {0,0,1,1,1,1,2,2},
+    {0,0,1,1,2,2,3,3},
+    {0,1,1,2,2,3,3,4},
+    {0,1,1,2,3,4,4,5},
+    {0,1,2,3,3,4,5,6},
+    {0,1,2,3,4,5,6,7}
 };
 
 static TSState g_state;
@@ -37,8 +41,7 @@ static uint16_t g_prev_map[TS_MAP_CELLS];
 static uint8_t g_tile[32u];
 static uint8_t g_prev_pad;
 
-/* Exported profiling markers. The Gearsystem runner instruction-steps and
- * timestamps transitions in this byte to get actual emulated Z80 phase cost. */
+/* Exported profiling markers. */
 volatile uint8_t g_ts_prof_phase;
 volatile uint16_t g_ts_loop_count;
 volatile uint16_t g_ts_dirty_words;
@@ -160,7 +163,6 @@ static uint8_t read_input(void) {
     if(pad&J_DOWN) input|=TS_INPUT_DOWN;
     if(pad&J_LEFT) input|=TS_INPUT_LEFT;
     if(pad&J_RIGHT) input|=TS_INPUT_RIGHT;
-    /* Physical GG button 1 is GBDK J_B; button 2 is J_A. */
     if(pad&J_B) input|=TS_INPUT_STRAFE_LEFT;
     if(pad&J_A) input|=TS_INPUT_STRAFE_RIGHT;
     if((pressed&J_START)!=0u) input|=TS_INPUT_SPEED;
