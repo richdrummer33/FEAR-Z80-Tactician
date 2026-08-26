@@ -19,10 +19,13 @@
 #define TS_SHADE_COUNT 3u
 #define TS_BORDER_COUNT 4u
 #define TS_CAP_COUNT 3u
-#define TS_EDGE_OFF_MIN (-2)
-#define TS_EDGE_OFF_COUNT 12u
-#define TS_EDGE_SLOPE_MIN (-2)
-#define TS_EDGE_SLOPE_COUNT 5u
+
+/* Edge patterns store positive rises 0..7. Negative slopes reuse them with
+ * TS_ATTR_FLIPX. The offset range is wide enough for a <=7px line to cross
+ * a hardware-tile row without a visual break. */
+#define TS_EDGE_OFF_MIN (-7)
+#define TS_EDGE_OFF_COUNT 16u
+#define TS_EDGE_SLOPE_COUNT 8u
 
 /* SMS/GG name-table high-byte flags, stored in a little-endian uint16_t. */
 #define TS_ATTR_FLIPX   0x0200u
@@ -68,6 +71,10 @@ typedef struct TSColumn {
     int8_t top_step;
     int8_t bottom_step;
 } TSColumn;
+
+/* Exported so the Gearsystem profiler can split ts_build_tilemap() internally.
+ * 0 idle, 1 clear, 2 camera transform, 3 sector/portal visibility+raster. */
+extern volatile uint8_t g_ts_render_stage;
 
 void ts_reset(TSState *s);
 void ts_step(TSState *s, uint8_t input);
