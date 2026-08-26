@@ -646,7 +646,7 @@ typedef struct TSRasterCtx {
     TSColumn *cols;
 #endif
     uint8_t seg_id;
-    int16_t inv_l_q6, inv_r_q6;
+    uint8_t inv_mid;
     int16_t top_l, top_r, bot_l, bot_r;
     uint8_t snap_top, snap_bottom, border;
     uint8_t *clip_top, *clip_bottom;
@@ -665,8 +665,7 @@ static void raster_surface_column(uint8_t col) {
 #ifndef __SDCC
     TS_FAST_LOCAL TSColumn *cols;
 #endif
-    TS_FAST_LOCAL uint8_t seg_id;
-    TS_FAST_LOCAL int16_t inv_l_q6,inv_r_q6;
+    TS_FAST_LOCAL uint8_t seg_id,inv_mid;
     TS_FAST_LOCAL int16_t top_l,top_r,bot_l,bot_r;
     TS_FAST_LOCAL uint8_t snap_top,snap_bottom,border;
     TS_FAST_LOCAL uint8_t *clip_top,*clip_bottom;
@@ -680,14 +679,14 @@ static void raster_surface_column(uint8_t col) {
     cols=g_raster_ctx.cols;
 #endif
     seg_id=g_raster_ctx.seg_id;
-    inv_l_q6=g_raster_ctx.inv_l_q6; inv_r_q6=g_raster_ctx.inv_r_q6;
+    inv_mid=g_raster_ctx.inv_mid;
     top_l=g_raster_ctx.top_l; top_r=g_raster_ctx.top_r;
     bot_l=g_raster_ctx.bot_l; bot_r=g_raster_ctx.bot_r;
     snap_top=g_raster_ctx.snap_top; snap_bottom=g_raster_ctx.snap_bottom;
     border=g_raster_ctx.border;
     clip_top=g_raster_ctx.clip_top; clip_bottom=g_raster_ctx.clip_bottom;
     seg=&k_segments[seg_id];
-    shade=shade_for((uint8_t)(((inv_l_q6+inv_r_q6)>>1)>>6),seg->shade_bias);
+    shade=shade_for(inv_mid,seg->shade_bias);
     top_min=top_l<top_r?top_l:top_r; top_max=top_l>top_r?top_l:top_r;
     bot_min=bot_l<bot_r?bot_l:bot_r; bot_max=bot_l>bot_r?bot_l:bot_r;
 
@@ -720,7 +719,7 @@ static void raster_surface_column(uint8_t col) {
      * consumes TSColumn. Do not pay these 16-bit comparisons/stores on SDCC. */
 #ifndef __SDCC
     {
-        uint8_t inv = (uint8_t)(((inv_l_q6 + inv_r_q6) >> 1) >> 6);
+        uint8_t inv = inv_mid;
         if (inv > cols[col].invz) {
             cols[col].invz = inv;
             cols[col].wall_id = seg_id;
@@ -817,34 +816,34 @@ static void render_sector_candidates(uint8_t depth,uint8_t view_c0,uint8_t view_
 #endif
     for (c=view_c0;c<=view_c1;++c) {
         uint8_t seg_id=g_best_seg[c];
-        int16_t tlq,trq,blq,brq;
         int16_t top_l,top_target,top_r,bot_l,bot_target,bot_r;
-        uint8_t stl,sbl,str,sbr;
+        int16_t hl,hr;
+        uint8_t profile;
         if (seg_id==TS_NO_WALL || g_clip_top[depth][c]>g_clip_bottom[depth][c]) {
             prev_seg=TS_NO_WALL;
             continue;
         }
-        profile_y_q6(k_segments[seg_id].profile,g_best_inv_l_q6[c],&tlq,&blq,&stl,&sbl);
-        profile_y_q6(k_segments[seg_id].profile,g_best_inv_r_q6[c],&trq,&brq,&str,&sbr);
-        if (stl||str) {
-            top_l=(int16_t)((q6_round_px(tlq)+4)&~7);
-            top_target=(int16_t)((q6_round_px(trq)+4)&~7);
-        } else { top_l=q6_round_px(tlq); top_target=q6_round_px(trq); }
-        if (sbl||sbr) {
-            bot_l=(int16_t)(((q6_round_px(blq)+4)&~7)-1);
-            bot_target=(int16_t)(((q6_round_px(brq)+4)&~7)-1);
-        } else { bot_l=q6_round_px(blq); bot_target=q6_round_px(brq); }
+        profile=k_segments[seg_id].profile;
+        hl=(int16_t)(g_best_inv_l_q6[c]>>1);
+        hr=(int16_t)(g_best_inv_r_q6[c]>>1);
+        top_l=(int16_t)(TS_HORIZON-((hl+31)>>6));
+        top_target=(int16_t)(TS_HORIZON-((hr+31)>>6));
+        if (profile==TS_PROFILE_RAISED_FULL) {
+            hl=(int16_t)(hl-(hl>>2));
+            hr=(int16_t)(hr-(hr>>2));
+        }
+        bot_l=(int16_t)(TS_HORIZON+((hl+32)>>6));
+        bot_target=(int16_t)(TS_HORIZON+((hr+32)>>6));
         if (prev_seg==seg_id) { top_l=carry_top; bot_l=carry_bottom; }
         top_r=connected_end(top_l,top_target);
         bot_r=connected_end(bot_l,bot_target);
         carry_top=top_r; carry_bottom=bot_r; prev_seg=seg_id;
         g_raster_ctx.seg_id=seg_id;
-        g_raster_ctx.inv_l_q6=g_best_inv_l_q6[c];
-        g_raster_ctx.inv_r_q6=g_best_inv_r_q6[c];
+        g_raster_ctx.inv_mid=g_best_inv[c];
         g_raster_ctx.top_l=top_l; g_raster_ctx.top_r=top_r;
         g_raster_ctx.bot_l=bot_l; g_raster_ctx.bot_r=bot_r;
-        g_raster_ctx.snap_top=(uint8_t)(stl||str);
-        g_raster_ctx.snap_bottom=(uint8_t)(sbl||sbr);
+        g_raster_ctx.snap_top=0u;
+        g_raster_ctx.snap_bottom=0u;
         g_raster_ctx.border=g_best_border[c];
         g_raster_ctx.clip_top=&g_clip_top[depth][c];
         g_raster_ctx.clip_bottom=&g_clip_bottom[depth][c];
@@ -874,21 +873,31 @@ static void raster_portal_face(uint8_t seg_id,const TSProjectedSpan *p,uint8_t d
     if (c1>(int8_t)view_c1) c1=(int8_t)view_c1;
     for (c=c0;c<=c1;++c) {
         int16_t next_q6=(int16_t)(inv_q6+p->step_q6);
-        int16_t tlq,trq,blq,brq;
         int16_t top_l,top_target,top_r,bot_l,bot_target,bot_r;
-        uint8_t stl,sbl,str,sbr,border=0u;
+        int16_t hl,hr;
+        uint8_t snap_top=0u,snap_bottom=0u,border=0u;
         uint8_t uc=(uint8_t)c;
         if (g_clip_top[depth][uc]<=g_clip_bottom[depth][uc]) {
-            profile_y_q6(k_segments[seg_id].profile,inv_q6,&tlq,&blq,&stl,&sbl);
-            profile_y_q6(k_segments[seg_id].profile,next_q6,&trq,&brq,&str,&sbr);
-            if (stl||str) {
-                top_l=(int16_t)((q6_round_px(tlq)+4)&~7);
-                top_target=(int16_t)((q6_round_px(trq)+4)&~7);
-            } else { top_l=q6_round_px(tlq); top_target=q6_round_px(trq); }
-            if (sbl||sbr) {
-                bot_l=(int16_t)(((q6_round_px(blq)+4)&~7)-1);
-                bot_target=(int16_t)(((q6_round_px(brq)+4)&~7)-1);
-            } else { bot_l=q6_round_px(blq); bot_target=q6_round_px(brq); }
+            hl=(int16_t)(inv_q6>>1);
+            hr=(int16_t)(next_q6>>1);
+            if (k_segments[seg_id].profile==TS_PROFILE_RISER) {
+                hl=(int16_t)(hl-(hl>>2));
+                hr=(int16_t)(hr-(hr>>2));
+                top_l=(int16_t)((TS_HORIZON+((hl+32)>>6)+4)&~7);
+                top_target=(int16_t)((TS_HORIZON+((hr+32)>>6)+4)&~7);
+                /* bottom still uses the original half extent, not raised 3/4. */
+                hl=(int16_t)(inv_q6>>1); hr=(int16_t)(next_q6>>1);
+                bot_l=(int16_t)(TS_HORIZON+((hl+32)>>6));
+                bot_target=(int16_t)(TS_HORIZON+((hr+32)>>6));
+                snap_top=1u;
+            } else {
+                top_l=(int16_t)(TS_HORIZON-((hl+31)>>6));
+                top_target=(int16_t)(TS_HORIZON-((hr+31)>>6));
+                hl=(int16_t)(hl>>1); hr=(int16_t)(hr>>1);
+                bot_l=(int16_t)(((TS_HORIZON-((hl+31)>>6)+4)&~7)-1);
+                bot_target=(int16_t)(((TS_HORIZON-((hr+31)>>6)+4)&~7)-1);
+                snap_bottom=1u;
+            }
             if (have_carry) { top_l=carry_top; bot_l=carry_bottom; }
             top_r=connected_end(top_l,top_target);
             bot_r=connected_end(bot_l,bot_target);
@@ -896,11 +905,11 @@ static void raster_portal_face(uint8_t seg_id,const TSProjectedSpan *p,uint8_t d
             if (c==p->original_c0&&p->original_c0>=0) border|=1u;
             if (c==p->original_c1&&p->original_c1<(int8_t)TS_COLS) border|=2u;
             g_raster_ctx.seg_id=seg_id;
-            g_raster_ctx.inv_l_q6=inv_q6; g_raster_ctx.inv_r_q6=next_q6;
+            g_raster_ctx.inv_mid=(uint8_t)(((inv_q6+next_q6)>>1)>>6);
             g_raster_ctx.top_l=top_l; g_raster_ctx.top_r=top_r;
             g_raster_ctx.bot_l=bot_l; g_raster_ctx.bot_r=bot_r;
-            g_raster_ctx.snap_top=(uint8_t)(stl||str);
-            g_raster_ctx.snap_bottom=(uint8_t)(sbl||sbr);
+            g_raster_ctx.snap_top=snap_top;
+            g_raster_ctx.snap_bottom=snap_bottom;
             g_raster_ctx.border=border;
             g_raster_ctx.clip_top=&g_clip_top[depth][uc];
             g_raster_ctx.clip_bottom=&g_clip_bottom[depth][uc];
