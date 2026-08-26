@@ -157,6 +157,13 @@ static const uint16_t k_row_base[TS_ROWS] = {
 static int16_t g_cam_x_q4[TS_VERTICES];
 static int16_t g_cam_z_q4[TS_VERTICES];
 
+/* Segment endpoints share authored vertices. Lazily project each touched
+ * camera-space vertex at most once per frame; near-plane-generated endpoints
+ * remain one-off because their X is segment-specific after clipping. */
+static int16_t g_proj_x[TS_VERTICES];
+static uint8_t g_proj_inv[TS_VERTICES];
+static uint8_t g_proj_state[TS_VERTICES];
+
 /* Projection is invariant for a world segment during one rendered frame. Cache
  * the 17 tiny spans so portals/candidate passes never redo clipping, reciprocal
  * interpolation and perspective projection for the same segment. */
@@ -366,9 +373,9 @@ static uint8_t inv_for_zq4(int16_t z_q4) {
 }
 
 /* Exact positive quotient decomposition avoids a 32-bit multiply:
- * px ~= cam_x_q4 * inv / 512. */
-static int16_t project_x_q4(int16_t cam_x_q4, int16_t cam_z_q4) {
-    uint8_t inv;
+ * px ~= cam_x_q4 * inv / 512. The reciprocal is supplied by the caller so a
+ * projected endpoint never computes inv_for_zq4() twice. */
+static int16_t project_x_inv_q4(int16_t cam_x_q4, uint8_t inv) {
     uint16_t ax, xi, xf, p, rem, extra;
     int16_t px;
     uint8_t neg = 0u;
@@ -377,7 +384,6 @@ static int16_t project_x_q4(int16_t cam_x_q4, int16_t cam_z_q4) {
     else ax = (uint16_t)cam_x_q4;
     if (ax > (uint16_t)(127u << 4)) ax = (uint16_t)(127u << 4);
 
-    inv = inv_for_zq4(cam_z_q4);
     xi = (uint16_t)(ax >> 4);
     xf = (uint16_t)(ax & 15u);
     p = (uint16_t)(xi * inv);          /* <= 32385 */
@@ -448,24 +454,50 @@ static int16_t clip_x_near_q4(int16_t x0, int16_t z0, int16_t x1, int16_t z1) {
 
 static uint8_t project_segment_span_uncached(uint8_t seg_id, TSProjectedSpan *p) {
     const TSSegment *seg = &k_segments[seg_id];
-    int16_t x0 = g_cam_x_q4[seg->a], z0 = g_cam_z_q4[seg->a];
-    int16_t x1 = g_cam_x_q4[seg->b], z1 = g_cam_z_q4[seg->b];
+    uint8_t va=seg->a, vb=seg->b;
+    int16_t x0 = g_cam_x_q4[va], z0 = g_cam_z_q4[va];
+    int16_t x1 = g_cam_x_q4[vb], z1 = g_cam_z_q4[vb];
     int16_t sx0, sx1;
     uint8_t inv0, inv1, span;
+    uint8_t clipped0=0u, clipped1=0u;
     int8_t c0, c1;
 
     if (z0 < TS_NEAR_Z_Q4 && z1 < TS_NEAR_Z_Q4) return 0u;
-    if (z0 < TS_NEAR_Z_Q4) { x0 = clip_x_near_q4(x0,z0,x1,z1); z0 = TS_NEAR_Z_Q4; }
-    if (z1 < TS_NEAR_Z_Q4) { x1 = clip_x_near_q4(x1,z1,x0,z0); z1 = TS_NEAR_Z_Q4; }
+    if (z0 < TS_NEAR_Z_Q4) {
+        x0 = clip_x_near_q4(x0,z0,x1,z1); z0 = TS_NEAR_Z_Q4; clipped0=1u;
+    }
+    if (z1 < TS_NEAR_Z_Q4) {
+        x1 = clip_x_near_q4(x1,z1,x0,z0); z1 = TS_NEAR_Z_Q4; clipped1=1u;
+    }
 
     /* Cheap ~90-degree horizontal frustum reject before projection. */
     if (x0 < -z0 && x1 < -z1) return 0u;
     if (x0 >  z0 && x1 >  z1) return 0u;
 
-    sx0 = project_x_q4(x0,z0);
-    sx1 = project_x_q4(x1,z1);
-    inv0 = inv_for_zq4(z0);
-    inv1 = inv_for_zq4(z1);
+    if (clipped0) {
+        inv0=k_invz[TS_NEAR_Z];
+        sx0=project_x_inv_q4(x0,inv0);
+    } else {
+        if (!g_proj_state[va]) {
+            inv0=inv_for_zq4(z0);
+            g_proj_inv[va]=inv0;
+            g_proj_x[va]=project_x_inv_q4(x0,inv0);
+            g_proj_state[va]=1u;
+        }
+        inv0=g_proj_inv[va]; sx0=g_proj_x[va];
+    }
+    if (clipped1) {
+        inv1=k_invz[TS_NEAR_Z];
+        sx1=project_x_inv_q4(x1,inv1);
+    } else {
+        if (!g_proj_state[vb]) {
+            inv1=inv_for_zq4(z1);
+            g_proj_inv[vb]=inv1;
+            g_proj_x[vb]=project_x_inv_q4(x1,inv1);
+            g_proj_state[vb]=1u;
+        }
+        inv1=g_proj_inv[vb]; sx1=g_proj_x[vb];
+    }
     if (sx0 > sx1) {
         int16_t tx = sx0;
         uint8_t ti = inv0;
@@ -977,6 +1009,7 @@ void ts_build_tilemap(const TSState *s, uint16_t out_map[TS_MAP_CELLS], TSColumn
     g_ts_render_stage=2u;
     transform_vertices_q4(s);
     memset(g_span_state,0,sizeof(g_span_state));
+    memset(g_proj_state,0,sizeof(g_proj_state));
 
     g_ts_render_stage=3u;
     sector=current_sector(s);
