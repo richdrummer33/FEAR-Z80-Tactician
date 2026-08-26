@@ -11,12 +11,15 @@ static const RGB8 k_col[] = {
 static uint8_t wall_color(uint8_t shade) { return (uint8_t)(3u+shade); }
 
 static int8_t edge_delta(uint8_t slope_index,uint8_t x) {
-    static const int8_t lut[5][8] = {
-        { 0, 0,-1,-1,-1,-1,-2,-2 },
-        { 0, 0, 0, 0,-1,-1,-1,-1 },
-        { 0, 0, 0, 0, 0, 0, 0, 0 },
-        { 0, 0, 0, 0, 1, 1, 1, 1 },
-        { 0, 0, 1, 1, 1, 1, 2, 2 }
+    static const int8_t lut[8][8] = {
+        {0,0,0,0,0,0,0,0},
+        {0,0,0,0,1,1,1,1},
+        {0,0,1,1,1,1,2,2},
+        {0,0,1,1,2,2,3,3},
+        {0,1,1,2,2,3,3,4},
+        {0,1,1,2,3,4,4,5},
+        {0,1,2,3,3,4,5,6},
+        {0,1,2,3,4,5,6,7}
     };
     return lut[slope_index][x];
 }
