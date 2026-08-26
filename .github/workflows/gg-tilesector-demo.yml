@@ -65,4 +65,4 @@ jobs:
             build/tilesector-host-*.ppm
           if-no-files-found: error
 
-# Stage 7 bounded traversal profile trigger.
+# Stage 7 persistent raster-context ABI/profile trigger.
