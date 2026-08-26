@@ -202,7 +202,7 @@ cand_no_win$:
         ld      h, a
         ld      a, (#cand_end$)
         cp      h
-        jr      nc, cand_loop$
+        jp      nc, cand_loop$
 
 cand_done$:
         pop     iy
