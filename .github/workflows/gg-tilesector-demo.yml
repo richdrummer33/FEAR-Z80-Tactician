@@ -76,4 +76,4 @@ jobs:
             build/raster_surface_column.asm.txt
           if-no-files-found: error
 
-# Stage 7 shared-vertex projection-cache profile/assembly trigger.
+# Stage 7 direct-pixel profile math + direct GG VDP uploader acceptance profile.
