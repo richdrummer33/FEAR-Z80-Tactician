@@ -53,7 +53,8 @@ int main(int argc,char**argv) {
         std::fprintf(stderr,"phase symbol not found in %s\n",sym); return 3;
     }
     bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
-    bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);\n    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);
+    bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
+    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);
     bool have_ret=
         (find_symbol(sym,"_g_ts_ret_full_total",ret_full_total_addr)||find_symbol(sym,"g_ts_ret_full_total",ret_full_total_addr)) &&
         (find_symbol(sym,"_g_ts_ret_full_skip",ret_full_skip_addr)||find_symbol(sym,"g_ts_ret_full_skip",ret_full_skip_addr)) &&
