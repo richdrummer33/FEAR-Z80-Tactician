@@ -51,6 +51,15 @@ int main(int argc,char**argv) {
         std::fprintf(stderr,"unknown scenario: %s\n",scenario.c_str());
         return 2;
     }
+    const char* mapdump_path=(argc>6)?argv[6]:nullptr;
+    std::ofstream mapdump;
+    if(mapdump_path) {
+        mapdump.open(mapdump_path,std::ios::binary|std::ios::trunc);
+        if(!mapdump) {
+            std::fprintf(stderr,"cannot open map dump: %s\n",mapdump_path);
+            return 2;
+        }
+    }
     u16 phase_addr=0,dirty_addr=0,stage_addr=0,state_addr=0,map_addr=0;
     u16 ret_full_total_addr=0,ret_full_skip_addr=0,ret_full_edge_addr=0;
     u16 ret_span_total_addr=0,ret_span_skip_addr=0;
@@ -153,8 +162,10 @@ int main(int argc,char**argv) {
                         loop_stats.add(now-loop_start);
                         if(have_map) {
                             for(unsigned i=0;i<720u;++i) {
-                                map_hash ^= (uint64_t)mem->DebugRetrieve((u16)(map_addr+i));
+                                const uint8_t v=mem->DebugRetrieve((u16)(map_addr+i));
+                                map_hash ^= (uint64_t)v;
                                 map_hash *= 1099511628211ull;
+                                if(mapdump) mapdump.put((char)v);
                             }
                             ++map_hash_frames;
                         }
