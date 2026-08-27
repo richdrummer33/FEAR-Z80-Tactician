@@ -391,7 +391,7 @@ s = s[:a] + new_end + s[b:]
 marker = "        .area   _BSS\n"
 if marker not in s:
     raise SystemExit("ntstate BSS marker not found")
-bss = r"""        .area   _BSS
+bss = r"""        .area _BSS
 _g_nt_exc_prev_active:: .ds 3
 _g_nt_exc_cur_active::  .ds 3
 nte_exc_group$:         .ds 1
