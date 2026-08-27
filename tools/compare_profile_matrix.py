@@ -21,6 +21,10 @@ def parse(path):
         raise SystemExit(f"missing loop count in {path}")
     loops = int(m.group(1))
     out = {"loops": loops}
+    hm = re.search(r"^  map-hash\s+frames=(\d+) fnv64=([0-9A-Fa-f]+)$", text, re.M)
+    if hm:
+        out["map_hash_frames"] = int(hm.group(1))
+        out["map_hash"] = hm.group(2).upper()
     for key, pat in PHASES:
         m = re.search(pat, text, re.M)
         if m:
@@ -44,6 +48,17 @@ def main():
     for i in range(1, len(sys.argv), 3):
         label, cpath, rpath = sys.argv[i:i+3]
         c, r = parse(cpath), parse(rpath)
+        if "map_hash" in c or "map_hash" in r:
+            if c.get("map_hash_frames") != r.get("map_hash_frames"):
+                raise SystemExit(
+                    f"{label}: map-hash frame-count mismatch "
+                    f"{c.get('map_hash_frames')} != {r.get('map_hash_frames')}"
+                )
+            if c.get("map_hash") != r.get("map_hash"):
+                raise SystemExit(
+                    f"{label}: ROM name-table sequence mismatch "
+                    f"{c.get('map_hash')} != {r.get('map_hash')}"
+                )
         rows.append((label, c, r))
 
     keys = ["loop","active","render","clear/lifetime","candidate-build",
@@ -51,6 +66,8 @@ def main():
     print("PROFILE MATRIX DELTA: repair - Stage23 control")
     for label, c, r in rows:
         print(f"\n[{label}]")
+        if c.get("map_hash"):
+            print(f"  map-equivalence   PASS  frames={c['map_hash_frames']} hash={c['map_hash']}")
         for key in keys:
             if key not in c and key not in r:
                 continue
