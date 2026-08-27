@@ -299,6 +299,39 @@ jobs:
       - name: Build bisect Stage25
         run: ./build_stage_variant.sh stage25
 
+      - name: Save Stage25 dense exception state
+        run: cp src/tilesector_ntstate_gg.s build/stage25-base-ntstate.s
+
+      - name: Apply Stage 29 zero-exception dense gate
+        run: python3 tools/apply_stage29_exception_any_gate.py
+
+      - name: Build bisect Stage29 candidate
+        run: ./build_stage_variant.sh stage29
+
+      - name: Profile Stage29 candidate matrix
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/bisect-stage29.gg build/bisect-stage29.sym 120 8 demo build/stage29-A-forward.bin build/stage29-A-forward.states | tee build/stage29-A-forward.txt
+          ./build/tilesector_profile_runner build/bisect-stage29.gg build/bisect-stage29.sym 80 145 demo build/stage29-B-turn.bin build/stage29-B-turn.states | tee build/stage29-B-turn.txt
+          ./build/tilesector_profile_runner build/bisect-stage29.gg build/bisect-stage29.sym 48 225 | tee build/stage29-C-late.txt
+          ./build/tilesector_profile_runner build/bisect-stage29.gg build/bisect-stage29.sym 60 320 | tee build/stage29-D-static.txt
+          ./build/tilesector_profile_runner build/bisect-stage29.gg build/bisect-stage29.sym 240 8 | tee build/stage29-E-mixed.txt
+          ./build/tilesector_profile_runner build/bisect-stage29.gg build/bisect-stage29.sym 80 16 roomA-turn build/stage29-F-roomA-turn.bin build/stage29-F-roomA-turn.states | tee build/stage29-F-roomA-turn.txt
+          python3 tools/compare_map_dumps.py stage29-A build/control-A-forward.bin build/stage29-A-forward.bin
+          python3 tools/compare_map_dumps.py stage29-B build/control-B-turn.bin build/stage29-B-turn.bin
+          python3 tools/compare_map_dumps.py stage29-F build/control-F-roomA-turn.bin build/stage29-F-roomA-turn.bin
+          python3 tools/compare_profile_matrix.py \
+            A-forward build/control-A-forward.txt build/stage29-A-forward.txt \
+            B-turn build/control-B-turn.txt build/stage29-B-turn.txt \
+            C-late build/control-C-late.txt build/stage29-C-late.txt \
+            D-static build/control-D-static.txt build/stage29-D-static.txt \
+            E-mixed build/control-E-mixed.txt build/stage29-E-mixed.txt \
+            F-roomA-turn build/control-F-roomA-turn.txt build/stage29-F-roomA-turn.txt \
+            | tee build/stage29-ab-matrix.txt
+
+      - name: Restore Stage25 before Stage28 experiments
+        run: cp build/stage25-base-ntstate.s src/tilesector_ntstate_gg.s
+
       - name: Apply Stage 28 sparse exception-only lifetime
         run: python3 tools/apply_stage28_exception_sparse.py
 
@@ -474,6 +507,10 @@ jobs:
             build/gearsystem_core_runner
             build/tilesector_write_trace
             build/trace-*.txt
+            build/stage29-*.txt
+            build/stage29-*.bin
+            build/stage29-*.states
+            build/stage29-ab-matrix.txt
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
