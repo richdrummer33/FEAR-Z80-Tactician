@@ -4,7 +4,7 @@ import re
 
 p=Path('src/tilesector_core.c')
 s=p.read_text()
-if 'k_vertex_rot_q4_64' in s:
+if 'k_vertex_rot_raw_64' in s:
     print('Stage 10 vertex rotation LUT already applied')
     raise SystemExit(0)
 
@@ -31,17 +31,18 @@ for yaw in range(64):
     for vx,vy in verts:
         # Store camera-X then camera-Z in Q4 for quadrant zero. The other three
         # quadrants are exact sign/swap identities, so 64 rows cover all 256 yaw.
-        xq=sra3(-vx*sn + vy*cs)
-        zq=sra3(vx*cs + vy*sn)
-        vals.extend((xq,zq))
+        xraw=-vx*sn + vy*cs
+        zraw=vx*cs + vy*sn
+        vals.extend((xraw,zraw))
     rows.append(vals)
 
 lines=[]
-lines.append('/* Stage 10: static world vertices rotated for only the first quarter-turn.\n'
-             ' * Yaw+64/128/192 is recovered by sign/swap identities, so this is\n'
-             ' * 64 * 14 * 2 int16 values = 3584 bytes, replacing 56 signed\n'
-             ' * multiplies per rendered frame with ROM reads. */')
-lines.append('static const int16_t k_vertex_rot_q4_64[64][TS_VERTICES][2] = {')
+lines.append('/* Stage 10: raw Q7-ish rotated world numerators for the first quarter-turn.\n'
+             ' * Keep the low three bits until after player subtraction: rounding\n'
+             ' * world and player independently can swallow a legal 1/16-unit\n'
+             ' * camera step at integer-world boundaries. Same 3584-byte LUT,\n'
+             ' * still replacing 56 signed multiplies per rendered frame. */')
+lines.append('static const int16_t k_vertex_rot_raw_64[64][TS_VERTICES][2] = {')
 for vals in rows:
     pairs=[f'{{{vals[i]},{vals[i+1]}}}' for i in range(0,len(vals),2)]
     lines.append('    {'+', '.join(pairs)+'},')
@@ -70,9 +71,9 @@ new=r'''static void transform_vertices_q4(const TSState *s) {
     int16_t frac_x=(int16_t)(-(int16_t)fx*sn+(int16_t)fy*cs);
     int16_t frac_z_q4=round_shift7(frac_z);
     int16_t frac_x_q4=round_shift7(frac_x);
-    int16_t player_z_q4=(int16_t)(((int16_t)px_i*cs+(int16_t)py_i*sn)>>3);
-    int16_t player_x_q4=(int16_t)((-(int16_t)px_i*sn+(int16_t)py_i*cs)>>3);
-    const int16_t *r=&k_vertex_rot_q4_64[a][0][0];
+    int16_t player_z_raw=(int16_t)((int16_t)px_i*cs+(int16_t)py_i*sn);
+    int16_t player_x_raw=(int16_t)(-(int16_t)px_i*sn+(int16_t)py_i*cs);
+    const int16_t *r=&k_vertex_rot_raw_64[a][0][0];
 
     for(vi=0u;vi<TS_VERTICES;++vi) {
         int16_t bx=*r++;
@@ -82,8 +83,8 @@ new=r'''static void transform_vertices_q4(const TSState *s) {
         else if(q==1u) { rx=-bz; rz=bx;  }
         else if(q==2u) { rx=-bx; rz=-bz; }
         else           { rx=bz;  rz=-bx; }
-        g_cam_x_q4[vi]=(int16_t)(rx-player_x_q4-frac_x_q4);
-        g_cam_z_q4[vi]=(int16_t)(rz-player_z_q4-frac_z_q4);
+        g_cam_x_q4[vi]=(int16_t)(((rx-player_x_raw)>>3)-frac_x_q4);
+        g_cam_z_q4[vi]=(int16_t)(((rz-player_z_raw)>>3)-frac_z_q4);
     }
 }
 
