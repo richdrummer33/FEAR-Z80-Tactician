@@ -304,6 +304,7 @@ jobs:
           sha256sum build/control-stage23.gg build/repair-stage28.gg | tee build/stage28-roms.sha256
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: gg-tilesector-stage28-runtime-repair
           path: |
@@ -329,4 +330,6 @@ jobs:
             src/tilesector_run_gg.s
             src/tilesector_opaque_gg.s
             src/tilesector_symfull_gg.s
+            src/tilesector_core.c
+            src/main_tilesector_gg.c
           if-no-files-found: error
