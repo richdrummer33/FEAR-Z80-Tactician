@@ -82,4 +82,10 @@ void ts_render_columns(const TSState *s, TSColumn cols[TS_COLS]);
 void ts_build_tilemap(const TSState *s, uint16_t out_map[TS_MAP_CELLS], TSColumn cols[TS_COLS]);
 uint8_t ts_is_walkable_q4(int16_t x_q4, int16_t y_q4);
 
+#ifndef __SDCC
+/* Host-test visibility into the real Q4 camera transform. Excluded from the ROM. */
+void ts_debug_transform_vertex_q4(const TSState *s, uint8_t vertex,
+                                  int16_t *cam_x_q4, int16_t *cam_z_q4);
+#endif
+
 #endif
