@@ -39,3 +39,16 @@ if not re.search(
         "sf_test_active_cur$ BC-clobbering helper"
     )
 print("Stage28 retained owns-cell ABI: BC preservation PASS")
+
+m=re.search(
+    r"sf_restore_range\$:(.*?)(?:sf_restore_base_row\$:)",
+    s,re.S
+)
+if not m:
+    raise SystemExit("retained restore-range helper not found")
+rr=m.group(1)
+if not re.search(r"push\s+de", rr) or not re.search(r"pop\s+de.*?ret", rr, re.S):
+    raise SystemExit(
+        "FAIL: sf_restore_range$ does not preserve DE stale bounds"
+    )
+print("Stage28 retained restore-range ABI: DE preservation PASS")
