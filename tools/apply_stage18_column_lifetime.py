@@ -339,7 +339,7 @@ nte_next_bit$:
         ld      a, (#nte_row$)
         inc     a
         ld      (#nte_row$), a
-        djnz    nte_bit_loop$
+        dec     b\n        jp      nz, nte_bit_loop$
 
 nte_group_done$:
         inc     ix
