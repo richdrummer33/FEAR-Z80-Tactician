@@ -1,9 +1,9 @@
-name: Profile Stage 16 direct opaque materializer
+name: Profile Stage 17 run-envelope visibility
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage16-direct
+      - feature/gg-tilesector-stage17-run-envelope
   workflow_dispatch:
 
 jobs:
@@ -24,6 +24,12 @@ jobs:
           python3 tools/gen_stage12_run_asm.py
           sed -i 's/        jr      /        jp      /g' src/tilesector_run_gg.s
 
+      - name: Verify Stage 17 run-envelope semantics
+        run: python3 tools/test_stage17_run_envelope.py
+
+      - name: Apply Stage 17 run-envelope visibility
+        run: python3 tools/apply_stage17_run_envelope.py
+
       - name: Apply Stage 13 authoritative state
         run: python3 tools/apply_stage13_ntstate.py
 
@@ -38,7 +44,7 @@ jobs:
       - name: Apply Stage 16 direct opaque materializer
         run: python3 tools/apply_stage16_direct_opaque.py
 
-      - name: Link Stage 16 kernels
+      - name: Link Stage 17 kernels
         shell: bash
         run: |
           python3 - <<'PY'
@@ -46,7 +52,7 @@ jobs:
           p=Path('Makefile')
           s=p.read_text()
           old='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o build/tilesector_raster_gg.o'
-          new='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_raster_gg.o build/tilesector_candidate_lite_gg.o build/tilesector_run_gg.o build/tilesector_ntstate_gg.o build/tilesector_opaque_gg.o'
+          new='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_raster_gg.o build/tilesector_run_gg.o build/tilesector_ntstate_gg.o build/tilesector_opaque_gg.o'
           if old not in s: raise SystemExit('TileSector object list pattern not found')
           s=s.replace(old,new,1)
           anchor='''\nbuild/tilesector_raster_gg.o: src/tilesector_raster_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
@@ -56,9 +62,10 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Verify Stage 16 representation
+      - name: Verify Stage 17 representation
         shell: bash
         run: |
+          grep -q 'STAGE17_RUN_ENVELOPE' src/tilesector_core.c
           grep -q 'STAGE16_DIRECT_OPAQUE' src/tilesector_run_gg.s
           grep -q '_ts_raster_opaque_column_fast' src/tilesector_run_gg.s
           grep -q '_ts_edge_lut::' src/tilesector_raster_gg.s
@@ -79,7 +86,7 @@ jobs:
       - name: Host acceptance
         run: make tilesector-test tilesector-host
 
-      - name: Build Stage 16 ROM
+      - name: Build Stage 17 ROM
         run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
 
       - name: Build cycle profiler
@@ -88,15 +95,15 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
-      - name: Profile Stage 16
+      - name: Profile Stage 17
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage16-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage16-rom.sha256
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage17-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage17-rom.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gg-tilesector-stage16-direct-opaque
+          name: gg-tilesector-stage17-run-envelope
           path: |
             build/gg-tilesector-demo.gg
             build/gg-tilesector-demo.sym
