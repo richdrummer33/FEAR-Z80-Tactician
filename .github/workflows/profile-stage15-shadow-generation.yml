@@ -246,7 +246,7 @@ jobs:
           for tag in stage24 stage25 stage28a stage28b stage28c stage28d; do
             echo "===== ${tag} / A-forward ====="
             ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 8 demo "build/bisect-${tag}-A.bin" > "build/bisect-${tag}-A.txt"
-            python3 tools/compare_map_dumps.py "${tag}-A" build/control-A-forward.bin "build/bisect-${tag}-A.bin"
+            python3 tools/compare_map_dumps.py "${tag}-A" <(head -c $((24*720)) build/control-A-forward.bin) "build/bisect-${tag}-A.bin"
             echo "===== ${tag} / F-roomA-turn ====="
             ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 16 roomA-turn "build/bisect-${tag}-F.bin" > "build/bisect-${tag}-F.txt"
             python3 tools/compare_map_dumps.py "${tag}-F" <(head -c $((24*720)) build/control-F-roomA-turn.bin) "build/bisect-${tag}-F.bin"
