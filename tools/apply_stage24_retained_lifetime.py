@@ -401,22 +401,16 @@ if old not in sym:
 sym=sym.replace(old,new,1)
 
 # Once previous generation is proven, capture its retained coverage range.
-anchor='''        ld      a, (hl)
+anchor='''        ld      hl, (#sf_prev_gen_ptr$)
+        ld      a, (hl)
         cp      c
         jp      nz, sf_ret_store_current$
-
-        ; First classify non-geometric state.
 '''
-repl='''        ld      a, (hl)
-        cp      c
-        jp      nz, sf_ret_store_current$
-
+repl=anchor+'''
         ld      a, 5 (ix)
         ld      (#sf_old_cov_first$), a
         ld      a, 6 (ix)
         ld      (#sf_old_cov_last$), a
-
-        ; First classify non-geometric state.
 '''
 if anchor not in sym:
     raise SystemExit('previous-generation compare anchor not found')
