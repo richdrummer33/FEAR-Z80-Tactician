@@ -331,7 +331,8 @@ nte_base_ready$:
         ; Dirty mark only this stale word.
         ld      a, (#nte_restore_row$)
         ld      d, b                    ; preserve bit-loop count
-        ld      a, (#nte_col$)\n        ld      b, a
+        ld      a, (#nte_col$)
+        ld      b, a
         call    _ts_nt_mark_dirty
         ld      b, d
 
@@ -339,7 +340,8 @@ nte_next_bit$:
         ld      a, (#nte_row$)
         inc     a
         ld      (#nte_row$), a
-        dec     b\n        jp      nz, nte_bit_loop$
+        dec     b
+        jp      nz, nte_bit_loop$
 
 nte_group_done$:
         inc     ix
@@ -348,7 +350,7 @@ nte_group_done$:
         inc     a
         ld      (#nte_group$), a
         cp      #3
-        jr      c, nte_group_loop$
+        jp      c, nte_group_loop$
 
         ld      a, (#nte_col$)
         inc     a
