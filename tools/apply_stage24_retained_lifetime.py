@@ -624,8 +624,11 @@ sym=sym.replace(anchor,repl,1)
 # EXCEPTION COVERAGE: stale Stage-18 exception cells must not restore base over
 # a CURRENT retained FULL wall. The test is only paid on actual stale bits.
 # ===========================================================================
-nt=nt.replace('; STAGE18_COLUMN_LIFETIME\n',
-              '; STAGE18_COLUMN_LIFETIME\n; STAGE24_EXCEPTION_COVERAGE_ONLY\n',1)
+if '; STAGE24_EXCEPTION_COVERAGE_ONLY\n' not in nt:
+    nt_marker='        .module tilesector_ntstate_gg\n'
+    if nt_marker not in nt:
+        raise SystemExit('generated Stage 18 ntstate module marker missing')
+    nt=nt.replace(nt_marker,nt_marker+'; STAGE24_EXCEPTION_COVERAGE_ONLY\n',1)
 nt=nt.replace(
 '''        .globl  _g_ts_dirty_words
 ''',
