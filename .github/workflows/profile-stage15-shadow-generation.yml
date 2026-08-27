@@ -91,66 +91,7 @@ jobs:
           grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_symfull_gg.s
           grep -q 'STAGE22_RETAINED_FULL' src/tilesector_symfull_gg.s
           grep -q 'STAGE23_EDGE_DELTA' src/tilesector_symfull_gg.s
-          grep -Fq 'sf_ret_edge_delta
-          grep -q 'STAGE22_RETAINED_FULL' src/tilesector_run_gg.s
-          grep -q '_g_ts_ret_full_skip::' src/tilesector_symfull_gg.s
-          grep -q '_g_ts_ret_span_skip::' src/tilesector_symfull_gg.s
-          grep -q '_ts_raster_symfull_column_fast' src/tilesector_run_gg.s
-          grep -q 'or      #0x0c' src/tilesector_symfull_gg.s
-          grep -q '_g_nt_row_min::    .ds 18' src/tilesector_ntstate_gg.s
-          grep -q '_g_nt_row_max::    .ds 18' src/tilesector_ntstate_gg.s
-          grep -q 'otir' src/tilesector_ntstate_gg.s
-          ! grep -q '_g_nt_dirty' src/tilesector_opaque_gg.s
-          grep -q 'STAGE18_DIRECT_OPAQUE' src/tilesector_raster_gg.s
-          grep -q '_g_nt_cov_cur::    .ds 60' src/tilesector_ntstate_gg.s
-          grep -q '_ts_raster_opaque_column_fast' src/tilesector_run_gg.s
-          grep -q '_ts_nt_mark_span' src/tilesector_opaque_gg.s
-          ! grep -q '_g_nt_meta' src/tilesector_opaque_gg.s
-          ! grep -q '_g_nt_meta' src/tilesector_ntstate_gg.s
-          ! grep -q 'g_prev_map' src/main_tilesector_gg.c
-
-      - name: Install GBDK 4.5.0
-        shell: bash
-        run: |
-          mkdir -p .toolchain
-          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
-            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
-          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
-          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
-
-      - name: Host acceptance
-        run: make tilesector-test tilesector-host
-
-      - name: Build Stage 23 ROM
-        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
-
-      - name: Build cycle profiler
-        shell: bash
-        run: |
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
-      - name: Profile Stage 23
-        shell: bash
-        run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage23-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage23-rom.sha256
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gg-tilesector-stage23-edge-delta
-          path: |
-            build/gg-tilesector-demo.gg
-            build/gg-tilesector-demo.sym
-            build/stage23-profile.txt
-            build/stage23-rom.sha256
-            src/tilesector_ntstate_gg.s
-            src/tilesector_raster_gg.s
-            src/tilesector_run_gg.s
-            src/tilesector_opaque_gg.s
-            src/tilesector_symfull_gg.s
-          if-no-files-found: error
- src/tilesector_symfull_gg.s
+          grep -Fq 'sf_ret_edge_delta' src/tilesector_symfull_gg.s
           grep -q 'STAGE22_RETAINED_FULL' src/tilesector_run_gg.s
           grep -q '_g_ts_ret_full_skip::' src/tilesector_symfull_gg.s
           grep -q '_g_ts_ret_span_skip::' src/tilesector_symfull_gg.s
