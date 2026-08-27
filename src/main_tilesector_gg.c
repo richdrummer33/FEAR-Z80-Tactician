@@ -34,7 +34,9 @@ static const int8_t k_edge_lut[8][8] = {
     {0,1,2,3,4,5,6,7}
 };
 
-static TSState g_state;
+/* Diagnostic/export visibility only: keeping the exact same object/layout lets
+ * the Gearsystem oracle dump the camera state used for each measured frame. */
+TSState g_state;
 static TSColumn g_cols[TS_COLS];
 /* These two buffers are intentionally externally visible to the dedicated
  * Z80 uploader.  The hot upload path takes no C arguments at all. */
