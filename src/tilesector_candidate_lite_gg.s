@@ -5,6 +5,8 @@
         .globl  _g_best_seg
         .globl  _g_best_inv
 
+; STAGE27_CANDIDATE_PHASE
+;
 ; Stage 12 candidate ABI:
 ;   context +0 seg_id, +1 view_c0, +2 view_c1, +3 span pointer
 ;   TSProjectedSpan +0 c0, +1 c1, +2 inv_q6, +4 step_q6,
@@ -20,6 +22,9 @@ _ts_candidate_span_lite_fast::
         push    hl
         push    ix
         push    iy
+
+        ld      a, (#_g_candidate_lite_ctx + 0)
+        ld      (#cl_seg$), a
 
         ld      hl, (#_g_candidate_lite_ctx + 3)
         ld      a, (hl)
@@ -88,36 +93,53 @@ cl_end_ready$:
         push    hl
         pop     iy
 
-        ld      de, (#cl_invq$)
-        ld      bc, (#cl_step$)
+        ; STAGE27: pre-scale the affine reciprocal line once so the high byte
+        ; IS the exact Stage-12 midpoint-quantized depth for each column.
+        ;
+        ; phase0 = 4*current + 2*step
+        ; delta  = 4*step
+        ; q[col] = high8(phase), phase += delta
+        ;
+        ; All operations wrap at 16 bits exactly like the old Z80 sequence.
+        ld      hl, (#cl_invq$)
+        add     hl, hl
+        add     hl, hl
+        ld      de, (#cl_step$)
+        add     hl, de
+        add     hl, de
+        push    hl                      ; phase0
 
-cl_loop$:
-        ; next=current+step. midpoint reciprocal=(current+next)>>7.
         ld      h, d
         ld      l, e
-        add     hl, bc
-        ld      (#cl_next$), hl
-        add     hl, de
         add     hl, hl
-        ld      a, h
-        ld      (#cl_mid$), a
+        add     hl, hl
+        ld      b, h
+        ld      c, l                    ; BC = phase delta
+        pop     de                      ; DE = phase
+
+cl_loop$:
+        ld      a, d                    ; exact quantized midpoint reciprocal
 
         ld      a, 0 (ix)
         inc     a
         jr      z, cl_winner$
-        ld      a, (#cl_mid$)
+        ld      a, d
         cp      0 (iy)
         jr      c, cl_no_win$
         jr      z, cl_no_win$
 
 cl_winner$:
-        ld      a, (#_g_candidate_lite_ctx + 0)
+        ld      a, (#cl_seg$)
         ld      0 (ix), a
-        ld      a, (#cl_mid$)
+        ld      a, d
         ld      0 (iy), a
 
 cl_no_win$:
-        ld      de, (#cl_next$)
+        ld      h, d
+        ld      l, e
+        add     hl, bc
+        ld      d, h
+        ld      e, l                    ; phase += delta
         inc     ix
         inc     iy
         ld      hl, #cl_col$
@@ -137,9 +159,8 @@ cl_done$:
         ret
 
         .area   _BSS
+cl_seg$:       .ds 1
 cl_col$:       .ds 1
 cl_end$:       .ds 1
-cl_mid$:       .ds 1
 cl_invq$:      .ds 2
 cl_step$:      .ds 2
-cl_next$:      .ds 2
