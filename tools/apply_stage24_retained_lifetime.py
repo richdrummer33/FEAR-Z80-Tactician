@@ -91,7 +91,7 @@ anchor='''        ld      a, (#_g_name_run_ctx + 2)
         ld      (#nr_profile$), a
         ld      (#_g_raster_ctx + 0), a
 
-        ; A whole contiguous run is the natural retained-span unit.
+        ; A whole contiguous run is the natural retained-span unit. Only
 '''
 insert='''        ld      a, (#_g_name_run_ctx + 2)
         ld      (#nr_profile$), a
@@ -111,7 +111,7 @@ insert='''        ld      a, (#_g_name_run_ctx + 2)
         call    _ts_retained_full_invalidate_range
 nr_ret_life_ready$:
 
-        ; A whole contiguous run is the natural retained-span unit.
+        ; A whole contiguous run is the natural retained-span unit. Only
 '''
 if anchor not in run:
     raise SystemExit('run retained-span anchor not found')
