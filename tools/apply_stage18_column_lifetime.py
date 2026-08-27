@@ -198,6 +198,40 @@ _ts_nt_mark_span::
         pop     af
         ret
 
+; Cold compatibility store for the generic portal/special-profile raster.
+; ABI: A=row, B=column, DE=visible word, HL=&authoritative name-table word.
+; Stage-18 opaque FULL/RAISED paths do not call this routine.
+_ts_nt_store_word::
+        push    af
+        push    bc
+        push    de
+        push    hl
+        ld      (#nts_row$), a
+
+        ld      a, (hl)
+        cp      e
+        jr      nz, nts_changed$
+        inc     hl
+        ld      a, (hl)
+        cp      d
+        jr      z, nts_done$
+
+nts_changed$:
+        pop     hl
+        push    hl
+        ld      (hl), e
+        inc     hl
+        ld      (hl), d
+        ld      a, (#nts_row$)
+        call    _ts_nt_mark_dirty
+
+nts_done$:
+        pop     hl
+        pop     de
+        pop     bc
+        pop     af
+        ret
+
 ; A=row 0..17, B=column 0..19. Called only when a visible word changed.
 _ts_nt_mark_dirty::
         push    af
@@ -525,7 +559,7 @@ _g_nt_dirty::      .ds 54
 ntm_first$:        .ds 1
 ntm_after$:        .ds 1
 ntm_col$:          .ds 1
-ntd_mask$:         .ds 1
+nts_row$:          .ds 1\nntd_mask$:         .ds 1
 nte_col$:          .ds 1
 nte_group$:        .ds 1
 nte_stale$:        .ds 1
