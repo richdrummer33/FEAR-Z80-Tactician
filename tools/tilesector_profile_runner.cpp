@@ -81,7 +81,7 @@ int main(int argc,char**argv) {
     uint64_t loop_start=0;
     bool have_loop_start=false;
     std::array<Stat,6> phase_stats{};
-    std::array<Stat,7> stage_stats{};
+    std::array<Stat,8> stage_stats{};
     Stat loop_stats,dirty_stats;
     Stat ret_full_total_stats,ret_full_skip_stats,ret_full_edge_stats;
     Stat ret_span_total_stats,ret_span_skip_stats;
@@ -98,7 +98,7 @@ int main(int argc,char**argv) {
         uint8_t st=have_stage?mem->DebugRetrieve(stage_addr):0u;
 
         if(have_stage&&st!=last_stage) {
-            if(last_stage>=1u&&last_stage<=6u&&loops_seen>=warmup)
+            if(last_stage>=1u&&last_stage<=7u&&loops_seen>=warmup)
                 stage_stats[last_stage].add(now-last_stage_cycle);
             last_stage=st;
             last_stage_cycle=now;
@@ -149,9 +149,9 @@ int main(int argc,char**argv) {
                     (unsigned long long)phase_stats[pidx].min,(unsigned long long)phase_stats[pidx].max,phase_stats[pidx].n);
     }
     if(have_stage) {
-        const char* snames[7]={"idle","clear-map","q4-transform","candidate-build","solid-raster","portal-control","portal-face"};
+        const char* snames[8]={"idle","clear/lifetime","q4-transform","candidate-build","solid-raster","portal-control","portal-face","retained-life"};
         std::printf("  render/build subphases:\n");
-        for(unsigned s=1;s<=6;++s) if(stage_stats[s].n) {
+        for(unsigned s=1;s<=7;++s) if(stage_stats[s].n) {
             std::printf("    %-15s total=%10llu T avg-chunk=%8.1f T min=%5llu max=%5llu n=%u\n",
                         snames[s],(unsigned long long)stage_stats[s].sum,stage_stats[s].avg(),
                         (unsigned long long)stage_stats[s].min,(unsigned long long)stage_stats[s].max,stage_stats[s].n);
