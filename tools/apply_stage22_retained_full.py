@@ -171,10 +171,11 @@ if old not in run:
     raise SystemExit('run epilogue loop boundary not found')
 run=run.replace(old,new,1)
 
-m=re.search(r'(nr_geom_base\\$:\\s*\\.ds 2)',run)
-if not m:
-    raise SystemExit('run BSS tail not found')
-run=run[:m.end()]+'\\nnr_ret_span_all$:  .ds 1'+run[m.end():]
+if 'nr_ret_span_all$:' not in run:
+    bss_anchor='        .area   _BSS\\n'
+    if bss_anchor not in run:
+        raise SystemExit('run BSS area not found')
+    run=run.replace(bss_anchor,bss_anchor+'nr_ret_span_all$:  .ds 1\\n',1)
 run=run.replace('; STAGE21_FULL_SYMMETRY\n',
                 '; STAGE21_FULL_SYMMETRY\n; STAGE22_RETAINED_FULL\n',1)
 
