@@ -533,7 +533,8 @@ static const TSProjectedSpan *project_segment_span(uint8_t seg_id) {
         state=project_segment_span_uncached(seg_id,&g_span_cache[seg_id]) ? 2u : 1u;
         g_span_state[seg_id]=state;
     }
-    return state==2u ? &g_span_cache[seg_id] : (const TSProjectedSpan *)0;
+    if (state==2u) return &g_span_cache[seg_id];
+    return (const TSProjectedSpan *)0;
 }
 
 /* ----- tile edge/fill raster ----- */
