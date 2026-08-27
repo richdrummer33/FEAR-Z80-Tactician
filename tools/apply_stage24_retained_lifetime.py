@@ -16,7 +16,7 @@ if 'STAGE24_RETAINED_LIFETIME' in sym:
     raise SystemExit(0)
 if 'STAGE23_EDGE_DELTA' not in sym:
     raise SystemExit('apply Stage 23 edge delta first')
-if 'STAGE18_COLUMN_LIFETIME' not in nt:
+if 'Stage 18 column-major lifetime state' not in nt:
     raise SystemExit('Stage 18 exception lifetime state missing')
 
 # ===========================================================================
