@@ -49,27 +49,20 @@ if old not in core:
     raise SystemExit("Stage24 early finalizer block not found")
 core=core.replace(old,new,1)
 
-old="""    g_ts_render_stage=3u;
-    sector=current_sector(s);
-    render_sector(sector,TS_NO_PORTAL,0u,0u,(uint8_t)(TS_COLS-1u),out_map,cols);
-
-    g_ts_render_stage=0u;
-"""
-new="""    g_ts_render_stage=3u;
-    sector=current_sector(s);
-    render_sector(sector,TS_NO_PORTAL,0u,0u,(uint8_t)(TS_COLS-1u),out_map,cols);
-
-#ifdef __SDCC
+build_i=core.find("void ts_build_tilemap(")
+if build_i < 0:
+    raise SystemExit("ts_build_tilemap function not found")
+idle_i=core.find("    g_ts_render_stage=0u;",build_i)
+if idle_i < 0:
+    raise SystemExit("ts_build_tilemap final idle stage not found")
+insert="""#ifdef __SDCC
     /* Final-state lifetime reconciliation: all normal, portal and exception
      * geometry has now written its current hardware-visible state. */
     g_ts_render_stage=7u;
     ts_retained_full_finalize_unseen();
 #endif
-    g_ts_render_stage=0u;
 """
-if old not in core:
-    raise SystemExit("root render/finalize anchor not found")
-core=core.replace(old,new,1)
+core=core[:idle_i]+insert+core[idle_i:]
 
 # ---------------------------------------------------------------------------
 # RUN KERNEL: remove eager depth-0 non-FULL invalidation. The current non-FULL
