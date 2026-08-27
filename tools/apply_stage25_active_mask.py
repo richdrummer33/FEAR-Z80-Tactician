@@ -16,16 +16,11 @@ s=s.replace('; STAGE24_RETAINED_LIFETIME\n',
 # Current FULL occupancy is a 20-bit mask. Keep it alive through portal-face
 # rendering so exception stale tests can query it; clear it at next begin-frame.
 anchor='''        ld      (_g_ts_ret_span_skip), a
-
-        ; Generation 0xFF is INVALID.
 '''
-repl='''        ld      (_g_ts_ret_span_skip), a
-
+repl=anchor+'''
         ld      (#sf_active_cur$), a
         ld      (#sf_active_cur$+1), a
         ld      (#sf_active_cur$+2), a
-
-        ; Generation 0xFF is INVALID.
 '''
 if anchor not in s:
     raise SystemExit('Stage24 begin-frame counter anchor not found')
