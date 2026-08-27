@@ -79,7 +79,8 @@ def draw_delta(m,old_l,old_r,new_l,new_r,shade,border,clip0,clip1):
     if first<=last:
         fw=full_word(shade,border)
         for r in range(first,last+1):
-            m[r]=fw
+            if clip0<=r<=clip1:
+                m[r]=fw
             br=17-r
             if clip0<=br<=clip1:
                 m[br]=fw
