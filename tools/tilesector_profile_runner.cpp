@@ -49,11 +49,18 @@ int main(int argc,char**argv) {
     u16 phase_addr=0,dirty_addr=0,stage_addr=0;
     u16 ret_full_total_addr=0,ret_full_skip_addr=0,ret_full_edge_addr=0;
     u16 ret_span_total_addr=0,ret_span_skip_addr=0;
+    u16 cand_total_addr=0,cand_uniform_addr=0,cand_reject_addr=0,cand_replace_addr=0,cand_fallback_addr=0;
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
         std::fprintf(stderr,"phase symbol not found in %s\n",sym); return 3;
     }
     bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
     bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
+    bool have_cand_fast=
+        (find_symbol(sym,"_g_ts_cand_total",cand_total_addr)||find_symbol(sym,"g_ts_cand_total",cand_total_addr)) &&
+        (find_symbol(sym,"_g_ts_cand_uniform",cand_uniform_addr)||find_symbol(sym,"g_ts_cand_uniform",cand_uniform_addr)) &&
+        (find_symbol(sym,"_g_ts_cand_reject",cand_reject_addr)||find_symbol(sym,"g_ts_cand_reject",cand_reject_addr)) &&
+        (find_symbol(sym,"_g_ts_cand_replace",cand_replace_addr)||find_symbol(sym,"g_ts_cand_replace",cand_replace_addr)) &&
+        (find_symbol(sym,"_g_ts_cand_fallback",cand_fallback_addr)||find_symbol(sym,"g_ts_cand_fallback",cand_fallback_addr));
     bool have_ret=
         (find_symbol(sym,"_g_ts_ret_full_total",ret_full_total_addr)||find_symbol(sym,"g_ts_ret_full_total",ret_full_total_addr)) &&
         (find_symbol(sym,"_g_ts_ret_full_skip",ret_full_skip_addr)||find_symbol(sym,"g_ts_ret_full_skip",ret_full_skip_addr)) &&
@@ -85,6 +92,7 @@ int main(int argc,char**argv) {
     Stat loop_stats,dirty_stats;
     Stat ret_full_total_stats,ret_full_skip_stats,ret_full_edge_stats;
     Stat ret_span_total_stats,ret_span_skip_stats;
+    Stat cand_total_stats,cand_uniform_stats,cand_reject_stats,cand_replace_stats,cand_fallback_stats;
     unsigned loops_seen=0,loops_measured=0;
     uint64_t instructions=0;
     const uint64_t instruction_limit=50000000ull;
@@ -114,6 +122,13 @@ int main(int argc,char**argv) {
                     ++loops_seen;
                 } else have_loop_start=true;
                 loop_start=now;
+            }
+            if(p==3u&&have_cand_fast&&loops_seen>=warmup) {
+                cand_total_stats.add(mem->DebugRetrieve(cand_total_addr));
+                cand_uniform_stats.add(mem->DebugRetrieve(cand_uniform_addr));
+                cand_reject_stats.add(mem->DebugRetrieve(cand_reject_addr));
+                cand_replace_stats.add(mem->DebugRetrieve(cand_replace_addr));
+                cand_fallback_stats.add(mem->DebugRetrieve(cand_fallback_addr));
             }
             if(p==3u&&have_ret&&loops_seen>=warmup) {
                 ret_full_total_stats.add(mem->DebugRetrieve(ret_full_total_addr));
@@ -164,6 +179,18 @@ int main(int argc,char**argv) {
     std::printf("  active-work  avg=%8.1f T (%.1f%% of loop)\n",work,100.0*work/loop_stats.avg());
     if(dirty_stats.n) std::printf("  dirty words  avg=%8.1f min=%5llu max=%5llu\n",dirty_stats.avg(),
                                   (unsigned long long)dirty_stats.min,(unsigned long long)dirty_stats.max);
+    if(cand_total_stats.n) {
+        double total=(double)cand_total_stats.sum;
+        std::printf("  candidate fast spans avg=%5.2f uniform=%5.2f (%.1f%%) reject=%5.2f (%.1f%%) replace=%5.2f (%.1f%%) fallback=%5.2f (%.1f%%)\n",
+                    cand_total_stats.avg(),cand_uniform_stats.avg(),
+                    total?100.0*(double)cand_uniform_stats.sum/total:0.0,
+                    cand_reject_stats.avg(),
+                    total?100.0*(double)cand_reject_stats.sum/total:0.0,
+                    cand_replace_stats.avg(),
+                    total?100.0*(double)cand_replace_stats.sum/total:0.0,
+                    cand_fallback_stats.avg(),
+                    total?100.0*(double)cand_fallback_stats.sum/total:0.0);
+    }
     if(ret_full_total_stats.n) {
         double col_total=(double)ret_full_total_stats.sum;
         double span_total=(double)ret_span_total_stats.sum;
