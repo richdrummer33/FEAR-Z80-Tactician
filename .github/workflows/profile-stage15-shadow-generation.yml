@@ -121,6 +121,7 @@ jobs:
           python3 tools/test_stage24_retained_lifetime.py
           python3 tools/test_stage25_active_mask.py
           python3 tools/test_stage28_exception_sparse.py
+          python3 tools/test_stage28d_deferred_reconcile.py
 
       - name: Apply Stage 24 retained FULL lifetime
         run: python3 tools/apply_stage24_retained_lifetime.py
@@ -137,6 +138,9 @@ jobs:
       - name: Apply Stage 28C stale ownership gate
         run: python3 tools/apply_stage28c_ownership_gate.py
 
+      - name: Apply Stage 28D deferred final reconcile
+        run: python3 tools/apply_stage28d_deferred_reconcile.py
+
       - name: Verify Stage 28 forward representation
         shell: bash
         run: |
@@ -145,6 +149,9 @@ jobs:
           grep -q 'STAGE28_EXCEPTION_SPARSE_LIFETIME' src/tilesector_ntstate_gg.s
           grep -q 'STAGE28B_RETAINED_FAST_GATES' src/tilesector_symfull_gg.s
           grep -q 'STAGE28C_OWNERSHIP_GATE' src/tilesector_ntstate_gg.s
+          grep -q 'STAGE28D_DEFERRED_FINAL_RECONCILE' src/tilesector_symfull_gg.s
+          grep -q 'STAGE28D_DEFERRED_FINAL_RECONCILE' src/tilesector_ntstate_gg.s
+          grep -Fq '_ts_nt_exception_owns_cell::' src/tilesector_ntstate_gg.s
           grep -Fq '_g_ts_ret_full_prev_any:: .ds 1' src/tilesector_symfull_gg.s
           grep -Fq '_g_nt_exc_prev_active:: .ds 3' src/tilesector_ntstate_gg.s
           grep -Fq '_g_nt_exc_cur_active::  .ds 3' src/tilesector_ntstate_gg.s
