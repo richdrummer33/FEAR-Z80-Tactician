@@ -153,6 +153,7 @@ jobs:
           grep -q 'STAGE28D_DEFERRED_FINAL_RECONCILE' src/tilesector_symfull_gg.s
           grep -q 'STAGE28D_DEFERRED_FINAL_RECONCILE' src/tilesector_ntstate_gg.s
           grep -Fq '_ts_nt_exception_owns_cell::' src/tilesector_ntstate_gg.s
+          python3 tools/test_stage28_restore_abi.py
           grep -Fq '_g_ts_ret_full_prev_any:: .ds 1' src/tilesector_symfull_gg.s
           grep -Fq '_g_nt_exc_prev_active:: .ds 3' src/tilesector_ntstate_gg.s
           grep -Fq '_g_nt_exc_cur_active::  .ds 3' src/tilesector_ntstate_gg.s
