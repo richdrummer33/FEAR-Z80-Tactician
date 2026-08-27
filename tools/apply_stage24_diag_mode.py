@@ -4,19 +4,25 @@ from pathlib import Path
 
 if len(sys.argv)!=2 or sys.argv[1] not in {
     "no-finalizer","no-oldstale","legacy-lifetime","retention-off",
-    "legacy-no-exact","legacy-no-edge"
+    "legacy-no-exact","legacy-no-edge",
+    "stage23-behavior","stage23-plus-owner","stage23-plus-eager"
 }:
     raise SystemExit(
         "usage: apply_stage24_diag_mode.py "
         "no-finalizer|no-oldstale|legacy-lifetime|retention-off|"
-        "legacy-no-exact|legacy-no-edge"
+        "legacy-no-exact|legacy-no-edge|stage23-behavior|"
+        "stage23-plus-owner|stage23-plus-eager"
     )
 
 mode=sys.argv[1]
 core_p=Path("src/tilesector_core.c")
+run_p=Path("src/tilesector_run_gg.s")
 sym_p=Path("src/tilesector_symfull_gg.s")
+nt_p=Path("src/tilesector_ntstate_gg.s")
 core=core_p.read_text()
+run=run_p.read_text()
 sym=sym_p.read_text()
+nt=nt_p.read_text()
 
 if "STAGE24_RETAINED_LIFETIME" not in sym:
     raise SystemExit("diagnostic mode requires generated Stage24")
@@ -41,6 +47,78 @@ def disable_old_stale(text):
     return text.replace(
         needle,
         "        ; DIAG: per-column old->new stale restore disabled\n",
+    )
+
+def disable_eager_nonfull(text):
+    start=text.find(
+        "        ; If a previous retained FULL wall is replaced by a depth-0 asymmetric"
+    )
+    if start < 0:
+        raise SystemExit("Stage24 eager non-FULL invalidation block not found")
+    end=text.find("nr_ret_life_ready$:\n",start)
+    if end < 0:
+        raise SystemExit("Stage24 eager non-FULL invalidation tail not found")
+    end += len("nr_ret_life_ready$:\n")
+    return text[:start] + "nr_ret_life_ready$:\n" + text[end:]
+
+def disable_exception_owner(text):
+    old="""nte_bit_loop$:
+        srl     c
+        jp      nc, nte_next_bit$
+
+        ; Generic coverage now tracks exceptions only. A stale exception cell
+        ; must not erase a CURRENT retained FULL wall occupying the same tile.
+        ld      a, (#nte_col$)
+        ld      e, a
+        ld      a, (#nte_row$)
+        call    _ts_retained_full_owns_cell
+        or      a
+        jp      nz, nte_next_bit$
+
+        ; Restore static base tile for this exact stale exception cell.
+"""
+    new="""nte_bit_loop$:
+        srl     c
+        jr      nc, nte_next_bit$
+
+        ; DIAG: exact Stage18 stale exception restore behavior.
+        ; Restore static base tile for this exact stale cell.
+"""
+    if old not in text:
+        raise SystemExit("Stage24 exception ownership gate not found")
+    return text.replace(old,new,1)
+
+def force_legacy_coverage(text):
+    gate="""        ld      a, (#_g_name_run_ctx + 14)
+        or      a
+        jp      nz, sf_cov_done$
+"""
+    if gate not in text:
+        raise SystemExit("ordinary-FULL generic-coverage gate not found")
+    return text.replace(
+        gate,
+        "        ; DIAG: ordinary FULL also uses legacy Stage18 coverage\n",
+        1,
+    )
+
+def bypass_retention(text):
+    retain_entry="""sf_cov_done$:
+
+        ; Retention is deliberately restricted to ordinary depth-0 FULL runs.
+        ld      a, (#_g_name_run_ctx + 14)
+"""
+    if retain_entry not in text:
+        raise SystemExit("retained entry not found")
+    return text.replace(
+        retain_entry,
+        """sf_cov_done$:
+        ; DIAG: bypass all retained descriptor comparison/reuse.
+        jp      sf_ret_not_eligible$
+
+sf_ret_diag_unreachable$:
+        ld      a, (#_g_name_run_ctx + 14)
+""",
+        1,
     )
 
 if mode=="no-finalizer":
@@ -162,6 +240,22 @@ sf_ret_edge_diag_unreachable$:
             1,
         )
 
+elif mode in {"stage23-behavior","stage23-plus-owner","stage23-plus-eager"}:
+    # A true Stage23-semantics control built from Stage24-generated sources.
+    # Retained reuse is bypassed, Stage18 generic coverage is restored, and
+    # Stage24 cleanup/support mechanisms are selectively reintroduced.
+    core=disable_finalizer(core)
+    sym=disable_old_stale(sym)
+    sym=force_legacy_coverage(sym)
+    sym=bypass_retention(sym)
+
+    if mode != "stage23-plus-eager":
+        run=disable_eager_nonfull(run)
+    if mode != "stage23-plus-owner":
+        nt=disable_exception_owner(nt)
+
 core_p.write_text(core)
+run_p.write_text(run)
 sym_p.write_text(sym)
+nt_p.write_text(nt)
 print(f"Applied Stage24 diagnostic mode: {mode}")
