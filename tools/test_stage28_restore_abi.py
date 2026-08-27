@@ -21,3 +21,21 @@ if not pat.search(block):
         "sf_map_ptr_for_row$ DE-clobbering helper"
     )
 print("Stage28 retained restore ABI: DE preservation PASS")
+
+m=re.search(
+    r"_ts_retained_full_owns_cell::(.*?)(?:sf_owns_done\$:.*?ret)",
+    s,re.S
+)
+if not m:
+    raise SystemExit("retained ownership helper not found")
+owns=m.group(1)
+if not re.search(
+    r"ld\s+c,\s*a.*?push\s+bc.*?call\s+sf_test_active_cur\$"
+    r".*?pop\s+bc.*?jp\s+z,\s*sf_owns_no\$",
+    owns,re.S
+):
+    raise SystemExit(
+        "FAIL: queried row/column are not preserved across "
+        "sf_test_active_cur$ BC-clobbering helper"
+    )
+print("Stage28 retained owns-cell ABI: BC preservation PASS")
