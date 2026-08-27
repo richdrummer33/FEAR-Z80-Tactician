@@ -1,5 +1,11 @@
 # Project memory / durable conventions
 
+## Response/reporting convention — prominent
+
+For every technical development/implementation reply in this project, begin with a descriptive title that immediately identifies the subject. When reporting implementation work, the title must explicitly say it is an update and include the current stage plus whether that stage is IN PROGRESS or COMPLETED (for example: "Implementation Update — Stage 23 — IN PROGRESS — Retained edge deltas"). For non-update technical replies, use the same descriptive-title principle with an appropriate subject label.
+
+Immediately under the title, include a normal-sentence **bold-italic nutshell summary** of current status/progress. This is a status header, not a substitute for any later TL;DR or requested summary; TL;DRs may still appear separately when useful.
+
 Current checkpoint: **v0.5.0 — Stage 5, banked persistent individual GOAP**.
 
 Durable decisions for future work:
