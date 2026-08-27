@@ -114,7 +114,15 @@ int main(int argc,char **argv){
     retro_game_info gi{}; gi.path=rom_path; gi.data=rom.data(); gi.size=rom.size();
     if(!retro_load_game(&gi)){fprintf(stderr,"retro_load_game failed\n");retro_deinit();return 4;}
     retro_system_av_info av{}; retro_get_system_av_info(&av);
-    for(unsigned i=0;i<frames;i++) retro_run();
+    const char *frame_dir=std::getenv("GS_FRAME_DIR");
+    for(unsigned i=0;i<frames;i++) {
+        retro_run();
+        if(frame_dir && *frame_dir) {
+            char frame_path[1024];
+            std::snprintf(frame_path,sizeof(frame_path),"%s/frame-%04u.ppm",frame_dir,i);
+            if(!save_ppm(frame_path)) { fprintf(stderr,"failed to save %s\n",frame_path); return 5; }
+        }
+    }
     printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",frames,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
     if(ppm){ if(!save_ppm(ppm)){fprintf(stderr,"failed to save ppm\n");return 5;} printf("saved=%s\n",ppm); }
     retro_unload_game(); retro_deinit(); dlclose(h); return 0;
