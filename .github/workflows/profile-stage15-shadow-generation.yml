@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/gg-tilesector-stage23-camera-q4-lock
+      - fix/gg-tilesector-edge-lut-phase
   workflow_dispatch:
 
 jobs:
@@ -41,6 +42,9 @@ jobs:
 
       - name: Apply Stage 20 row dirty extents
         run: python3 tools/apply_stage20_row_extents.py
+
+      - name: Verify GG edge LUT against C reference
+        run: python3 tools/test_edge_lut_reference.py
 
       - name: Verify Stage 21 mirror identity
         run: python3 tools/test_stage21_full_symmetry.py
@@ -152,11 +156,21 @@ jobs:
             build/stage23-camera-startup-slowmo.mp4
           ls -lh build/stage23-camera-*.mp4 build/stage23-camera-final.ppm
 
-      - name: Profile Stage 23
+      - name: Profile Stage 23 edge-phase repair
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage23-profile.txt
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 demo \
+            build/edgefix-A-forward.bin build/edgefix-A-forward.states | tee build/stage23-profile.txt
           sha256sum build/gg-tilesector-demo.gg | tee build/stage23-rom.sha256
+
+      - name: Prove ROM name table matches host C oracle
+        shell: bash
+        run: |
+          gcc -O2 -std=c11 -Isrc src/tilesector_core.c tools/tilesector_reference_replay.c \
+            -o build/tilesector_reference_replay
+          ./build/tilesector_reference_replay build/edgefix-A-forward.states build/edgefix-reference-A-forward.bin
+          cmp build/edgefix-A-forward.bin build/edgefix-reference-A-forward.bin
+          echo "PATCHED ROM == C REFERENCE: PASS"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -170,6 +184,9 @@ jobs:
             build/stage23-camera-final.ppm
             build/stage23-camera-runtime-60fps.mp4
             build/stage23-camera-startup-slowmo.mp4
+            build/edgefix-A-forward.bin
+            build/edgefix-A-forward.states
+            build/edgefix-reference-A-forward.bin
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
