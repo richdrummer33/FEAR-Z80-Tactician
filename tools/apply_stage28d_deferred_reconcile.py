@@ -65,18 +65,12 @@ insert="""#ifdef __SDCC
 core=core[:idle_i]+insert+core[idle_i:]
 
 # ---------------------------------------------------------------------------
-# RUN KERNEL: remove eager depth-0 non-FULL invalidation. The current non-FULL
-# materializer simply overwrites cells it owns; the deferred finalizer later
-# restores only old retained cells left unowned by the FINAL scene.
+# RUN KERNEL: KEEP Stage24/28B eager invalidation for a depth-0 non-FULL
+# replacement. It consumes the prior retained-active bit BEFORE the new
+# RAISED/LINTEL/RISER-style materializer writes, so the deferred unseen
+# finalizer cannot later restore base over that current solid. Stage28B already
+# gates this call when no previous retained FULL exists.
 # ---------------------------------------------------------------------------
-start=run.find("        ; If a previous retained FULL wall is replaced by a depth-0 asymmetric")
-if start < 0:
-    raise SystemExit("Stage24 eager invalidation comment not found")
-end=run.find("nr_ret_life_ready$:",start)
-if end < 0:
-    raise SystemExit("Stage24 eager invalidation tail not found")
-end += len("nr_ret_life_ready$:\n")
-run=run[:start]+"nr_ret_life_ready$:\n"+run[end:]
 
 # ---------------------------------------------------------------------------
 # NTSTATE: expose current exception occupancy as a rare cleanup query.
