@@ -70,6 +70,10 @@ new='''        ld      hl, (#sf_prev_gen_ptr$)
         ld      a, (#sf_ret_mode$)
         or      a
         jp      nz, sf_ret_edge_delta$
+        ; The normal/full path MUST be explicit. Later stages insert callable
+        ; helpers before sf_ret_edge_delta$; fall-through here would enter a
+        ; helper and RET out of the entire column materializer.
+        jp      sf_ret_not_eligible$
 
 sf_ret_not_eligible$:
         ; top slope = topR-topL; run kernel already constrains it to +/-7.
@@ -286,6 +290,19 @@ sf_col$:          .ds 1
 if anchor not in s:
     raise SystemExit('Stage22 retained BSS anchor not found')
 s=s.replace(anchor,repl,1)
+
+# Generated-Z80 control-flow guard: the non-delta case must never depend on
+# source layout/fall-through. This is deliberately checked after all insertions.
+dispatch_guard='''        ld      a, (#sf_ret_mode$)
+        or      a
+        jp      nz, sf_ret_edge_delta$
+        ; The normal/full path MUST be explicit. Later stages insert callable
+        ; helpers before sf_ret_edge_delta$; fall-through here would enter a
+        ; helper and RET out of the entire column materializer.
+        jp      sf_ret_not_eligible$
+'''
+if dispatch_guard not in s:
+    raise SystemExit('Stage23 generated dispatch lost explicit normal-path jump')
 
 p.write_text(s)
 print('Applied Stage 23 retained FULL edge-delta materialization.')

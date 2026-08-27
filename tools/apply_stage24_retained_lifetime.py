@@ -496,6 +496,21 @@ if old not in sym:
 sym=sym.replace(old,new,1)
 
 # Restore helper suite just before the Stage23 delta materializer.
+# Stage23's mode dispatch must have an explicit normal-path jump. Stage24 places
+# callable helpers immediately before sf_ret_edge_delta$, so any implicit
+# fall-through here would execute a helper RET as though it were this function's
+# return -- exactly the runtime corruption caught by the instruction tracer.
+dispatch_guard='''        ld      a, (#sf_ret_mode$)
+        or      a
+        jp      nz, sf_ret_edge_delta$
+        ; The normal/full path MUST be explicit. Later stages insert callable
+        ; helpers before sf_ret_edge_delta$; fall-through here would enter a
+        ; helper and RET out of the entire column materializer.
+        jp      sf_ret_not_eligible$
+'''
+if dispatch_guard not in sym:
+    raise SystemExit('Stage24 requires explicit Stage23 normal-path dispatch')
+
 anchor='''sf_ret_edge_delta$:
         ; OLD top_max from the two retained signed pixel endpoints.
 '''
