@@ -1,9 +1,9 @@
-name: Profile Stage 25 retained active mask
+name: Profile Stage 28 runtime repair
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage25-active-mask
+      - feature/gg-tilesector-stage28-runtime-repair
   workflow_dispatch:
 
 jobs:
@@ -57,25 +57,7 @@ jobs:
       - name: Apply Stage 23 edge-delta materializer
         run: python3 tools/apply_stage23_edge_delta.py
 
-      - name: Verify Stage 24 retained-lifetime semantics
-        run: python3 tools/test_stage24_retained_lifetime.py
-
-      - name: Apply Stage 24 retained FULL lifetime
-        run: python3 tools/apply_stage24_retained_lifetime.py
-
-      - name: Verify Stage 25 active-mask semantics
-        run: python3 tools/test_stage25_active_mask.py
-
-      - name: Apply Stage 25 retained active mask
-        run: python3 tools/apply_stage25_active_mask.py
-
-      - name: Dump Stage 18 assembly around stale loop
-        shell: bash
-        run: |
-          nl -ba src/tilesector_ntstate_gg.s | sed -n '292,336p'
-          nl -ba src/tilesector_opaque_gg.s | sed -n '1,120p'
-
-      - name: Link Stage 25 kernels
+      - name: Link Stage 23+ kernels
         shell: bash
         run: |
           python3 - <<'PY'
@@ -93,42 +75,13 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Verify Stage 25 representation
+      - name: Verify Stage 23 control representation
         shell: bash
         run: |
-          grep -q 'STAGE18_COLUMN_LIFETIME' src/tilesector_raster_gg.s
-          grep -q 'STAGE19_ROW_BURST_UPLOAD' src/tilesector_ntstate_gg.s
-          grep -q 'STAGE20_ROW_EXTENTS' src/tilesector_ntstate_gg.s
-          grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_run_gg.s
-          grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_symfull_gg.s
           grep -q 'STAGE22_RETAINED_FULL' src/tilesector_symfull_gg.s
           grep -q 'STAGE23_EDGE_DELTA' src/tilesector_symfull_gg.s
-          grep -q 'STAGE24_RETAINED_LIFETIME' src/tilesector_symfull_gg.s
-          grep -q 'STAGE25_ACTIVE_MASK' src/tilesector_symfull_gg.s
-          grep -Fq 'sf_active_prev$:' src/tilesector_symfull_gg.s
-          grep -Fq 'sf_active_cur$:' src/tilesector_symfull_gg.s
-          grep -q 'STAGE24_RETAINED_LIFETIME' src/tilesector_run_gg.s
-          grep -q 'STAGE24_EXCEPTION_COVERAGE_ONLY' src/tilesector_ntstate_gg.s
-          grep -Fq '_ts_retained_full_finalize_unseen::' src/tilesector_symfull_gg.s
-          grep -Fq '_ts_retained_full_owns_cell::' src/tilesector_symfull_gg.s
-          grep -q 'sf_prev_desc.*ds 140' src/tilesector_symfull_gg.s
-          grep -Fq 'sf_ret_edge_delta' src/tilesector_symfull_gg.s
-          grep -q 'STAGE22_RETAINED_FULL' src/tilesector_run_gg.s
-          grep -q '_g_ts_ret_full_skip::' src/tilesector_symfull_gg.s
-          grep -q '_g_ts_ret_span_skip::' src/tilesector_symfull_gg.s
-          grep -q '_ts_raster_symfull_column_fast' src/tilesector_run_gg.s
-          grep -q 'or      #0x0c' src/tilesector_symfull_gg.s
-          grep -q '_g_nt_row_min::    .ds 18' src/tilesector_ntstate_gg.s
-          grep -q '_g_nt_row_max::    .ds 18' src/tilesector_ntstate_gg.s
-          grep -q 'otir' src/tilesector_ntstate_gg.s
-          ! grep -q '_g_nt_dirty' src/tilesector_opaque_gg.s
-          grep -q 'STAGE18_DIRECT_OPAQUE' src/tilesector_raster_gg.s
+          grep -q 'STAGE20_ROW_EXTENTS' src/tilesector_ntstate_gg.s
           grep -q '_g_nt_cov_cur::    .ds 60' src/tilesector_ntstate_gg.s
-          grep -q '_ts_raster_opaque_column_fast' src/tilesector_run_gg.s
-          grep -q '_ts_nt_mark_span' src/tilesector_opaque_gg.s
-          ! grep -q '_g_nt_meta' src/tilesector_opaque_gg.s
-          ! grep -q '_g_nt_meta' src/tilesector_ntstate_gg.s
-          ! grep -q 'g_prev_map' src/main_tilesector_gg.c
 
       - name: Install GBDK 4.5.0
         shell: bash
@@ -139,11 +92,8 @@ jobs:
           echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
           tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
-      - name: Host acceptance
+      - name: Host acceptance — control
         run: make tilesector-test tilesector-host
-
-      - name: Build Stage 25 ROM
-        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
 
       - name: Build cycle profiler
         shell: bash
@@ -151,20 +101,111 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
-      - name: Profile Stage 25
+      - name: Build Stage 23 control ROM
+        run: |
+          make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+          cp build/gg-tilesector-demo.gg build/control-stage23.gg
+          cp build/gg-tilesector-demo.sym build/control-stage23.sym
+
+      - name: Profile Stage 23 control matrix
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage25-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage25-rom.sha256
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 120 8   | tee build/control-A-forward.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 80 145  | tee build/control-B-turn.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 48 225  | tee build/control-C-late.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 60 320  | tee build/control-D-static.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 240 8   | tee build/control-E-mixed.txt
+
+      - name: Verify retained-lifetime algorithms
+        run: |
+          python3 tools/test_stage24_retained_lifetime.py
+          python3 tools/test_stage25_active_mask.py
+          python3 tools/test_stage28_exception_sparse.py
+
+      - name: Apply Stage 24 retained FULL lifetime
+        run: python3 tools/apply_stage24_retained_lifetime.py
+
+      - name: Apply Stage 25 retained active mask
+        run: python3 tools/apply_stage25_active_mask.py
+
+      - name: Apply Stage 28 sparse exception-only lifetime
+        run: python3 tools/apply_stage28_exception_sparse.py
+
+      - name: Verify Stage 28 forward representation
+        shell: bash
+        run: |
+          grep -q 'STAGE24_RETAINED_LIFETIME' src/tilesector_symfull_gg.s
+          grep -q 'STAGE25_ACTIVE_MASK' src/tilesector_symfull_gg.s
+          grep -q 'STAGE28_EXCEPTION_SPARSE_LIFETIME' src/tilesector_ntstate_gg.s
+          grep -Fq '_g_nt_exc_prev_active:: .ds 3' src/tilesector_ntstate_gg.s
+          grep -Fq '_g_nt_exc_cur_active::  .ds 3' src/tilesector_ntstate_gg.s
+          grep -Fq 'nte_exc_group_loop$:' src/tilesector_ntstate_gg.s
+          grep -Fq 'nte_exc_slot$:' src/tilesector_ntstate_gg.s
+          grep -Fq '_ts_retained_full_finalize_unseen::' src/tilesector_symfull_gg.s
+          grep -q '_g_nt_cov_cur::    .ds 60' src/tilesector_ntstate_gg.s
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('src/tilesector_ntstate_gg.s').read_text()
+          a=s.index('_ts_nt_begin_frame::')
+          b=s.index('; Coverage ABI inherited from Stage 14:',a)
+          assert 'ldir' not in s[a:b], 'legacy 60-byte begin clear still active'
+          a=s.index('_ts_nt_end_frame::')
+          b=s.index('_ts_nt_upload_dirty::',a)
+          assert '_g_nt_exc_prev_active' in s[a:b]
+          assert 'nte_col_loop$:' not in s[a:b], 'legacy unconditional 20-column end scan still active'
+          print('Stage28 legacy common-path clear/scan removed: PASS')
+          PY
+
+      - name: Host acceptance — repaired
+        run: make tilesector-test tilesector-host
+
+      - name: Rebuild Stage 28 repaired ROM
+        shell: bash
+        run: |
+          rm -f build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_raster_gg.o \
+                build/tilesector_candidate_lite_gg.o build/tilesector_run_gg.o \
+                build/tilesector_ntstate_gg.o build/tilesector_opaque_gg.o \
+                build/tilesector_symfull_gg.o build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym
+          make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+          cp build/gg-tilesector-demo.gg build/repair-stage28.gg
+          cp build/gg-tilesector-demo.sym build/repair-stage28.sym
+
+      - name: Profile Stage 28 repair matrix
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 120 8   | tee build/repair-A-forward.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 80 145  | tee build/repair-B-turn.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 48 225  | tee build/repair-C-late.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 60 320  | tee build/repair-D-static.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 240 8   | tee build/repair-E-mixed.txt
+
+      - name: Compare control vs repair
+        shell: bash
+        run: |
+          python3 tools/compare_profile_matrix.py \
+            A-forward build/control-A-forward.txt build/repair-A-forward.txt \
+            B-turn    build/control-B-turn.txt    build/repair-B-turn.txt \
+            C-late    build/control-C-late.txt    build/repair-C-late.txt \
+            D-static  build/control-D-static.txt  build/repair-D-static.txt \
+            E-mixed   build/control-E-mixed.txt   build/repair-E-mixed.txt \
+            | tee build/stage28-ab-matrix.txt
+
+      - name: Hash ROMs
+        run: |
+          sha256sum build/control-stage23.gg build/repair-stage28.gg | tee build/stage28-roms.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gg-tilesector-stage25-active-mask
+          name: gg-tilesector-stage28-runtime-repair
           path: |
-            build/gg-tilesector-demo.gg
-            build/gg-tilesector-demo.sym
-            build/stage25-profile.txt
-            build/stage25-rom.sha256
+            build/control-stage23.gg
+            build/control-stage23.sym
+            build/repair-stage28.gg
+            build/repair-stage28.sym
+            build/control-*.txt
+            build/repair-*.txt
+            build/stage28-ab-matrix.txt
+            build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
