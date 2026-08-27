@@ -389,7 +389,7 @@ nte_exc_group_commit$:
 """
 s = s[:a] + new_end + s[b:]
 
-m = re.search(r"(?m)^\\s*\\.area\\s+_BSS\\s*$", s)
+m = re.search(r"(?m)^\s*\.area\s+_BSS\s*$", s)
 if not m:
     raise SystemExit("ntstate BSS marker not found")
 bss = r"""        .area _BSS
