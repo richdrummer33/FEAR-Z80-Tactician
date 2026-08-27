@@ -5,13 +5,15 @@ from pathlib import Path
 if len(sys.argv)!=2 or sys.argv[1] not in {
     "no-finalizer","no-oldstale","legacy-lifetime","retention-off",
     "legacy-no-exact","legacy-no-edge",
-    "stage23-behavior","stage23-plus-owner","stage23-plus-eager"
+    "stage23-behavior","stage23-plus-owner","stage23-plus-eager",
+    "stage23-ret5","stage23-ret7-nocov","stage23-ret7-cov"
 }:
     raise SystemExit(
         "usage: apply_stage24_diag_mode.py "
         "no-finalizer|no-oldstale|legacy-lifetime|retention-off|"
         "legacy-no-exact|legacy-no-edge|stage23-behavior|"
-        "stage23-plus-owner|stage23-plus-eager"
+        "stage23-plus-owner|stage23-plus-eager|stage23-ret5|"
+        "stage23-ret7-nocov|stage23-ret7-cov"
     )
 
 mode=sys.argv[1]
@@ -100,6 +102,71 @@ def force_legacy_coverage(text):
         "        ; DIAG: ordinary FULL also uses legacy Stage18 coverage\n",
         1,
     )
+
+def remove_old_cov_capture(text):
+    block="""        ld      a, 5 (ix)
+        ld      (#sf_old_cov_first$), a
+        ld      a, 6 (ix)
+        ld      (#sf_old_cov_last$), a
+"""
+    if block not in text:
+        raise SystemExit("old coverage capture block not found")
+    return text.replace(block,"",1)
+
+def remove_cov_descriptor_store(text):
+    old="""        ld      a, (#sf_clip_last$)
+        ld      4 (ix), a
+        ld      a, (#sf_cov_valid$)
+        or      a
+        jp      z, sf_ret_store_no_cov$
+        ld      a, (#sf_cov_first$)
+        ld      5 (ix), a
+        ld      a, (#sf_cov_last$)
+        ld      6 (ix), a
+        jp      sf_ret_cov_stored$
+sf_ret_store_no_cov$:
+        ld      5 (ix), #0xff
+        ld      6 (ix), #0
+sf_ret_cov_stored$:
+        ld      hl, (#sf_prev_gen_ptr$)
+"""
+    new="""        ld      a, (#sf_clip_last$)
+        ld      4 (ix), a
+        ld      hl, (#sf_prev_gen_ptr$)
+"""
+    if old not in text:
+        raise SystemExit("coverage descriptor store block not found")
+    return text.replace(old,new,1)
+
+def restore_descriptor_stride5(text):
+    old="""        ; IX = seven-byte retained hardware descriptor for this column.
+        ld      a, (#sf_col$)
+        ld      e, a
+        add     a, a                   ; 2x
+        add     a, a                   ; 4x
+        add     a, a                   ; 8x
+        sub     e                      ; 7x
+        ld      e, a
+"""
+    new="""        ; DIAG: Stage23 five-byte retained descriptor for this column.
+        ld      a, (#sf_col$)
+        ld      e, a
+        add     a, a                   ; 2x
+        add     a, a                   ; 4x
+        add     a, e                   ; 5x
+        ld      e, a
+"""
+    if old not in text:
+        raise SystemExit("seven-byte descriptor index block not found")
+    return text.replace(old,new,1)
+
+def neutralize_lifetime_support(core,run,sym,nt):
+    core=disable_finalizer(core)
+    run=disable_eager_nonfull(run)
+    sym=disable_old_stale(sym)
+    sym=force_legacy_coverage(sym)
+    nt=disable_exception_owner(nt)
+    return core,run,sym,nt
 
 def bypass_retention(text):
     retain_entry="""sf_cov_done$:
@@ -239,6 +306,19 @@ sf_ret_edge_diag_unreachable$:
 """,
             1,
         )
+
+elif mode in {"stage23-ret5","stage23-ret7-nocov","stage23-ret7-cov"}:
+    # Preserve Stage23 retained exact-skip + edge-delta semantics. Neutralize
+    # Stage24 lifetime authority, then progressively add only the descriptor
+    # representation changes. This is the clean retention-preserving bisect.
+    core,run,sym,nt=neutralize_lifetime_support(core,run,sym,nt)
+
+    if mode in {"stage23-ret5","stage23-ret7-nocov"}:
+        sym=remove_cov_descriptor_store(sym)
+        sym=remove_old_cov_capture(sym)
+
+    if mode=="stage23-ret5":
+        sym=restore_descriptor_stride5(sym)
 
 elif mode in {"stage23-behavior","stage23-plus-owner","stage23-plus-eager"}:
     # A true Stage23-semantics control built from Stage24-generated sources.
