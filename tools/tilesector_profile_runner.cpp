@@ -46,6 +46,11 @@ int main(int argc,char**argv) {
     const char* sym=argv[2];
     unsigned target=(argc>3)?(unsigned)std::strtoul(argv[3],nullptr,0):120u;
     unsigned warmup=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):8u;
+    std::string scenario=(argc>5)?argv[5]:"demo";
+    if(scenario!="demo" && scenario!="roomA-turn") {
+        std::fprintf(stderr,"unknown scenario: %s\n",scenario.c_str());
+        return 2;
+    }
     u16 phase_addr=0,dirty_addr=0,stage_addr=0,state_addr=0,map_addr=0;
     u16 ret_full_total_addr=0,ret_full_skip_addr=0,ret_full_edge_addr=0;
     u16 ret_span_total_addr=0,ret_span_skip_addr=0;
@@ -117,6 +122,11 @@ int main(int argc,char**argv) {
     unsigned map_hash_frames=0;
     const uint64_t instruction_limit=50000000ull;
 
+    // External deterministic input scenario: no ROM instrumentation or hot-path
+    // branches. RIGHT-only forces manual in-place yaw while staying in Room A.
+    if(scenario=="roomA-turn")
+        core.KeyPressed(Joypad_1,Key_Right);
+
     while(loops_measured<target&&instructions<instruction_limit) {
         samples=0;
         core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false);
@@ -182,8 +192,8 @@ int main(int argc,char**argv) {
     }
 
     const double cpu_hz=3579545.0;
-    std::printf("TileSector Gearsystem profile: loops=%u warmup=%u instructions=%llu phase_addr=%04X",
-                loop_stats.n,warmup,(unsigned long long)instructions,phase_addr);
+    std::printf("TileSector Gearsystem profile: loops=%u warmup=%u scenario=%s instructions=%llu phase_addr=%04X",
+                loop_stats.n,warmup,scenario.c_str(),(unsigned long long)instructions,phase_addr);
     if(have_stage) std::printf(" render_stage_addr=%04X",stage_addr);
     if(have_state) std::printf(" state_addr=%04X",state_addr);\n    if(have_map) std::printf(" map_addr=%04X",map_addr);
     std::printf("\n");
