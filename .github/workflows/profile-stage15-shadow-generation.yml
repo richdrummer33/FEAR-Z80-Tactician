@@ -151,6 +151,46 @@ jobs:
       - name: Build bisect Stage24
         run: ./build_stage_variant.sh stage24
 
+      - name: Audit Stage 23/24 RAM and ABI layout
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def symbols(path):
+              out={}
+              for raw in Path(path).read_text().splitlines():
+                  parts=raw.split()
+                  if len(parts)<2 or ':' not in parts[0]:
+                      continue
+                  bank,addr=parts[0].split(':',1)
+                  try: out[parts[1]]=int(addr,16)
+                  except ValueError: pass
+              return out
+
+          c=symbols('build/control-stage23.sym')
+          s=symbols('build/bisect-stage24.sym')
+          stable=['_g_state','_g_map','_g_ts_render_stage','_g_name_run_ctx','_g_raster_ctx']
+          for name in stable:
+              print(f'{name}: stage23={c.get(name,0):04X} stage24={s.get(name,0):04X}')
+              assert c.get(name)==s.get(name), f'{name} moved between Stage23 and Stage24'
+          for label,x in [('stage23',c),('stage24',s)]:
+              heap=x['s__HEAP_END']; stack=x['.STACK']
+              print(f'{label}: heap_end={heap:04X} stack={stack:04X} free_gap={stack-heap} bytes')
+              assert 0xC000 <= heap < 0xDFF0
+              assert stack == 0xDFF0
+              assert heap < stack
+          print('Stage23/24 RAM-layout stability and stack-gap audit: PASS')
+          PY
+
+      - name: Trace first divergent Game Gear RAM writes
+        shell: bash
+        run: |
+          ./build/tilesector_write_trace build/control-stage23.gg build/control-stage23.sym 8 demo 3 19 256 | tee build/trace-control-A-r03c19.txt
+          ./build/tilesector_write_trace build/bisect-stage24.gg build/bisect-stage24.sym 8 demo 3 19 256 | tee build/trace-stage24-A-r03c19.txt
+          ./build/tilesector_write_trace build/control-stage23.gg build/control-stage23.sym 16 roomA-turn 3 11 256 | tee build/trace-control-F-r03c11.txt
+          ./build/tilesector_write_trace build/bisect-stage24.gg build/bisect-stage24.sym 16 roomA-turn 3 11 256 | tee build/trace-stage24-F-r03c11.txt
+
       - name: Build Stage24 lifetime sub-bisect variants
         shell: bash
         run: |
@@ -424,6 +464,8 @@ jobs:
             build/diff-stage23beh-*.txt
             build/tilesector_profile_runner
             build/gearsystem_core_runner
+            build/tilesector_write_trace
+            build/trace-*.txt
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
