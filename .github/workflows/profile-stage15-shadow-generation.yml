@@ -383,6 +383,39 @@ jobs:
             F-roomA-turn build/control-F-roomA-turn.txt build/stage31-F-roomA-turn.txt \
             | tee build/stage31-ab-matrix.txt
 
+      - name: Apply Stage 32 dense ownership gate
+        run: python3 tools/apply_stage32_dense_ownership_gate.py
+
+      - name: Build bisect Stage32 candidate
+        run: ./build_stage_variant.sh stage32
+
+      - name: Profile Stage32 candidate matrix
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/bisect-stage32.gg build/bisect-stage32.sym 120 8 demo build/stage32-A-forward.bin build/stage32-A-forward.states | tee build/stage32-A-forward.txt
+          ./build/tilesector_profile_runner build/bisect-stage32.gg build/bisect-stage32.sym 80 145 demo build/stage32-B-turn.bin build/stage32-B-turn.states | tee build/stage32-B-turn.txt
+          ./build/tilesector_profile_runner build/bisect-stage32.gg build/bisect-stage32.sym 48 225 | tee build/stage32-C-late.txt
+          ./build/tilesector_profile_runner build/bisect-stage32.gg build/bisect-stage32.sym 60 320 | tee build/stage32-D-static.txt
+          ./build/tilesector_profile_runner build/bisect-stage32.gg build/bisect-stage32.sym 240 8 | tee build/stage32-E-mixed.txt
+          ./build/tilesector_profile_runner build/bisect-stage32.gg build/bisect-stage32.sym 80 16 roomA-turn build/stage32-F-roomA-turn.bin build/stage32-F-roomA-turn.states | tee build/stage32-F-roomA-turn.txt
+          python3 tools/compare_map_dumps.py stage32-A build/control-A-forward.bin build/stage32-A-forward.bin
+          python3 tools/compare_map_dumps.py stage32-B build/control-B-turn.bin build/stage32-B-turn.bin
+          python3 tools/compare_map_dumps.py stage32-F build/control-F-roomA-turn.bin build/stage32-F-roomA-turn.bin
+          python3 tools/compare_profile_matrix.py \
+            A-forward build/control-A-forward.txt build/stage32-A-forward.txt \
+            B-turn build/control-B-turn.txt build/stage32-B-turn.txt \
+            C-late build/control-C-late.txt build/stage32-C-late.txt \
+            D-static build/control-D-static.txt build/stage32-D-static.txt \
+            E-mixed build/control-E-mixed.txt build/stage32-E-mixed.txt \
+            F-roomA-turn build/control-F-roomA-turn.txt build/stage32-F-roomA-turn.txt \
+            | tee build/stage32-ab-matrix.txt
+
+      - name: Focused Stage32 timing stop
+        if: contains(github.event.head_commit.message, '[stage32-fast]')
+        run: |
+          echo "Stage32 dense ownership result captured; intentionally stop before Stage28 matrix."
+          exit 1
+
       - name: Focused Stage31 timing stop
         if: contains(github.event.head_commit.message, '[stage31-fast]')
         run: |
@@ -579,6 +612,10 @@ jobs:
             build/stage31-*.bin
             build/stage31-*.states
             build/stage31-ab-matrix.txt
+            build/stage32-*.txt
+            build/stage32-*.bin
+            build/stage32-*.states
+            build/stage32-ab-matrix.txt
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
