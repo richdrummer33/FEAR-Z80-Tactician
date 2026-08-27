@@ -1,9 +1,9 @@
-name: Profile Stage 21 symmetric FULL walls
+name: Profile Stage 22 retained FULL descriptors
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage21-full-symmetry
+      - feature/gg-tilesector-stage22-retained-full
   workflow_dispatch:
 
 jobs:
@@ -48,13 +48,16 @@ jobs:
       - name: Apply Stage 21 symmetric FULL fast path
         run: python3 tools/apply_stage21_full_symmetry.py
 
+      - name: Apply Stage 22 retained FULL descriptors
+        run: python3 tools/apply_stage22_retained_full.py
+
       - name: Dump Stage 18 assembly around stale loop
         shell: bash
         run: |
           nl -ba src/tilesector_ntstate_gg.s | sed -n '292,336p'
           nl -ba src/tilesector_opaque_gg.s | sed -n '1,120p'
 
-      - name: Link Stage 21 kernels
+      - name: Link Stage 22 kernels
         shell: bash
         run: |
           python3 - <<'PY'
@@ -72,7 +75,7 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Verify Stage 21 representation
+      - name: Verify Stage 22 representation
         shell: bash
         run: |
           grep -q 'STAGE18_COLUMN_LIFETIME' src/tilesector_raster_gg.s
@@ -80,6 +83,10 @@ jobs:
           grep -q 'STAGE20_ROW_EXTENTS' src/tilesector_ntstate_gg.s
           grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_run_gg.s
           grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_symfull_gg.s
+          grep -q 'STAGE22_RETAINED_FULL' src/tilesector_symfull_gg.s
+          grep -q 'STAGE22_RETAINED_FULL' src/tilesector_run_gg.s
+          grep -q '_g_ts_ret_full_skip::' src/tilesector_symfull_gg.s
+          grep -q '_g_ts_ret_span_skip::' src/tilesector_symfull_gg.s
           grep -q '_ts_raster_symfull_column_fast' src/tilesector_run_gg.s
           grep -q 'or      #0x0c' src/tilesector_symfull_gg.s
           grep -q '_g_nt_row_min::    .ds 18' src/tilesector_ntstate_gg.s
@@ -106,7 +113,7 @@ jobs:
       - name: Host acceptance
         run: make tilesector-test tilesector-host
 
-      - name: Build Stage 21 ROM
+      - name: Build Stage 22 ROM
         run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
 
       - name: Build cycle profiler
@@ -115,20 +122,20 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
-      - name: Profile Stage 21
+      - name: Profile Stage 22
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage21-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage21-rom.sha256
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage22-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage22-rom.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gg-tilesector-stage21-full-symmetry
+          name: gg-tilesector-stage22-retained-full
           path: |
             build/gg-tilesector-demo.gg
             build/gg-tilesector-demo.sym
-            build/stage21-profile.txt
-            build/stage21-rom.sha256
+            build/stage22-profile.txt
+            build/stage22-rom.sha256
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
