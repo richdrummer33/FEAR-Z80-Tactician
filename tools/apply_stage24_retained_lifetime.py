@@ -554,6 +554,9 @@ sf_restore_old_all$:
 ; A=start row, C=end row. Restore static ceiling/horizon/floor name-table words
 ; for this retained column and expand Stage-20 dirty extents.
 sf_restore_range$:
+        ; Caller may retain OLD coverage bounds in DE while reconciling both
+        ; sides of a shrinking span. Keep DE callee-preserved.
+        push    de
         ld      (#sf_restore_row$), a
         ld      a, c
         ld      (#sf_restore_last$), a
@@ -564,11 +567,14 @@ sf_restore_range_loop$:
         ld      c, a
         ld      a, (#sf_restore_last$)
         cp      c
-        ret     z
+        jp      z, sf_restore_range_done$
         ld      a, c
         inc     a
         ld      (#sf_restore_row$), a
         jp      sf_restore_range_loop$
+sf_restore_range_done$:
+        pop     de
+        ret
 
 sf_restore_base_row$:
         ld      (#sf_store_row$), a
