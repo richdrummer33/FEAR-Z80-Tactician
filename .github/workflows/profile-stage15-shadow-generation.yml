@@ -147,6 +147,31 @@ jobs:
       - name: Build bisect Stage24
         run: ./build_stage_variant.sh stage24
 
+      - name: Build Stage24 lifetime sub-bisect variants
+        shell: bash
+        run: |
+          cp src/tilesector_core.c build/stage24-base-core.c
+          cp src/tilesector_symfull_gg.s build/stage24-base-symfull.s
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          python3 tools/apply_stage24_diag_mode.py no-finalizer
+          ./build_stage_variant.sh stage24-nofinal
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          python3 tools/apply_stage24_diag_mode.py no-oldstale
+          ./build_stage_variant.sh stage24-nooldstale
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          python3 tools/apply_stage24_diag_mode.py legacy-lifetime
+          ./build_stage_variant.sh stage24-legacy-life
+
+          # Restore canonical generated Stage24 before applying Stage25.
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+
       - name: Apply Stage 25 retained active mask
         run: python3 tools/apply_stage25_active_mask.py
 
@@ -243,7 +268,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          for tag in stage24 stage25 stage28a stage28b stage28c stage28d; do
+          for tag in stage24 stage24-nofinal stage24-nooldstale stage24-legacy-life stage25 stage28a stage28b stage28c stage28d; do
             echo "===== ${tag} / A-forward ====="
             ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 8 demo "build/bisect-${tag}-A.bin" > "build/bisect-${tag}-A.txt"
             python3 tools/compare_map_dumps.py "${tag}-A" <(head -c $((24*720)) build/control-A-forward.bin) "build/bisect-${tag}-A.bin"
