@@ -377,21 +377,23 @@ old='''sf_close$:
         ld      (hl), #0
         ret
 '''
-new='''sf_skip_close$:
-        ld      hl, (#_g_raster_ctx + 11)
-        ld      (hl), #1
-        ld      hl, (#_g_raster_ctx + 13)
-        ld      (hl), #0
-        ld      a, #1
-        ret
-
-sf_close$:
+new='''sf_close$:
         ; FULL is opaque: farther portal traversal cannot contribute here.
+        ; Keep this label at the Stage-21 location so its hot short branches
+        ; remain short-range.
         ld      hl, (#_g_raster_ctx + 11)
         ld      (hl), #1
         ld      hl, (#_g_raster_ctx + 13)
         ld      (hl), #0
         xor     a
+        ret
+
+sf_skip_close$:
+        ld      hl, (#_g_raster_ctx + 11)
+        ld      (hl), #1
+        ld      hl, (#_g_raster_ctx + 13)
+        ld      (hl), #0
+        ld      a, #1
         ret
 '''
 if old not in sym:
