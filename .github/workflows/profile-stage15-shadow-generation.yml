@@ -36,6 +36,12 @@ jobs:
       - name: Apply Stage 18 direct opaque materializer
         run: python3 tools/apply_stage18_direct_opaque.py
 
+      - name: Dump Stage 18 assembly around stale loop
+        shell: bash
+        run: |
+          nl -ba src/tilesector_ntstate_gg.s | sed -n '292,336p'
+          nl -ba src/tilesector_opaque_gg.s | sed -n '1,120p'
+
       - name: Link Stage 18 kernels
         shell: bash
         run: |
