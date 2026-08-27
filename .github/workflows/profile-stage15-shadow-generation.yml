@@ -1,9 +1,9 @@
-name: Profile Stage 16 direct opaque materializer
+name: Profile Stage 18 column lifetime
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage16-direct
+      - feature/gg-tilesector-stage18-column-lifetime
   workflow_dispatch:
 
 jobs:
@@ -30,15 +30,13 @@ jobs:
       - name: Apply Stage 14 change-only stores
         run: python3 tools/apply_stage14_span_dirty.py
 
-      - name: Apply Stage 15 generation-tagged shadow
-        run: |
-          python3 tools/apply_stage15_shadow_generation.py
-          python3 tools/fix_stage15_generation_scan.py
+      - name: Apply Stage 18 column-major lifetime
+        run: python3 tools/apply_stage18_column_lifetime.py
 
-      - name: Apply Stage 16 direct opaque materializer
-        run: python3 tools/apply_stage16_direct_opaque.py
+      - name: Apply Stage 18 direct opaque materializer
+        run: python3 tools/apply_stage18_direct_opaque.py
 
-      - name: Link Stage 16 kernels
+      - name: Link Stage 18 kernels
         shell: bash
         run: |
           python3 - <<'PY'
@@ -56,15 +54,16 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Verify Stage 16 representation
+      - name: Verify Stage 18 representation
         shell: bash
         run: |
-          grep -q 'STAGE16_DIRECT_OPAQUE' src/tilesector_run_gg.s
+          grep -q 'STAGE18_COLUMN_LIFETIME' src/tilesector_raster_gg.s
+          grep -q 'STAGE18_DIRECT_OPAQUE' src/tilesector_raster_gg.s
+          grep -q '_g_nt_cov_cur::    .ds 60' src/tilesector_ntstate_gg.s
           grep -q '_ts_raster_opaque_column_fast' src/tilesector_run_gg.s
-          grep -q '_ts_edge_lut::' src/tilesector_raster_gg.s
-          grep -q '_g_nt_dirty' src/tilesector_opaque_gg.s
-          grep -q 'add     iy, de' src/tilesector_opaque_gg.s
-          ! grep -q '_ts_nt_mark_dirty' src/tilesector_opaque_gg.s
+          grep -q '_ts_nt_mark_span' src/tilesector_opaque_gg.s
+          ! grep -q '_g_nt_meta' src/tilesector_opaque_gg.s
+          ! grep -q '_g_nt_meta' src/tilesector_ntstate_gg.s
           ! grep -q 'g_prev_map' src/main_tilesector_gg.c
 
       - name: Install GBDK 4.5.0
@@ -79,7 +78,7 @@ jobs:
       - name: Host acceptance
         run: make tilesector-test tilesector-host
 
-      - name: Build Stage 16 ROM
+      - name: Build Stage 18 ROM
         run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
 
       - name: Build cycle profiler
@@ -88,20 +87,20 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
-      - name: Profile Stage 16
+      - name: Profile Stage 18
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage16-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage16-rom.sha256
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage18-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage18-rom.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gg-tilesector-stage16-direct-opaque
+          name: gg-tilesector-stage18-column-lifetime
           path: |
             build/gg-tilesector-demo.gg
             build/gg-tilesector-demo.sym
-            build/stage16-profile.txt
-            build/stage16-rom.sha256
+            build/stage18-profile.txt
+            build/stage18-rom.sha256
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
