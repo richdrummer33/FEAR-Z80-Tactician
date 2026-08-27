@@ -196,11 +196,12 @@ sf_delta_first_nonneg$:
         jp      nc, sf_delta_done$
         ld      (#sf_delta_row$), a
 
-        ; last=min(old_top_max,17)
+        ; last=min(old_top_max,8). FULL top endpoints are constructed at
+        ; y<=71, so retained fill reconciliation operates on top/bottom pairs.
         ld      a, (#sf_old_top_max$)
-        cp      #18
+        cp      #9
         jp      c, sf_delta_last_screen$
-        ld      a, #17
+        ld      a, #8
 sf_delta_last_screen$:
         ld      c, a
         ld      a, (#sf_delta_row$)
