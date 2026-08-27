@@ -1,9 +1,9 @@
-name: Profile Stage 22 retained FULL descriptors
+name: Profile Stage 23 retained edge delta
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage22-retained-full
+      - feature/gg-tilesector-stage23-edge-delta
   workflow_dispatch:
 
 jobs:
@@ -51,18 +51,19 @@ jobs:
       - name: Apply Stage 22 retained FULL descriptors
         run: python3 tools/apply_stage22_retained_full.py
 
+      - name: Verify Stage 23 edge-delta semantics
+        run: python3 tools/test_stage23_edge_delta.py
+
+      - name: Apply Stage 23 edge-delta materializer
+        run: python3 tools/apply_stage23_edge_delta.py
+
       - name: Dump Stage 18 assembly around stale loop
         shell: bash
         run: |
           nl -ba src/tilesector_ntstate_gg.s | sed -n '292,336p'
           nl -ba src/tilesector_opaque_gg.s | sed -n '1,120p'
 
-      - name: Dump Stage 22 retention assembly
-        shell: bash
-        run: |
-          nl -ba src/tilesector_symfull_gg.s | sed -n '338,356p'
-
-      - name: Link Stage 22 kernels
+      - name: Link Stage 23 kernels
         shell: bash
         run: |
           python3 - <<'PY'
@@ -80,7 +81,7 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Verify Stage 22 representation
+      - name: Verify Stage 23 representation
         shell: bash
         run: |
           grep -q 'STAGE18_COLUMN_LIFETIME' src/tilesector_raster_gg.s
@@ -89,6 +90,66 @@ jobs:
           grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_run_gg.s
           grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_symfull_gg.s
           grep -q 'STAGE22_RETAINED_FULL' src/tilesector_symfull_gg.s
+          grep -q 'STAGE23_EDGE_DELTA' src/tilesector_symfull_gg.s
+          grep -q 'sf_ret_edge_delta          grep -q 'STAGE22_RETAINED_FULL' src/tilesector_run_gg.s
+          grep -q '_g_ts_ret_full_skip::' src/tilesector_symfull_gg.s
+          grep -q '_g_ts_ret_span_skip::' src/tilesector_symfull_gg.s
+          grep -q '_ts_raster_symfull_column_fast' src/tilesector_run_gg.s
+          grep -q 'or      #0x0c' src/tilesector_symfull_gg.s
+          grep -q '_g_nt_row_min::    .ds 18' src/tilesector_ntstate_gg.s
+          grep -q '_g_nt_row_max::    .ds 18' src/tilesector_ntstate_gg.s
+          grep -q 'otir' src/tilesector_ntstate_gg.s
+          ! grep -q '_g_nt_dirty' src/tilesector_opaque_gg.s
+          grep -q 'STAGE18_DIRECT_OPAQUE' src/tilesector_raster_gg.s
+          grep -q '_g_nt_cov_cur::    .ds 60' src/tilesector_ntstate_gg.s
+          grep -q '_ts_raster_opaque_column_fast' src/tilesector_run_gg.s
+          grep -q '_ts_nt_mark_span' src/tilesector_opaque_gg.s
+          ! grep -q '_g_nt_meta' src/tilesector_opaque_gg.s
+          ! grep -q '_g_nt_meta' src/tilesector_ntstate_gg.s
+          ! grep -q 'g_prev_map' src/main_tilesector_gg.c
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Host acceptance
+        run: make tilesector-test tilesector-host
+
+      - name: Build Stage 23 ROM
+        run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+
+      - name: Build cycle profiler
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Profile Stage 23
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage23-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage23-rom.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gg-tilesector-stage23-edge-delta
+          path: |
+            build/gg-tilesector-demo.gg
+            build/gg-tilesector-demo.sym
+            build/stage23-profile.txt
+            build/stage23-rom.sha256
+            src/tilesector_ntstate_gg.s
+            src/tilesector_raster_gg.s
+            src/tilesector_run_gg.s
+            src/tilesector_opaque_gg.s
+            src/tilesector_symfull_gg.s
+          if-no-files-found: error
+ src/tilesector_symfull_gg.s
           grep -q 'STAGE22_RETAINED_FULL' src/tilesector_run_gg.s
           grep -q '_g_ts_ret_full_skip::' src/tilesector_symfull_gg.s
           grep -q '_g_ts_ret_span_skip::' src/tilesector_symfull_gg.s
@@ -130,8 +191,8 @@ jobs:
       - name: Profile Stage 22
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage22-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage22-rom.sha256
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage23-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage23-rom.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -139,8 +200,8 @@ jobs:
           path: |
             build/gg-tilesector-demo.gg
             build/gg-tilesector-demo.sym
-            build/stage22-profile.txt
-            build/stage22-rom.sha256
+            build/stage23-profile.txt
+            build/stage23-rom.sha256
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
