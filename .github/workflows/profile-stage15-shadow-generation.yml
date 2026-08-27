@@ -135,7 +135,8 @@ jobs:
         run: |
           mkdir -p build/gearsystem-frames
           GS_FRAME_DIR="$PWD/build/gearsystem-frames" \
-            ./build/gearsystem_core_runner build/gg-tilesector-demo.gg 180 build/stage23-camera-final.ppm \
+            ./build/libretro_runner "$PWD/.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so" \
+            build/gg-tilesector-demo.gg 180 build/stage23-camera-final.ppm \
             | tee build/stage23-camera-emulator.txt
           if ! command -v ffmpeg >/dev/null 2>&1; then
             sudo apt-get update
