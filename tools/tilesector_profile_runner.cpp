@@ -130,6 +130,8 @@ int main(int argc,char**argv) {
     bool have_loop_start=false;
     std::array<Stat,6> phase_stats{};
     std::array<Stat,8> stage_stats{};
+    Stat stage1_begin_stats,stage1_end_stats;
+    bool stage1_is_end=false;
     Stat loop_stats,dirty_stats;
     Stat ret_full_total_stats,ret_full_skip_stats,ret_full_edge_stats;
     Stat ret_span_total_stats,ret_span_skip_stats;
@@ -155,8 +157,18 @@ int main(int argc,char**argv) {
         uint8_t st=have_stage?mem->DebugRetrieve(stage_addr):0u;
 
         if(have_stage&&st!=last_stage) {
-            if(last_stage>=1u&&last_stage<=7u&&loops_seen>=warmup)
-                stage_stats[last_stage].add(now-last_stage_cycle);
+            const uint8_t leaving_stage=last_stage;
+            if(leaving_stage>=1u&&leaving_stage<=7u&&loops_seen>=warmup) {
+                const uint64_t dt=now-last_stage_cycle;
+                stage_stats[leaving_stage].add(dt);
+                if(leaving_stage==1u) {
+                    if(stage1_is_end) stage1_end_stats.add(dt);
+                    else stage1_begin_stats.add(dt);
+                }
+            }
+            /* Stage 1 is used twice per render: 0->1 is begin-frame/clear,
+             * while any render-stage ->1 transition is end-frame lifetime. */
+            if(st==1u) stage1_is_end=(leaving_stage!=0u);
             last_stage=st;
             last_stage_cycle=now;
         }
@@ -237,6 +249,14 @@ int main(int argc,char**argv) {
                         snames[s],(unsigned long long)stage_stats[s].sum,stage_stats[s].avg(),
                         (unsigned long long)stage_stats[s].min,(unsigned long long)stage_stats[s].max,stage_stats[s].n);
         }
+        if(stage1_begin_stats.n)
+            std::printf("      stage1-begin    avg=%8.1f T min=%5llu max=%5llu n=%u\n",
+                        stage1_begin_stats.avg(),(unsigned long long)stage1_begin_stats.min,
+                        (unsigned long long)stage1_begin_stats.max,stage1_begin_stats.n);
+        if(stage1_end_stats.n)
+            std::printf("      stage1-end      avg=%8.1f T min=%5llu max=%5llu n=%u\n",
+                        stage1_end_stats.avg(),(unsigned long long)stage1_end_stats.min,
+                        (unsigned long long)stage1_end_stats.max,stage1_end_stats.n);
     }
     std::printf("  loop         avg=%8.1f T min=%5llu max=%5llu -> %.2f updates/s\n",
                 loop_stats.avg(),(unsigned long long)loop_stats.min,(unsigned long long)loop_stats.max,

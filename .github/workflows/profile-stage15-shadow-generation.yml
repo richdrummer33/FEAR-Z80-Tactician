@@ -383,6 +383,12 @@ jobs:
             F-roomA-turn build/control-F-roomA-turn.txt build/stage31-F-roomA-turn.txt \
             | tee build/stage31-ab-matrix.txt
 
+      - name: Focused Stage31 timing stop
+        if: contains(github.event.head_commit.message, '[stage31-fast]')
+        run: |
+          echo "Stage31 split timing captured; intentionally stop before Stage28 matrix."
+          exit 1
+
       - name: Restore Stage25 before Stage28 experiments
         run: cp build/stage25-base-ntstate.s src/tilesector_ntstate_gg.s
 
