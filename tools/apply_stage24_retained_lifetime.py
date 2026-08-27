@@ -90,13 +90,8 @@ run=run.replace(
 anchor='''        ld      a, (#_g_name_run_ctx + 2)
         ld      (#nr_profile$), a
         ld      (#_g_raster_ctx + 0), a
-
-        ; A whole contiguous run is the natural retained-span unit. Only
 '''
-insert='''        ld      a, (#_g_name_run_ctx + 2)
-        ld      (#nr_profile$), a
-        ld      (#_g_raster_ctx + 0), a
-
+insert=anchor+'''
         ; If a previous retained FULL wall is replaced by a depth-0 asymmetric
         ; solid, clear the old FULL hardware state before the replacement draws.
         ld      a, (#_g_name_run_ctx + 14)
@@ -110,11 +105,9 @@ insert='''        ld      a, (#_g_name_run_ctx + 2)
         ld      a, (#nr_col$)
         call    _ts_retained_full_invalidate_range
 nr_ret_life_ready$:
-
-        ; A whole contiguous run is the natural retained-span unit. Only
 '''
 if anchor not in run:
-    raise SystemExit('run retained-span anchor not found')
+    raise SystemExit('run profile-load anchor not found')
 run=run.replace(anchor,insert,1)
 
 # ===========================================================================
