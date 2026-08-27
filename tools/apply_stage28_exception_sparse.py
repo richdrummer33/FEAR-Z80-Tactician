@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 
 p = Path("src/tilesector_ntstate_gg.s")
 s = p.read_text()
@@ -388,8 +389,8 @@ nte_exc_group_commit$:
 """
 s = s[:a] + new_end + s[b:]
 
-marker = "        .area   _BSS\n"
-if marker not in s:
+m = re.search(r"(?m)^\\s*\\.area\\s+_BSS\\s*$", s)
+if not m:
     raise SystemExit("ntstate BSS marker not found")
 bss = r"""        .area _BSS
 _g_nt_exc_prev_active:: .ds 3
@@ -404,7 +405,7 @@ nte_exc_prev_on$:       .ds 1
 nte_exc_cur_on$:        .ds 1
 nte_exc_cov_group$:     .ds 1
 """
-s = s.replace(marker, bss, 1)
+s = s[:m.start()] + bss + s[m.end():]
 
 p.write_text(s)
 print("Applied Stage 28 sparse exception-only lifetime runtime.")
