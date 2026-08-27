@@ -82,7 +82,8 @@ op_cov_last_ready$:
         jr      c, op_cov_emit$
         jr      nz, op_cov_done$
 op_cov_emit$:
-        ld      a, (#op_col$)\n        ld      b, a
+        ld      a, (#op_col$)
+        ld      b, a
         ld      a, e
         call    _ts_nt_mark_span
 op_cov_done$:
