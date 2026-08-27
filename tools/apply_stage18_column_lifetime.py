@@ -331,7 +331,7 @@ nte_base_ready$:
         ; Dirty mark only this stale word.
         ld      a, (#nte_restore_row$)
         ld      d, b                    ; preserve bit-loop count
-        ld      b, (#nte_col$)
+        ld      a, (#nte_col$)\n        ld      b, a
         call    _ts_nt_mark_dirty
         ld      b, d
 
