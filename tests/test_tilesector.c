@@ -53,6 +53,55 @@ static void test_fractional_camera_reaches_renderer(void) {
     assert(changed_at>0 && changed_at<16);
 }
 
+static void test_q4_camera_step_and_accel_decel_path(void) {
+    TSState s;
+    int16_t cam_x,cam_z,prev_cam_x,prev_cam_z;
+    int16_t prev_x,dx;
+    unsigned i,moving_frames=0u,camera_response_frames=0u;
+    uint16_t min_nonzero_step=0xffffu;
+
+    /* Exact minimum representable translation: 1/16 world unit per sample.
+     * This catches the original whole-unit camera truncation directly. */
+    ts_reset(&s);
+    s.yaw=0u;
+    ts_debug_transform_vertex_q4(&s,0u,&prev_cam_x,&prev_cam_z);
+    for(i=0u;i<16u;++i) {
+        s.x_q4=(int16_t)(s.x_q4+1);
+        ts_debug_transform_vertex_q4(&s,0u,&cam_x,&cam_z);
+        assert(cam_x==prev_cam_x);
+        assert(cam_z==(int16_t)(prev_cam_z-1));
+        prev_cam_x=cam_x;
+        prev_cam_z=cam_z;
+    }
+
+    /* Normal control path: accelerate from rest, then release and decelerate.
+     * The early motion naturally contains 1-Q4 position deltas. Every nonzero
+     * tracked-player movement in this interval must reach the camera transform. */
+    ts_reset(&s);
+    ts_debug_transform_vertex_q4(&s,0u,&prev_cam_x,&prev_cam_z);
+    for(i=0u;i<24u;++i) {
+        uint8_t input=(i<12u)?TS_INPUT_UP:0u;
+        prev_x=s.x_q4;
+        ts_step(&s,input);
+        ts_debug_transform_vertex_q4(&s,0u,&cam_x,&cam_z);
+        dx=(int16_t)(s.x_q4-prev_x);
+        if(dx!=0) {
+            uint16_t mag=(uint16_t)(dx<0?-dx:dx);
+            ++moving_frames;
+            if(mag<min_nonzero_step) min_nonzero_step=mag;
+            if(cam_x!=prev_cam_x || cam_z!=prev_cam_z) ++camera_response_frames;
+            assert(cam_x!=prev_cam_x || cam_z!=prev_cam_z);
+        }
+        prev_cam_x=cam_x;
+        prev_cam_z=cam_z;
+    }
+    assert(s.speed_q4==0);
+    assert(min_nonzero_step==1u);
+    assert(moving_frames==camera_response_frames);
+    printf("camera Q4: direct=16/16 min-motion-step=%u/16 response=%u/%u accel-decel-speed=%d\n",
+           (unsigned)min_nonzero_step,camera_response_frames,moving_frames,(int)s.speed_q4);
+}
+
 static void test_renderer_invariants_and_edge_vectors(void) {
     TSState s;
     uint16_t map[TS_MAP_CELLS];
@@ -115,6 +164,7 @@ static void test_open_arch_has_near_header_and_far_geometry(void) {
 int main(void) {
     test_accel_takeover_strafe_and_speed_cycle();
     test_fractional_camera_reaches_renderer();
+    test_q4_camera_step_and_accel_decel_path();
     test_renderer_invariants_and_edge_vectors();
     test_open_arch_has_near_header_and_far_geometry();
     puts("tilesector tests: ok");
