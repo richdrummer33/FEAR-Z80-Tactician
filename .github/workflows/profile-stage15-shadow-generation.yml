@@ -124,23 +124,58 @@ jobs:
           python3 tools/test_stage28_exception_sparse.py
           python3 tools/test_stage28d_deferred_reconcile.py
 
+      - name: Define lifetime bisect builder
+        shell: bash
+        run: |
+          cat > build_stage_variant.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          tag="$1"
+          rm -f build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_raster_gg.o \
+                build/tilesector_candidate_lite_gg.o build/tilesector_run_gg.o \
+                build/tilesector_ntstate_gg.o build/tilesector_opaque_gg.o \
+                build/tilesector_symfull_gg.o build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym
+          make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
+          cp build/gg-tilesector-demo.gg "build/bisect-${tag}.gg"
+          cp build/gg-tilesector-demo.sym "build/bisect-${tag}.sym"
+          SH
+          chmod +x build_stage_variant.sh
+
       - name: Apply Stage 24 retained FULL lifetime
         run: python3 tools/apply_stage24_retained_lifetime.py
+
+      - name: Build bisect Stage24
+        run: ./build_stage_variant.sh stage24
 
       - name: Apply Stage 25 retained active mask
         run: python3 tools/apply_stage25_active_mask.py
 
+      - name: Build bisect Stage25
+        run: ./build_stage_variant.sh stage25
+
       - name: Apply Stage 28 sparse exception-only lifetime
         run: python3 tools/apply_stage28_exception_sparse.py
+
+      - name: Build bisect Stage28A sparse
+        run: ./build_stage_variant.sh stage28a
 
       - name: Apply Stage 28B retained hot-path gates
         run: python3 tools/apply_stage28b_retained_gates.py
 
+      - name: Build bisect Stage28B gates
+        run: ./build_stage_variant.sh stage28b
+
       - name: Apply Stage 28C stale ownership gate
         run: python3 tools/apply_stage28c_ownership_gate.py
 
+      - name: Build bisect Stage28C ownership
+        run: ./build_stage_variant.sh stage28c
+
       - name: Apply Stage 28D deferred final reconcile
         run: python3 tools/apply_stage28d_deferred_reconcile.py
+
+      - name: Build bisect Stage28D deferred
+        run: ./build_stage_variant.sh stage28d
 
       - name: Verify Stage 28 forward representation
         shell: bash
@@ -174,6 +209,12 @@ jobs:
           print('Stage28 legacy common-path clear/scan removed: PASS')
           PY
 
+      - name: Inspect transformed core warning context
+        shell: bash
+        run: |
+          echo "=== transformed tilesector_core.c lines 645-670 ==="
+          nl -ba src/tilesector_core.c | sed -n '645,670p'
+
       - name: Host acceptance — repaired
         run: make tilesector-test tilesector-host
 
@@ -197,6 +238,20 @@ jobs:
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 60 320  | tee build/repair-D-static.txt
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 240 8   | tee build/repair-E-mixed.txt
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 80 16 roomA-turn build/repair-F-roomA-turn.bin build/repair-F-roomA-turn.states | tee build/repair-F-roomA-turn.txt
+
+      - name: Lifetime stage hardware-output bisect
+        shell: bash
+        run: |
+          set +e
+          for tag in stage24 stage25 stage28a stage28b stage28c stage28d; do
+            echo "===== ${tag} / A-forward ====="
+            ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 8 demo "build/bisect-${tag}-A.bin" > "build/bisect-${tag}-A.txt"
+            python3 tools/compare_map_dumps.py "${tag}-A" build/control-A-forward.bin "build/bisect-${tag}-A.bin"
+            echo "===== ${tag} / F-roomA-turn ====="
+            ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 16 roomA-turn "build/bisect-${tag}-F.bin" > "build/bisect-${tag}-F.txt"
+            python3 tools/compare_map_dumps.py "${tag}-F" <(head -c $((24*720)) build/control-F-roomA-turn.bin) "build/bisect-${tag}-F.bin"
+          done
+          exit 0
 
       - name: Build native reference replay
         shell: bash
@@ -263,6 +318,10 @@ jobs:
             build/control-*.states
             build/repair-*.states
             build/reference-*.bin
+            build/bisect-*.gg
+            build/bisect-*.sym
+            build/bisect-*.txt
+            build/bisect-*.bin
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
