@@ -43,7 +43,11 @@ def main():
         # Keep values in the unsigned reciprocal domain over this tiny span.
         old_vals=[old_inv+old_step*k for k in range(n+1)]
         new_vals=[new_inv+new_step*k for k in range(n+1)]
-        if min(old_vals)<0 or max(old_vals)>0xffff or min(new_vals)<0 or max(new_vals)>0xffff:
+        # Real TSProjectedSpan reciprocal endpoints originate as uint8_t invZ
+        # values shifted to Q6. Exclude synthetic cases that cross the 255->0
+        # byte wrap, which the projector can never generate.
+        q6_max=255<<6
+        if min(old_vals)<0 or max(old_vals)>q6_max or min(new_vals)<0 or max(new_vals)>q6_max:
             continue
 
         oldq=seq(old_inv,old_step,n)
