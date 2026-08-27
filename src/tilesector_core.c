@@ -359,20 +359,6 @@ static void transform_vertices_q4(const TSState *s) {
     }
 }
 
-#ifndef __SDCC
-void ts_debug_transform_vertex_q4(const TSState *s, uint8_t vertex,
-                                  int16_t *cam_x_q4, int16_t *cam_z_q4) {
-    if (vertex >= TS_VERTICES) {
-        *cam_x_q4 = 0;
-        *cam_z_q4 = 0;
-        return;
-    }
-    transform_vertices_q4(s);
-    *cam_x_q4 = g_cam_x_q4[vertex];
-    *cam_z_q4 = g_cam_z_q4[vertex];
-}
-#endif
-
 static uint8_t inv_for_zq4(int16_t z_q4) {
     uint8_t zi, frac, a, b;
     int16_t d;
@@ -1062,3 +1048,17 @@ void ts_build_tilemap(const TSState *s, uint16_t out_map[TS_MAP_CELLS], TSColumn
 
     g_ts_render_stage=0u;
 }
+
+#ifndef __SDCC
+void ts_debug_transform_vertex_q4(const TSState *s, uint8_t vertex,
+                                  int16_t *cam_x_q4, int16_t *cam_z_q4) {
+    if (vertex >= TS_VERTICES) {
+        *cam_x_q4 = 0;
+        *cam_z_q4 = 0;
+        return;
+    }
+    transform_vertices_q4(s);
+    *cam_x_q4 = g_cam_x_q4[vertex];
+    *cam_z_q4 = g_cam_z_q4[vertex];
+}
+#endif
