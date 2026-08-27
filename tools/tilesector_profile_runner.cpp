@@ -46,7 +46,30 @@ int main(int argc,char**argv) {
     const char* sym=argv[2];
     unsigned target=(argc>3)?(unsigned)std::strtoul(argv[3],nullptr,0):120u;
     unsigned warmup=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):8u;
-    u16 phase_addr=0,dirty_addr=0,stage_addr=0;
+    std::string scenario=(argc>5)?argv[5]:"demo";
+    if(scenario!="demo" && scenario!="roomA-turn") {
+        std::fprintf(stderr,"unknown scenario: %s\n",scenario.c_str());
+        return 2;
+    }
+    const char* mapdump_path=(argc>6)?argv[6]:nullptr;
+    std::ofstream mapdump;
+    if(mapdump_path) {
+        mapdump.open(mapdump_path,std::ios::binary|std::ios::trunc);
+        if(!mapdump) {
+            std::fprintf(stderr,"cannot open map dump: %s\n",mapdump_path);
+            return 2;
+        }
+    }
+    const char* statedump_path=(argc>7)?argv[7]:nullptr;
+    std::ofstream statedump;
+    if(statedump_path) {
+        statedump.open(statedump_path,std::ios::binary|std::ios::trunc);
+        if(!statedump) {
+            std::fprintf(stderr,"cannot open state dump: %s\n",statedump_path);
+            return 2;
+        }
+    }
+    u16 phase_addr=0,dirty_addr=0,stage_addr=0,state_addr=0,map_addr=0;
     u16 ret_full_total_addr=0,ret_full_skip_addr=0,ret_full_edge_addr=0;
     u16 ret_span_total_addr=0,ret_span_skip_addr=0;
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
@@ -54,6 +77,8 @@ int main(int argc,char**argv) {
     }
     bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
     bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
+    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);
+    bool have_map=find_symbol(sym,"_g_map",map_addr)||find_symbol(sym,"g_map",map_addr);
     bool have_ret=
         (find_symbol(sym,"_g_ts_ret_full_total",ret_full_total_addr)||find_symbol(sym,"g_ts_ret_full_total",ret_full_total_addr)) &&
         (find_symbol(sym,"_g_ts_ret_full_skip",ret_full_skip_addr)||find_symbol(sym,"g_ts_ret_full_skip",ret_full_skip_addr)) &&
@@ -74,6 +99,29 @@ int main(int argc,char**argv) {
     dbg.stop_on_irq=false;
     Memory* mem=core.GetMemory();
 
+    auto rd16=[&](u16 a)->uint16_t {
+        return (uint16_t)mem->DebugRetrieve(a) |
+               ((uint16_t)mem->DebugRetrieve((u16)(a+1u))<<8);
+    };
+    struct MotionSample {
+        int16_t x_q4=0,y_q4=0,speed_q4=0,turn_q4=0;
+        uint8_t yaw=0,demo_phase=0;
+        uint16_t demo_ticks=0;
+    };
+    auto sample_motion=[&]()->MotionSample {
+        MotionSample m{};
+        if(!have_state) return m;
+        // TSState is naturally packed by SDCC/Z80 in declaration order.
+        m.x_q4=(int16_t)rd16(state_addr+0u);
+        m.y_q4=(int16_t)rd16(state_addr+2u);
+        m.yaw=mem->DebugRetrieve((u16)(state_addr+4u));
+        m.speed_q4=(int16_t)rd16((u16)(state_addr+5u));
+        m.turn_q4=(int16_t)rd16((u16)(state_addr+9u));
+        m.demo_phase=mem->DebugRetrieve((u16)(state_addr+13u));
+        m.demo_ticks=rd16((u16)(state_addr+14u));
+        return m;
+    };
+
     uint8_t last_phase=mem->DebugRetrieve(phase_addr);
     uint8_t last_stage=have_stage?mem->DebugRetrieve(stage_addr):0u;
     uint64_t last_cycle=core.GetMasterClockCycles();
@@ -81,13 +129,24 @@ int main(int argc,char**argv) {
     uint64_t loop_start=0;
     bool have_loop_start=false;
     std::array<Stat,6> phase_stats{};
-    std::array<Stat,7> stage_stats{};
+    std::array<Stat,8> stage_stats{};
+    Stat stage1_begin_stats,stage1_end_stats;
+    bool stage1_is_end=false;
     Stat loop_stats,dirty_stats;
     Stat ret_full_total_stats,ret_full_skip_stats,ret_full_edge_stats;
     Stat ret_span_total_stats,ret_span_skip_stats;
     unsigned loops_seen=0,loops_measured=0;
+    MotionSample motion_first{},motion_last{};
+    bool have_motion_first=false;
     uint64_t instructions=0;
+    uint64_t map_hash=1469598103934665603ull; // FNV-1a over measured frame shadows
+    unsigned map_hash_frames=0;
     const uint64_t instruction_limit=50000000ull;
+
+    // External deterministic input scenario: no ROM instrumentation or hot-path
+    // branches. RIGHT-only forces manual in-place yaw while staying in Room A.
+    if(scenario=="roomA-turn")
+        core.KeyPressed(Joypad_1,Key_Right);
 
     while(loops_measured<target&&instructions<instruction_limit) {
         samples=0;
@@ -98,8 +157,18 @@ int main(int argc,char**argv) {
         uint8_t st=have_stage?mem->DebugRetrieve(stage_addr):0u;
 
         if(have_stage&&st!=last_stage) {
-            if(last_stage>=1u&&last_stage<=6u&&loops_seen>=warmup)
-                stage_stats[last_stage].add(now-last_stage_cycle);
+            const uint8_t leaving_stage=last_stage;
+            if(leaving_stage>=1u&&leaving_stage<=7u&&loops_seen>=warmup) {
+                const uint64_t dt=now-last_stage_cycle;
+                stage_stats[leaving_stage].add(dt);
+                if(leaving_stage==1u) {
+                    if(stage1_is_end) stage1_end_stats.add(dt);
+                    else stage1_begin_stats.add(dt);
+                }
+            }
+            /* Stage 1 is used twice per render: 0->1 is begin-frame/clear,
+             * while any render-stage ->1 transition is end-frame lifetime. */
+            if(st==1u) stage1_is_end=(leaving_stage!=0u);
             last_stage=st;
             last_stage_cycle=now;
         }
@@ -110,10 +179,32 @@ int main(int argc,char**argv) {
             }
             if(p==1u) {
                 if(have_loop_start) {
-                    if(loops_seen>=warmup) { loop_stats.add(now-loop_start); ++loops_measured; }
+                    if(loops_seen>=warmup) {
+                        loop_stats.add(now-loop_start);
+                        if(have_map) {
+                            for(unsigned i=0;i<720u;++i) {
+                                const uint8_t v=mem->DebugRetrieve((u16)(map_addr+i));
+                                map_hash ^= (uint64_t)v;
+                                map_hash *= 1099511628211ull;
+                                if(mapdump) mapdump.put((char)v);
+                            }
+                            ++map_hash_frames;
+                        }
+                        if(statedump && have_state) {
+                            // SDCC TSState layout is 16 packed bytes, declaration order.
+                            for(unsigned i=0;i<16u;++i)
+                                statedump.put((char)mem->DebugRetrieve((u16)(state_addr+i)));
+                        }
+                        ++loops_measured;
+                    }
                     ++loops_seen;
                 } else have_loop_start=true;
                 loop_start=now;
+                if(have_state && loops_seen>=warmup && loops_measured<target) {
+                    MotionSample m=sample_motion();
+                    if(!have_motion_first) { motion_first=m; have_motion_first=true; }
+                    motion_last=m;
+                }
             }
             if(p==3u&&have_ret&&loops_seen>=warmup) {
                 ret_full_total_stats.add(mem->DebugRetrieve(ret_full_total_addr));
@@ -139,9 +230,11 @@ int main(int argc,char**argv) {
     }
 
     const double cpu_hz=3579545.0;
-    std::printf("TileSector Gearsystem profile: loops=%u warmup=%u instructions=%llu phase_addr=%04X",
-                loop_stats.n,warmup,(unsigned long long)instructions,phase_addr);
+    std::printf("TileSector Gearsystem profile: loops=%u warmup=%u scenario=%s instructions=%llu phase_addr=%04X",
+                loop_stats.n,warmup,scenario.c_str(),(unsigned long long)instructions,phase_addr);
     if(have_stage) std::printf(" render_stage_addr=%04X",stage_addr);
+    if(have_state) std::printf(" state_addr=%04X",state_addr);
+    if(have_map) std::printf(" map_addr=%04X",map_addr);
     std::printf("\n");
     const char* names[6]={"startup","input+motion","render/build","vsync-wait","VRAM-upload","loop-tail"};
     for(unsigned pidx=1;pidx<=5;++pidx) if(phase_stats[pidx].n) {
@@ -149,13 +242,21 @@ int main(int argc,char**argv) {
                     (unsigned long long)phase_stats[pidx].min,(unsigned long long)phase_stats[pidx].max,phase_stats[pidx].n);
     }
     if(have_stage) {
-        const char* snames[7]={"idle","clear-map","q4-transform","candidate-build","solid-raster","portal-control","portal-face"};
+        const char* snames[8]={"idle","clear/lifetime","q4-transform","candidate-build","solid-raster","portal-control","portal-face","retained-life"};
         std::printf("  render/build subphases:\n");
-        for(unsigned s=1;s<=6;++s) if(stage_stats[s].n) {
+        for(unsigned s=1;s<=7;++s) if(stage_stats[s].n) {
             std::printf("    %-15s total=%10llu T avg-chunk=%8.1f T min=%5llu max=%5llu n=%u\n",
                         snames[s],(unsigned long long)stage_stats[s].sum,stage_stats[s].avg(),
                         (unsigned long long)stage_stats[s].min,(unsigned long long)stage_stats[s].max,stage_stats[s].n);
         }
+        if(stage1_begin_stats.n)
+            std::printf("      stage1-begin    avg=%8.1f T min=%5llu max=%5llu n=%u\n",
+                        stage1_begin_stats.avg(),(unsigned long long)stage1_begin_stats.min,
+                        (unsigned long long)stage1_begin_stats.max,stage1_begin_stats.n);
+        if(stage1_end_stats.n)
+            std::printf("      stage1-end      avg=%8.1f T min=%5llu max=%5llu n=%u\n",
+                        stage1_end_stats.avg(),(unsigned long long)stage1_end_stats.min,
+                        (unsigned long long)stage1_end_stats.max,stage1_end_stats.n);
     }
     std::printf("  loop         avg=%8.1f T min=%5llu max=%5llu -> %.2f updates/s\n",
                 loop_stats.avg(),(unsigned long long)loop_stats.min,(unsigned long long)loop_stats.max,
@@ -175,6 +276,20 @@ int main(int argc,char**argv) {
         std::printf("  retained FULL spans avg=%5.2f whole-span-skip=%5.2f (%.1f%%)\n",
                     ret_span_total_stats.avg(),ret_span_skip_stats.avg(),
                     span_total?100.0*(double)ret_span_skip_stats.sum/span_total:0.0);
+    }
+    if(have_map) {
+        std::printf("  map-hash     frames=%u fnv64=%016llX\n",
+                    map_hash_frames,(unsigned long long)map_hash);
+    }
+    if(have_motion_first) {
+        std::printf("  motion start x=%.2f y=%.2f yaw=%u speed_q4=%d turn_q4=%d demo_phase=%u demo_ticks=%u\n",
+                    motion_first.x_q4/16.0,motion_first.y_q4/16.0,motion_first.yaw,
+                    motion_first.speed_q4,motion_first.turn_q4,
+                    motion_first.demo_phase,motion_first.demo_ticks);
+        std::printf("  motion last  x=%.2f y=%.2f yaw=%u speed_q4=%d turn_q4=%d demo_phase=%u demo_ticks=%u\n",
+                    motion_last.x_q4/16.0,motion_last.y_q4/16.0,motion_last.yaw,
+                    motion_last.speed_q4,motion_last.turn_q4,
+                    motion_last.demo_phase,motion_last.demo_ticks);
     }
     return 0;
 }
