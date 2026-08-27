@@ -190,6 +190,8 @@ jobs:
           ./build/tilesector_write_trace build/bisect-stage24.gg build/bisect-stage24.sym 8 demo 3 19 256 | tee build/trace-stage24-A-r03c19.txt
           ./build/tilesector_write_trace build/control-stage23.gg build/control-stage23.sym 16 roomA-turn 3 11 256 | tee build/trace-control-F-r03c11.txt
           ./build/tilesector_write_trace build/bisect-stage24.gg build/bisect-stage24.sym 16 roomA-turn 3 11 256 | tee build/trace-stage24-F-r03c11.txt
+          ./build/tilesector_write_trace build/control-stage23.gg build/control-stage23.sym 145 demo 3 0 0 | tee build/trace-control-B-marks.txt
+          ./build/tilesector_write_trace build/bisect-stage24.gg build/bisect-stage24.sym 145 demo 3 0 0 | tee build/trace-stage24-B-marks.txt
 
       - name: Focused trace stop
         if: contains(github.event.head_commit.message, '[trace-fast]')

@@ -77,13 +77,14 @@ int main(int argc,char**argv) {
     if(row>=18u || col>=20u) { std::fprintf(stderr,"row/col out of range\n"); return 2; }
     if(scenario!="demo" && scenario!="roomA-turn") { std::fprintf(stderr,"bad scenario\n"); return 2; }
 
-    u16 phase_addr=0,stage_addr=0,map_addr=0,raster_addr=0,name_addr=0,symfull_addr=0;
+    u16 phase_addr=0,stage_addr=0,map_addr=0,raster_addr=0,name_addr=0,symfull_addr=0,nt_mark_addr=0;
     u16 ret_total_addr=0,ret_skip_addr=0,ret_edge_addr=0,span_total_addr=0,span_skip_addr=0;
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) return 3;
     if(!find_symbol(sym,"_g_map",map_addr)&&!find_symbol(sym,"g_map",map_addr)) return 3;
     const bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
     const bool have_ctx=find_symbol(sym,"_g_raster_ctx",raster_addr)&&find_symbol(sym,"_g_name_run_ctx",name_addr);
     const bool have_symfull=find_symbol(sym,"_ts_raster_symfull_column_fast",symfull_addr);
+    const bool have_nt_mark=find_symbol(sym,"_ts_nt_mark_span",nt_mark_addr);
     const bool have_ret=
         find_symbol(sym,"_g_ts_ret_full_total",ret_total_addr)&&
         find_symbol(sym,"_g_ts_ret_full_skip",ret_skip_addr)&&
@@ -115,6 +116,8 @@ int main(int argc,char**argv) {
     bool target_call_active=false;
     u16 target_return_pc=0;
     unsigned target_calls=0;
+    unsigned nt_marks_frame=0,nt_marks_total=0;
+    uint32_t nt_mark_cols_frame=0;
     uint64_t instructions=0;
     const uint64_t instruction_limit=30000000ull;
     std::printf("TRACE target row=%u col=%u map=%04X addr=%04X initial=%04X warmup=%u scenario=%s\n",
@@ -133,6 +136,13 @@ int main(int argc,char**argv) {
         const uint8_t op1=mem->DebugRetrieve((u16)(pc+1u));
         const uint8_t op2=mem->DebugRetrieve((u16)(pc+2u));
         const uint8_t op3=mem->DebugRetrieve((u16)(pc+3u));
+
+        if(have_nt_mark && pc==nt_mark_addr) {
+            ++nt_marks_frame;
+            ++nt_marks_total;
+            const unsigned mark_col=(bc>>8)&0xffu;
+            if(mark_col<20u) nt_mark_cols_frame |= (uint32_t)1u<<mark_col;
+        }
 
         if(have_symfull && pc==symfull_addr && ((af>>8)&0xffu)==col) {
             ++target_calls;
@@ -204,6 +214,13 @@ int main(int argc,char**argv) {
                         mem->DebugRetrieve(ret_total_addr),mem->DebugRetrieve(ret_skip_addr),
                         mem->DebugRetrieve(ret_edge_addr),mem->DebugRetrieve(span_total_addr),
                         mem->DebugRetrieve(span_skip_addr));
+                if(have_nt_mark) {
+                    unsigned unique=0,mask=nt_mark_cols_frame;
+                    while(mask){ unique += mask&1u; mask >>= 1u; }
+                    std::printf(" ntmarks=%u cols=%u mask=%05X",nt_marks_frame,unique,(unsigned)nt_mark_cols_frame);
+                    nt_marks_frame=0;
+                    nt_mark_cols_frame=0;
+                }
                 std::printf("\n");
             }
             last_phase=p;
@@ -211,8 +228,8 @@ int main(int argc,char**argv) {
     }
 
     auto *st=cpu->GetState();
-    std::printf("TRACE_DONE phase1_seen=%u writes=%u instructions=%llu final=%04X PC=%04X SP=%04X\n",
-                phase1_seen,writes,(unsigned long long)instructions,rd16(mem,target),
+    std::printf("TRACE_DONE phase1_seen=%u writes=%u ntmarks_total=%u instructions=%llu final=%04X PC=%04X SP=%04X\n",
+                phase1_seen,writes,nt_marks_total,(unsigned long long)instructions,rd16(mem,target),
                 st->PC->GetValue(),st->SP->GetValue());
     if(instructions>=instruction_limit) return 5;
     return 0;
