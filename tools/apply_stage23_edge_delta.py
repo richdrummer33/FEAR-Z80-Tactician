@@ -182,37 +182,27 @@ sf_delta_edges_done$:
         bit     7, a
         jp      nz, sf_delta_done$
 
-        ; first=max(new_top_max+1,0,clip_first)
+        ; Reconcile symmetric ROW PAIRS. Do not pre-clamp the top member
+        ; to the aperture: it may be clipped while its mirrored bottom mate is
+        ; still visible. sf_store_if_clip$ tests each member independently.
+        ; first=max(new_top_max+1,0)
         ld      a, (#sf_top_max$)
         inc     a
         bit     7, a
         jp      z, sf_delta_first_nonneg$
         xor     a
 sf_delta_first_nonneg$:
-        ld      e, a
-        ld      a, (#sf_clip_first$)
-        cp      e
-        jp      c, sf_delta_first_ready$
-        jp      z, sf_delta_first_ready$
-        ld      e, a
-sf_delta_first_ready$:
-        ld      a, e
         cp      #18
         jp      nc, sf_delta_done$
         ld      (#sf_delta_row$), a
 
-        ; last=min(old_top_max,17,clip_last)
+        ; last=min(old_top_max,17)
         ld      a, (#sf_old_top_max$)
         cp      #18
         jp      c, sf_delta_last_screen$
         ld      a, #17
 sf_delta_last_screen$:
         ld      c, a
-        ld      a, (#sf_clip_last$)
-        cp      c
-        jp      nc, sf_delta_last_ready$
-        ld      c, a
-sf_delta_last_ready$:
         ld      a, (#sf_delta_row$)
         cp      c
         jp      c, sf_delta_fill_have$
