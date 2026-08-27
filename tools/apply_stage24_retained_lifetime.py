@@ -584,8 +584,12 @@ sf_restore_ceil$:
         ld      e, #0
 sf_restore_base_ready$:
         ld      d, #0
+        ; sf_map_ptr_for_row$ uses DE as address scratch. Preserve the actual
+        ; base tile word across the pointer calculation before storing it.
+        push    de
         ld      a, (#sf_store_row$)
         call    sf_map_ptr_for_row$
+        pop     de
         ld      (hl), e
         inc     hl
         ld      (hl), d
