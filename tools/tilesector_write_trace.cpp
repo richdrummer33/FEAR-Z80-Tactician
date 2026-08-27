@@ -77,10 +77,19 @@ int main(int argc,char**argv) {
     if(row>=18u || col>=20u) { std::fprintf(stderr,"row/col out of range\n"); return 2; }
     if(scenario!="demo" && scenario!="roomA-turn") { std::fprintf(stderr,"bad scenario\n"); return 2; }
 
-    u16 phase_addr=0,stage_addr=0,map_addr=0;
+    u16 phase_addr=0,stage_addr=0,map_addr=0,raster_addr=0,name_addr=0,symfull_addr=0;
+    u16 ret_total_addr=0,ret_skip_addr=0,ret_edge_addr=0,span_total_addr=0,span_skip_addr=0;
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) return 3;
     if(!find_symbol(sym,"_g_map",map_addr)&&!find_symbol(sym,"g_map",map_addr)) return 3;
     const bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
+    const bool have_ctx=find_symbol(sym,"_g_raster_ctx",raster_addr)&&find_symbol(sym,"_g_name_run_ctx",name_addr);
+    const bool have_symfull=find_symbol(sym,"_ts_raster_symfull_column_fast",symfull_addr);
+    const bool have_ret=
+        find_symbol(sym,"_g_ts_ret_full_total",ret_total_addr)&&
+        find_symbol(sym,"_g_ts_ret_full_skip",ret_skip_addr)&&
+        find_symbol(sym,"_g_ts_ret_full_edgeonly",ret_edge_addr)&&
+        find_symbol(sym,"_g_ts_ret_span_total",span_total_addr)&&
+        find_symbol(sym,"_g_ts_ret_span_skip",span_skip_addr);
     const u16 target=(u16)(map_addr + (row*20u+col)*2u);
     auto syms=load_symbols(sym);
 
@@ -103,6 +112,9 @@ int main(int argc,char**argv) {
     uint8_t last_phase=mem->DebugRetrieve(phase_addr);
     unsigned phase1_seen=0;
     unsigned writes=0;
+    bool target_call_active=false;
+    u16 target_return_pc=0;
+    unsigned target_calls=0;
     uint64_t instructions=0;
     const uint64_t instruction_limit=30000000ull;
     std::printf("TRACE target row=%u col=%u map=%04X addr=%04X initial=%04X warmup=%u scenario=%s\n",
@@ -122,6 +134,51 @@ int main(int argc,char**argv) {
         const uint8_t op2=mem->DebugRetrieve((u16)(pc+2u));
         const uint8_t op3=mem->DebugRetrieve((u16)(pc+3u));
 
+        if(have_symfull && pc==symfull_addr && ((af>>8)&0xffu)==col) {
+            ++target_calls;
+            target_call_active=true;
+            target_return_pc=stack0;
+            const int16_t top_l=have_ctx?(int16_t)rd16(mem,(u16)(raster_addr+2u)):0;
+            const int16_t top_r=have_ctx?(int16_t)rd16(mem,(u16)(raster_addr+4u)):0;
+            const int16_t bot_l=have_ctx?(int16_t)rd16(mem,(u16)(raster_addr+6u)):0;
+            const int16_t bot_r=have_ctx?(int16_t)rd16(mem,(u16)(raster_addr+8u)):0;
+            const u16 clip_top_p=have_ctx?rd16(mem,(u16)(raster_addr+11u)):0;
+            const u16 clip_bot_p=have_ctx?rd16(mem,(u16)(raster_addr+13u)):0;
+            const unsigned clip_top=have_ctx?mem->DebugRetrieve(clip_top_p):0;
+            const unsigned clip_bot=have_ctx?mem->DebugRetrieve(clip_bot_p):0;
+            std::printf(
+                "SYM_ENTRY %03u loopBoundary=%u phase=%u stage=%u col=%u PC=%04X RET=%04X "
+                "profile=%u shade=%u top=%d/%d bot=%d/%d border=%u clip=%u..%u retain_ok=%u "
+                "AF=%04X BC=%04X DE=%04X HL=%04X IX=%04X IY=%04X SP=%04X",
+                target_calls,phase1_seen,phase_before,stage_before,col,pc,stack0,
+                have_ctx?mem->DebugRetrieve(raster_addr):0,
+                have_ctx?mem->DebugRetrieve((u16)(raster_addr+1u)):0,
+                (int)top_l,(int)top_r,(int)bot_l,(int)bot_r,
+                have_ctx?mem->DebugRetrieve((u16)(raster_addr+10u)):0,
+                clip_top,clip_bot,
+                have_ctx?mem->DebugRetrieve((u16)(name_addr+14u)):0,
+                af,bc,de,hl,ix,iy,sp);
+            if(have_ret)
+                std::printf(" ret=%u/%u/%u span=%u/%u",
+                    mem->DebugRetrieve(ret_total_addr),mem->DebugRetrieve(ret_skip_addr),
+                    mem->DebugRetrieve(ret_edge_addr),mem->DebugRetrieve(span_total_addr),
+                    mem->DebugRetrieve(span_skip_addr));
+            std::printf("\n");
+        } else if(target_call_active && pc==target_return_pc) {
+            std::printf(
+                "SYM_RETURN %03u loopBoundary=%u phase=%u stage=%u A=%02X target=%04X "
+                "AF=%04X BC=%04X DE=%04X HL=%04X IX=%04X IY=%04X SP=%04X",
+                target_calls,phase1_seen,phase_before,stage_before,(unsigned)((af>>8)&0xffu),
+                before,af,bc,de,hl,ix,iy,sp);
+            if(have_ret)
+                std::printf(" ret=%u/%u/%u span=%u/%u",
+                    mem->DebugRetrieve(ret_total_addr),mem->DebugRetrieve(ret_skip_addr),
+                    mem->DebugRetrieve(ret_edge_addr),mem->DebugRetrieve(span_total_addr),
+                    mem->DebugRetrieve(span_skip_addr));
+            std::printf("\n");
+            target_call_active=false;
+        }
+
         samples=0;
         core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false);
         ++instructions;
@@ -140,8 +197,14 @@ int main(int argc,char**argv) {
         if(p!=last_phase) {
             if(p==1u) {
                 ++phase1_seen;
-                std::printf("BOUNDARY phase1_seen=%u target=%04X cycles=%llu\n",
+                std::printf("BOUNDARY phase1_seen=%u target=%04X cycles=%llu",
                             phase1_seen,rd16(mem,target),(unsigned long long)core.GetMasterClockCycles());
+                if(have_ret)
+                    std::printf(" ret=%u/%u/%u span=%u/%u",
+                        mem->DebugRetrieve(ret_total_addr),mem->DebugRetrieve(ret_skip_addr),
+                        mem->DebugRetrieve(ret_edge_addr),mem->DebugRetrieve(span_total_addr),
+                        mem->DebugRetrieve(span_skip_addr));
+                std::printf("\n");
             }
             last_phase=p;
         }

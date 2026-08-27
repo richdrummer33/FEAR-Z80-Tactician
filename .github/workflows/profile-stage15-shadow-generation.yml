@@ -191,6 +191,12 @@ jobs:
           ./build/tilesector_write_trace build/control-stage23.gg build/control-stage23.sym 16 roomA-turn 3 11 256 | tee build/trace-control-F-r03c11.txt
           ./build/tilesector_write_trace build/bisect-stage24.gg build/bisect-stage24.sym 16 roomA-turn 3 11 256 | tee build/trace-stage24-F-r03c11.txt
 
+      - name: Focused trace stop
+        if: contains(github.event.head_commit.message, '[trace-fast]')
+        run: |
+          echo "Focused trace complete; intentionally stop before the long Stage25-28 matrix."
+          exit 1
+
       - name: Build Stage24 lifetime sub-bisect variants
         shell: bash
         run: |
