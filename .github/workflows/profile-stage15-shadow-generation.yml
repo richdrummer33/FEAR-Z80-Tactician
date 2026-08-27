@@ -115,6 +115,7 @@ jobs:
           ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 48 225  | tee build/control-C-late.txt
           ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 60 320  | tee build/control-D-static.txt
           ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 240 8   | tee build/control-E-mixed.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 80 16 roomA-turn | tee build/control-F-roomA-turn.txt
 
       - name: Verify retained-lifetime algorithms
         run: |
@@ -194,6 +195,7 @@ jobs:
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 48 225  | tee build/repair-C-late.txt
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 60 320  | tee build/repair-D-static.txt
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 240 8   | tee build/repair-E-mixed.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 80 16 roomA-turn | tee build/repair-F-roomA-turn.txt
 
       - name: Compare control vs repair
         shell: bash
@@ -204,6 +206,7 @@ jobs:
             C-late    build/control-C-late.txt    build/repair-C-late.txt \
             D-static  build/control-D-static.txt  build/repair-D-static.txt \
             E-mixed   build/control-E-mixed.txt   build/repair-E-mixed.txt \
+            F-roomA-turn build/control-F-roomA-turn.txt build/repair-F-roomA-turn.txt \
             | tee build/stage28-ab-matrix.txt
 
       - name: Hash ROMs
