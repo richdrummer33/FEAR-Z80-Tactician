@@ -46,7 +46,7 @@ int main(int argc,char**argv) {
     const char* sym=argv[2];
     unsigned target=(argc>3)?(unsigned)std::strtoul(argv[3],nullptr,0):120u;
     unsigned warmup=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):8u;
-    u16 phase_addr=0,dirty_addr=0,stage_addr=0,state_addr=0;
+    u16 phase_addr=0,dirty_addr=0,stage_addr=0,state_addr=0,map_addr=0;
     u16 ret_full_total_addr=0,ret_full_skip_addr=0,ret_full_edge_addr=0;
     u16 ret_span_total_addr=0,ret_span_skip_addr=0;
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
@@ -54,7 +54,7 @@ int main(int argc,char**argv) {
     }
     bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
     bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
-    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);
+    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);\n    bool have_map=find_symbol(sym,"_g_map",map_addr)||find_symbol(sym,"g_map",map_addr);
     bool have_ret=
         (find_symbol(sym,"_g_ts_ret_full_total",ret_full_total_addr)||find_symbol(sym,"g_ts_ret_full_total",ret_full_total_addr)) &&
         (find_symbol(sym,"_g_ts_ret_full_skip",ret_full_skip_addr)||find_symbol(sym,"g_ts_ret_full_skip",ret_full_skip_addr)) &&
@@ -113,6 +113,8 @@ int main(int argc,char**argv) {
     MotionSample motion_first{},motion_last{};
     bool have_motion_first=false;
     uint64_t instructions=0;
+    uint64_t map_hash=1469598103934665603ull; // FNV-1a over measured frame shadows
+    unsigned map_hash_frames=0;
     const uint64_t instruction_limit=50000000ull;
 
     while(loops_measured<target&&instructions<instruction_limit) {
@@ -136,7 +138,17 @@ int main(int argc,char**argv) {
             }
             if(p==1u) {
                 if(have_loop_start) {
-                    if(loops_seen>=warmup) { loop_stats.add(now-loop_start); ++loops_measured; }
+                    if(loops_seen>=warmup) {
+                        loop_stats.add(now-loop_start);
+                        if(have_map) {
+                            for(unsigned i=0;i<720u;++i) {
+                                map_hash ^= (uint64_t)mem->DebugRetrieve((u16)(map_addr+i));
+                                map_hash *= 1099511628211ull;
+                            }
+                            ++map_hash_frames;
+                        }
+                        ++loops_measured;
+                    }
                     ++loops_seen;
                 } else have_loop_start=true;
                 loop_start=now;
@@ -173,7 +185,7 @@ int main(int argc,char**argv) {
     std::printf("TileSector Gearsystem profile: loops=%u warmup=%u instructions=%llu phase_addr=%04X",
                 loop_stats.n,warmup,(unsigned long long)instructions,phase_addr);
     if(have_stage) std::printf(" render_stage_addr=%04X",stage_addr);
-    if(have_state) std::printf(" state_addr=%04X",state_addr);
+    if(have_state) std::printf(" state_addr=%04X",state_addr);\n    if(have_map) std::printf(" map_addr=%04X",map_addr);
     std::printf("\n");
     const char* names[6]={"startup","input+motion","render/build","vsync-wait","VRAM-upload","loop-tail"};
     for(unsigned pidx=1;pidx<=5;++pidx) if(phase_stats[pidx].n) {
@@ -207,6 +219,10 @@ int main(int argc,char**argv) {
         std::printf("  retained FULL spans avg=%5.2f whole-span-skip=%5.2f (%.1f%%)\n",
                     ret_span_total_stats.avg(),ret_span_skip_stats.avg(),
                     span_total?100.0*(double)ret_span_skip_stats.sum/span_total:0.0);
+    }
+    if(have_map) {
+        std::printf("  map-hash     frames=%u fnv64=%016llX\n",
+                    map_hash_frames,(unsigned long long)map_hash);
     }
     if(have_motion_first) {
         std::printf("  motion start x=%.2f y=%.2f yaw=%u speed_q4=%d turn_q4=%d demo_phase=%u demo_ticks=%u\n",
