@@ -151,7 +151,9 @@ jobs:
         shell: bash
         run: |
           cp src/tilesector_core.c build/stage24-base-core.c
+          cp src/tilesector_run_gg.s build/stage24-base-run.s
           cp src/tilesector_symfull_gg.s build/stage24-base-symfull.s
+          cp src/tilesector_ntstate_gg.s build/stage24-base-ntstate.s
 
           cp build/stage24-base-core.c src/tilesector_core.c
           cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
@@ -183,9 +185,32 @@ jobs:
           python3 tools/apply_stage24_diag_mode.py legacy-no-edge
           ./build_stage_variant.sh stage24-noedge
 
-          # Restore canonical generated Stage24 before applying Stage25.
           cp build/stage24-base-core.c src/tilesector_core.c
           cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          cp build/stage24-base-run.s src/tilesector_run_gg.s
+          cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
+          python3 tools/apply_stage24_diag_mode.py stage23-behavior
+          ./build_stage_variant.sh stage24-stage23beh
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          cp build/stage24-base-run.s src/tilesector_run_gg.s
+          cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
+          python3 tools/apply_stage24_diag_mode.py stage23-plus-owner
+          ./build_stage_variant.sh stage24-plus-owner
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          cp build/stage24-base-run.s src/tilesector_run_gg.s
+          cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
+          python3 tools/apply_stage24_diag_mode.py stage23-plus-eager
+          ./build_stage_variant.sh stage24-plus-eager
+
+          # Restore canonical generated Stage24 before applying Stage25.
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-run.s src/tilesector_run_gg.s
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
 
       - name: Apply Stage 25 retained active mask
         run: python3 tools/apply_stage25_active_mask.py
@@ -283,7 +308,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          for tag in stage24 stage24-nofinal stage24-nooldstale stage24-legacy-life stage24-retention-off stage24-noexact stage24-noedge stage25 stage28a stage28b stage28c stage28d; do
+          for tag in stage24 stage24-nofinal stage24-nooldstale stage24-legacy-life stage24-retention-off stage24-noexact stage24-noedge stage24-stage23beh stage24-plus-owner stage24-plus-eager stage25 stage28a stage28b stage28c stage28d; do
             echo "===== ${tag} / A-forward ====="
             ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 8 demo "build/bisect-${tag}-A.bin" > "build/bisect-${tag}-A.txt"
             python3 tools/compare_map_dumps.py "${tag}-A" <(head -c $((24*720)) build/control-A-forward.bin) "build/bisect-${tag}-A.bin"
