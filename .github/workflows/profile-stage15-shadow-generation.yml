@@ -173,6 +173,7 @@ jobs:
           echo "PATCHED ROM == C REFERENCE: PASS"
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: gg-tilesector-stage23-camera-q4-lock
           path: |
