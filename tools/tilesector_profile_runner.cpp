@@ -59,7 +59,8 @@ int main(int argc,char**argv) {
     }
     bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
     bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
-    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);\n    bool have_map=find_symbol(sym,"_g_map",map_addr)||find_symbol(sym,"g_map",map_addr);
+    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);
+    bool have_map=find_symbol(sym,"_g_map",map_addr)||find_symbol(sym,"g_map",map_addr);
     bool have_ret=
         (find_symbol(sym,"_g_ts_ret_full_total",ret_full_total_addr)||find_symbol(sym,"g_ts_ret_full_total",ret_full_total_addr)) &&
         (find_symbol(sym,"_g_ts_ret_full_skip",ret_full_skip_addr)||find_symbol(sym,"g_ts_ret_full_skip",ret_full_skip_addr)) &&
@@ -195,7 +196,8 @@ int main(int argc,char**argv) {
     std::printf("TileSector Gearsystem profile: loops=%u warmup=%u scenario=%s instructions=%llu phase_addr=%04X",
                 loop_stats.n,warmup,scenario.c_str(),(unsigned long long)instructions,phase_addr);
     if(have_stage) std::printf(" render_stage_addr=%04X",stage_addr);
-    if(have_state) std::printf(" state_addr=%04X",state_addr);\n    if(have_map) std::printf(" map_addr=%04X",map_addr);
+    if(have_state) std::printf(" state_addr=%04X",state_addr);
+    if(have_map) std::printf(" map_addr=%04X",map_addr);
     std::printf("\n");
     const char* names[6]={"startup","input+motion","render/build","vsync-wait","VRAM-upload","loop-tail"};
     for(unsigned pidx=1;pidx<=5;++pidx) if(phase_stats[pidx].n) {
