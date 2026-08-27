@@ -190,6 +190,27 @@ jobs:
           ./build_stage_variant.sh stage24-noedge
 
           cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-run.s src/tilesector_run_gg.s
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
+          python3 tools/apply_stage24_diag_mode.py stage23-ret5
+          ./build_stage_variant.sh stage24-ret5
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-run.s src/tilesector_run_gg.s
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
+          python3 tools/apply_stage24_diag_mode.py stage23-ret7-nocov
+          ./build_stage_variant.sh stage24-ret7-nocov
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-run.s src/tilesector_run_gg.s
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
+          python3 tools/apply_stage24_diag_mode.py stage23-ret7-cov
+          ./build_stage_variant.sh stage24-ret7-cov
+
+          cp build/stage24-base-core.c src/tilesector_core.c
           cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
           cp build/stage24-base-run.s src/tilesector_run_gg.s
           cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
@@ -320,7 +341,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          for tag in stage24 stage24-nofinal stage24-nooldstale stage24-legacy-life stage24-retention-off stage24-noexact stage24-noedge stage24-stage23beh stage24-plus-owner stage24-plus-eager stage25 stage28a stage28b stage28c stage28d; do
+          for tag in stage24 stage24-nofinal stage24-nooldstale stage24-legacy-life stage24-retention-off stage24-noexact stage24-noedge stage24-ret5 stage24-ret7-nocov stage24-ret7-cov stage24-stage23beh stage24-plus-owner stage24-plus-eager stage25 stage28a stage28b stage28c stage28d; do
             echo "===== ${tag} / A-forward ====="
             ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 8 demo "build/bisect-${tag}-A.bin" > "build/bisect-${tag}-A.txt"
             python3 tools/compare_map_dumps.py "${tag}-A" <(head -c $((24*720)) build/control-A-forward.bin) "build/bisect-${tag}-A.bin"
