@@ -60,6 +60,15 @@ int main(int argc,char**argv) {
             return 2;
         }
     }
+    const char* statedump_path=(argc>7)?argv[7]:nullptr;
+    std::ofstream statedump;
+    if(statedump_path) {
+        statedump.open(statedump_path,std::ios::binary|std::ios::trunc);
+        if(!statedump) {
+            std::fprintf(stderr,"cannot open state dump: %s\n",statedump_path);
+            return 2;
+        }
+    }
     u16 phase_addr=0,dirty_addr=0,stage_addr=0,state_addr=0,map_addr=0;
     u16 ret_full_total_addr=0,ret_full_skip_addr=0,ret_full_edge_addr=0;
     u16 ret_span_total_addr=0,ret_span_skip_addr=0;
@@ -168,6 +177,11 @@ int main(int argc,char**argv) {
                                 if(mapdump) mapdump.put((char)v);
                             }
                             ++map_hash_frames;
+                        }
+                        if(statedump && have_state) {
+                            // SDCC TSState layout is 16 packed bytes, declaration order.
+                            for(unsigned i=0;i<16u;++i)
+                                statedump.put((char)mem->DebugRetrieve((u16)(state_addr+i)));
                         }
                         ++loops_measured;
                     }
