@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import re
 
 core_p=Path('src/tilesector_core.c')
 run_p=Path('src/tilesector_run_gg.s')
@@ -170,14 +171,10 @@ if old not in run:
     raise SystemExit('run epilogue loop boundary not found')
 run=run.replace(old,new,1)
 
-old='''nr_geom_base$:     .ds 2
-'''
-new='''nr_geom_base$:     .ds 2
-nr_ret_span_all$:  .ds 1
-'''
-if old not in run:
+m=re.search(r'(nr_geom_base\\$:\\s*\\.ds 2)',run)
+if not m:
     raise SystemExit('run BSS tail not found')
-run=run.replace(old,new,1)
+run=run[:m.end()]+'\\nnr_ret_span_all$:  .ds 1'+run[m.end():]
 run=run.replace('; STAGE21_FULL_SYMMETRY\n',
                 '; STAGE21_FULL_SYMMETRY\n; STAGE22_RETAINED_FULL\n',1)
 
