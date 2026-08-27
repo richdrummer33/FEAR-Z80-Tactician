@@ -57,6 +57,11 @@ jobs:
           nl -ba src/tilesector_ntstate_gg.s | sed -n '292,336p'
           nl -ba src/tilesector_opaque_gg.s | sed -n '1,120p'
 
+      - name: Dump Stage 22 retention assembly
+        shell: bash
+        run: |
+          nl -ba src/tilesector_symfull_gg.s | sed -n '338,356p'
+
       - name: Link Stage 22 kernels
         shell: bash
         run: |
