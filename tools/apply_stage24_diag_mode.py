@@ -3,11 +3,13 @@ import sys
 from pathlib import Path
 
 if len(sys.argv)!=2 or sys.argv[1] not in {
-    "no-finalizer","no-oldstale","legacy-lifetime","retention-off"
+    "no-finalizer","no-oldstale","legacy-lifetime","retention-off",
+    "legacy-no-exact","legacy-no-edge"
 }:
     raise SystemExit(
         "usage: apply_stage24_diag_mode.py "
-        "no-finalizer|no-oldstale|legacy-lifetime|retention-off"
+        "no-finalizer|no-oldstale|legacy-lifetime|retention-off|"
+        "legacy-no-exact|legacy-no-edge"
     )
 
 mode=sys.argv[1]
@@ -103,6 +105,62 @@ sf_ret_diag_unreachable$:
 """,
         1,
     )
+
+elif mode in {"legacy-no-exact","legacy-no-edge"}:
+    # Keep the Stage24 7-byte descriptor and retained bookkeeping, but return
+    # lifetime ownership to Stage18 so only reuse classification/materializer
+    # differences remain under test.
+    core=disable_finalizer(core)
+    sym=disable_old_stale(sym)
+    gate="""        ld      a, (#_g_name_run_ctx + 14)
+        or      a
+        jp      nz, sf_cov_done$
+"""
+    if gate not in sym:
+        raise SystemExit("ordinary-FULL generic-coverage gate not found")
+    sym=sym.replace(
+        gate,
+        "        ; DIAG: ordinary FULL also uses legacy Stage18 coverage\n",
+        1,
+    )
+
+    if mode=="legacy-no-exact":
+        exact="""        ld      a, (_g_ts_ret_full_skip)
+        inc     a
+        ld      (_g_ts_ret_full_skip), a
+        jp      sf_skip_close$
+"""
+        if exact not in sym:
+            raise SystemExit("exact-skip block not found")
+        sym=sym.replace(
+            exact,
+            """        ; DIAG: exact descriptor hits still fully materialize.
+        jp      sf_ret_store_current$
+""",
+            1,
+        )
+    else:
+        edge="""sf_ret_edge_only$:
+        ; DIAG: per-column old->new stale restore disabled
+        ld      a, (_g_ts_ret_full_edgeonly)
+        inc     a
+        ld      (_g_ts_ret_full_edgeonly), a
+"""
+        if edge not in sym:
+            raise SystemExit("edge-only block after cleanup-disable not found")
+        sym=sym.replace(
+            edge,
+            """sf_ret_edge_only$:
+        ; DIAG: edge-only classification falls back to full materializer.
+        jp      sf_ret_store_current$
+
+sf_ret_edge_diag_unreachable$:
+        ld      a, (_g_ts_ret_full_edgeonly)
+        inc     a
+        ld      (_g_ts_ret_full_edgeonly), a
+""",
+            1,
+        )
 
 core_p.write_text(core)
 sym_p.write_text(sym)
