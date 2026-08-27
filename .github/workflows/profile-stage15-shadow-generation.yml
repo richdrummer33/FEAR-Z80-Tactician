@@ -106,6 +106,10 @@ jobs:
           make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
           cp build/gg-tilesector-demo.gg build/control-stage23.gg
           cp build/gg-tilesector-demo.sym build/control-stage23.sym
+          cp src/tilesector_core.c build/stage23-source-core.c
+          cp src/tilesector_run_gg.s build/stage23-source-run.s
+          cp src/tilesector_symfull_gg.s build/stage23-source-symfull.s
+          cp src/tilesector_ntstate_gg.s build/stage23-source-ntstate.s
 
       - name: Profile Stage 23 control matrix
         shell: bash
@@ -190,6 +194,14 @@ jobs:
           cp build/stage24-base-run.s src/tilesector_run_gg.s
           cp build/stage24-base-ntstate.s src/tilesector_ntstate_gg.s
           python3 tools/apply_stage24_diag_mode.py stage23-behavior
+          echo "===== GENERATED DIFF: Stage23 -> Stage24-stage23beh core ====="
+          diff -u build/stage23-source-core.c src/tilesector_core.c | tee build/diff-stage23beh-core.txt || true
+          echo "===== GENERATED DIFF: Stage23 -> Stage24-stage23beh run ====="
+          diff -u build/stage23-source-run.s src/tilesector_run_gg.s | tee build/diff-stage23beh-run.txt || true
+          echo "===== GENERATED DIFF: Stage23 -> Stage24-stage23beh symfull ====="
+          diff -u build/stage23-source-symfull.s src/tilesector_symfull_gg.s | tee build/diff-stage23beh-symfull.txt || true
+          echo "===== GENERATED DIFF: Stage23 -> Stage24-stage23beh ntstate ====="
+          diff -u build/stage23-source-ntstate.s src/tilesector_ntstate_gg.s | tee build/diff-stage23beh-ntstate.txt || true
           ./build_stage_variant.sh stage24-stage23beh
 
           cp build/stage24-base-core.c src/tilesector_core.c
@@ -388,6 +400,7 @@ jobs:
             build/bisect-*.sym
             build/bisect-*.txt
             build/bisect-*.bin
+            build/diff-stage23beh-*.txt
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
