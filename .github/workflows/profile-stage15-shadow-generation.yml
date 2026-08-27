@@ -356,6 +356,33 @@ jobs:
             F-roomA-turn build/control-F-roomA-turn.txt build/stage30-F-roomA-turn.txt \
             | tee build/stage30-ab-matrix.txt
 
+      - name: Apply Stage 31 retained global gates
+        run: python3 tools/apply_stage28b_retained_gates.py
+
+      - name: Build bisect Stage31 candidate
+        run: ./build_stage_variant.sh stage31
+
+      - name: Profile Stage31 candidate matrix
+        shell: bash
+        run: |
+          ./build/tilesector_profile_runner build/bisect-stage31.gg build/bisect-stage31.sym 120 8 demo build/stage31-A-forward.bin build/stage31-A-forward.states | tee build/stage31-A-forward.txt
+          ./build/tilesector_profile_runner build/bisect-stage31.gg build/bisect-stage31.sym 80 145 demo build/stage31-B-turn.bin build/stage31-B-turn.states | tee build/stage31-B-turn.txt
+          ./build/tilesector_profile_runner build/bisect-stage31.gg build/bisect-stage31.sym 48 225 | tee build/stage31-C-late.txt
+          ./build/tilesector_profile_runner build/bisect-stage31.gg build/bisect-stage31.sym 60 320 | tee build/stage31-D-static.txt
+          ./build/tilesector_profile_runner build/bisect-stage31.gg build/bisect-stage31.sym 240 8 | tee build/stage31-E-mixed.txt
+          ./build/tilesector_profile_runner build/bisect-stage31.gg build/bisect-stage31.sym 80 16 roomA-turn build/stage31-F-roomA-turn.bin build/stage31-F-roomA-turn.states | tee build/stage31-F-roomA-turn.txt
+          python3 tools/compare_map_dumps.py stage31-A build/control-A-forward.bin build/stage31-A-forward.bin
+          python3 tools/compare_map_dumps.py stage31-B build/control-B-turn.bin build/stage31-B-turn.bin
+          python3 tools/compare_map_dumps.py stage31-F build/control-F-roomA-turn.bin build/stage31-F-roomA-turn.bin
+          python3 tools/compare_profile_matrix.py \
+            A-forward build/control-A-forward.txt build/stage31-A-forward.txt \
+            B-turn build/control-B-turn.txt build/stage31-B-turn.txt \
+            C-late build/control-C-late.txt build/stage31-C-late.txt \
+            D-static build/control-D-static.txt build/stage31-D-static.txt \
+            E-mixed build/control-E-mixed.txt build/stage31-E-mixed.txt \
+            F-roomA-turn build/control-F-roomA-turn.txt build/stage31-F-roomA-turn.txt \
+            | tee build/stage31-ab-matrix.txt
+
       - name: Restore Stage25 before Stage28 experiments
         run: cp build/stage25-base-ntstate.s src/tilesector_ntstate_gg.s
 
@@ -542,6 +569,10 @@ jobs:
             build/stage30-*.bin
             build/stage30-*.states
             build/stage30-ab-matrix.txt
+            build/stage31-*.txt
+            build/stage31-*.bin
+            build/stage31-*.states
+            build/stage31-ab-matrix.txt
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
