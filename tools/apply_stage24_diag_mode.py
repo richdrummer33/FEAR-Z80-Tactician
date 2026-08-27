@@ -3,11 +3,11 @@ import sys
 from pathlib import Path
 
 if len(sys.argv)!=2 or sys.argv[1] not in {
-    "no-finalizer","no-oldstale","legacy-lifetime"
+    "no-finalizer","no-oldstale","legacy-lifetime","retention-off"
 }:
     raise SystemExit(
         "usage: apply_stage24_diag_mode.py "
-        "no-finalizer|no-oldstale|legacy-lifetime"
+        "no-finalizer|no-oldstale|legacy-lifetime|retention-off"
     )
 
 mode=sys.argv[1]
@@ -62,6 +62,45 @@ elif mode=="legacy-lifetime":
     sym=sym.replace(
         gate,
         "        ; DIAG: ordinary FULL also uses legacy Stage18 coverage\n",
+        1,
+    )
+
+elif mode=="retention-off":
+    # Preserve Stage24-generated code layout, but route ordinary FULL through
+    # the Stage21 full materializer every frame and let Stage18 own lifetime.
+    # If this matches Stage23, geometry/raster is sound and the divergence is
+    # specifically inside retained descriptor/reuse state.
+    core=disable_finalizer(core)
+    sym=disable_old_stale(sym)
+
+    gate="""        ld      a, (#_g_name_run_ctx + 14)
+        or      a
+        jp      nz, sf_cov_done$
+"""
+    if gate not in sym:
+        raise SystemExit("ordinary-FULL generic-coverage gate not found")
+    sym=sym.replace(
+        gate,
+        "        ; DIAG: ordinary FULL uses legacy generic coverage\n",
+        1,
+    )
+
+    retain_entry="""sf_cov_done$:
+
+        ; Retention is deliberately restricted to ordinary depth-0 FULL runs.
+        ld      a, (#_g_name_run_ctx + 14)
+"""
+    if retain_entry not in sym:
+        raise SystemExit("retained entry not found")
+    sym=sym.replace(
+        retain_entry,
+        """sf_cov_done$:
+        ; DIAG: bypass all retained descriptor comparison/reuse.
+        jp      sf_ret_not_eligible$
+
+sf_ret_diag_unreachable$:
+        ld      a, (#_g_name_run_ctx + 14)
+""",
         1,
     )
 
