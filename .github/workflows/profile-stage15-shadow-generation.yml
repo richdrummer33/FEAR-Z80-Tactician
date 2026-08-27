@@ -173,6 +173,16 @@ jobs:
           python3 tools/apply_stage24_diag_mode.py retention-off
           ./build_stage_variant.sh stage24-retention-off
 
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          python3 tools/apply_stage24_diag_mode.py legacy-no-exact
+          ./build_stage_variant.sh stage24-noexact
+
+          cp build/stage24-base-core.c src/tilesector_core.c
+          cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
+          python3 tools/apply_stage24_diag_mode.py legacy-no-edge
+          ./build_stage_variant.sh stage24-noedge
+
           # Restore canonical generated Stage24 before applying Stage25.
           cp build/stage24-base-core.c src/tilesector_core.c
           cp build/stage24-base-symfull.s src/tilesector_symfull_gg.s
@@ -273,7 +283,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          for tag in stage24 stage24-nofinal stage24-nooldstale stage24-legacy-life stage24-retention-off stage25 stage28a stage28b stage28c stage28d; do
+          for tag in stage24 stage24-nofinal stage24-nooldstale stage24-legacy-life stage24-retention-off stage24-noexact stage24-noedge stage25 stage28a stage28b stage28c stage28d; do
             echo "===== ${tag} / A-forward ====="
             ./build/tilesector_profile_runner "build/bisect-${tag}.gg" "build/bisect-${tag}.sym" 24 8 demo "build/bisect-${tag}-A.bin" > "build/bisect-${tag}-A.txt"
             python3 tools/compare_map_dumps.py "${tag}-A" <(head -c $((24*720)) build/control-A-forward.bin) "build/bisect-${tag}-A.bin"
