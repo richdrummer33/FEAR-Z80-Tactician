@@ -422,6 +422,8 @@ jobs:
             build/bisect-*.txt
             build/bisect-*.bin
             build/diff-stage23beh-*.txt
+            build/tilesector_profile_runner
+            build/gearsystem_core_runner
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
