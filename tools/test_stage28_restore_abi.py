@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 
 s=Path("src/tilesector_symfull_gg.s").read_text()
+run=Path("src/tilesector_run_gg.s").read_text()
 m=re.search(
     r"sf_restore_base_ready\$:(.*?)sf_ret_edge_delta\$:",
     s,re.S
@@ -52,3 +53,17 @@ if not re.search(r"push\s+de", rr) or not re.search(r"pop\s+de.*?ret", rr, re.S)
         "FAIL: sf_restore_range$ does not preserve DE stale bounds"
     )
 print("Stage28 retained restore-range ABI: DE preservation PASS")
+
+if "_ts_retained_full_invalidate_range" not in run:
+    raise SystemExit("FAIL: non-FULL retained invalidation symbol disappeared")
+if not re.search(
+    r"ld\s+a,\s*\(#_g_ts_ret_full_prev_any\).*?"
+    r"jp\s+z,\s*nr_ret_life_ready\$.*?"
+    r"call\s+_ts_retained_full_invalidate_range",
+    run,re.S
+):
+    raise SystemExit(
+        "FAIL: depth-0 non-FULL replacement no longer uses gated eager "
+        "retained invalidation"
+    )
+print("Stage28 non-FULL replacement invalidation gate: PASS")
