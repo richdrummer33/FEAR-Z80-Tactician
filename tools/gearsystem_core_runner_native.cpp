@@ -28,7 +28,16 @@ int main(int argc,char**argv){
     GS_RuntimeInfo ri{}; core.GetRuntimeInfo(ri);
     std::vector<u8> fb(GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN*GS_RESOLUTION_MAX_HEIGHT_WITH_OVERSCAN*4);
     std::vector<s16> audio(16384); int samples=0;
-    for(int i=0;i<frames;i++) { samples=0; core.RunToVBlank(fb.data(), audio.data(), &samples, nullptr, true); }
+    const char* frame_dir=std::getenv("GS_FRAME_DIR");
+    for(int i=0;i<frames;i++) {
+        samples=0;
+        core.RunToVBlank(fb.data(), audio.data(), &samples, nullptr, true);
+        if(frame_dir && *frame_dir) {
+            char frame_path[1024];
+            std::snprintf(frame_path,sizeof(frame_path),"%s/frame-%04d.ppm",frame_dir,i);
+            save_ppm(frame_path,fb,ri.screen_width,ri.screen_height);
+        }
+    }
     auto *st=core.GetProcessor()->GetState();
     printf("frames=%d screen=%dx%d cycles=%llu PC=%04X SP=%04X AF=%04X BC=%04X DE=%04X HL=%04X RAM[C000..C007]=",
         frames,ri.screen_width,ri.screen_height,(unsigned long long)core.GetMasterClockCycles(),
