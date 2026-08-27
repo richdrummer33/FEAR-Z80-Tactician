@@ -226,9 +226,10 @@ nr_left_ready$:
 nr_geometry_ready$:
         ; Exact midpoint reciprocal for distance shade: (left+right)>>7.
 '''
-if old_block not in run:
+old_block_actual=old_block.replace('        jr      ','        jp      ')
+if old_block_actual not in run:
     raise SystemExit('run geometry block not found')
-run=run.replace(old_block,new_block,1)
+run=run.replace(old_block_actual,new_block,1)
 
 # Insert the cheap reciprocal->top conversion before the generic 4-byte lookup.
 anchor='''; A=0..255 reciprocal. Return BC=top Y, DE=bottom Y from the profile table.
