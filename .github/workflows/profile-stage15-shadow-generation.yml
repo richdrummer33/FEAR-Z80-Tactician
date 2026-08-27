@@ -1,9 +1,9 @@
-name: Profile Stage 23 retained edge delta
+name: Profile Stage 23 camera Q4 lock
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage23-edge-delta
+      - feature/gg-tilesector-stage23-camera-q4-lock
   workflow_dispatch:
 
 jobs:
@@ -130,6 +130,27 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
+      - name: Capture emulated camera-motion videos
+        shell: bash
+        run: |
+          mkdir -p build/gearsystem-frames
+          GS_FRAME_DIR="$PWD/build/gearsystem-frames" \
+            ./build/gearsystem_core_runner build/gg-tilesector-demo.gg 180 build/stage23-camera-final.ppm \
+            | tee build/stage23-camera-emulator.txt
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -y -framerate 60 -start_number 0 \
+            -i build/gearsystem-frames/frame-%04d.ppm \
+            -vf "scale=640:576:flags=neighbor" -c:v libx264 -pix_fmt yuv420p -movflags +faststart \
+            build/stage23-camera-runtime-60fps.mp4
+          ffmpeg -y -framerate 15 -start_number 0 \
+            -i build/gearsystem-frames/frame-%04d.ppm -frames:v 60 \
+            -vf "scale=640:576:flags=neighbor" -c:v libx264 -pix_fmt yuv420p -movflags +faststart \
+            build/stage23-camera-startup-slowmo.mp4
+          ls -lh build/stage23-camera-*.mp4 build/stage23-camera-final.ppm
+
       - name: Profile Stage 23
         shell: bash
         run: |
@@ -138,12 +159,16 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gg-tilesector-stage23-edge-delta
+          name: gg-tilesector-stage23-camera-q4-lock
           path: |
             build/gg-tilesector-demo.gg
             build/gg-tilesector-demo.sym
             build/stage23-profile.txt
             build/stage23-rom.sha256
+            build/stage23-camera-emulator.txt
+            build/stage23-camera-final.ppm
+            build/stage23-camera-runtime-60fps.mp4
+            build/stage23-camera-startup-slowmo.mp4
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
