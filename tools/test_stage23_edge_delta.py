@@ -75,7 +75,7 @@ def draw_delta(m,old_l,old_r,new_l,new_r,shade,border,clip0,clip1):
     # Reconcile symmetric row PAIRS. Do not pre-clamp the top row to the
     # aperture: top may be clipped while its mirrored bottom mate is visible.
     first=max(0,new_max+1)
-    last=min(17,old_max)
+    last=min(8,old_max)
     if first<=last:
         fw=full_word(shade,border)
         for r in range(first,last+1):
