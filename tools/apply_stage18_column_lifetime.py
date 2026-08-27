@@ -559,7 +559,8 @@ _g_nt_dirty::      .ds 54
 ntm_first$:        .ds 1
 ntm_after$:        .ds 1
 ntm_col$:          .ds 1
-nts_row$:          .ds 1\nntd_mask$:         .ds 1
+nts_row$:          .ds 1
+ntd_mask$:         .ds 1
 nte_col$:          .ds 1
 nte_group$:        .ds 1
 nte_stale$:        .ds 1
