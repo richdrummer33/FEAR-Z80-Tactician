@@ -1,9 +1,9 @@
-name: Profile Stage 23 retained edge delta
+name: Profile Stage 26 candidate envelope
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage23-edge-delta
+      - feature/gg-tilesector-stage26-candidate-envelope
   workflow_dispatch:
 
 jobs:
@@ -57,13 +57,19 @@ jobs:
       - name: Apply Stage 23 edge-delta materializer
         run: python3 tools/apply_stage23_edge_delta.py
 
+      - name: Verify Stage 26 endpoint-envelope safety
+        run: python3 tools/test_stage26_candidate_envelope.py
+
+      - name: Apply Stage 26 candidate-envelope core hook
+        run: python3 tools/apply_stage26_candidate_envelope.py
+
       - name: Dump Stage 18 assembly around stale loop
         shell: bash
         run: |
           nl -ba src/tilesector_ntstate_gg.s | sed -n '292,336p'
           nl -ba src/tilesector_opaque_gg.s | sed -n '1,120p'
 
-      - name: Link Stage 23 kernels
+      - name: Link Stage 26 kernels
         shell: bash
         run: |
           python3 - <<'PY'
@@ -81,7 +87,7 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Verify Stage 23 representation
+      - name: Verify Stage 26 representation
         shell: bash
         run: |
           grep -q 'STAGE18_COLUMN_LIFETIME' src/tilesector_raster_gg.s
@@ -91,6 +97,10 @@ jobs:
           grep -q 'STAGE21_FULL_SYMMETRY' src/tilesector_symfull_gg.s
           grep -q 'STAGE22_RETAINED_FULL' src/tilesector_symfull_gg.s
           grep -q 'STAGE23_EDGE_DELTA' src/tilesector_symfull_gg.s
+          grep -q 'STAGE26_CANDIDATE_ENVELOPE' src/tilesector_candidate_lite_gg.s
+          grep -q 'STAGE26_CANDIDATE_ENVELOPE' src/tilesector_core.c
+          grep -Fq '_ts_candidate_fast_reset::' src/tilesector_candidate_lite_gg.s
+          grep -Fq '_g_ts_cand_reject::' src/tilesector_candidate_lite_gg.s
           grep -Fq 'sf_ret_edge_delta' src/tilesector_symfull_gg.s
           grep -q 'STAGE22_RETAINED_FULL' src/tilesector_run_gg.s
           grep -q '_g_ts_ret_full_skip::' src/tilesector_symfull_gg.s
@@ -121,7 +131,7 @@ jobs:
       - name: Host acceptance
         run: make tilesector-test tilesector-host
 
-      - name: Build Stage 23 ROM
+      - name: Build Stage 26 ROM
         run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
 
       - name: Build cycle profiler
@@ -130,23 +140,25 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
-      - name: Profile Stage 23
+      - name: Profile Stage 26
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage23-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage23-rom.sha256
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage26-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage26-rom.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gg-tilesector-stage23-edge-delta
+          name: gg-tilesector-stage26-candidate-envelope
           path: |
             build/gg-tilesector-demo.gg
             build/gg-tilesector-demo.sym
-            build/stage23-profile.txt
-            build/stage23-rom.sha256
+            build/stage26-profile.txt
+            build/stage26-rom.sha256
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
             src/tilesector_opaque_gg.s
             src/tilesector_symfull_gg.s
+            src/tilesector_candidate_lite_gg.s
+            src/tilesector_core.c
           if-no-files-found: error
