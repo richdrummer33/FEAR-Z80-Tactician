@@ -98,9 +98,9 @@ def main():
         clip1=rng.randrange(max(clip0,8),18)
 
         old_l=rng.randrange(-56,72)
-        old_r=old_l+rng.randrange(-7,8)
+        old_r=rng.randrange(max(-56,old_l-7),min(71,old_l+7)+1)
         new_l=rng.randrange(-56,72)
-        new_r=new_l+rng.randrange(-7,8)
+        new_r=rng.randrange(max(-56,new_l-7),min(71,new_l+7)+1)
 
         old_min,old_max=signed_minmax(old_l,old_r)
         new_min,new_max=signed_minmax(new_l,new_r)
