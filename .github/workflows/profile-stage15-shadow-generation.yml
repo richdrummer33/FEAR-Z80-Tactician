@@ -110,12 +110,12 @@ jobs:
       - name: Profile Stage 23 control matrix
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 120 8   | tee build/control-A-forward.txt
-          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 80 145  | tee build/control-B-turn.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 120 8 demo build/control-A-forward.bin | tee build/control-A-forward.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 80 145 demo build/control-B-turn.bin | tee build/control-B-turn.txt
           ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 48 225  | tee build/control-C-late.txt
           ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 60 320  | tee build/control-D-static.txt
           ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 240 8   | tee build/control-E-mixed.txt
-          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 80 16 roomA-turn | tee build/control-F-roomA-turn.txt
+          ./build/tilesector_profile_runner build/control-stage23.gg build/control-stage23.sym 80 16 roomA-turn build/control-F-roomA-turn.bin | tee build/control-F-roomA-turn.txt
 
       - name: Verify retained-lifetime algorithms
         run: |
@@ -190,12 +190,20 @@ jobs:
       - name: Profile Stage 28 repair matrix
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 120 8   | tee build/repair-A-forward.txt
-          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 80 145  | tee build/repair-B-turn.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 120 8 demo build/repair-A-forward.bin | tee build/repair-A-forward.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 80 145 demo build/repair-B-turn.bin | tee build/repair-B-turn.txt
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 48 225  | tee build/repair-C-late.txt
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 60 320  | tee build/repair-D-static.txt
           ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 240 8   | tee build/repair-E-mixed.txt
-          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 80 16 roomA-turn | tee build/repair-F-roomA-turn.txt
+          ./build/tilesector_profile_runner build/repair-stage28.gg build/repair-stage28.sym 80 16 roomA-turn build/repair-F-roomA-turn.bin | tee build/repair-F-roomA-turn.txt
+
+      - name: Diagnose map divergence
+        shell: bash
+        continue-on-error: true
+        run: |
+          python3 tools/compare_map_dumps.py A-forward build/control-A-forward.bin build/repair-A-forward.bin
+          python3 tools/compare_map_dumps.py B-turn build/control-B-turn.bin build/repair-B-turn.bin
+          python3 tools/compare_map_dumps.py F-roomA-turn build/control-F-roomA-turn.bin build/repair-F-roomA-turn.bin
 
       - name: Compare control vs repair
         shell: bash
@@ -223,6 +231,8 @@ jobs:
             build/repair-stage28.sym
             build/control-*.txt
             build/repair-*.txt
+            build/control-*.bin
+            build/repair-*.bin
             build/stage28-ab-matrix.txt
             build/stage28-roms.sha256
             src/tilesector_ntstate_gg.s
