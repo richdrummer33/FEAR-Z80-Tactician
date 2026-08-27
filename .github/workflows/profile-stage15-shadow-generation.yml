@@ -1,9 +1,9 @@
-name: Profile Stage 18 column lifetime
+name: Profile Stage 19 row-burst uploader
 
 on:
   push:
     branches:
-      - feature/gg-tilesector-stage18-column-lifetime
+      - feature/gg-tilesector-stage19-row-burst
   workflow_dispatch:
 
 jobs:
@@ -36,13 +36,16 @@ jobs:
       - name: Apply Stage 18 direct opaque materializer
         run: python3 tools/apply_stage18_direct_opaque.py
 
+      - name: Apply Stage 19 horizontal VDP row bursts
+        run: python3 tools/apply_stage19_row_burst_upload.py
+
       - name: Dump Stage 18 assembly around stale loop
         shell: bash
         run: |
           nl -ba src/tilesector_ntstate_gg.s | sed -n '292,336p'
           nl -ba src/tilesector_opaque_gg.s | sed -n '1,120p'
 
-      - name: Link Stage 18 kernels
+      - name: Link Stage 19 kernels
         shell: bash
         run: |
           python3 - <<'PY'
@@ -60,10 +63,12 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Verify Stage 18 representation
+      - name: Verify Stage 19 representation
         shell: bash
         run: |
           grep -q 'STAGE18_COLUMN_LIFETIME' src/tilesector_raster_gg.s
+          grep -q 'STAGE19_ROW_BURST_UPLOAD' src/tilesector_ntstate_gg.s
+          grep -q 'otir' src/tilesector_ntstate_gg.s
           grep -q 'STAGE18_DIRECT_OPAQUE' src/tilesector_raster_gg.s
           grep -q '_g_nt_cov_cur::    .ds 60' src/tilesector_ntstate_gg.s
           grep -q '_ts_raster_opaque_column_fast' src/tilesector_run_gg.s
@@ -84,7 +89,7 @@ jobs:
       - name: Host acceptance
         run: make tilesector-test tilesector-host
 
-      - name: Build Stage 18 ROM
+      - name: Build Stage 19 ROM
         run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
 
       - name: Build cycle profiler
@@ -93,20 +98,20 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
-      - name: Profile Stage 18
+      - name: Profile Stage 19
         shell: bash
         run: |
-          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage18-profile.txt
-          sha256sum build/gg-tilesector-demo.gg | tee build/stage18-rom.sha256
+          ./build/tilesector_profile_runner build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym 120 8 | tee build/stage19-profile.txt
+          sha256sum build/gg-tilesector-demo.gg | tee build/stage19-rom.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gg-tilesector-stage18-column-lifetime
+          name: gg-tilesector-stage19-row-burst
           path: |
             build/gg-tilesector-demo.gg
             build/gg-tilesector-demo.sym
-            build/stage18-profile.txt
-            build/stage18-rom.sha256
+            build/stage19-profile.txt
+            build/stage19-rom.sha256
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
