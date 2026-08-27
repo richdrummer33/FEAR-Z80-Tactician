@@ -46,14 +46,14 @@ int main(int argc,char**argv) {
     const char* sym=argv[2];
     unsigned target=(argc>3)?(unsigned)std::strtoul(argv[3],nullptr,0):120u;
     unsigned warmup=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):8u;
-    u16 phase_addr=0,dirty_addr=0,stage_addr=0;
+    u16 phase_addr=0,dirty_addr=0,stage_addr=0,state_addr=0;
     u16 ret_full_total_addr=0,ret_full_skip_addr=0,ret_full_edge_addr=0;
     u16 ret_span_total_addr=0,ret_span_skip_addr=0;
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
         std::fprintf(stderr,"phase symbol not found in %s\n",sym); return 3;
     }
     bool have_dirty=find_symbol(sym,"_g_ts_dirty_words",dirty_addr)||find_symbol(sym,"g_ts_dirty_words",dirty_addr);
-    bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);
+    bool have_stage=find_symbol(sym,"_g_ts_render_stage",stage_addr)||find_symbol(sym,"g_ts_render_stage",stage_addr);\n    bool have_state=find_symbol(sym,"_g_state",state_addr)||find_symbol(sym,"g_state",state_addr);
     bool have_ret=
         (find_symbol(sym,"_g_ts_ret_full_total",ret_full_total_addr)||find_symbol(sym,"g_ts_ret_full_total",ret_full_total_addr)) &&
         (find_symbol(sym,"_g_ts_ret_full_skip",ret_full_skip_addr)||find_symbol(sym,"g_ts_ret_full_skip",ret_full_skip_addr)) &&
@@ -74,6 +74,29 @@ int main(int argc,char**argv) {
     dbg.stop_on_irq=false;
     Memory* mem=core.GetMemory();
 
+    auto rd16=[&](u16 a)->uint16_t {
+        return (uint16_t)mem->DebugRetrieve(a) |
+               ((uint16_t)mem->DebugRetrieve((u16)(a+1u))<<8);
+    };
+    struct MotionSample {
+        int16_t x_q4=0,y_q4=0,speed_q4=0,turn_q4=0;
+        uint8_t yaw=0,demo_phase=0;
+        uint16_t demo_ticks=0;
+    };
+    auto sample_motion=[&]()->MotionSample {
+        MotionSample m{};
+        if(!have_state) return m;
+        // TSState is naturally packed by SDCC/Z80 in declaration order.
+        m.x_q4=(int16_t)rd16(state_addr+0u);
+        m.y_q4=(int16_t)rd16(state_addr+2u);
+        m.yaw=mem->DebugRetrieve((u16)(state_addr+4u));
+        m.speed_q4=(int16_t)rd16((u16)(state_addr+5u));
+        m.turn_q4=(int16_t)rd16((u16)(state_addr+9u));
+        m.demo_phase=mem->DebugRetrieve((u16)(state_addr+13u));
+        m.demo_ticks=rd16((u16)(state_addr+14u));
+        return m;
+    };
+
     uint8_t last_phase=mem->DebugRetrieve(phase_addr);
     uint8_t last_stage=have_stage?mem->DebugRetrieve(stage_addr):0u;
     uint64_t last_cycle=core.GetMasterClockCycles();
@@ -86,6 +109,8 @@ int main(int argc,char**argv) {
     Stat ret_full_total_stats,ret_full_skip_stats,ret_full_edge_stats;
     Stat ret_span_total_stats,ret_span_skip_stats;
     unsigned loops_seen=0,loops_measured=0;
+    MotionSample motion_first{},motion_last{};
+    bool have_motion_first=false;
     uint64_t instructions=0;
     const uint64_t instruction_limit=50000000ull;
 
@@ -114,6 +139,11 @@ int main(int argc,char**argv) {
                     ++loops_seen;
                 } else have_loop_start=true;
                 loop_start=now;
+                if(have_state && loops_seen>=warmup && loops_measured<target) {
+                    MotionSample m=sample_motion();
+                    if(!have_motion_first) { motion_first=m; have_motion_first=true; }
+                    motion_last=m;
+                }
             }
             if(p==3u&&have_ret&&loops_seen>=warmup) {
                 ret_full_total_stats.add(mem->DebugRetrieve(ret_full_total_addr));
@@ -142,6 +172,7 @@ int main(int argc,char**argv) {
     std::printf("TileSector Gearsystem profile: loops=%u warmup=%u instructions=%llu phase_addr=%04X",
                 loop_stats.n,warmup,(unsigned long long)instructions,phase_addr);
     if(have_stage) std::printf(" render_stage_addr=%04X",stage_addr);
+    if(have_state) std::printf(" state_addr=%04X",state_addr);
     std::printf("\n");
     const char* names[6]={"startup","input+motion","render/build","vsync-wait","VRAM-upload","loop-tail"};
     for(unsigned pidx=1;pidx<=5;++pidx) if(phase_stats[pidx].n) {
@@ -175,6 +206,16 @@ int main(int argc,char**argv) {
         std::printf("  retained FULL spans avg=%5.2f whole-span-skip=%5.2f (%.1f%%)\n",
                     ret_span_total_stats.avg(),ret_span_skip_stats.avg(),
                     span_total?100.0*(double)ret_span_skip_stats.sum/span_total:0.0);
+    }
+    if(have_motion_first) {
+        std::printf("  motion start x=%.2f y=%.2f yaw=%u speed_q4=%d turn_q4=%d demo_phase=%u demo_ticks=%u\n",
+                    motion_first.x_q4/16.0,motion_first.y_q4/16.0,motion_first.yaw,
+                    motion_first.speed_q4,motion_first.turn_q4,
+                    motion_first.demo_phase,motion_first.demo_ticks);
+        std::printf("  motion last  x=%.2f y=%.2f yaw=%u speed_q4=%d turn_q4=%d demo_phase=%u demo_ticks=%u\n",
+                    motion_last.x_q4/16.0,motion_last.y_q4/16.0,motion_last.yaw,
+                    motion_last.speed_q4,motion_last.turn_q4,
+                    motion_last.demo_phase,motion_last.demo_ticks);
     }
     return 0;
 }
