@@ -679,7 +679,6 @@ static void raster_surface_column(uint8_t col) {
     TS_FAST_LOCAL int16_t top_l,top_r,bot_l,bot_r;
     TS_FAST_LOCAL uint8_t snap_top,snap_bottom,border;
     TS_FAST_LOCAL uint8_t *clip_top,*clip_bottom;
-    TS_FAST_LOCAL const TSSegment *seg;
     TS_FAST_LOCAL uint8_t shade,clip_first,clip_last;
     TS_FAST_LOCAL int8_t top_min_row,top_max_row,bot_min_row,bot_max_row;
     TS_FAST_LOCAL int16_t top_min,top_max,bot_min,bot_max;
@@ -695,7 +694,6 @@ static void raster_surface_column(uint8_t col) {
     snap_bottom=(uint8_t)(profile==TS_PROFILE_LINTEL);
     border=g_raster_ctx.border;
     clip_top=g_raster_ctx.clip_top; clip_bottom=g_raster_ctx.clip_bottom;
-    seg=&k_segments[seg_id];
     shade=g_raster_ctx.shade;
     top_min=top_l<top_r?top_l:top_r; top_max=top_l>top_r?top_l:top_r;
     bot_min=bot_l<bot_r?bot_l:bot_r; bot_max=bot_l>bot_r?bot_l:bot_r;
