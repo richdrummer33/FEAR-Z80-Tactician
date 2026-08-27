@@ -260,8 +260,12 @@ old=r'''        ld      c, a                    ; queried row
 '''
 new=r'''        ld      c, a                    ; queried row
         ld      b, e                    ; preserve queried column
+        ; sf_test_active_cur$ uses C for its bit mask. Preserve BOTH the row
+        ; and column across the helper; POP does not disturb its Z flag.
+        push    bc
         ld      a, e
         call    sf_test_active_cur$
+        pop     bc
         jp      z, sf_owns_no$
         ld      e, b
 
