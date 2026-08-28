@@ -44,9 +44,10 @@ int main(int argc,char**argv) {
     const unsigned warmup=(unsigned)std::strtoul(argv[4],nullptr,0);
     const std::filesystem::path outdir=argv[5];
 
-    u16 state_addr=0;
-    if(!find_symbol(sym,"_g_state",state_addr)&&!find_symbol(sym,"g_state",state_addr)) {
-        std::fprintf(stderr,"g_state not found in %s\n",sym);
+    u16 state_addr=0,phase_addr=0;
+    if((!find_symbol(sym,"_g_state",state_addr)&&!find_symbol(sym,"g_state",state_addr)) ||
+       (!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr))) {
+        std::fprintf(stderr,"required state/phase symbols missing in %s\n",sym);
         return 3;
     }
     std::filesystem::create_directories(outdir);
@@ -73,33 +74,38 @@ int main(int argc,char**argv) {
                ((uint16_t)mem->DebugRetrieve((u16)(a+1u))<<8);
     };
 
-    const u16 marker_addr=(u16)(state_addr+14u);
-    uint8_t marker=mem->DebugRetrieve(marker_addr);
-    unsigned events=0,captured=0;
+    const u16 ticks_addr=(u16)(state_addr+14u);
+    unsigned captured=0;
+    uint16_t last_tick=0xffffu;
     uint64_t instructions=0;
-    const uint64_t instruction_limit=180000000ull;
+    const uint64_t instruction_limit=220000000ull;
 
     std::ofstream meta(outdir/"frames.csv",std::ios::trunc);
-    meta<<"frame,event,marker,x,y,yaw,cycles\n";
+    meta<<"frame,tick,x,y,yaw,cycles\n";
 
     while(captured<target && instructions<instruction_limit) {
         samples=0;
         core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false);
         ++instructions;
-        const uint8_t m=mem->DebugRetrieve(marker_addr);
-        if(m!=marker) {
-            marker=m;
-            if(events>=warmup) {
-                char name[64];
-                std::snprintf(name,sizeof(name),"frame%04u.ppm",captured);
-                save_ppm((outdir/name).string(),fb,ri.screen_width,ri.screen_height);
-                const int16_t xq=(int16_t)rd16(state_addr+0u);
-                const int16_t yq=(int16_t)rd16(state_addr+2u);
-                const uint8_t yaw=mem->DebugRetrieve((u16)(state_addr+4u));
-                meta<<captured<<','<<events<<','<<(unsigned)m<<','<<(xq/16.0)<<','<<(yq/16.0)<<','<<(unsigned)yaw<<','<<core.GetMasterClockCycles()<<"\n";
-                ++captured;
-            }
-            ++events;
+
+        const uint8_t phase=mem->DebugRetrieve(phase_addr);
+        const uint16_t tick=rd16(ticks_addr);
+        if(phase==5u && tick>(uint16_t)warmup && tick!=last_tick) {
+            /* Phase 5 means this update has rendered and uploaded its name table.
+             * One real display VBlank materializes that VRAM state into Gearsystem's
+             * framebuffer, matching tilesector_state_capture.cpp's proven path. */
+            samples=0;
+            core.RunToVBlank(fb.data(),audio.data(),&samples,nullptr,true);
+            last_tick=tick;
+
+            char name[64];
+            std::snprintf(name,sizeof(name),"frame%04u.ppm",captured);
+            save_ppm((outdir/name).string(),fb,ri.screen_width,ri.screen_height);
+            const int16_t xq=(int16_t)rd16(state_addr+0u);
+            const int16_t yq=(int16_t)rd16(state_addr+2u);
+            const uint8_t yaw=mem->DebugRetrieve((u16)(state_addr+4u));
+            meta<<captured<<','<<tick<<','<<(xq/16.0)<<','<<(yq/16.0)<<','<<(unsigned)yaw<<','<<core.GetMasterClockCycles()<<"\n";
+            ++captured;
         }
     }
 
@@ -108,8 +114,8 @@ int main(int argc,char**argv) {
                      captured,target,(unsigned long long)instructions);
         return 5;
     }
-    std::printf("captured=%u warmup=%u outdir=%s screen=%dx%d instructions=%llu\n",
+    std::printf("captured=%u warmup=%u outdir=%s screen=%dx%d instructions=%llu phase_addr=%04X\n",
                 captured,warmup,outdir.string().c_str(),ri.screen_width,ri.screen_height,
-                (unsigned long long)instructions);
+                (unsigned long long)instructions,phase_addr);
     return 0;
 }
