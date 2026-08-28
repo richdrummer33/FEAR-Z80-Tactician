@@ -192,8 +192,8 @@ static int16_t wall_d_q4(uint8_t sid,uint8_t anchor_vid,const TSPState *s){
     int16_t frac=(int16_t)k_tspf_nx_q5[sid]*fx+(int16_t)k_tspf_ny_q5[sid]*fy;
     return (int16_t)(shr_signed(whole,1)-shr_signed(frac,5));
 }
-static uint8_t inv_at(uint8_t sid,uint8_t anchor,uint16_t world_bearing,int16_t rel,const TSPState *s){
-    int16_t d=wall_d_q4(sid,anchor,s);uint8_t invd=inv_for_dq4(d);uint8_t bi=(uint8_t)(world_bearing>>4);int8_t sn=(int8_t)k_tspf_sin_q7[bi],cs=(int8_t)k_tspf_sin_q7[(uint8_t)(bi+64u)];
+static uint8_t inv_at_invd(uint8_t sid,uint8_t invd,uint16_t world_bearing,int16_t rel){
+    uint8_t bi=(uint8_t)(world_bearing>>4);int8_t sn=(int8_t)k_tspf_sin_q7[bi],cs=(int8_t)k_tspf_sin_q7[(uint8_t)(bi+64u)];
     int16_t dot=(int16_t)k_tspf_nx_q5[sid]*cs+(int16_t)k_tspf_ny_q5[sid]*sn;uint16_t q,sec;
     dot=shr_signed(dot,5);if(dot<0)dot=(int16_t)-dot;if(dot>127)dot=127;
     q=((uint16_t)invd*(uint16_t)dot+64u)>>7;sec=k_tspf_sec_q7[(uint16_t)(rel<0?-rel:rel)];q=(q*sec+64u)>>7;return (uint8_t)(q>255u?255u:q);
@@ -201,14 +201,17 @@ static uint8_t inv_at(uint8_t sid,uint8_t anchor,uint16_t world_bearing,int16_t 
 static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else if(inv>=46u)s=1;else s=0;s=(int8_t)(s+bias);if(s<0)s=0;if(s>2)s=2;return (uint8_t)s;}
 
 static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
-    uint16_t w=k_tspf_keys[keyid];uint8_t sid=(uint8_t)(w&31u),v0=(uint8_t)((w>>5)&15u),v1=(uint8_t)((w>>9)&15u);uint16_t a0,a1,len,yawq;int16_t st,en,lo,hi;uint8_t x0,x1;
+    uint16_t w=k_tspf_keys[keyid];uint8_t sid=(uint8_t)(w&31u),v0=(uint8_t)((w>>5)&15u),v1=(uint8_t)((w>>9)&15u);uint16_t a0,a1,len,yawq;int16_t st,en,lo,hi;uint8_t x0,x1,invd;
     a0=bearing_vertex_q12(v0,s);
     a1=bearing_vertex_q12(v1,s);
     len=(uint16_t)((a1-a0)&4095u);if(len==0u||len>=2048u)return 0u;yawq=(uint16_t)s->yaw<<4;st=signed_q12((uint16_t)(a0-yawq));en=(int16_t)(st+(int16_t)len);
     while(en<-512){st=(int16_t)(st+4096);en=(int16_t)(en+4096);}while(st>512){st=(int16_t)(st-4096);en=(int16_t)(en-4096);}
     lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo)return 0u;x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
     r->key_id=keyid;r->sid=sid;r->v0=v0;r->v1=v1;r->lo_q12=lo;r->hi_q12=hi;r->x0=x0;r->x1=x1;r->left_real=(uint8_t)(lo==st);r->right_real=(uint8_t)(hi==en);
-    r->inv0=inv_at(sid,k_tspf_seg_anchor[sid],(uint16_t)(yawq+lo)&4095u,lo,s);r->inv1=inv_at(sid,k_tspf_seg_anchor[sid],(uint16_t)(yawq+hi)&4095u,hi,s);r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);return 1u;
+    invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
+    r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+lo)&4095u,lo);
+    r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+hi)&4095u,hi);
+    r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);return 1u;
 }
 
 static uint16_t edge_entry(uint8_t shade,int16_t local_left,int8_t slope,uint8_t bottom){
