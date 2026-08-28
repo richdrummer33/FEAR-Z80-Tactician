@@ -347,8 +347,10 @@ polar_cov_last_ready$:
         jr      z, polar_cov_emit$
         jr      polar_cov_done$
 polar_cov_emit$:
-        call    polar_mark_span_fast$   ; lifetime coverage only in overwrite A/B
+        call    polar_mark_span_fast$   ; returns A=OR of previously-unclaimed rows
 _tsp_polar_p_span::
+        or      a
+        jp      z, raster_done$         ; nearer geometry already owns whole span
 polar_cov_done$:
 
         ; FULL is exact hardware symmetry: calculate each top edge word once
@@ -437,10 +439,20 @@ draw_symfull_edge_pair$:
         sub     c
         ld      (#r_sym_bottom_row$), a
 
-        ; WRAM-overwrite A/B: no per-row ownership query. Both final shadow
-        ; stores happen in RAM; nearer geometry overwrites later before VBlank.
+        ; Check both mirrored rows before paying for the LUT lookup.
+        ld      a, c
+        call    polar_row_unclaimed_fast$
 _tsp_polar_p_symtop::
+        ld      (#r_sym_top_draw$), a
+        ld      a, (#r_sym_bottom_row$)
+        call    polar_row_unclaimed_fast$
 _tsp_polar_p_symbot::
+        ld      (#r_sym_bot_draw$), a
+        ld      c, a
+        ld      a, (#r_sym_top_draw$)
+        or      c
+        ret     z
+
         ; Top local coordinate and canonical top-edge LUT index.
         ld      a, (#r_row$)
         add     a, a
@@ -506,9 +518,16 @@ sym_edge_shade_two$:
 sym_edge_word_ready$:
         ld      (#r_sym_word$), de
 
+        ld      a, (#r_sym_top_draw$)
+        or      a
+        jr      z, sym_skip_top_store$
         ld      de, (#r_sym_word$)
         ld      a, (#r_row$)
         call    sym_store_word$
+sym_skip_top_store$:
+        ld      a, (#r_sym_bot_draw$)
+        or      a
+        ret     z
         ld      de, (#r_sym_word$)
         ld      a, d
         or      #0x0c                  ; VFLIP | palette 1
@@ -613,9 +632,14 @@ edge_after_first$:
         cp      c
         ret     c
 
-        ; WRAM-overwrite A/B: materialize directly; later nearer surfaces own
-        ; the final shadow word before VBlank upload.
+        ; Near->far fast path: only rows that were unclaimed before this
+        ; surface entered may materialize. Same-surface top/bottom overlap is
+        ; intentionally allowed because the mask is not consumed per subdraw.
+        ld      a, (#r_row$)
+        call    polar_row_unclaimed_fast$
 _tsp_polar_p_edge::
+        ret     z
+
         ; local = left_y - row*8; low-byte arithmetic is exact in this range.
         ld      a, c
         add     a, a
@@ -731,7 +755,10 @@ full_first_ok$:
         ld      a, (#r_clip_last$)
         cp      c
         ret     c
+        ld      a, (#r_row$)
+        call    polar_row_unclaimed_fast$
 _tsp_polar_p_cap::
+        ret     z
         ld      a, (#r_row$)
         call    map_ptr_row_col$
         call    full_tile_low$
@@ -814,7 +841,12 @@ interior_multi$:
         call    full_tile_low$
         ld      (#r_full_tile$), a
 interior_loop$:
+        push    hl
+        ld      a, (#r_row$)
+        call    polar_row_unclaimed_fast$
 _tsp_polar_p_fill::
+        pop     hl
+        jr      z, polar_interior_done$
         ld      a, (#r_full_tile$)
         ld      e, a
         ld      d, #0
@@ -941,13 +973,21 @@ polar_mark_span_fast$:
         ex      de, hl
         pop     hl
 
-        ; span=prefix[after]^prefix[first], then OR into current lifetime.
+        ; For each byte: span=after^before; unclaimed=span&~old;
+        ; current coverage becomes old|span.
         ld      a, (hl)
         ld      c, a
         ld      a, (#r_cov_p0$)
         xor     c
+        ld      c, a                   ; C=span0
         ex      de, hl
-        or      (hl)
+        ld      a, (hl)
+        ld      (#r_cov_old$), a
+        cpl
+        and     c
+        ld      (#r_unclaimed0$), a
+        ld      a, (#r_cov_old$)
+        or      c
         ld      (hl), a
         inc     hl
         ex      de, hl
@@ -957,8 +997,15 @@ polar_mark_span_fast$:
         ld      c, a
         ld      a, (#r_cov_p1$)
         xor     c
+        ld      c, a
         ex      de, hl
-        or      (hl)
+        ld      a, (hl)
+        ld      (#r_cov_old$), a
+        cpl
+        and     c
+        ld      (#r_unclaimed1$), a
+        ld      a, (#r_cov_old$)
+        or      c
         ld      (hl), a
         inc     hl
         ex      de, hl
@@ -968,9 +1015,24 @@ polar_mark_span_fast$:
         ld      c, a
         ld      a, (#r_cov_p2$)
         xor     c
+        ld      c, a
         ex      de, hl
-        or      (hl)
+        ld      a, (hl)
+        ld      (#r_cov_old$), a
+        cpl
+        and     c
+        ld      (#r_unclaimed2$), a
+        ld      a, (#r_cov_old$)
+        or      c
         ld      (hl), a
+
+        ld      a, (#r_unclaimed0$)
+        ld      c, a
+        ld      a, (#r_unclaimed1$)
+        or      c
+        ld      c, a
+        ld      a, (#r_unclaimed2$)
+        or      c                       ; return NZ if anything new is visible
         ret
 
 ; A=row 0..17. Return A!=0/Z=0 only when this row was unclaimed before the
