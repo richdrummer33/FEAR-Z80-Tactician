@@ -47,7 +47,7 @@ jobs:
             esac
             rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/gg-tilesector-polar.*
             make GBDK_HOME="$PWD/.toolchain/gbdk" \
-              POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION="$localproj" \
+              POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION="$localproj" \
               POLAR_PROJ_THRESHOLD="$threshold" POLAR_PROJ_ROWS_PER_BANK="$rows" \
               POLAR_PROJ_BANK_COUNT="$banks" POLAR_ROM_BANKS="$rombanks" \
               TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u -DTSP_CAPTURE_MOTION=${motion}" \
