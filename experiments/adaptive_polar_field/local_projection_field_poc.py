@@ -190,6 +190,81 @@ def corner_uniform_depth(d,v,gx,gy,thr,minq):
     return None,float("inf")
 
 
+
+def shr0(v,shift):
+    """Signed power-of-two divide rounded toward zero, matching renderer style."""
+    if v>=0:return v>>shift
+    return -((-v)>>shift)
+
+
+def quant_leaf_record(d,v,gx,gy,x0,x1,y0,y1):
+    """Return (base_q12, span_dx_q12, span_dy_q12) or None if int8 slope won't fit.
+
+    The slope bytes represent total Q12 change across the power-of-two leaf span.
+    Runtime reconstruction is only:
+        base + (sx*local_x >> shift) + (sy*local_y >> shift)
+    using two signed 8x8 multiplies and shifts; no atan/reciprocal.
+    """
+    f=fit(d,v,gx,gy,x0,x1,y0,y1)
+    if f.bad:return None
+    span=x1-x0
+    if span<=0 or span!=(y1-y0) or (span & (span-1)):return None
+    cx=(x0+x1-1)*.5;cy=(y0+y1-1)*.5
+    # Intercept of the center-derived plane at this leaf's local origin.
+    intercept=f.base + f.dx*(x0-cx) + f.dy*(y0-cy)
+    sx=round(f.dx*span);sy=round(f.dy*span)
+    if sx < -127 or sx > 127 or sy < -127 or sy > 127:return None
+    return int(round(intercept))&4095,int(sx),int(sy)
+
+
+def quant_leaf_error(d,v,gx,gy,x0,x1,y0,y1):
+    q=quant_leaf_record(d,v,gx,gy,x0,x1,y0,y1)
+    if q is None:return float("inf"),True
+    base,sx,sy=q;span=x1-x0;shift=span.bit_length()-1;worst=0.0
+    for x in range(x0,x1):
+      for y in range(y0,y1):
+        exact=bearing(d.vx[v],d.vy[v],gx*CELL_Q4+x,gy*CELL_Q4+y)
+        if math.isnan(exact):return float("inf"),True
+        pred=base+shr0(sx*(x-x0),shift)+shr0(sy*(y-y0),shift)
+        worst=max(worst,abs(wrap(exact-pred)))
+    return worst,False
+
+
+def corner_quant_depth(d,v,gx,gy,thr,minq):
+    maxdepth=0;size=CELL_Q4
+    while size>minq:maxdepth+=1;size//=2
+    for dep in range(maxdepth+1):
+        n=1<<dep;step=CELL_Q4//n;worst=0.0;ok=True
+        for yy in range(n):
+          for xx in range(n):
+            e,b=quant_leaf_error(d,v,gx,gy,xx*step,(xx+1)*step,yy*step,(yy+1)*step)
+            worst=max(worst,e)
+            if b or e>thr+1e-9:ok=False;break
+          if not ok:break
+        if ok:return dep,worst
+    return None,float("inf")
+
+
+def analyse_quantized_pack(d,thr,minq):
+    cells=[]
+    for gy in range(GRID_H):
+      for gx in range(GRID_W):
+        c,segs=relevant(d,gx,gy)
+        if c:cells.append((gx,gy,c,segs))
+    hist={};fallback=0;leaves=0;worst=0.0;corner_count=0
+    for gx,gy,corners,_ in cells:
+      for v in corners:
+        corner_count+=1
+        dep,e=corner_quant_depth(d,v,gx,gy,thr,minq)
+        if dep is None:fallback+=1;continue
+        hist[dep]=hist.get(dep,0)+1
+        leaves+=4**dep;worst=max(worst,e)
+    # Same concrete pack as the float estimate: cell offsets + 14-bit corner
+    # presence mask + one mode byte/corner + one 4-byte quantized leaf record.
+    pack=(GRID_W*GRID_H*2)+(len(cells)*2)+corner_count+leaves*4
+    return cells,corner_count,fallback,leaves,hist,worst,pack
+
+
 def analyse_per_corner_uniform(d,thr,minq):
     cells=[]
     for gy in range(GRID_H):
@@ -254,6 +329,15 @@ def main():
     print(f"  concrete straw-pack={pack} bytes (includes full 1152x uint16 cell-offset table)")
     print(f"  exhaustive worst accepted={worst:.3f} Q12")
     print("NOTE: per-corner refinement avoids duplicating nine-ish smooth corners because one nearby corner is nonlinear.")
-    print("Fallback corner records are exactly where smaller cells or exact special handling belong; they are not ordinary runtime-general-math justification.")
+
+    qcells,qcorners,qfb,qleaves,qhist,qworst,qpack=analyse_quantized_pack(d,target,a.min_q4)
+    print()
+    print(f"quantized runtime-shaped pack @ {target:g} Q12:")
+    print("  leaf = baseQ12:uint16 + span-dx:int8 + span-dy:int8")
+    print("  reconstruction = base + (dx*local_x >> log2(span)) + (dy*local_y >> log2(span))")
+    print(f"  cells={len(qcells)} corner-records={qcorners} fallback-corners={qfb}")
+    print(f"  depth histogram={dict(sorted(qhist.items()))}; affine leaves={qleaves}; concrete pack={qpack} bytes")
+    print(f"  exhaustive worst accepted={qworst:.3f} Q12")
+    print("Fallback corner records are exactly where smaller cells or exact special handling belongs; they are not ordinary runtime-general-math justification.")
 
 if __name__=="__main__":main()
