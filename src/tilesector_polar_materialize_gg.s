@@ -158,7 +158,18 @@ prep_slope$:
         ex      de, hl                  ; HL=right, DE=left
         or      a
         sbc     hl, de
-        ld      a, l                    ; guaranteed -7..+7
+        ld      a, l                    ; signed slope, clamp exactly like C
+        bit     7, a
+        jr      nz, slope_negative$
+        cp      #8
+        jr      c, slope_store$
+        ld      a, #7
+        jr      slope_store$
+slope_negative$:
+        cp      #0xF9                  ; -7
+        jr      nc, slope_store$
+        ld      a, #0xF9
+slope_store$:
         ld      (#r_edge_slope$), a
         ld      a, (#r_edge_min$)
         call    draw_edge_row$
