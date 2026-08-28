@@ -149,14 +149,26 @@ static uint8_t selector_pass(uint8_t sid,uint8_t lx,uint8_t ly){
     return (uint8_t)(((v>=0)?1u:0u)^k_tspf_sel_inv[sid]);
 }
 
+/* Exact modulo-8-bit equivalent of ((uint32_t)n*recip_q16 + 128)>>8,
+ * decomposed into two 8x8->16 products so SDCC never pulls __mullong. */
+static uint8_t ratio_q8_exact(uint8_t n,uint8_t d){
+    uint16_t rec,p_lo,p_hi,q;
+    if(!d)return 0u;
+    rec=k_tspf_recip8_q16[d];
+    p_lo=(uint16_t)n*(uint8_t)rec;
+    p_hi=(uint16_t)n*(uint8_t)(rec>>8);
+    q=(uint16_t)(p_hi+((p_lo+128u)>>8));
+    return (uint8_t)q;
+}
+
 static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4){
     uint8_t sx,sy,ax8,ay8,ratio;uint16_t ax,ay,a;
     if(dxq4==0&&dyq4==0)return 0u;
     sx=(uint8_t)(dxq4<0);sy=(uint8_t)(dyq4<0);ax=(uint16_t)(dxq4<0?-dxq4:dxq4);ay=(uint16_t)(dyq4<0?-dyq4:dyq4);
     while(ax>255u||ay>255u){ax=(uint16_t)((ax+1u)>>1);ay=(uint16_t)((ay+1u)>>1);}
     ax8=(uint8_t)ax;ay8=(uint8_t)ay;
-    if(ax8>=ay8){ratio=ax8? (uint8_t)((((uint32_t)ay8*k_tspf_recip8_q16[ax8])+128u)>>8):0u;a=k_tspf_atan_q12[ratio];}
-    else {ratio=ay8? (uint8_t)((((uint32_t)ax8*k_tspf_recip8_q16[ay8])+128u)>>8):0u;a=(uint16_t)(1024u-k_tspf_atan_q12[ratio]);}
+    if(ax8>=ay8){ratio=ratio_q8_exact(ay8,ax8);a=k_tspf_atan_q12[ratio];}
+    else {ratio=ratio_q8_exact(ax8,ay8);a=(uint16_t)(1024u-k_tspf_atan_q12[ratio]);}
     if(sx) a=(uint16_t)(2048u-a);
     if(sy) a=(uint16_t)(0u-a);
     return (uint16_t)(a&4095u);
