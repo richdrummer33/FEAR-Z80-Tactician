@@ -107,8 +107,8 @@ static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4){
     sx=(uint8_t)(dxq4<0);sy=(uint8_t)(dyq4<0);ax=(uint16_t)(dxq4<0?-dxq4:dxq4);ay=(uint16_t)(dyq4<0?-dyq4:dyq4);
     while(ax>255u||ay>255u){ax=(uint16_t)((ax+1u)>>1);ay=(uint16_t)((ay+1u)>>1);}
     ax8=(uint8_t)ax;ay8=(uint8_t)ay;
-    if(ax8>=ay8){ratio=ax8? (uint8_t)((uint16_t)ay8*k_tspf_recip8_q8[ax8]):0u;a=k_tspf_atan_q12[ratio];}
-    else {ratio=ay8? (uint8_t)((uint16_t)ax8*k_tspf_recip8_q8[ay8]):0u;a=(uint16_t)(1024u-k_tspf_atan_q12[ratio]);}
+    if(ax8>=ay8){ratio=ax8? (uint8_t)((((uint32_t)ay8*k_tspf_recip8_q16[ax8])+128u)>>8):0u;a=k_tspf_atan_q12[ratio];}
+    else {ratio=ay8? (uint8_t)((((uint32_t)ax8*k_tspf_recip8_q16[ay8])+128u)>>8):0u;a=(uint16_t)(1024u-k_tspf_atan_q12[ratio]);}
     if(sx) a=(uint16_t)(2048u-a);
     if(sy) a=(uint16_t)(0u-a);
     return (uint16_t)(a&4095u);
