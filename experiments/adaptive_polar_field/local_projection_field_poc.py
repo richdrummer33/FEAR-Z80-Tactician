@@ -154,6 +154,73 @@ def analyse(d,thr,minq,do_ex):
     pack=2*len(leaves)+4*records
     return cells,leaves,fallback,records,maxdepth,worst,fails,pack
 
+
+def corner_uniform_depth(d,v,gx,gy,thr,minq):
+    """Choose a simple regular 1x1/2x2/4x4/8x8 coefficient grid for ONE corner.
+
+    This is deliberately different from shared-cell refinement: one nearby
+    nonlinear corner must not force all other smooth corners in the cell to
+    duplicate their coefficients.
+    """
+    maxdepth=0
+    size=CELL_Q4
+    while size>minq:
+        maxdepth+=1;size//=2
+
+    for dep in range(maxdepth+1):
+        n=1<<dep; step=CELL_Q4//n; sampled_ok=True
+        for yy in range(n):
+          for xx in range(n):
+            e,b=sample_err(d,v,gx,gy,xx*step,(xx+1)*step,yy*step,(yy+1)*step)
+            if b or e>thr:
+                sampled_ok=False;break
+          if not sampled_ok:break
+        if not sampled_ok:continue
+
+        # Validate the selected regular depth exhaustively before accepting.
+        exhaustive_ok=True; worst=0.0
+        for yy in range(n):
+          for xx in range(n):
+            leaf=Leaf(gx,gy,xx*step,(xx+1)*step,yy*step,(yy+1)*step,(v,),dep,False,0.0)
+            e,b=exhaustive(d,leaf);worst=max(worst,e)
+            if b or e>thr+1e-9:
+                exhaustive_ok=False;break
+          if not exhaustive_ok:break
+        if exhaustive_ok:return dep,worst
+    return None,float("inf")
+
+
+def analyse_per_corner_uniform(d,thr,minq):
+    cells=[]
+    for gy in range(GRID_H):
+      for gx in range(GRID_W):
+        c,segs=relevant(d,gx,gy)
+        if c:cells.append((gx,gy,c,segs))
+
+    depth_hist={}
+    fallback=0
+    leaf_records=0
+    worst=0.0
+    corner_count=0
+    for gx,gy,corners,_ in cells:
+      for v in corners:
+        corner_count+=1
+        dep,e=corner_uniform_depth(d,v,gx,gy,thr,minq)
+        if dep is None:
+            fallback+=1
+            continue
+        depth_hist[dep]=depth_hist.get(dep,0)+1
+        leaf_records+=4**dep
+        worst=max(worst,e)
+
+    # Concrete straw-pack for a runtime-friendly representation:
+    # - uint16 cell offset for the complete 48x24 grid,
+    # - uint16 present-corner mask for each non-empty cell,
+    # - one byte mode/depth for each relevant corner,
+    # - 4 bytes per affine coefficient leaf (base16 + dx8 + dy8).
+    bytes_est=(GRID_W*GRID_H*2)+(len(cells)*2)+corner_count+(leaf_records*4)
+    return cells,corner_count,fallback,leaf_records,depth_hist,worst,bytes_est
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--thresholds",default="2,4,8")
@@ -165,14 +232,28 @@ def main():
     print(f"1 Q12 bearing ~= {EDGE_PX_PER_Q12:.3f}px at FOV edge")
     print("bearing model: local affine base+dx*x+dy*y; split cell where nonlinear")
     print("range observation: straight-wall plane distance is exactly affine in camera x/y; bearing is the nonlinear field.")
-    for raw in a.thresholds.split(","):
-        t=float(raw);cells,leaves,fb,rec,md,worst,fails,pack=analyse(d,t,a.min_q4,not a.no_exhaustive)
+    thresholds=[float(x) for x in a.thresholds.split(",")]
+    for t in thresholds:
+        cells,leaves,fb,rec,md,worst,fails,pack=analyse(d,t,a.min_q4,not a.no_exhaustive)
         avgc=sum(len(c) for _,_,c,_ in cells)/max(1,len(cells))
         avgl=len(leaves)/max(1,len(cells))
-        segrefs=sum(len(s) for *_,s in cells)
-        print(f"threshold={t:g} Q12 (~{t*EDGE_PX_PER_Q12:.2f}px edge): cells={len(cells)} leaves={len(leaves)} avg-leaves/cell={avgl:.2f} max-depth={md} fallback={fb}")
+        segrefs=sum(len(ss) for *_,ss in cells)
+        print(f"shared-refine threshold={t:g} Q12 (~{t*EDGE_PX_PER_Q12:.2f}px edge): cells={len(cells)} leaves={len(leaves)} avg-leaves/cell={avgl:.2f} max-depth={md} fallback={fb}")
         print(f"  relevant corners/cell={avgc:.2f}; segment-refs={segrefs}; corner-coeff-records={rec}; rough-pack={pack} bytes")
         print(f"  exhaustive worst accepted={worst:.3f} Q12; validation-fail-leaves={fails}")
-    print("NOTE: fallback leaves are exactly where adaptive refinement/exact special handling belongs; they are not ordinary runtime-general-math justification.")
+
+    # The more hardware-useful pack: refine each corner independently, using an
+    # implicit regular subgrid so runtime leaf selection is just local coordinate
+    # high bits. Run the middle requested threshold by default.
+    target=thresholds[len(thresholds)//2]
+    cells,corner_count,fb,leaf_records,hist,worst,pack=analyse_per_corner_uniform(d,target,a.min_q4)
+    print()
+    print(f"per-corner regular refinement @ {target:g} Q12 (~{target*EDGE_PX_PER_Q12:.2f}px edge):")
+    print(f"  cells={len(cells)} relevant-corner records={corner_count} fallback-corners={fb}")
+    print(f"  depth histogram={dict(sorted(hist.items()))}; affine leaves={leaf_records}")
+    print(f"  concrete straw-pack={pack} bytes (includes full 1152x uint16 cell-offset table)")
+    print(f"  exhaustive worst accepted={worst:.3f} Q12")
+    print("NOTE: per-corner refinement avoids duplicating nine-ish smooth corners because one nearby corner is nonlinear.")
+    print("Fallback corner records are exactly where smaller cells or exact special handling belong; they are not ordinary runtime-general-math justification.")
 
 if __name__=="__main__":main()
