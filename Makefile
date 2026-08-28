@@ -32,7 +32,7 @@ POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOK
 ifeq ($(POLAR_PROFILE_HOOKS),0)
 POLAR_VRAM_OBJ := build/tilesector_polar_vram_raw_gg.o
 else
-POLAR_VRAM_OBJ := build/tilesector_vram_gg.o
+POLAR_VRAM_OBJ := build/tilesector_polar_vram_profiled_gg.o
 endif
 POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_frame_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_VRAM_OBJ)
 
@@ -129,6 +129,9 @@ build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_materialize_gg.o: src/tilesector_polar_materialize_gg.s | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+
+build/tilesector_polar_vram_profiled_gg.o: src/tilesector_polar_vram_profiled_gg.s | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_vram_raw_gg.o: src/tilesector_polar_vram_raw_gg.s | build
