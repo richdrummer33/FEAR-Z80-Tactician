@@ -40,7 +40,7 @@ jobs:
                     build/gg-tilesector-polar.*
               make GBDK_HOME="$PWD/.toolchain/gbdk" \
                 POLAR_PROFILE_HOOKS="$hooks" \
-                TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=$modeu" \
+                TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=${mode}u" \
                 gg-tilesector-polar 2>&1 | tee "build/polar-modes/build-$label-mode$mode.txt"
               for ext in gg sym map noi cdb ihx; do
                 if [ -f "build/gg-tilesector-polar.$ext" ]; then
