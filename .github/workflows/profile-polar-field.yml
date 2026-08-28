@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/gg-tilesector-polar-field
+      - feature/gg-tilesector-polar-field--hardware-fit-recovery
   workflow_dispatch:
 
 jobs:
