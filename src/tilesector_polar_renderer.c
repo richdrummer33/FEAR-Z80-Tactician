@@ -197,10 +197,12 @@ static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4);
 
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 static void projection_load_cell(uint8_t gx,uint8_t gy,uint16_t gi){
-    uint16_t local=(uint16_t)((uint16_t)(gy&3u)*48u+gx);
+    uint16_t local;
     const uint8_t *p;
     uint16_t mask;
     uint8_t v,d;
+#if TSPF_PROJ_ROWS_PER_BANK == 4u && TSPF_PROJ_BANK_COUNT == 6u
+    local=(uint16_t)((uint16_t)(gy&3u)*48u+gx);
     switch(gy>>2){
         case 0u:tsp_polar_proj_load_bank0(local,g_proj_cell);break;
         case 1u:tsp_polar_proj_load_bank1(local,g_proj_cell);break;
@@ -209,6 +211,40 @@ static void projection_load_cell(uint8_t gx,uint8_t gy,uint16_t gi){
         case 4u:tsp_polar_proj_load_bank4(local,g_proj_cell);break;
         default:tsp_polar_proj_load_bank5(local,g_proj_cell);break;
     }
+#elif TSPF_PROJ_ROWS_PER_BANK == 1u && TSPF_PROJ_BANK_COUNT == 24u
+    /* Diagnostic layout: one world-grid row per ROM source.  This lets us
+     * measure much tighter global error thresholds without pretending the
+     * resulting ROM footprint is a production recommendation. */
+    local=gx;
+    switch(gy){
+        case 0u:tsp_polar_proj_load_bank0(local,g_proj_cell);break;
+        case 1u:tsp_polar_proj_load_bank1(local,g_proj_cell);break;
+        case 2u:tsp_polar_proj_load_bank2(local,g_proj_cell);break;
+        case 3u:tsp_polar_proj_load_bank3(local,g_proj_cell);break;
+        case 4u:tsp_polar_proj_load_bank4(local,g_proj_cell);break;
+        case 5u:tsp_polar_proj_load_bank5(local,g_proj_cell);break;
+        case 6u:tsp_polar_proj_load_bank6(local,g_proj_cell);break;
+        case 7u:tsp_polar_proj_load_bank7(local,g_proj_cell);break;
+        case 8u:tsp_polar_proj_load_bank8(local,g_proj_cell);break;
+        case 9u:tsp_polar_proj_load_bank9(local,g_proj_cell);break;
+        case 10u:tsp_polar_proj_load_bank10(local,g_proj_cell);break;
+        case 11u:tsp_polar_proj_load_bank11(local,g_proj_cell);break;
+        case 12u:tsp_polar_proj_load_bank12(local,g_proj_cell);break;
+        case 13u:tsp_polar_proj_load_bank13(local,g_proj_cell);break;
+        case 14u:tsp_polar_proj_load_bank14(local,g_proj_cell);break;
+        case 15u:tsp_polar_proj_load_bank15(local,g_proj_cell);break;
+        case 16u:tsp_polar_proj_load_bank16(local,g_proj_cell);break;
+        case 17u:tsp_polar_proj_load_bank17(local,g_proj_cell);break;
+        case 18u:tsp_polar_proj_load_bank18(local,g_proj_cell);break;
+        case 19u:tsp_polar_proj_load_bank19(local,g_proj_cell);break;
+        case 20u:tsp_polar_proj_load_bank20(local,g_proj_cell);break;
+        case 21u:tsp_polar_proj_load_bank21(local,g_proj_cell);break;
+        case 22u:tsp_polar_proj_load_bank22(local,g_proj_cell);break;
+        default:tsp_polar_proj_load_bank23(local,g_proj_cell);break;
+    }
+#else
+#error Unsupported Polar projection bank partition
+#endif
     p=g_proj_cell;
     mask=(uint16_t)p[0]|((uint16_t)p[1]<<8);p+=2;
     g_proj_fallback_mask=0u;
