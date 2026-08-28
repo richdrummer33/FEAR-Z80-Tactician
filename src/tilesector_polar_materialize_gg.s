@@ -840,12 +840,51 @@ interior_multi$:
         call    map_ptr_row_col$
         call    full_tile_low$
         ld      (#r_full_tile$), a
+
+        ; POLAR_INTERIOR_CLAIM_WALKER: the interior is one contiguous row run.
+        ; Resolve ownership byte + starting bit ONCE, then carry the bit down
+        ; the run instead of re-addressing r_unclaimed0/1/2 for every row.
+        ld      a, (#r_fill_first$)
+        and     #7
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_dirty_mask_lut$
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_fill_claim_bit$), a
+
+        ld      a, (#r_fill_first$)
+        cp      #8
+        jr      c, interior_claim_group0$
+        cp      #16
+        jr      c, interior_claim_group1$
+        ld      a, (#r_unclaimed2$)
+        ld      (#r_fill_claim_byte$), a
+        ld      a, #2
+        jr      interior_claim_init_done$
+interior_claim_group1$:
+        ld      a, (#r_unclaimed1$)
+        ld      (#r_fill_claim_byte$), a
+        ld      a, #1
+        jr      interior_claim_init_done$
+interior_claim_group0$:
+        ld      a, (#r_unclaimed0$)
+        ld      (#r_fill_claim_byte$), a
+        xor     a
+interior_claim_init_done$:
+        ld      (#r_fill_claim_group$), a
+
+        ; map_ptr_row_col$ used HL; rebuild the first destination once after
+        ; the one-time ownership setup. The hot row loop then advances HL by 40.
+        ld      a, (#r_fill_first$)
+        call    map_ptr_row_col$
+
 interior_loop$:
-        push    hl
-        ld      a, (#r_row$)
-        call    polar_row_unclaimed_fast$
+        ld      a, (#r_fill_claim_byte$)
+        ld      e, a
+        ld      a, (#r_fill_claim_bit$)
+        and     e
 _tsp_polar_p_fill::
-        pop     hl
         jr      z, polar_interior_done$
         ld      a, (#r_full_tile$)
         ld      e, a
@@ -873,6 +912,33 @@ polar_interior_done$:
         ld      a, (#r_row$)
         inc     a
         ld      (#r_row$), a
+
+        ; Carry ownership bit to the next row. Crossing row 7/15 swaps in the
+        ; next already-computed unclaimed byte; no row->mask lookup in the loop.
+        ld      a, (#r_fill_claim_bit$)
+        add     a, a
+        jr      nz, interior_claim_bit_ready$
+        ld      a, #1
+        ld      (#r_fill_claim_bit$), a
+        ld      a, (#r_fill_claim_group$)
+        inc     a
+        ld      (#r_fill_claim_group$), a
+        cp      #1
+        jr      z, interior_claim_load1$
+        cp      #2
+        jr      z, interior_claim_load2$
+        jr      interior_claim_advance_done$
+interior_claim_load1$:
+        ld      a, (#r_unclaimed1$)
+        ld      (#r_fill_claim_byte$), a
+        jr      interior_claim_advance_done$
+interior_claim_load2$:
+        ld      a, (#r_unclaimed2$)
+        ld      (#r_fill_claim_byte$), a
+        jr      interior_claim_advance_done$
+interior_claim_bit_ready$:
+        ld      (#r_fill_claim_bit$), a
+interior_claim_advance_done$:
         dec     c
         jr      nz, interior_loop$
         ret
@@ -1324,6 +1390,12 @@ r_cap_delta$:
 r_fill_first$:
         .ds     1
 r_full_tile$:
+        .ds     1
+r_fill_claim_bit$:
+        .ds     1
+r_fill_claim_byte$:
+        .ds     1
+r_fill_claim_group$:
         .ds     1
 r_cov_first$:
         .ds     1
