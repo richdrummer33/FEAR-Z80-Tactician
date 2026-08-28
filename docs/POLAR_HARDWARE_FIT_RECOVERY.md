@@ -77,3 +77,15 @@ No chain of small commits without a whole-frame anchor. After each experiment re
 - whether the result supports or falsifies the hypothesis.
 
 Twenty unique rendered updates/s remains about **179K T/update**. Work that cannot plausibly move us toward that scale is support work, not the main campaign.
+
+### Interior ownership bit-walker - REJECTED
+
+The first-owner path rejects only about 9.5% of interior-row ownership checks, so we tested carrying one ownership bit through the contiguous fill instead of re-addressing the 3-byte unclaimed mask each row.
+
+It was behaviorally exact but slower:
+
+- Winning near-first baseline: **561,014 T/update**.
+- Carried-bit experiment: **564,001 T/update**.
+- Net: **+2,987 T/update / +0.53% slower**.
+
+The one-time setup/rebuild cost exceeded the saved per-row addressing on this 20-column workload. Do not keep sanding this 12K-ish class of bookkeeping; return to the missing pre-baked projection architecture.
