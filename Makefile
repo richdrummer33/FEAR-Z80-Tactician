@@ -42,7 +42,7 @@ POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_raw_gg.o
 else
 POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_profiled_gg.o
 endif
-POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ) $(POLAR_PROJ_OBJS)
+POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_projection_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ) $(POLAR_PROJ_OBJS)
 
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # Speed bias is cheap enough for normal iteration. GBDK's documented
@@ -148,6 +148,9 @@ build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
 	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_materialize_gg.o: src/tilesector_polar_materialize_gg.s | build
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
+
+build/tilesector_polar_projection_gg.o: src/tilesector_polar_projection_gg.s | build
 	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_ntstate_gg.o: src/tilesector_polar_ntstate_gg.s | build
