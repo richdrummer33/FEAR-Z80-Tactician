@@ -24,6 +24,7 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifdef __SDCC
 void tsp_polar_begin_map_fast(void);
 void tsp_polar_surface_column_fast(void);
+void tsp_polar_run_geometry_fast(void);
 /* Explicit assembly bridge symbols. No C struct layout and no implicit
  * register-argument ABI: the Z80 materializer reads these exact globals. */
 uint8_t g_polar_mat_col;
@@ -33,6 +34,16 @@ int16_t g_polar_mat_top_l;
 int16_t g_polar_mat_top_r;
 int16_t g_polar_mat_bot_l;
 int16_t g_polar_mat_bot_r;
+
+/* One-call geometry-run bridge. C computes only run bounds and the Q6 depth
+ * increment; Z80 walks every coarse column and materializes it directly. */
+uint8_t g_polar_run_c0;
+uint8_t g_polar_run_c1;
+uint8_t g_polar_run_profile;
+uint8_t g_polar_run_left_real;
+uint8_t g_polar_run_right_real;
+int16_t g_polar_run_iq;
+int16_t g_polar_run_step;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
@@ -244,6 +255,15 @@ static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t
 }
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c,profile=k_tspf_profile[r->sid];int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);iq=(int16_t)r->inv0<<6;step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);step=shr_signed(step,2);
+#ifdef __SDCC
+    if(g_tspf_appearance_mode==0u){
+        g_polar_run_c0=c0;g_polar_run_c1=c1;g_polar_run_profile=profile;
+        g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
+        g_polar_run_iq=iq;g_polar_run_step=step;
+        tsp_polar_run_geometry_fast();
+        return;
+    }
+#endif
     for(c=c0;c<=c1;++c){uint8_t invl=(uint8_t)clamp_u8i((iq+32)>>6,255u),invr=(uint8_t)clamp_u8i((iq+step+32)>>6,255u),mid=(uint8_t)(((uint16_t)invl+invr)>>1),hl=(uint8_t)(invl>>1),hr=(uint8_t)(invr>>1);int16_t tl=(int16_t)(TSPF_HORIZON-hl),tr=(int16_t)(TSPF_HORIZON-hr),bl=(int16_t)(TSPF_HORIZON+hl),br=(int16_t)(TSPF_HORIZON+hr);uint8_t border=0,shade,edge_shade;
         if(c==c0&&r->left_real) border|=1u;
         if(c==c1&&r->right_real) border|=2u;
