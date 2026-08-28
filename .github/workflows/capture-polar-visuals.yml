@@ -1,0 +1,109 @@
+name: Polar visual Q sweep
+
+on:
+  push:
+    branches:
+      - capture/polar-visual-q-sweep
+  workflow_dispatch:
+
+jobs:
+  capture:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build exact and Q4/Q2/Q1 visual ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/visual-roms
+
+          clean_family() {
+            rm -rf build/generated/polar_projection
+            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+                  build/tilesector_polar_renderer_gg.o build/tilesector_polar_projection_gg.o \
+                  build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o \
+                  build/tilesector_polar_ntupload_raw_gg.o build/tilesector_polar_ntupload_profiled_gg.o \
+                  build/tilesector_polar_proj_bank*.o build/gg-tilesector-polar.*
+          }
+
+          build_motion() {
+            label="$1"; motion="$2"; localproj="$3"; threshold="$4"; rows="$5"; banks="$6"; rombanks="$7"
+            case "$motion" in
+              1) scenario=translation ;;
+              2) scenario=rotation ;;
+              3) scenario=mixed ;;
+              *) exit 9 ;;
+            esac
+            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/gg-tilesector-polar.*
+            make GBDK_HOME="$PWD/.toolchain/gbdk" \
+              POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION="$localproj" \
+              POLAR_PROJ_THRESHOLD="$threshold" POLAR_PROJ_ROWS_PER_BANK="$rows" \
+              POLAR_PROJ_BANK_COUNT="$banks" POLAR_ROM_BANKS="$rombanks" \
+              TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u -DTSP_CAPTURE_MOTION=${motion}" \
+              gg-tilesector-polar
+            cp build/gg-tilesector-polar.gg "build/visual-roms/${scenario}-${label}.gg"
+            cp build/gg-tilesector-polar.sym "build/visual-roms/${scenario}-${label}.sym"
+          }
+
+          echo "=== exact reference ==="
+          clean_family
+          for motion in 1 2 3; do build_motion exact "$motion" 0 4 4 6 8; done
+
+          echo "=== Q4 original coarse bake ==="
+          clean_family
+          for motion in 1 2 3; do build_motion q4 "$motion" 1 4 4 6 8; done
+
+          echo "=== Q2 tighter bake ==="
+          clean_family
+          for motion in 1 2 3; do build_motion q2 "$motion" 1 2 1 24 32; done
+
+          echo "=== Q1 tight bake ==="
+          clean_family
+          for motion in 1 2 3; do build_motion q1 "$motion" 1 1 1 24 64; done
+
+          ls -lh build/visual-roms
+
+      - name: Build Gearsystem visual capture runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Capture synchronized rendered-update frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/visual-frames
+          for scenario in translation rotation mixed; do
+            for variant in exact q4 q2 q1; do
+              out="build/visual-frames/${scenario}/${variant}"
+              echo "=== capture ${scenario} / ${variant} ==="
+              ./build/polar_visual_capture \
+                "build/visual-roms/${scenario}-${variant}.gg" \
+                "build/visual-roms/${scenario}-${variant}.sym" \
+                80 4 "$out"
+            done
+          done
+          find build/visual-frames -name 'frame*.ppm' | wc -l
+
+      - name: Upload visual sweep
+        uses: actions/upload-artifact@v4
+        with:
+          name: polar-visual-q-sweep
+          path: |
+            build/visual-roms
+            build/visual-frames
+          compression-level: 9
+          retention-days: 30
