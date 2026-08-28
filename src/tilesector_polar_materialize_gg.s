@@ -107,11 +107,11 @@ run_border_done$:
         ld      c, a
         ld      a, (#_g_polar_run_c1)
         cp      c
-        jr      z, run_geom_done$
+        jp      z, run_geom_done$
         ld      a, c
         inc     a
         ld      (#r_run_col$), a
-        jr      run_geom_loop$
+        jp      run_geom_loop$
 
 run_geom_done$:
         pop     hl
