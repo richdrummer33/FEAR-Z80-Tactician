@@ -28,7 +28,7 @@ TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o buil
 POLAR_TEST_BIN := build/test_tilesector_polar
 POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
-POLAR_CFLAGS := $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS)
+POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS)
 ifeq ($(POLAR_PROFILE_HOOKS),0)
 POLAR_VRAM_OBJ := build/tilesector_polar_vram_raw_gg.o
 else
