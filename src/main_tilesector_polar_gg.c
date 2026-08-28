@@ -60,7 +60,7 @@ static uint8_t read_input(void){
 
 void main(void){
     DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
-    tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=0u;invalidate_map();tsp_polar_render(&g_state,g_map,g_cols);upload_dirty_map();
+    tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;invalidate_map();tsp_polar_render(&g_state,g_map,g_cols);upload_dirty_map();
     g_ts_prof_phase=0u;g_ts_loop_count=0u;g_ts_dirty_words=0u;DISPLAY_ON;
     for(;;){uint8_t input;g_ts_prof_phase=1u;input=read_input();tsp_step(&g_state,input);g_ts_prof_phase=2u;tsp_polar_render(&g_state,g_map,g_cols);g_ts_prof_phase=3u;vsync();g_ts_prof_phase=4u;g_ts_dirty_words=upload_dirty_map();g_ts_prof_phase=5u;++g_ts_loop_count;}
 }
