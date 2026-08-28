@@ -186,16 +186,33 @@ static uint8_t inv_for_dq4(int16_t dq4){
     return (uint8_t)((int16_t)x0+shr_signed((int16_t)(d*(int16_t)f+(d>=0?8:-8)),4));
 }
 static int16_t wall_d_q4(uint8_t sid,uint8_t anchor_vid,const TSPState *s){
-    int16_t xi=(int16_t)(s->x_q4>>4),yi=(int16_t)(s->y_q4>>4);uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
-    int16_t dx=(int16_t)k_tspf_vx[anchor_vid]-xi,dy=(int16_t)k_tspf_vy[anchor_vid]-yi;
-    int16_t whole=(int16_t)k_tspf_nx_q5[sid]*dx+(int16_t)k_tspf_ny_q5[sid]*dy;
-    int16_t frac=(int16_t)k_tspf_nx_q5[sid]*fx+(int16_t)k_tspf_ny_q5[sid]*fy;
-    return (int16_t)(shr_signed(whole,1)-shr_signed(frac,5));
+    int8_t nx=k_tspf_nx_q5[sid],ny=k_tspf_ny_q5[sid];
+    /* Exact cardinal-wall identities. For +/-32 Q5 normals the original
+     * multiply/shift expression reduces to one Q4 coordinate subtraction. */
+    if(ny==0&&(nx==32||nx==-32)){
+        int16_t wall=(int16_t)((int16_t)k_tspf_vx[anchor_vid]<<4);
+        return nx>0?(int16_t)(wall-s->x_q4):(int16_t)(s->x_q4-wall);
+    }
+    if(nx==0&&(ny==32||ny==-32)){
+        int16_t wall=(int16_t)((int16_t)k_tspf_vy[anchor_vid]<<4);
+        return ny>0?(int16_t)(wall-s->y_q4):(int16_t)(s->y_q4-wall);
+    }
+    {
+        int16_t xi=(int16_t)(s->x_q4>>4),yi=(int16_t)(s->y_q4>>4);uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
+        int16_t dx=(int16_t)k_tspf_vx[anchor_vid]-xi,dy=(int16_t)k_tspf_vy[anchor_vid]-yi;
+        int16_t whole=(int16_t)nx*dx+(int16_t)ny*dy;
+        int16_t frac=(int16_t)nx*fx+(int16_t)ny*fy;
+        return (int16_t)(shr_signed(whole,1)-shr_signed(frac,5));
+    }
 }
 static uint8_t inv_at_invd(uint8_t sid,uint8_t invd,uint16_t world_bearing,int16_t rel){
-    uint8_t bi=(uint8_t)(world_bearing>>4);int8_t sn=(int8_t)k_tspf_sin_q7[bi],cs=(int8_t)k_tspf_sin_q7[(uint8_t)(bi+64u)];
-    int16_t dot=(int16_t)k_tspf_nx_q5[sid]*cs+(int16_t)k_tspf_ny_q5[sid]*sn;uint16_t q,sec;
-    dot=shr_signed(dot,5);if(dot<0)dot=(int16_t)-dot;if(dot>127)dot=127;
+    uint8_t bi=(uint8_t)(world_bearing>>4);int8_t sn=(int8_t)k_tspf_sin_q7[bi],cs=(int8_t)k_tspf_sin_q7[(uint8_t)(bi+64u)],nx=k_tspf_nx_q5[sid],ny=k_tspf_ny_q5[sid];int16_t dot;uint16_t q,sec;
+    /* Exact cardinal-normal shortcuts: (+/-32 * trig) >> 5 == +/-trig.
+     * The final magnitude discards normal sign, so no multiply is needed. */
+    if(ny==0&&(nx==32||nx==-32)) dot=cs;
+    else if(nx==0&&(ny==32||ny==-32)) dot=sn;
+    else dot=shr_signed((int16_t)((int16_t)nx*cs+(int16_t)ny*sn),5);
+    if(dot<0)dot=(int16_t)-dot;if(dot>127)dot=127;
     q=((uint16_t)invd*(uint16_t)dot+64u)>>7;sec=k_tspf_sec_q7[(uint16_t)(rel<0?-rel:rel)];q=(q*sec+64u)>>7;return (uint8_t)(q>255u?255u:q);
 }
 static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else if(inv>=46u)s=1;else s=0;s=(int8_t)(s+bias);if(s<0)s=0;if(s>2)s=2;return (uint8_t)s;}
