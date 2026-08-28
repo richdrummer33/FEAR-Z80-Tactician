@@ -22,6 +22,15 @@ struct Range {
     uint64_t entries=0;
 };
 
+struct OwnershipProbe {
+    const char* symbol;
+    const char* label;
+    u16 addr=0;
+    bool found=false;
+    uint64_t checks=0;
+    uint64_t rejected=0;
+};
+
 static bool find_symbol(const char* path,const char* wanted,u16& addr) {
     std::ifstream f(path);
     std::string line;
@@ -128,6 +137,15 @@ int main(int argc,char**argv) {
         std::fprintf(stderr,"phase symbol missing\n"); return 3;
     }
     auto ranges=load_polar_ranges(noi,sym);
+    std::vector<OwnershipProbe> ownership = {
+        {"_tsp_polar_prof_after_span_claim","whole-span"},
+        {"_tsp_polar_prof_after_edge_claim","generic-edge-row"},
+        {"_tsp_polar_prof_after_fullsingle_claim","generic-cap-row"},
+        {"_tsp_polar_prof_after_interior_claim","interior-row"},
+        {"_tsp_polar_prof_after_sym_top_claim","sym-top-row"},
+        {"_tsp_polar_prof_after_sym_bottom_claim","sym-bottom-row"},
+    };
+    for(auto &p:ownership) p.found=find_symbol(sym,p.symbol,p.addr);
 
     GearsystemCore core;
     core.Init(GS_PIXEL_RGBA8888);
@@ -162,6 +180,11 @@ int main(int argc,char**argv) {
         const uint64_t dt=after-before;
 
         if(p_before==2u && loops>=warmup) {
+            const uint8_t reg_a=(uint8_t)(st->AF->GetValue()>>8);
+            for(auto &p:ownership) if(p.found && pc==p.addr) {
+                ++p.checks;
+                if(reg_a==0u) ++p.rejected;
+            }
             total_render_cycles+=dt; ++total_render_ins;
             bool hit=false;
             for(auto &r:ranges) {
@@ -199,5 +222,11 @@ int main(int argc,char**argv) {
                 (double)unassigned_cycles/measured,
                 100.0*(double)unassigned_cycles/total_render_cycles,
                 (unsigned long long)unassigned_ins);
+    std::printf("Polar ownership-mask probes (zero ROM instructions; sampled at exported labels):\n");
+    for(const auto &p:ownership) if(p.found) {
+        const double pct=p.checks?100.0*(double)p.rejected/(double)p.checks:0.0;
+        std::printf("  %-18s checks/update=%7.2f rejected/update=%7.2f reject=%6.2f%%\n",
+                    p.label,(double)p.checks/measured,(double)p.rejected/measured,pct);
+    }
     return 0;
 }

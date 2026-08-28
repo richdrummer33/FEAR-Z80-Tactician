@@ -21,6 +21,12 @@
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
         .globl  _g_map
+        .globl  _tsp_polar_prof_after_span_claim
+        .globl  _tsp_polar_prof_after_edge_claim
+        .globl  _tsp_polar_prof_after_fullsingle_claim
+        .globl  _tsp_polar_prof_after_interior_claim
+        .globl  _tsp_polar_prof_after_sym_top_claim
+        .globl  _tsp_polar_prof_after_sym_bottom_claim
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
@@ -342,6 +348,7 @@ polar_cov_last_ready$:
         jr      polar_cov_done$
 polar_cov_emit$:
         call    polar_mark_span_fast$   ; returns A=OR of previously-unclaimed rows
+_tsp_polar_prof_after_span_claim::
         or      a
         jp      z, raster_done$         ; nearer geometry already owns whole span
 polar_cov_done$:
@@ -435,9 +442,11 @@ draw_symfull_edge_pair$:
         ; Check both mirrored rows before paying for the LUT lookup.
         ld      a, c
         call    polar_row_unclaimed_fast$
+_tsp_polar_prof_after_sym_top_claim::
         ld      (#r_sym_top_draw$), a
         ld      a, (#r_sym_bottom_row$)
         call    polar_row_unclaimed_fast$
+_tsp_polar_prof_after_sym_bottom_claim::
         ld      (#r_sym_bot_draw$), a
         ld      c, a
         ld      a, (#r_sym_top_draw$)
@@ -628,6 +637,7 @@ edge_after_first$:
         ; intentionally allowed because the mask is not consumed per subdraw.
         ld      a, (#r_row$)
         call    polar_row_unclaimed_fast$
+_tsp_polar_prof_after_edge_claim::
         ret     z
 
         ; local = left_y - row*8; low-byte arithmetic is exact in this range.
@@ -747,6 +757,7 @@ full_first_ok$:
         ret     c
         ld      a, (#r_row$)
         call    polar_row_unclaimed_fast$
+_tsp_polar_prof_after_fullsingle_claim::
         ret     z
         ld      a, (#r_row$)
         call    map_ptr_row_col$
@@ -833,6 +844,7 @@ interior_loop$:
         push    hl
         ld      a, (#r_row$)
         call    polar_row_unclaimed_fast$
+_tsp_polar_prof_after_interior_claim::
         pop     hl
         jr      z, polar_interior_done$
         ld      a, (#r_full_tile$)
