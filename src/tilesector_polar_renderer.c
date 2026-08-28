@@ -86,6 +86,7 @@ typedef struct PolarRun {
 } PolarRun;
 
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
+static uint8_t g_run_order[TSPF_MAX_ACTIVE];
 /* Original polar-field design: connected spans share authored corners.
  * Compute each corner bearing at most once per rendered update. 14 vertices
  * need only 28 bytes plus a 16-bit validity mask. */
@@ -305,10 +306,17 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
     }
 }
 
-static void insert_run(PolarRun *r,uint8_t *count){
-    uint8_t i=*count;if(i>=TSPF_MAX_ACTIVE)return;while(i>0u&&g_runs[i-1u].inv_mid>r->inv_mid){g_runs[i]=g_runs[i-1u];--i;}g_runs[i]=*r;*count=(uint8_t)(*count+1u);
+static void insert_run(uint8_t idx,uint8_t *count){
+    uint8_t i=*count;if(i>=TSPF_MAX_ACTIVE)return;
+    while(i>0u&&g_runs[g_run_order[i-1u]].inv_mid>g_runs[idx].inv_mid){
+        g_run_order[i]=g_run_order[i-1u];--i;
+    }
+    g_run_order[i]=idx;*count=(uint8_t)(*count+1u);
 }
-static void add_key(uint8_t key,const TSPState *s,uint8_t *count){PolarRun r;if(project_key(key,s,&r))insert_run(&r,count);}
+static void add_key(uint8_t key,const TSPState *s,uint8_t *count){
+    uint8_t idx=*count;
+    if(idx<TSPF_MAX_ACTIVE&&project_key(key,s,&g_runs[idx]))insert_run(idx,count);
+}
 
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED {
     uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0,i;uint16_t gi,off;const uint8_t *p,*b;
@@ -331,8 +339,8 @@ gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_active_runs=count;
 #endif
-    TSPF_SET_STAGE(3u); /* runs are insertion-sorted far -> near during collection */
-    TSPF_SET_STAGE(4u);for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[i]);
+    TSPF_SET_STAGE(3u); /* one-byte indices are insertion-sorted far -> near */
+    TSPF_SET_STAGE(4u);for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[g_run_order[i]]);
 done:
 #if !defined(__SDCC)
     g_tspf_touched_cells=g_touched_count;
