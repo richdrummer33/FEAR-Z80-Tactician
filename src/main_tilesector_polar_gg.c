@@ -81,7 +81,7 @@ void main(void){
     for(;;){
         uint8_t input;
         TSPF_PHASE(1u);input=read_input();tsp_step(&g_state,input);
-        TSPF_PHASE(2u);tsp_polar_render(&g_state,g_map,g_cols);
+        TSPF_PHASE(2u);tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
         TSPF_PHASE(3u);vsync();
         TSPF_PHASE(4u);
 #if TSPF_PROFILE_HOOKS
