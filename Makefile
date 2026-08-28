@@ -25,13 +25,17 @@ TILESECTOR_HOST_BIN := build/tilesector_preview
 TILESECTOR_ROM := build/gg-tilesector-demo.gg
 TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o build/tilesector_raster_gg.o
 
+POLAR_TEST_BIN := build/test_tilesector_polar
+POLAR_ROM := build/gg-tilesector-polar.gg
+POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_vram_gg.o
+
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # Speed bias is cheap enough for normal iteration. GBDK's documented
 # --max-allocs-per-node50000 experiment is measured separately because the
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test gg-tilesector-polar clean
 all: host test
 
 build:
@@ -86,6 +90,10 @@ tilesector-test: build
 tilesector-host: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_core.c host/tilesector_host.c -o $(TILESECTOR_HOST_BIN)
 
+polar-test: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tests/test_tilesector_polar.c -o $(POLAR_TEST_BIN)
+	./$(POLAR_TEST_BIN)
+
 build/main_tilesector_gg.o: src/main_tilesector_gg.c | build
 	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
 
@@ -100,6 +108,18 @@ build/tilesector_raster_gg.o: src/tilesector_raster_gg.s | build
 
 gg-tilesector: $(TILESECTOR_GG_OBJS)
 	$(LCC) $(GGFLAGS) -Wm-yS -o $(TILESECTOR_ROM) $(TILESECTOR_GG_OBJS)
+
+build/main_tilesector_polar_gg.o: src/main_tilesector_polar_gg.c | build
+	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
+
+build/tilesector_polar_motion_gg.o: src/tilesector_polar_motion.c | build
+	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
+
+build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c | build
+	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
+
+gg-tilesector-polar: $(POLAR_GG_OBJS)
+	$(LCC) $(GGFLAGS) -Wm-yS -o $(POLAR_ROM) $(POLAR_GG_OBJS)
 
 clean:
 	rm -rf build/*
