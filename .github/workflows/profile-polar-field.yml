@@ -16,6 +16,11 @@ jobs:
       - name: Host polar acceptance
         run: make polar-test | tee polar-host-test.txt
 
+      - name: Probe adaptive local projection bake
+        run: |
+          mkdir -p build
+          python3 experiments/adaptive_polar_field/local_projection_field_poc.py --thresholds 2,4,8 --min-q4 8 | tee build/polar-local-projection-poc.txt
+
       - name: Install GBDK 4.5.0
         shell: bash
         run: |
