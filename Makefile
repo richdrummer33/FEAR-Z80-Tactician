@@ -29,6 +29,7 @@ POLAR_TEST_BIN := build/test_tilesector_polar
 POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
 POLAR_LOCAL_PROJECTION ?= 1
+POLAR_PROJ_THRESHOLD ?= 4
 POLAR_PROJ_GEN_DIR := build/generated/polar_projection
 POLAR_PROJ_STAMP := $(POLAR_PROJ_GEN_DIR)/.stamp
 POLAR_PROJ_META := $(POLAR_PROJ_GEN_DIR)/tilesector_polar_projection_meta.h
@@ -129,7 +130,7 @@ gg-tilesector: $(TILESECTOR_GG_OBJS)
 
 $(POLAR_PROJ_STAMP): experiments/adaptive_polar_field/local_projection_field_poc.py src/generated/tilesector_polar_data_part00.inc src/generated/tilesector_polar_data_part01.inc src/generated/tilesector_polar_data_part02.inc src/generated/tilesector_polar_data_part03.inc src/generated/tilesector_polar_data_part04.inc | build
 	mkdir -p $(POLAR_PROJ_GEN_DIR)
-	python3 experiments/adaptive_polar_field/local_projection_field_poc.py --emit-dir $(POLAR_PROJ_GEN_DIR) --emit-threshold 4 --min-q4 8 --rows-per-bank 4 --emit-only
+	python3 experiments/adaptive_polar_field/local_projection_field_poc.py --emit-dir $(POLAR_PROJ_GEN_DIR) --emit-threshold $(POLAR_PROJ_THRESHOLD) --min-q4 8 --rows-per-bank 4 --emit-only
 	touch $@
 
 $(POLAR_PROJ_META) $(POLAR_PROJ_SRCS): $(POLAR_PROJ_STAMP)
