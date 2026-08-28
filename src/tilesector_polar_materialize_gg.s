@@ -104,98 +104,16 @@ bot_r_is_min$:
         ld      (#r_bot_max$), a
 bot_minmax_done$:
 
-        ; Riser has a snapped top cap; everything else has a vector edge.
-        ld      a, (#_g_polar_raster_ctx + 0)
-        cp      #3
-        jr      nz, draw_top_vector$
-        ld      a, (#r_top_min$)
-        ld      e, #4                  ; TS_CAP_TOP delta
-        call    draw_full_single$
-        jr      top_done$
-draw_top_vector$:
+        ; Polar runtime semantics: both visible boundaries are vector edges.
+        ; LINTEL/RISER/RAISED only change projected endpoint Y upstream.
         xor     a
-        call    prepare_edge$          ; A=0 => top
-top_done$:
+        call    prepare_edge$          ; top
 
-        ; Lintel has a snapped bottom cap; everything else has a vector edge.
-        ld      a, (#_g_polar_raster_ctx + 0)
-        cp      #1
-        jr      nz, draw_bottom_vector$
-        ld      a, (#r_bot_max$)
-        ld      e, #8                  ; TS_CAP_BOTTOM delta
-        call    draw_full_single$
-        jr      bottom_done$
-draw_bottom_vector$:
         ld      a, #1
-        call    prepare_edge$          ; A=1 => bottom
-bottom_done$:
+        call    prepare_edge$          ; bottom
 
         call    draw_plain_interior$
-
-        ; Update the vertical aperture for portal traversal.
-        ld      a, (#_g_polar_raster_ctx + 0)
-        or      a
-        jr      z, close_ray$
-        cp      #2
-        jr      z, close_ray$
-        cp      #1
-        jr      z, update_lintel_clip$
-        ; RISER: clip_bottom=min(current, top_min_row*8 - 1), clamped.
-        ld      a, (#r_top_min$)
-        bit     7, a
-        jr      nz, riser_zero$
-        add     a, a
-        add     a, a
-        add     a, a
-        sub     #1
-        jr      nc, riser_value_ok$
-riser_zero$:
-        xor     a
-riser_value_ok$:
-        cp      #144
-        jr      c, riser_clamped$
-        ld      a, #143
-riser_clamped$:
-        ld      c, a
-        ld      hl, (#_g_polar_raster_ctx + 13)
-        ld      a, (hl)
-        cp      c
-        jr      c, raster_done$
-        jr      z, raster_done$
-        ld      (hl), c
         jr      raster_done$
-
-update_lintel_clip$:
-        ; clip_top=max(current,(bot_max_row+1)*8), clamped.
-        ld      a, (#r_bot_max$)
-        bit     7, a
-        jr      nz, lintel_zero$
-        inc     a
-        cp      #18
-        jr      c, lintel_shift$
-        ld      a, #143
-        jr      lintel_value_ok$
-lintel_shift$:
-        add     a, a
-        add     a, a
-        add     a, a
-        jr      lintel_value_ok$
-lintel_zero$:
-        xor     a
-lintel_value_ok$:
-        ld      c, a
-        ld      hl, (#_g_polar_raster_ctx + 11)
-        ld      a, (hl)
-        cp      c
-        jr      nc, raster_done$
-        ld      (hl), c
-        jr      raster_done$
-
-close_ray$:
-        ld      hl, (#_g_polar_raster_ctx + 11)
-        ld      (hl), #1
-        ld      hl, (#_g_polar_raster_ctx + 13)
-        ld      (hl), #0
 
 raster_done$:
         pop     hl
