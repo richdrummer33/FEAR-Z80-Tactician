@@ -35,7 +35,7 @@ POLAR_PROJ_META := $(POLAR_PROJ_GEN_DIR)/tilesector_polar_projection_meta.h
 POLAR_PROJ_BANKS := 0 1 2 3 4 5
 POLAR_PROJ_SRCS := $(addprefix $(POLAR_PROJ_GEN_DIR)/tilesector_polar_proj_bank,$(addsuffix .c,$(POLAR_PROJ_BANKS)))
 POLAR_PROJ_OBJS := $(addprefix build/tilesector_polar_proj_bank,$(addsuffix .o,$(POLAR_PROJ_BANKS)))
-POLAR_GGFLAGS := $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo8 -I$(POLAR_PROJ_GEN_DIR)
+POLAR_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo8 -I$(POLAR_PROJ_GEN_DIR)
 POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS) -DTSPF_LOCAL_PROJECTION=$(POLAR_LOCAL_PROJECTION)
 ifeq ($(POLAR_PROFILE_HOOKS),0)
 POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_raw_gg.o
