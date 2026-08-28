@@ -100,14 +100,6 @@ ntu_bit_loop$:
         ei
         pop     bc
 
-        ld      a, (_g_ts_dirty_words)
-        inc     a
-        ld      (_g_ts_dirty_words), a
-        jr      nz, ntu_skip_word$
-        ld      a, (_g_ts_dirty_words+1)
-        inc     a
-        ld      (_g_ts_dirty_words+1), a
-
 ntu_skip_word$:
         inc     iy
         inc     iy
