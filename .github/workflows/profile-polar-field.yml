@@ -286,6 +286,51 @@ jobs:
             --csv build/polar-modes/legacy-vs-polar-map-divergence.csv \
             | tee build/polar-modes/legacy-vs-polar-map-divergence.txt
 
+          # Turn the aggregate oracle into a first-cause oracle too. Locate the
+          # first measured frame/cell whose final name word differs, then trace
+          # every write to that exact cell in both linked ROMs.
+          python3 - <<'PY' | tee build/polar-modes/first-divergence.txt
+          from pathlib import Path
+          FRAME=720
+          a=Path("build/polar-modes/legacy-stage28-map.bin").read_bytes()
+          b=Path("build/polar-modes/polar-profiled-mode0-map.bin").read_bytes()
+          found=None
+          for f in range(min(len(a),len(b))//FRAME):
+              off=f*FRAME
+              for cell in range(360):
+                  p=off+cell*2
+                  aw=a[p]|(a[p+1]<<8); bw=b[p]|(b[p+1]<<8)
+                  if aw!=bw:
+                      found=(f,cell,aw,bw); break
+              if found: break
+          if not found:
+              print("FIRST_DIVERGENCE none")
+              Path("build/polar-modes/first-divergence.env").write_text("TRACE_NONE=1\n")
+          else:
+              f,cell,aw,bw=found
+              row,col=divmod(cell,20)
+              # Profile dumps begin after eight warmup updates.
+              warmup=8+f
+              print(f"FIRST_DIVERGENCE frame={f} warmup={warmup} cell={cell} row={row} col={col} legacy={aw:04X} polar={bw:04X}")
+              Path("build/polar-modes/first-divergence.env").write_text(
+                  f"TRACE_NONE=0\nTRACE_FRAME={f}\nTRACE_WARMUP={warmup}\nTRACE_ROW={row}\nTRACE_COL={col}\n"
+              )
+          PY
+
+          source build/polar-modes/first-divergence.env
+          if [ "$TRACE_NONE" = 0 ]; then
+            ./build/tilesector_write_trace \
+              build/polar-modes/legacy-stage28.gg \
+              build/polar-modes/legacy-stage28.sym \
+              "$TRACE_WARMUP" demo "$TRACE_ROW" "$TRACE_COL" 64 \
+              | tee build/polar-modes/first-divergence-legacy-trace.txt
+            ./build/tilesector_write_trace \
+              build/polar-modes/polar-profiled-mode0.gg \
+              build/polar-modes/polar-profiled-mode0.sym \
+              "$TRACE_WARMUP" demo "$TRACE_ROW" "$TRACE_COL" 64 \
+              | tee build/polar-modes/first-divergence-polar-trace.txt
+          fi
+
           for tick in 64 128; do
             ./build/tilesector_state_capture \
               build/polar-modes/legacy-stage28.gg \
