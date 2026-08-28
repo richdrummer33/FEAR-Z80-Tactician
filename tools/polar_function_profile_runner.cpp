@@ -39,7 +39,24 @@ static bool find_symbol(const char* path,const char* wanted,u16& addr) {
     return false;
 }
 
-static std::vector<Range> load_polar_ranges(const char* noi) {
+static std::vector<std::pair<u16,std::string>> load_fixed_symbols(const char* path) {
+    std::ifstream f(path);
+    std::string line;
+    std::vector<std::pair<u16,std::string>> out;
+    while(std::getline(f,line)) {
+        unsigned bank=0,a=0;
+        char sym[256]={0};
+        if(std::sscanf(line.c_str(),"%x:%x %255s",&bank,&a,sym)==3) {
+            if(bank==0 && a<0x4000u) out.push_back({(u16)a,sym});
+        } else if(std::sscanf(line.c_str(),"%x %255s",&a,sym)==2) {
+            if(a<0x4000u) out.push_back({(u16)a,sym});
+        }
+    }
+    std::sort(out.begin(),out.end(),[](const auto&a,const auto&b){return a.first<b.first;});
+    return out;
+}
+
+static std::vector<Range> load_polar_ranges(const char* noi,const char* sym) {
     std::ifstream f(noi);
     std::string line;
     std::vector<std::pair<u16,std::string>> starts;
@@ -70,12 +87,28 @@ static std::vector<Range> load_polar_ranges(const char* noi) {
     if(render_start && render_end>render_start)
         out.push_back({render_start,render_end,"tsp_polar_render(self)",0,0});
 
-    // Fixed-bank compiler/runtime helpers observed in the linked image.
-    out.push_back({0x0DC6,0x0DC8,"__mulint(wrapper)",0,0});
-    out.push_back({0x0DC8,0x0DDD,"__mul16",0,0});
-    out.push_back({0x0DDD,0x0DF2,"memset",0,0});
-    out.push_back({0x0DF2,0x0E63,"bank-call trampoline",0,0});
-    out.push_back({0x118E,0x1200,"__mullong",0,0}); // conservative cap; attribution only
+    // Fixed-bank attribution must follow the CURRENT link. The previous profiler
+    // hardcoded addresses from an older ROM and eventually mislabeled unrelated
+    // assembly as "__mullong" even when no __mullong symbol was linked.
+    u16 a=0;
+    if(find_symbol(sym,"__mulint",a)) out.push_back({a,(u16)(a+2u),"__mulint(wrapper)",0,0});
+    if(find_symbol(sym,"__mul16",a)) out.push_back({a,(u16)(a+0x15u),"__mul16",0,0});
+    if(find_symbol(sym,".memset_simple",a)) out.push_back({a,(u16)(a+0x15u),"memset",0,0});
+    if(find_symbol(sym,"__mullong",a)) out.push_back({a,(u16)(a+0x72u),"__mullong",0,0});
+
+    // Attribute exported polar assembly entrypoints by linked symbol order.
+    // This captures the run/materializer/name-table modules without assuming
+    // that SDCC/linker placement is stable from one optimization pass to the next.
+    auto fixed=load_fixed_symbols(sym);
+    for(size_t i=0;i<fixed.size();++i) {
+        const auto &name=fixed[i].second;
+        if(name.rfind("_tsp_polar_",0)!=0) continue;
+        u16 lo=fixed[i].first,hi=(u16)(lo+1u);
+        for(size_t j=i+1;j<fixed.size();++j) {
+            if(fixed[j].first>lo) { hi=fixed[j].first; break; }
+        }
+        if(hi>lo) out.push_back({lo,hi,name.substr(1),0,0});
+    }
     return out;
 }
 
@@ -94,7 +127,7 @@ int main(int argc,char**argv) {
     if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
         std::fprintf(stderr,"phase symbol missing\n"); return 3;
     }
-    auto ranges=load_polar_ranges(noi);
+    auto ranges=load_polar_ranges(noi,sym);
 
     GearsystemCore core;
     core.Init(GS_PIXEL_RGBA8888);
