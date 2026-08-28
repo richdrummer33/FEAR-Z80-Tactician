@@ -5,6 +5,7 @@ on:
     branches:
       - feature/gg-tilesector-stage23-camera-q4-lock
       - fix/gg-tilesector-edge-lut-phase
+      - diag/edgefix-motion-vfr-suite
   workflow_dispatch:
 
 jobs:
@@ -134,6 +135,35 @@ jobs:
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
+      - name: Capture timed motion verification suite
+        shell: bash
+        run: |
+          mkdir -p build/motion-vfr-suite
+          for spec in \
+            "roomA 8" \
+            "connector 100" \
+            "roomB 145"
+          do
+            set -- $spec
+            area="$1"
+            warmup="$2"
+            for motion in forward turn forward-turn
+            do
+              case "$motion" in
+                forward) scenario="manual-forward" ;;
+                turn) scenario="manual-turn" ;;
+                forward-turn) scenario="manual-forward-turn" ;;
+              esac
+              stem="build/motion-vfr-suite/${area}-${motion}"
+              ./build/tilesector_profile_runner \
+                build/gg-tilesector-demo.gg build/gg-tilesector-demo.sym \
+                48 "$warmup" "$scenario" \
+                "${stem}.map.bin" "${stem}.states.bin" "${stem}.cycles.bin" \
+                | tee "${stem}.profile.txt"
+            done
+          done
+          find build/motion-vfr-suite -maxdepth 1 -type f -print -exec ls -lh {} \;
+
       - name: Capture emulated camera-motion videos
         shell: bash
         run: |
@@ -188,6 +218,7 @@ jobs:
             build/edgefix-A-forward.bin
             build/edgefix-A-forward.states
             build/edgefix-reference-A-forward.bin
+            build/motion-vfr-suite/**
             src/tilesector_ntstate_gg.s
             src/tilesector_raster_gg.s
             src/tilesector_run_gg.s
