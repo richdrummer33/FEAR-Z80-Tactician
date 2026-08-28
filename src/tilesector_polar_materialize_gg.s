@@ -10,11 +10,212 @@
         .globl  _g_polar_mat_top_r
         .globl  _g_polar_mat_bot_l
         .globl  _g_polar_mat_bot_r
+        .globl  _g_polar_run_c0
+        .globl  _g_polar_run_c1
+        .globl  _g_polar_run_profile
+        .globl  _g_polar_run_left_real
+        .globl  _g_polar_run_right_real
+        .globl  _g_polar_run_iq
+        .globl  _g_polar_run_step
         .globl  _g_map
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
 ; the full 18-row GG viewport.
+
+; Geometry-only connected-run path. C supplies run bounds plus Q6 inverse-depth
+; start/step once. Z80 walks all covered coarse columns without returning to C.
+; It intentionally feeds the already-validated single-column hardware emitter,
+; so the only new behavior here is run traversal and exact profile-Y arithmetic.
+_tsp_polar_run_geometry_fast::
+        push    bc
+        push    de
+        push    hl
+
+        ld      a, (#_g_polar_run_c0)
+        ld      (#r_run_col$), a
+        ld      a, #1
+        ld      (#_g_polar_mat_shade), a
+
+run_geom_loop$:
+        ; inv_left = clamp_u8(((iq + 32) arithmetic>>6), 0..255)
+        ld      hl, (#_g_polar_run_iq)
+        ld      de, #32
+        add     hl, de
+        call    q6_round_u8$
+        ld      (#r_run_invl$), a
+
+        ; inv_right uses iq+step, exactly matching the C column path.
+        ld      hl, (#_g_polar_run_iq)
+        ld      de, (#_g_polar_run_step)
+        add     hl, de
+        ld      de, #32
+        add     hl, de
+        call    q6_round_u8$
+        ld      (#r_run_invr$), a
+
+        ; Left profile endpoints from half=invl>>1.
+        ld      a, (#r_run_invl$)
+        srl     a
+        call    profile_half$
+        ld      (#_g_polar_mat_top_l), hl
+        ld      (#_g_polar_mat_bot_l), de
+
+        ; Right profile endpoints from half=invr>>1.
+        ld      a, (#r_run_invr$)
+        srl     a
+        call    profile_half$
+        ld      (#_g_polar_mat_top_r), hl
+        ld      (#_g_polar_mat_bot_r), de
+
+        ; Physical-chain border bits: 1 at the true left endpoint, 2 at the
+        ; true right endpoint. Interior coarse columns carry no border bits.
+        xor     a
+        ld      (#_g_polar_mat_border), a
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c0)
+        cp      c
+        jr      nz, run_no_left_border$
+        ld      a, (#_g_polar_run_left_real)
+        or      a
+        jr      z, run_no_left_border$
+        ld      a, #1
+        ld      (#_g_polar_mat_border), a
+run_no_left_border$:
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      nz, run_border_done$
+        ld      a, (#_g_polar_run_right_real)
+        or      a
+        jr      z, run_border_done$
+        ld      a, (#_g_polar_mat_border)
+        or      #2
+        ld      (#_g_polar_mat_border), a
+run_border_done$:
+        ld      a, c
+        ld      (#_g_polar_mat_col), a
+        call    _tsp_polar_surface_column_fast
+
+        ; iq += step for the next coarse column.
+        ld      hl, (#_g_polar_run_iq)
+        ld      de, (#_g_polar_run_step)
+        add     hl, de
+        ld      (#_g_polar_run_iq), hl
+
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      z, run_geom_done$
+        ld      a, c
+        inc     a
+        ld      (#r_run_col$), a
+        jr      run_geom_loop$
+
+run_geom_done$:
+        pop     hl
+        pop     de
+        pop     bc
+        ret
+
+; HL = signed Q6-ish accumulator + rounding bias. Return the exact C
+; clamp_u8i((value)>>6,255): arithmetic shift, negative -> 0, >255 -> 255.
+q6_round_u8$:
+        sra     h
+        rr      l
+        sra     h
+        rr      l
+        sra     h
+        rr      l
+        sra     h
+        rr      l
+        sra     h
+        rr      l
+        sra     h
+        rr      l
+        bit     7, h
+        jr      nz, q6_negative$
+        ld      a, h
+        or      a
+        jr      nz, q6_overflow$
+        ld      a, l
+        ret
+q6_negative$:
+        xor     a
+        ret
+q6_overflow$:
+        ld      a, #255
+        ret
+
+; A = half height (inv>>1, 0..127)
+; Returns HL=top pixel Y, DE=bottom pixel Y using the exact C profile formulas.
+; Profiles: 0 FULL, 1 LINTEL, 2 RAISED, 3 RISER.
+profile_half$:
+        ld      (#r_run_half$), a
+
+        ; Default FULL top = 72-half, sign-extended to 16 bits.
+        ld      a, #72
+        ld      c, a
+        ld      a, (#r_run_half$)
+        ld      b, a
+        ld      a, c
+        sub     b
+        ld      l, a
+        ld      h, #0
+        bit     7, l
+        jr      z, profile_top_default_ready$
+        dec     h
+profile_top_default_ready$:
+        ; Default FULL bottom = 72+half (always 0..199).
+        ld      a, #72
+        add     a, b
+        ld      e, a
+        ld      d, #0
+
+        ld      a, (#_g_polar_run_profile)
+        cp      #1
+        jr      z, profile_lintel$
+        cp      #2
+        jr      z, profile_raised$
+        cp      #3
+        ret     nz
+
+        ; RISER top = 72 + half - (half>>2).
+        ld      a, b
+        srl     a
+        srl     a
+        ld      c, a
+        ld      a, #72
+        add     a, b
+        sub     c
+        ld      l, a
+        ld      h, #0
+        ret
+
+profile_lintel$:
+        ; bottom = 72 - (half>>1).
+        ld      a, b
+        srl     a
+        ld      c, a
+        ld      a, #72
+        sub     c
+        ld      e, a
+        ld      d, #0
+        ret
+
+profile_raised$:
+        ; bottom = 72 + half - (half>>2).
+        ld      a, b
+        srl     a
+        srl     a
+        ld      c, a
+        ld      a, #72
+        add     a, b
+        sub     c
+        ld      e, a
+        ld      d, #0
+        ret
 
 _tsp_polar_surface_column_fast::
         push    bc
@@ -565,6 +766,14 @@ edge_lut$:
         .dw 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E
 
         .area _DATA
+r_run_col$:
+        .ds     1
+r_run_invl$:
+        .ds     1
+r_run_invr$:
+        .ds     1
+r_run_half$:
+        .ds     1
 r_clip_first$:
         .ds     1
 r_clip_last$:
