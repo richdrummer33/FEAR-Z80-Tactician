@@ -427,9 +427,12 @@ def main():
     ap.add_argument("--emit-dir",default="",help="emit GG projection bank C sources + metadata header")
     ap.add_argument("--emit-threshold",type=float,default=4.0)
     ap.add_argument("--rows-per-bank",type=int,default=4)
+    ap.add_argument("--emit-only",action="store_true")
     a=ap.parse_args();d=load()
     if a.emit_dir:
         emit_runtime_banks(d,a.emit_dir,a.emit_threshold,a.min_q4,a.rows_per_bank)
+        if a.emit_only:
+            return
     print("=== POLAR LOCAL PROJECTION BAKE POC ===")
     print(f"topology grid={GRID_W}x{GRID_H}; cell={CELL_Q4/16:g} world units; min leaf={a.min_q4/16:g}")
     print(f"1 Q12 bearing ~= {EDGE_PX_PER_Q12:.3f}px at FOV edge")
