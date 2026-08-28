@@ -225,17 +225,22 @@ static void draw_edge(uint16_t *out,uint8_t col,int16_t yl,int16_t yr,uint8_t sh
 static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t shade,uint8_t border){
     int8_t r;if(first<0)first=0;if(last>=(int8_t)TSP_ROWS)last=(int8_t)(TSP_ROWS-1u);if(first>last)return;for(r=first;r<=last;++r)put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,border));
 }
-static void profile_y(uint8_t profile,uint8_t inv,int16_t *top,int16_t *bot){
-    int16_t h=(int16_t)(inv>>1);*top=(int16_t)(TSPF_HORIZON-h);*bot=(int16_t)(TSPF_HORIZON+h);if(profile==TSP_PROFILE_LINTEL)*bot=(int16_t)(TSPF_HORIZON-(h>>1));else if(profile==TSP_PROFILE_RAISED)*bot=(int16_t)(TSPF_HORIZON+h-(h>>2));else if(profile==TSP_PROFILE_RISER)*top=(int16_t)(TSPF_HORIZON+h-(h>>2));
-}
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
-    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c;int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);iq=(int16_t)r->inv0<<6;step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);step=shr_signed(step,2);
-    for(c=c0;c<=c1;++c){uint8_t invl=(uint8_t)clamp_u8i((iq+32)>>6,255u),invr=(uint8_t)clamp_u8i((iq+step+32)>>6,255u),mid=(uint8_t)(((uint16_t)invl+invr)>>1);int16_t tl,tr,bl,br;uint8_t border=0,shade,edge_shade,profile=k_tspf_profile[r->sid];
+    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c,profile=k_tspf_profile[r->sid];int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);iq=(int16_t)r->inv0<<6;step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);step=shr_signed(step,2);
+    for(c=c0;c<=c1;++c){uint8_t invl=(uint8_t)clamp_u8i((iq+32)>>6,255u),invr=(uint8_t)clamp_u8i((iq+step+32)>>6,255u),mid=(uint8_t)(((uint16_t)invl+invr)>>1),hl=(uint8_t)(invl>>1),hr=(uint8_t)(invr>>1);int16_t tl=(int16_t)(TSPF_HORIZON-hl),tr=(int16_t)(TSPF_HORIZON-hr),bl=(int16_t)(TSPF_HORIZON+hl),br=(int16_t)(TSPF_HORIZON+hr);uint8_t border=0,shade,edge_shade;
         if(c==c0&&r->left_real) border|=1u;
         if(c==c1&&r->right_real) border|=2u;
         shade=g_tspf_appearance_mode?shade_for(mid,k_tspf_shade_bias[r->sid]):1u;edge_shade=shade;
         if(g_tspf_appearance_mode>=2u&&border){uint8_t cls=0;if((border&1u)&&r->left_real)cls=ao_class(r->v0);if((border&2u)&&r->right_real){uint8_t q=ao_class(r->v1);if(q>cls)cls=q;}if(cls&&edge_shade) --edge_shade;}
-        profile_y(profile,invl,&tl,&bl);profile_y(profile,invr,&tr,&br);
+        /* Profile is constant for the whole run. Compute both left/right
+         * endpoints together instead of two generic helper calls per column. */
+        if(profile==TSP_PROFILE_LINTEL){
+            bl=(int16_t)(TSPF_HORIZON-(hl>>1));br=(int16_t)(TSPF_HORIZON-(hr>>1));
+        }else if(profile==TSP_PROFILE_RAISED){
+            bl=(int16_t)(TSPF_HORIZON+hl-(hl>>2));br=(int16_t)(TSPF_HORIZON+hr-(hr>>2));
+        }else if(profile==TSP_PROFILE_RISER){
+            tl=(int16_t)(TSPF_HORIZON+hl-(hl>>2));tr=(int16_t)(TSPF_HORIZON+hr-(hr>>2));
+        }
 #ifdef __SDCC
         if(g_tspf_appearance_mode<2u){
             /* Fast-path geometry/shade materialization. The baked polar
