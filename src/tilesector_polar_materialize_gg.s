@@ -3,60 +3,41 @@
 
         .area   _HOME
 
-        .globl  _g_polar_raster_ctx
+        .globl  _g_polar_mat_col
+        .globl  _g_polar_mat_shade
+        .globl  _g_polar_mat_border
+        .globl  _g_polar_mat_top_l
+        .globl  _g_polar_mat_top_r
+        .globl  _g_polar_mat_bot_l
+        .globl  _g_polar_mat_bot_r
         .globl  _g_map
 
-; Fresh polar context ABI. The polar renderer resets clip_top/bottom to the full screen before each call:
-;   +0 profile, +1 shade, +2 top_l, +4 top_r, +6 bot_l, +8 bot_r,
-;   +10 border, +11 clip_top*, +13 clip_bottom*.
-; Profiles: 0 full, 1 lintel, 2 raised-full, 3 riser.
+; Explicit polar materializer bridge. No C struct offsets and no argument-register
+; convention: every input is a named symbol, and the visible aperture is always
+; the full 18-row GG viewport.
 
 _tsp_polar_surface_column_fast::
         push    bc
         push    de
         push    hl
-        ld      b, a                    ; changing screen column
-
-        ; Convert the current pixel aperture to whole tile rows.
-        ld      hl, (#_g_polar_raster_ctx + 11)
-        ld      a, (hl)
-        add     a, #7
-        srl     a
-        srl     a
-        srl     a
-        cp      #18
-        jp      nc, raster_done$
+        ld      a, (#_g_polar_mat_col)
+        ld      b, a
+        xor     a
         ld      (#r_clip_first$), a
-
-        ld      hl, (#_g_polar_raster_ctx + 13)
-        ld      a, (hl)
-        srl     a
-        srl     a
-        srl     a
-        cp      #18
-        jr      c, clip_last_ok$
         ld      a, #17
-clip_last_ok$:
         ld      (#r_clip_last$), a
-        ld      c, a
-        ld      a, (#r_clip_first$)
-        cp      c
-        jp      c, aperture_open$
-        jp      z, aperture_open$
-        jp      raster_done$
 
-aperture_open$:
         ; Four signed pixel endpoints -> four signed tile rows.
-        ld      hl, (#_g_polar_raster_ctx + 2)
+        ld      hl, (#_g_polar_mat_top_l)
         call    row_floor_hl$
         ld      (#r_top_l_row$), a
-        ld      hl, (#_g_polar_raster_ctx + 4)
+        ld      hl, (#_g_polar_mat_top_r)
         call    row_floor_hl$
         ld      (#r_top_r_row$), a
-        ld      hl, (#_g_polar_raster_ctx + 6)
+        ld      hl, (#_g_polar_mat_bot_l)
         call    row_floor_hl$
         ld      (#r_bot_l_row$), a
-        ld      hl, (#_g_polar_raster_ctx + 8)
+        ld      hl, (#_g_polar_mat_bot_r)
         call    row_floor_hl$
         ld      (#r_bot_r_row$), a
 
@@ -138,18 +119,18 @@ prepare_edge$:
         ld      (#r_edge_bottom$), a
         or      a
         jr      nz, prep_bottom$
-        ld      hl, (#_g_polar_raster_ctx + 2)
+        ld      hl, (#_g_polar_mat_top_l)
         ld      (#r_edge_left$), hl
-        ld      de, (#_g_polar_raster_ctx + 4)
+        ld      de, (#_g_polar_mat_top_r)
         ld      a, (#r_top_min$)
         ld      (#r_edge_min$), a
         ld      a, (#r_top_max$)
         ld      (#r_edge_max$), a
         jr      prep_slope$
 prep_bottom$:
-        ld      hl, (#_g_polar_raster_ctx + 6)
+        ld      hl, (#_g_polar_mat_bot_l)
         ld      (#r_edge_left$), hl
-        ld      de, (#_g_polar_raster_ctx + 8)
+        ld      de, (#_g_polar_mat_bot_r)
         ld      a, (#r_bot_min$)
         ld      (#r_edge_min$), a
         ld      a, (#r_bot_max$)
@@ -264,7 +245,7 @@ group_ready$:
         ld      d, (hl)
 
         ; LUT is shade zero. Add 0x0080/0x0100 for mid/near families.
-        ld      a, (#_g_polar_raster_ctx + 1)
+        ld      a, (#_g_polar_mat_shade)
         or      a
         jr      z, edge_tile_ready$
         dec     a
@@ -387,7 +368,7 @@ interior_loop$:
 
 ; Return low-byte full tile ID for current shade/border, cap none.
 full_tile_low$:
-        ld      a, (#_g_polar_raster_ctx + 1)
+        ld      a, (#_g_polar_mat_shade)
         or      a
         jr      z, full_far$
         dec     a
@@ -401,7 +382,7 @@ full_far$:
         ld      a, #3
 full_add_border$:
         ld      e, a
-        ld      a, (#_g_polar_raster_ctx + 10)
+        ld      a, (#_g_polar_mat_border)
         add     a, e
         ret
 
