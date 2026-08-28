@@ -25,74 +25,187 @@ jobs:
           echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
           tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
-      - name: Build three polar ROM modes
+      - name: Build profiled and raw ROMs for all appearance modes
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build/polar-modes
-          for mode in 0 1 2; do
-            echo "===== POLAR MODE $mode ====="
-            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
-                  build/tilesector_polar_renderer_gg.o build/gg-tilesector-polar.*
-            make GBDK_HOME="$PWD/.toolchain/gbdk" \
-              TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=${mode}u" \
-              gg-tilesector-polar 2>&1 | tee "build/polar-modes/build-mode${mode}.txt"
-            for ext in gg sym map noi cdb ihx; do
-              if [ -f "build/gg-tilesector-polar.$ext" ]; then
-                cp "build/gg-tilesector-polar.$ext" "build/polar-modes/polar-mode${mode}.$ext"
-              fi
+          for hooks in 1 0; do
+            if [ "$hooks" = 1 ]; then label=profiled; else label=raw; fi
+            for mode in 0 1 2; do
+              echo "===== POLAR $label / MODE $mode ====="
+              rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+                    build/tilesector_polar_renderer_gg.o build/tilesector_polar_frame_gg.o \
+                    build/tilesector_vram_gg.o build/tilesector_polar_vram_raw_gg.o \
+                    build/gg-tilesector-polar.*
+              make GBDK_HOME="$PWD/.toolchain/gbdk" \
+                POLAR_PROFILE_HOOKS="$hooks" \
+                TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=\${mode}u" \
+                gg-tilesector-polar 2>&1 | tee "build/polar-modes/build-\${label}-mode\${mode}.txt"
+              for ext in gg sym map noi cdb ihx; do
+                if [ -f "build/gg-tilesector-polar.$ext" ]; then
+                  cp "build/gg-tilesector-polar.$ext" "build/polar-modes/polar-\${label}-mode\${mode}.$ext"
+                fi
+              done
+              sha256sum build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-\${label}-mode\${mode}.sha256"
+              wc -c build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-\${label}-mode\${mode}.bytes"
             done
-            sha256sum build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-mode${mode}.sha256"
-            wc -c build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-mode${mode}.bytes"
           done
 
       - name: Inspect linked memory maps
         shell: bash
         run: |
           set -euo pipefail
-          for mode in 0 1 2; do
-            echo "===== MODE $mode MAP SECTIONS =====" | tee "build/polar-modes/map-summary-mode${mode}.txt"
-            grep -E '(_CODE|_HOME|_DATA|_BSS|_HEAP|ROM|bank|BANK|Area)' "build/polar-modes/polar-mode${mode}.map" \
-              | tee -a "build/polar-modes/map-summary-mode${mode}.txt" || true
+          for label in profiled raw; do
+            for mode in 0 1 2; do
+              echo "===== $label MODE $mode MAP SECTIONS =====" | tee "build/polar-modes/map-summary-\${label}-mode\${mode}.txt"
+              grep -E '(_CODE|_HOME|_DATA|_BSS|_HEAP|ROM|bank|BANK|Area)' \
+                "build/polar-modes/polar-\${label}-mode\${mode}.map" \
+                | tee -a "build/polar-modes/map-summary-\${label}-mode\${mode}.txt" || true
+            done
           done
           find .toolchain/gbdk -type f -iname 'romusage*' -print | tee build/polar-modes/romusage-tools.txt
 
-      - name: Build Gearsystem instruction profiler
+      - name: Build Gearsystem profilers
         shell: bash
         run: |
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
-      - name: Profile real Z80 costs
+      - name: Detailed profiled-ROM Z80 costs
         shell: bash
         run: |
           set -euo pipefail
           for mode in 0 1 2; do
             ./build/tilesector_profile_runner \
-              "build/polar-modes/polar-mode${mode}.gg" \
-              "build/polar-modes/polar-mode${mode}.sym" \
+              "build/polar-modes/polar-profiled-mode\${mode}.gg" \
+              "build/polar-modes/polar-profiled-mode\${mode}.sym" \
               120 8 demo \
-              "build/polar-modes/polar-mode${mode}-map.bin" \
-              "build/polar-modes/polar-mode${mode}-states.bin" \
-              | tee "build/polar-modes/profile-mode${mode}.txt"
+              "build/polar-modes/polar-profiled-mode\${mode}-map.bin" \
+              "build/polar-modes/polar-profiled-mode\${mode}-states.bin" \
+              | tee "build/polar-modes/profile-detailed-mode\${mode}.txt"
           done
 
-      - name: Summarize polar profiles
+      - name: External zero-hook cadence A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          for label in profiled raw; do
+            for mode in 0 1 2; do
+              ./build/polar_raw_profile_runner \
+                "build/polar-modes/polar-\${label}-mode\${mode}.gg" \
+                "build/polar-modes/polar-\${label}-mode\${mode}.sym" \
+                120 8 \
+                "build/polar-modes/cadence-\${label}-mode\${mode}.csv" \
+                | tee "build/polar-modes/cadence-\${label}-mode\${mode}.txt"
+            done
+          done
+
+      - name: Summarize profiler tax and distributions
         shell: bash
         run: |
           python3 - <<'PY' | tee build/polar-modes/profile-summary.txt
           from pathlib import Path
-          import re
-          for m in range(3):
-              p=Path(f'build/polar-modes/profile-mode{m}.txt').read_text()
-              def grab(rx):
-                  z=re.search(rx,p)
-                  return z.group(1) if z else 'n/a'
-              print(f"mode {m}: render={grab(r'render/build\s+avg=\s*([0-9.]+)')} T "
-                    f"upload={grab(r'VRAM-upload\s+avg=\s*([0-9.]+)')} T "
-                    f"loop={grab(r'loop\s+avg=\s*([0-9.]+)')} T "
-                    f"ups={grab(r'->\s*([0-9.]+) updates/s')} "
-                    f"dirty={grab(r'dirty words\s+avg=\s*([0-9.]+)')}")
+          import csv, re
+
+          ROOT=Path("build/polar-modes")
+          CPU=3579545.0
+
+          def grab(text, rx, default=float("nan")):
+              m=re.search(rx,text)
+              return float(m.group(1)) if m else default
+
+          def hash_of(text):
+              m=re.search(r"map-hash\s+frames=\d+\s+fnv64=([0-9A-F]+)",text)
+              return m.group(1) if m else "n/a"
+
+          rows=[]
+          print("=== POLAR PROFILER-HOOK A/B ===")
+          for mode in range(3):
+              ptxt=(ROOT/f"cadence-profiled-mode{mode}.txt").read_text()
+              rtxt=(ROOT/f"cadence-raw-mode{mode}.txt").read_text()
+              dtxt=(ROOT/f"profile-detailed-mode{mode}.txt").read_text()
+
+              p_mean=grab(ptxt, r"update T\s+mean=\s*([0-9.]+)")
+              r_mean=grab(rtxt, r"update T\s+mean=\s*([0-9.]+)")
+              p_sd=grab(ptxt, r"update T\s+mean=\s*[0-9.]+\s+sd=\s*([0-9.]+)")
+              r_sd=grab(rtxt, r"update T\s+mean=\s*[0-9.]+\s+sd=\s*([0-9.]+)")
+              p_skew=grab(ptxt, r"skew=([+-]?[0-9.]+)")
+              r_skew=grab(rtxt, r"skew=([+-]?[0-9.]+)")
+              p_fps=CPU/p_mean
+              r_fps=CPU/r_mean
+              tax=(p_mean/r_mean-1.0)*100.0
+              ph=hash_of(ptxt); rh=hash_of(rtxt)
+              render=grab(dtxt, r"render/build\s+avg=\s*([0-9.]+)")
+              upload=grab(dtxt, r"VRAM-upload\s+avg=\s*([0-9.]+)")
+              dirty=grab(dtxt, r"dirty words\s+avg=\s*([0-9.]+)")
+              hashes_equal=(ph==rh and ph!="n/a")
+
+              print(
+                  f"mode {mode}: raw={r_mean:.1f} T / {r_fps:.3f} FPS, "
+                  f"profiled={p_mean:.1f} T / {p_fps:.3f} FPS, "
+                  f"profiler tax={tax:+.2f}%, raw sigma={r_sd:.1f} T, "
+                  f"raw skew={r_skew:+.3f}, map-hash-equal={hashes_equal}"
+              )
+              print(
+                  f"        detailed profiled: render={render:.1f} T, "
+                  f"upload={upload:.1f} T, dirty={dirty:.1f} words"
+              )
+
+              rows.append({
+                  "mode":mode,"raw_mean_t":r_mean,"raw_sd_t":r_sd,"raw_skew":r_skew,
+                  "raw_fps":r_fps,"profiled_mean_t":p_mean,"profiled_sd_t":p_sd,
+                  "profiled_skew":p_skew,"profiled_fps":p_fps,"profiler_tax_pct":tax,
+                  "map_hash_profiled":ph,"map_hash_raw":rh,"map_hash_equal":int(hashes_equal),
+                  "detailed_render_t":render,"detailed_upload_t":upload,"dirty_words":dirty
+              })
+
+          with (ROOT/"ab-summary.csv").open("w",newline="") as f:
+              w=csv.DictWriter(f,fieldnames=list(rows[0]))
+              w.writeheader(); w.writerows(rows)
+
+          if not all(r["map_hash_equal"] for r in rows):
+              raise SystemExit("PROFILED/RAW MAP HASH MISMATCH: A/B is not behaviorally equivalent")
+
+          W,H=900,500; left,bottom,top=80,420,50
+          maxfps=max(max(r["raw_fps"],r["profiled_fps"]) for r in rows)*1.20
+          def y(v): return bottom-(v/maxfps)*(bottom-top)
+          def sigma_fps(mean_t,sd_t): return CPU*sd_t/(mean_t*mean_t)
+          parts=[f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}">',
+                 '<rect width="100%" height="100%" fill="white"/>',
+                 '<text x="450" y="28" text-anchor="middle" font-size="20">Polar renderer profiler-hook A/B - effective rendered FPS</text>',
+                 f'<line x1="{left}" y1="{bottom}" x2="850" y2="{bottom}" stroke="black"/>',
+                 f'<line x1="{left}" y1="{top}" x2="{left}" y2="{bottom}" stroke="black"/>']
+          for tick in range(6):
+              val=maxfps*tick/5
+              yy=y(val)
+              parts.append(f'<line x1="{left-5}" y1="{yy:.1f}" x2="850" y2="{yy:.1f}" stroke="#ddd"/>')
+              parts.append(f'<text x="{left-10}" y="{yy+5:.1f}" text-anchor="end" font-size="12">{val:.2f}</text>')
+          xs=[210,450,690]
+          for row,x in zip(rows,xs):
+              series=[
+                  ("profiled",row["profiled_fps"],row["profiled_mean_t"],row["profiled_sd_t"],"#777"),
+                  ("raw",row["raw_fps"],row["raw_mean_t"],row["raw_sd_t"],"#222")
+              ]
+              for j,(label,fps,mean_t,sd_t,fill) in enumerate(series):
+                  bx=x-50+j*60; bw=42; yy=y(fps); h=bottom-yy
+                  sig=sigma_fps(mean_t,sd_t); ylo=y(max(0,fps-sig)); yhi=y(fps+sig); cx=bx+bw/2
+                  parts.append(f'<rect x="{bx}" y="{yy:.1f}" width="{bw}" height="{h:.1f}" fill="{fill}"/>')
+                  parts.append(f'<line x1="{cx}" y1="{yhi:.1f}" x2="{cx}" y2="{ylo:.1f}" stroke="black"/>')
+                  parts.append(f'<line x1="{cx-7}" y1="{yhi:.1f}" x2="{cx+7}" y2="{yhi:.1f}" stroke="black"/>')
+                  parts.append(f'<line x1="{cx-7}" y1="{ylo:.1f}" x2="{cx+7}" y2="{ylo:.1f}" stroke="black"/>')
+                  parts.append(f'<text x="{cx}" y="{yy-8:.1f}" text-anchor="middle" font-size="12">{fps:.2f}</text>')
+              names=["geometry","shade","shade + AO"]
+              parts.append(f'<text x="{x}" y="450" text-anchor="middle" font-size="14">{names[row["mode"]]}</text>')
+              parts.append(f'<text x="{x}" y="470" text-anchor="middle" font-size="12">tax {row["profiler_tax_pct"]:+.1f}%</text>')
+          parts += [
+              '<rect x="720" y="55" width="14" height="14" fill="#777"/><text x="742" y="67" font-size="12">profiled</text>',
+              '<rect x="720" y="76" width="14" height="14" fill="#222"/><text x="742" y="88" font-size="12">hooks compiled out</text>',
+              '<text x="20" y="250" transform="rotate(-90 20 250)" text-anchor="middle" font-size="14">effective rendered FPS / updates per second</text>',
+              '</svg>'
+          ]
+          (ROOT/"ab-fps.svg").write_text("\n".join(parts))
+          print("A/B hashes match. Wrote ab-summary.csv and ab-fps.svg")
           PY
 
       - name: Upload bring-up artifacts
