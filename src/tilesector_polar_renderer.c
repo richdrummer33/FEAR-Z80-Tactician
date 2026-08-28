@@ -22,6 +22,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #define TSPF_FAR_Z_Q4  (127<<4)
 
 volatile uint8_t g_tspf_stage;
+/* Compatibility marker for the existing Gearsystem stage profiler. */
+volatile uint8_t g_ts_render_stage;
+#define TSPF_SET_STAGE(v) do { g_tspf_stage=(v); g_ts_render_stage=(v); } while(0)
 volatile uint8_t g_tspf_active_runs;
 volatile uint8_t g_tspf_selector_tests;
 volatile uint16_t g_tspf_touched_cells;
@@ -88,7 +91,7 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 
 void tsp_polar_renderer_reset(void) BANKED {
     g_map_ready=0u;g_touched_count=0u;memset(g_touched_bits,0,sizeof(g_touched_bits));
-    g_tspf_stage=0u;g_tspf_active_runs=0u;g_tspf_selector_tests=0u;g_tspf_touched_cells=0u;
+    TSPF_SET_STAGE(0u);g_tspf_active_runs=0u;g_tspf_selector_tests=0u;g_tspf_touched_cells=0u;
 }
 
 static uint8_t ao_class(uint8_t vid){return (uint8_t)((k_tspf_ao[vid>>2]>>((vid&3u)*2u))&3u);}
@@ -181,11 +184,11 @@ static void add_key(uint8_t key,const TSPState *s,uint8_t *count){PolarRun r;if(
 
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED {
     uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0,i;uint16_t gi,off;const uint8_t *p,*b;
-    g_tspf_stage=1u;if(!g_map_ready)map_init(out_map);else restore_touched(out_map);if(cols)memset(cols,0,sizeof(TSPColumn)*TSP_COLS);
-    g_tspf_stage=2u;g_tspf_selector_tests=0u;gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u||gy>=24u)goto done;gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);recipe=k_tspf_recipe_grid[gi];if(recipe==0xffu)goto done;lx=(uint8_t)((uint16_t)s->x_q4&63u);ly=(uint8_t)((uint16_t)s->y_q4&63u);
+    TSPF_SET_STAGE(1u);if(!g_map_ready)map_init(out_map);else restore_touched(out_map);if(cols)memset(cols,0,sizeof(TSPColumn)*TSP_COLS);
+    TSPF_SET_STAGE(2u);g_tspf_selector_tests=0u;gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u||gy>=24u)goto done;gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);recipe=k_tspf_recipe_grid[gi];if(recipe==0xffu)goto done;lx=(uint8_t)((uint16_t)s->x_q4&63u);ly=(uint8_t)((uint16_t)s->y_q4&63u);
     off=k_tspf_recipe_off[recipe];p=&k_tspf_recipe_stream[off];base_id=*p++;cond_count=*p++;b=&k_tspf_base_stream[k_tspf_base_off[base_id]];i=*b++;for(;i;--i)add_key(*b++,s,&count);
     for(i=0;i<cond_count;++i){uint8_t key=*p++,sel=*p++;if(selector_pass(sel,lx,ly))add_key(key,s,&count);}g_tspf_active_runs=count;
-    g_tspf_stage=3u; /* runs are insertion-sorted far -> near during collection */
-    g_tspf_stage=4u;for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[i]);
-done:g_tspf_touched_cells=g_touched_count;g_tspf_stage=0u;
+    TSPF_SET_STAGE(3u); /* runs are insertion-sorted far -> near during collection */
+    TSPF_SET_STAGE(4u);for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[i]);
+done:g_tspf_touched_cells=g_touched_count;TSPF_SET_STAGE(0u);
 }
