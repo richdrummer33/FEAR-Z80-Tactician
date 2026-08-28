@@ -21,6 +21,10 @@ BANKREF(tilesector_polar_renderer_bank)
 #define TSPF_NEAR_Z_Q4 (10<<4)
 #define TSPF_FAR_Z_Q4  (127<<4)
 
+#ifdef __SDCC
+void tsp_polar_begin_map_fast(void);
+#endif
+
 volatile uint8_t g_tspf_stage;
 /* Compatibility marker for the existing Gearsystem stage profiler. */
 volatile uint8_t g_ts_render_stage;
@@ -70,6 +74,22 @@ static uint16_t base_word(uint8_t row){
     if(row==9u)return TSP_TILE_HORIZON;
     return TSP_TILE_FLOOR;
 }
+#ifdef __SDCC
+static void map_init(uint16_t *out){
+    (void)out;
+    tsp_polar_begin_map_fast();
+    g_touched_count=0u;
+    g_map_ready=1u;
+}
+static void restore_touched(uint16_t *out){
+    (void)out;
+    tsp_polar_begin_map_fast();
+    g_touched_count=0u;
+}
+static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
+    out[k_row_base[row]+col]=word;
+}
+#else
 static void map_init(uint16_t *out){
     uint8_t r,c;
     for(r=0;r<TSP_ROWS;++r)for(c=0;c<TSP_COLS;++c)out[k_row_base[r]+c]=base_word(r);
@@ -88,6 +108,7 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
     if(!(*b&m)){*b|=m;g_touched_list[g_touched_count++]=(uint16_t)(((uint16_t)row<<8)|col);}
     out[idx]=word;
 }
+#endif
 
 void tsp_polar_renderer_reset(void) BANKED {
     g_map_ready=0u;g_touched_count=0u;memset(g_touched_bits,0,sizeof(g_touched_bits));
