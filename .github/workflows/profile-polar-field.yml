@@ -53,6 +53,25 @@ jobs:
             done
           done
 
+      - name: Build exact-bearing Mode-0 control ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+                build/tilesector_polar_renderer_gg.o build/tilesector_polar_projection_gg.o \
+                build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o \
+                build/tilesector_polar_ntupload_raw_gg.o build/tilesector_polar_ntupload_profiled_gg.o \
+                build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar
+          for ext in gg sym map noi cdb ihx; do
+            if [ -f "build/gg-tilesector-polar.$ext" ]; then
+              cp "build/gg-tilesector-polar.$ext" "build/polar-modes/polar-exact-mode0.$ext"
+            fi
+          done
+
       - name: Inspect linked memory maps
         shell: bash
         run: |
@@ -86,6 +105,44 @@ jobs:
               "build/polar-modes/polar-profiled-mode$mode-states.bin" \
               | tee "build/polar-modes/profile-detailed-mode$mode.txt"
           done
+
+      - name: Exact-vs-baked local projection A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/polar_raw_profile_runner \
+            build/polar-modes/polar-exact-mode0.gg \
+            build/polar-modes/polar-exact-mode0.sym \
+            120 8 build/polar-modes/cadence-exact-mode0.csv \
+            | tee build/polar-modes/cadence-exact-mode0.txt
+
+          ./build/tilesector_profile_runner \
+            build/polar-modes/polar-exact-mode0.gg \
+            build/polar-modes/polar-exact-mode0.sym \
+            120 8 demo \
+            build/polar-modes/polar-exact-mode0-map.bin \
+            build/polar-modes/polar-exact-mode0-states.bin \
+            | tee build/polar-modes/profile-exact-mode0.txt
+
+          python3 tools/measure_map_divergence.py \
+            build/polar-modes/polar-exact-mode0-map.bin \
+            build/polar-modes/polar-profiled-mode0-map.bin \
+            --csv build/polar-modes/exact-vs-baked-map-divergence.csv \
+            | tee build/polar-modes/exact-vs-baked-map-divergence.txt
+
+          python3 - <<'PY' | tee build/polar-modes/exact-vs-baked-summary.txt
+          from pathlib import Path
+          import re
+
+          def grab(path, rx):
+              t=Path(path).read_text()
+              m=re.search(rx,t)
+              return float(m.group(1)) if m else float("nan")
+
+          exact=grab("build/polar-modes/cadence-exact-mode0.txt",r"update T\s+mean=\s*([0-9.]+)")
+          baked=grab("build/polar-modes/cadence-raw-mode0.txt",r"update T\s+mean=\s*([0-9.]+)")
+          print(f"EXACT_VS_BAKED raw exact={exact:.1f} baked={baked:.1f} delta={baked-exact:+.1f} T ({(baked/exact-1)*100:+.2f}%)")
+          PY
 
       - name: Bottom-up renderer PC cycle profile
         shell: bash
