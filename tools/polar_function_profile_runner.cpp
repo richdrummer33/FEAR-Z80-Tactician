@@ -19,6 +19,7 @@ struct Range {
     std::string name;
     uint64_t cycles=0;
     uint64_t instructions=0;
+    uint64_t entries=0;
 };
 
 static bool find_symbol(const char* path,const char* wanted,u16& addr) {
@@ -132,7 +133,9 @@ int main(int argc,char**argv) {
             bool hit=false;
             for(auto &r:ranges) {
                 if(pc>=r.lo && pc<r.hi) {
-                    r.cycles+=dt; ++r.instructions; hit=true; break;
+                    r.cycles+=dt; ++r.instructions;
+                    if(pc==r.lo) ++r.entries;
+                    hit=true; break;
                 }
             }
             if(!hit) { unassigned_cycles+=dt; ++unassigned_ins; }
@@ -153,9 +156,10 @@ int main(int argc,char**argv) {
     std::printf("Polar render PC profile: measured_updates=%u render_cycles=%llu render_instructions=%llu\n",
                 measured,(unsigned long long)total_render_cycles,(unsigned long long)total_render_ins);
     for(const auto&r:ranges) if(r.cycles) {
-        std::printf("  %-28s total=%12llu T avg/update=%10.1f T share=%6.2f%% ins=%llu\n",
+        std::printf("  %-28s total=%12llu T avg/update=%10.1f T share=%6.2f%% calls/update=%7.2f ins=%llu\n",
                     r.name.c_str(),(unsigned long long)r.cycles,(double)r.cycles/measured,
-                    100.0*(double)r.cycles/total_render_cycles,(unsigned long long)r.instructions);
+                    100.0*(double)r.cycles/total_render_cycles,(double)r.entries/measured,
+                    (unsigned long long)r.instructions);
     }
     std::printf("  %-28s total=%12llu T avg/update=%10.1f T share=%6.2f%% ins=%llu\n",
                 "unassigned / callees",(unsigned long long)unassigned_cycles,
