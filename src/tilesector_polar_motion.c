@@ -7,6 +7,10 @@
 #define AUTO_TURN_Q4 40
 #define AUTO_TURN_ACCEL_Q4 4
 
+#ifndef TSP_CAPTURE_MOTION
+#define TSP_CAPTURE_MOTION 0
+#endif
+
 typedef struct { uint16_t frames; uint8_t yaw; int8_t throttle; } DemoPhase;
 static const DemoPhase k_demo[] = {
     {145u,0u,1},{10u,248u,1},{10u,236u,1},{12u,224u,1},{12u,212u,1},
@@ -62,6 +66,25 @@ static void apply_motion(TSPState *s,int8_t throttle,int8_t strafe,uint8_t targe
     if(tsp_is_walkable_q4(s->x_q4,(int16_t)(s->y_q4+dyq)))s->y_q4=(int16_t)(s->y_q4+dyq);
 }
 void tsp_step(TSPState *s,uint8_t input){
+#if TSP_CAPTURE_MOTION == 1
+    /* Visual-capture translation control: deterministic forward-only path. */
+    (void)input;
+    apply_motion(s,1,0,s->yaw,0u);
+    ++s->demo_ticks;
+    return;
+#elif TSP_CAPTURE_MOTION == 2
+    /* Visual-capture rotation control: rotate in place, no translation. */
+    (void)input;
+    apply_motion(s,0,0,s->yaw,2u);
+    ++s->demo_ticks;
+    return;
+#elif TSP_CAPTURE_MOTION == 3
+    /* Visual-capture mixed control: forward motion while turning right. */
+    (void)input;
+    apply_motion(s,1,0,s->yaw,2u);
+    ++s->demo_ticks;
+    return;
+#endif
     uint8_t takeover=(uint8_t)(input&(TSP_INPUT_UP|TSP_INPUT_DOWN|TSP_INPUT_LEFT|TSP_INPUT_RIGHT|TSP_INPUT_STRAFE_LEFT|TSP_INPUT_STRAFE_RIGHT));
     int8_t throttle=0,strafe=0;uint8_t turn=0;
     if(input&TSP_INPUT_SPEED){if(++s->speed_scale>5u)s->speed_scale=1u;}if(takeover)s->manual=1u;
