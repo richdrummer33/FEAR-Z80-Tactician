@@ -27,7 +27,7 @@ TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o buil
 
 POLAR_TEST_BIN := build/test_tilesector_polar
 POLAR_ROM := build/gg-tilesector-polar.gg
-POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_vram_gg.o
+POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_frame_gg.o build/tilesector_vram_gg.o
 
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # Speed bias is cheap enough for normal iteration. GBDK's documented
