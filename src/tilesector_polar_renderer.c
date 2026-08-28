@@ -23,6 +23,20 @@ BANKREF(tilesector_polar_renderer_bank)
 
 #ifdef __SDCC
 void tsp_polar_begin_map_fast(void);
+void tsp_polar_surface_column_fast(uint8_t col);
+typedef struct TSPPolarRasterCtx {
+    /* Fresh polar GG assembly ABI, deliberately matching the proven tile
+     * materializer shape: 0 profile, 1 shade, 2/4 top, 6/8 bottom,
+     * 10 border, 11 clip_top*, 13 clip_bottom*. */
+    uint8_t profile;
+    uint8_t shade;
+    int16_t top_l,top_r,bot_l,bot_r;
+    uint8_t border;
+    uint8_t *clip_top,*clip_bottom;
+} TSPPolarRasterCtx;
+TSPPolarRasterCtx g_polar_raster_ctx;
+static uint8_t g_polar_clip_top;
+static uint8_t g_polar_clip_bottom;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
@@ -113,6 +127,12 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 }
 
 void tsp_polar_renderer_reset(void) BANKED {
+#ifdef __SDCC
+    g_polar_clip_top=0u;
+    g_polar_clip_bottom=143u;
+    g_polar_raster_ctx.clip_top=&g_polar_clip_top;
+    g_polar_raster_ctx.clip_bottom=&g_polar_clip_bottom;
+#endif
 #ifndef __SDCC
     g_map_ready=0u;g_touched_count=0u;memset(g_touched_bits,0,sizeof(g_touched_bits));
 #endif
@@ -210,10 +230,31 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
         if(c==c1&&r->right_real) border|=2u;
         shade=g_tspf_appearance_mode?shade_for(mid,k_tspf_shade_bias[r->sid]):1u;edge_shade=shade;
         if(g_tspf_appearance_mode>=2u&&border){uint8_t cls=0;if((border&1u)&&r->left_real)cls=ao_class(r->v0);if((border&2u)&&r->right_real){uint8_t q=ao_class(r->v1);if(q>cls)cls=q;}if(cls&&edge_shade) --edge_shade;}
-        profile_y(profile,invl,&tl,&bl);profile_y(profile,invr,&tr,&br);draw_edge(out,c,tl,tr,edge_shade,0u);draw_edge(out,c,bl,br,edge_shade,1u);draw_full(out,c,(int8_t)(row_floor(tl>tr?tl:tr)+1),(int8_t)(row_floor(bl<br?bl:br)-1),shade,border);
-        /* Keep this NULL-guarded diagnostic shape even on SDCC. The GG main
-         * passes NULL, so no diagnostic RAM is touched, but SDCC 4.5 otherwise
-         * spills draw_run much more aggressively (~65K T/update regression). */
+        profile_y(profile,invl,&tl,&bl);profile_y(profile,invr,&tr,&br);
+#ifdef __SDCC
+        if(g_tspf_appearance_mode<2u){
+            /* Fast-path geometry/shade materialization. The baked polar
+             * renderer supplies final projected endpoints; this kernel only
+             * turns them into the existing GG edge/full tile vocabulary. */
+            g_polar_clip_top=0u;
+            g_polar_clip_bottom=143u;
+            g_polar_raster_ctx.profile=profile;
+            g_polar_raster_ctx.shade=shade;
+            g_polar_raster_ctx.top_l=tl;g_polar_raster_ctx.top_r=tr;
+            g_polar_raster_ctx.bot_l=bl;g_polar_raster_ctx.bot_r=br;
+            g_polar_raster_ctx.border=border;
+            tsp_polar_surface_column_fast(c);
+        }else
+#endif
+        {
+            /* AO stays on the known C path until the fast kernel is proven
+             * geometry-identical, then it gets a separate edge-shade byte. */
+            draw_edge(out,c,tl,tr,edge_shade,0u);
+            draw_edge(out,c,bl,br,edge_shade,1u);
+            draw_full(out,c,(int8_t)(row_floor(tl>tr?tl:tr)+1),(int8_t)(row_floor(bl<br?bl:br)-1),shade,border);
+        }
+        /* Preserve this NULL-guarded shape: SDCC 4.5 allocates draw_run much
+         * better with it present, while the GG caller passes NULL. */
         if(cols&&mid>cols[c].invz){cols[c].invz=mid;cols[c].wall_id=r->sid;cols[c].shade=shade;cols[c].top=clamp_u8i(tl,143u);cols[c].bottom=clamp_u8i(bl,143u);cols[c].top_step=clamp_s8((int16_t)(tr-tl),-7,7);cols[c].bottom_step=clamp_s8((int16_t)(br-bl),-7,7);}
         iq=(int16_t)(iq+step);
     }
