@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifndef TSPF_PROFILE_HOOKS
+#define TSPF_PROFILE_HOOKS 1
+#endif
+
 #if defined(__SDCC)
 #include <gbdk/platform.h>
 #else
