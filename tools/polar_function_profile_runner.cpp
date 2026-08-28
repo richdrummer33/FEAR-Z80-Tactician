@@ -138,12 +138,12 @@ int main(int argc,char**argv) {
     }
     auto ranges=load_polar_ranges(noi,sym);
     std::vector<OwnershipProbe> ownership = {
-        {"_tsp_polar_prof_after_span_claim","whole-span"},
-        {"_tsp_polar_prof_after_edge_claim","generic-edge-row"},
-        {"_tsp_polar_prof_after_fullsingle_claim","generic-cap-row"},
-        {"_tsp_polar_prof_after_interior_claim","interior-row"},
-        {"_tsp_polar_prof_after_sym_top_claim","sym-top-row"},
-        {"_tsp_polar_prof_after_sym_bottom_claim","sym-bottom-row"},
+        {"_tsp_polar_p_span","whole-span"},
+        {"_tsp_polar_p_edge","generic-edge-row"},
+        {"_tsp_polar_p_cap","generic-cap-row"},
+        {"_tsp_polar_p_fill","interior-row"},
+        {"_tsp_polar_p_symtop","sym-top-row"},
+        {"_tsp_polar_p_symbot","sym-bottom-row"},
     };
     for(auto &p:ownership) p.found=find_symbol(sym,p.symbol,p.addr);
 
