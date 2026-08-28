@@ -1,0 +1,105 @@
+name: Polar Field GG bring-up
+
+on:
+  push:
+    branches:
+      - feature/gg-tilesector-polar-field
+  workflow_dispatch:
+
+jobs:
+  bringup:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host polar acceptance
+        run: make polar-test | tee polar-host-test.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build three polar ROM modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/polar-modes
+          for mode in 0 1 2; do
+            echo "===== POLAR MODE $mode ====="
+            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+                  build/tilesector_polar_renderer_gg.o build/gg-tilesector-polar.*
+            make GBDK_HOME="$PWD/.toolchain/gbdk" \
+              TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=${mode}u" \
+              gg-tilesector-polar 2>&1 | tee "build/polar-modes/build-mode${mode}.txt"
+            for ext in gg sym map noi cdb ihx; do
+              if [ -f "build/gg-tilesector-polar.$ext" ]; then
+                cp "build/gg-tilesector-polar.$ext" "build/polar-modes/polar-mode${mode}.$ext"
+              fi
+            done
+            sha256sum build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-mode${mode}.sha256"
+            wc -c build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-mode${mode}.bytes"
+          done
+
+      - name: Inspect linked memory maps
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in 0 1 2; do
+            echo "===== MODE $mode MAP SECTIONS =====" | tee "build/polar-modes/map-summary-mode${mode}.txt"
+            grep -E '(_CODE|_HOME|_DATA|_BSS|_HEAP|ROM|bank|BANK|Area)' "build/polar-modes/polar-mode${mode}.map" \
+              | tee -a "build/polar-modes/map-summary-mode${mode}.txt" || true
+          done
+          find .toolchain/gbdk -type f -iname 'romusage*' -print | tee build/polar-modes/romusage-tools.txt
+
+      - name: Build Gearsystem instruction profiler
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Profile real Z80 costs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in 0 1 2; do
+            ./build/tilesector_profile_runner \
+              "build/polar-modes/polar-mode${mode}.gg" \
+              "build/polar-modes/polar-mode${mode}.sym" \
+              120 8 demo \
+              "build/polar-modes/polar-mode${mode}-map.bin" \
+              "build/polar-modes/polar-mode${mode}-states.bin" \
+              | tee "build/polar-modes/profile-mode${mode}.txt"
+          done
+
+      - name: Summarize polar profiles
+        shell: bash
+        run: |
+          python3 - <<'PY' | tee build/polar-modes/profile-summary.txt
+          from pathlib import Path
+          import re
+          for m in range(3):
+              p=Path(f'build/polar-modes/profile-mode{m}.txt').read_text()
+              def grab(rx):
+                  z=re.search(rx,p)
+                  return z.group(1) if z else 'n/a'
+              print(f"mode {m}: render={grab(r'render/build\s+avg=\s*([0-9.]+)')} T "
+                    f"upload={grab(r'VRAM-upload\s+avg=\s*([0-9.]+)')} T "
+                    f"loop={grab(r'loop\s+avg=\s*([0-9.]+)')} T "
+                    f"ups={grab(r'->\s*([0-9.]+) updates/s')} "
+                    f"dirty={grab(r'dirty words\s+avg=\s*([0-9.]+)')}")
+          PY
+
+      - name: Upload bring-up artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: polar-field-bringup
+          path: |
+            polar-host-test.txt
+            build/polar-modes/
