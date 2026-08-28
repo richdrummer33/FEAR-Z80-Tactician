@@ -118,6 +118,9 @@ build/tilesector_polar_motion_gg.o: src/tilesector_polar_motion.c | build
 build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c | build
 	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
 
+build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+
 gg-tilesector-polar: $(POLAR_GG_OBJS)
 	$(LCC) $(GGFLAGS) -Wm-yS -o $(POLAR_ROM) $(POLAR_GG_OBJS)
 
