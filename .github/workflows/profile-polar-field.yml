@@ -110,23 +110,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Both sides of this A/B are zero-hook ROMs.  The raw runner uses
+          # the stable demo-tick marker, so the control does not need profiler
+          # phase symbols merely to dump its authoritative name-table shadow.
           ./build/polar_raw_profile_runner \
             build/polar-modes/polar-exact-mode0.gg \
             build/polar-modes/polar-exact-mode0.sym \
             120 8 build/polar-modes/cadence-exact-mode0.csv \
+            build/polar-modes/polar-exact-mode0-map.bin \
             | tee build/polar-modes/cadence-exact-mode0.txt
 
-          ./build/tilesector_profile_runner \
-            build/polar-modes/polar-exact-mode0.gg \
-            build/polar-modes/polar-exact-mode0.sym \
-            120 8 demo \
-            build/polar-modes/polar-exact-mode0-map.bin \
-            build/polar-modes/polar-exact-mode0-states.bin \
-            | tee build/polar-modes/profile-exact-mode0.txt
+          ./build/polar_raw_profile_runner \
+            build/polar-modes/polar-raw-mode0.gg \
+            build/polar-modes/polar-raw-mode0.sym \
+            120 8 build/polar-modes/cadence-raw-mode0.csv \
+            build/polar-modes/polar-raw-mode0-map.bin \
+            | tee build/polar-modes/cadence-raw-mode0.txt
 
           python3 tools/measure_map_divergence.py \
             build/polar-modes/polar-exact-mode0-map.bin \
-            build/polar-modes/polar-profiled-mode0-map.bin \
+            build/polar-modes/polar-raw-mode0-map.bin \
             --csv build/polar-modes/exact-vs-baked-map-divergence.csv \
             | tee build/polar-modes/exact-vs-baked-map-divergence.txt
 
