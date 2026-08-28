@@ -92,6 +92,10 @@ static uint8_t g_run_order[TSPF_MAX_ACTIVE];
  * need only 28 bytes plus a 16-bit validity mask. */
 static uint16_t g_corner_bearing_q12[14];
 static uint16_t g_corner_bearing_valid;
+static const uint16_t k_corner_mask[14] = {
+    0x0001u,0x0002u,0x0004u,0x0008u,0x0010u,0x0020u,0x0040u,
+    0x0080u,0x0100u,0x0200u,0x0400u,0x0800u,0x1000u,0x2000u
+};
 #ifndef __SDCC
 static uint8_t g_touched_bits[45];
 static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
@@ -176,7 +180,7 @@ static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4){
     return (uint16_t)(a&4095u);
 }
 static uint16_t bearing_vertex_q12(uint8_t vid,const TSPState *s){
-    uint16_t mask=(uint16_t)((uint16_t)1u<<vid);
+    uint16_t mask=k_corner_mask[vid];
     if(!(g_corner_bearing_valid&mask)){
         g_corner_bearing_q12[vid]=bearing_q12(
             (int16_t)((int16_t)k_tspf_vx[vid]<<4)-s->x_q4,
