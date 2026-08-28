@@ -22,9 +22,12 @@ BANKREF(tilesector_polar_renderer_bank)
 #define TSPF_FAR_Z_Q4  (127<<4)
 
 #ifdef __SDCC
-void tsp_polar_begin_map_fast(void);
+void tsp_polar_nt_begin_frame(void);
+void tsp_polar_nt_end_frame(void);
 void tsp_polar_surface_column_fast(void);
 void tsp_polar_run_geometry_fast(void);
+extern uint8_t g_polar_nt_cov_cur[60];
+extern uint8_t g_polar_nt_dirty[54];
 /* Explicit assembly bridge symbols. No C struct layout and no implicit
  * register-argument ABI: the Z80 materializer reads these exact globals. */
 uint8_t g_polar_mat_col;
@@ -65,6 +68,9 @@ static const uint16_t k_row_base[TSP_ROWS] = {
     0u,20u,40u,60u,80u,100u,120u,140u,160u,
     180u,200u,220u,240u,260u,280u,300u,320u,340u
 };
+#ifdef __SDCC
+static const uint8_t k_nt_mask8[8] = {1u,2u,4u,8u,16u,32u,64u,128u};
+#endif
 static const uint8_t k_col_recip_q8[21] = {
     0,255,128,85,64,51,43,36,32,28,26,23,21,20,18,17,16,15,14,13,13
 };
@@ -127,7 +133,16 @@ static void restore_touched(uint16_t *out){
 #endif
 static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 #ifdef __SDCC
-    out[k_row_base[row]+col]=word;
+    /* AO/C fallback only. Fast geometry/shade assembly marks whole spans and
+     * dirties changed words directly. Keep the fallback lifetime-correct too. */
+    uint16_t idx=k_row_base[row]+col;
+    uint8_t cov_i=(uint8_t)(col+col+col+(row>>3));
+    uint8_t dirty_i=(uint8_t)(row+row+row+(col>>3));
+    g_polar_nt_cov_cur[cov_i]|=k_nt_mask8[row&7u];
+    if(out[idx]!=word){
+        out[idx]=word;
+        g_polar_nt_dirty[dirty_i]|=k_nt_mask8[col&7u];
+    }
 #else
     uint16_t idx=k_row_base[row]+col;uint8_t *b=&g_touched_bits[idx>>3];uint8_t m=(uint8_t)(1u<<(idx&7u));
     if(!(*b&m)){*b|=m;g_touched_list[g_touched_count++]=(uint16_t)(((uint16_t)row<<8)|col);}
@@ -324,7 +339,7 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
     g_corner_bearing_valid=0u;
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
-    tsp_polar_begin_map_fast();
+    tsp_polar_nt_begin_frame();
     (void)cols;
 #else
     if(!g_map_ready)map_init(out_map);else restore_touched(out_map);
@@ -343,6 +358,10 @@ gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u
     TSPF_SET_STAGE(3u); /* one-byte indices are insertion-sorted far -> near */
     TSPF_SET_STAGE(4u);for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[g_run_order[i]]);
 done:
+#ifdef __SDCC
+    /* Restore only geometry-owned cells that disappeared this frame. */
+    tsp_polar_nt_end_frame();
+#endif
 #if !defined(__SDCC)
     g_tspf_touched_cells=g_touched_count;
 #elif TSPF_PROFILE_HOOKS
