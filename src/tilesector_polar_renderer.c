@@ -330,7 +330,7 @@ static void insert_run(uint8_t idx,uint8_t *count){
      * the assembly coverage mask then rejects hidden farther writes.
      * AO remains on the reference-style far->near C materializer for now. */
     if(g_tspf_appearance_mode<2u){
-        while(i>0u&&g_runs[g_run_order[i-1u]].inv_mid<g_runs[idx].inv_mid){
+        while(i>0u&&g_runs[g_run_order[i-1u]].inv_mid<=g_runs[idx].inv_mid){
             g_run_order[i]=g_run_order[i-1u];--i;
         }
     }else
