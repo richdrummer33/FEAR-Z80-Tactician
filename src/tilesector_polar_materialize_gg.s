@@ -17,6 +17,8 @@
         .globl  _g_polar_run_right_real
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
+        .globl  _tsp_polar_nt_mark_span
+        .globl  _tsp_polar_nt_mark_dirty
         .globl  _g_map
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
@@ -286,6 +288,35 @@ bot_r_is_min$:
         ld      (#r_bot_max$), a
 bot_minmax_done$:
 
+        ; Persistent name-table lifetime: this projected surface owns one
+        ; contiguous visible tile-row span in this coarse screen column.
+        ; Mark it once; individual stores only need change-time dirty marking.
+        ld      a, (#r_top_min$)
+        bit     7, a
+        jr      z, polar_cov_first_nonneg$
+        xor     a
+polar_cov_first_nonneg$:
+        cp      #18
+        jr      nc, polar_cov_done$
+        ld      e, a                   ; E=first visible owned row
+
+        ld      a, (#r_bot_max$)
+        bit     7, a
+        jr      nz, polar_cov_done$
+        cp      #18
+        jr      c, polar_cov_last_ready$
+        ld      a, #17
+polar_cov_last_ready$:
+        ld      c, a                   ; C=last visible owned row
+        ld      a, e
+        cp      c
+        jr      c, polar_cov_emit$
+        jr      z, polar_cov_emit$
+        jr      polar_cov_done$
+polar_cov_emit$:
+        call    _tsp_polar_nt_mark_span ; A=first, C=last, B=column
+polar_cov_done$:
+
         ; Polar runtime semantics: both visible boundaries are vector edges.
         ; LINTEL/RISER/RAISED only change projected endpoint Y upstream.
         xor     a
@@ -464,9 +495,22 @@ edge_tile_ready$:
         ld      a, (#r_row$)
         call    map_ptr_row_col$
         pop     de
+        ld      a, (hl)
+        cp      e
+        jr      nz, polar_edge_changed$
+        inc     hl
+        ld      a, (hl)
+        cp      d
+        dec     hl
+        jr      z, polar_edge_done$
+polar_edge_changed$:
         ld      (hl), e
         inc     hl
         ld      (hl), d
+        dec     hl
+        ld      a, (#r_row$)
+        call    _tsp_polar_nt_mark_dirty
+polar_edge_done$:
         ld      a, (#r_row$)
         ret
 
@@ -496,9 +540,23 @@ full_first_ok$:
         ld      e, a
         ld      a, (#r_cap_delta$)
         add     a, e
-        ld      (hl), a
+        ld      e, a
+        ld      d, #0
+        ld      a, (hl)
+        cp      e
+        jr      nz, polar_full_changed$
+        inc     hl
+        ld      a, (hl)
+        or      a
+        dec     hl
+        ret     z
+polar_full_changed$:
+        ld      (hl), e
         inc     hl
         ld      (hl), #0
+        dec     hl
+        ld      a, (#r_row$)
+        call    _tsp_polar_nt_mark_dirty
         ret
 
 ; Fill top_max+1 .. bot_min-1, clipped to the portal aperture.
@@ -553,16 +611,35 @@ interior_multi$:
         inc     a
         ld      c, a
         ld      a, (#r_fill_first$)
+        ld      (#r_row$), a
         call    map_ptr_row_col$
         call    full_tile_low$
         ld      (#r_full_tile$), a
-        ld      de, #39              ; after high byte, +39 => next row low
 interior_loop$:
         ld      a, (#r_full_tile$)
-        ld      (hl), a
+        ld      e, a
+        ld      d, #0
+        ld      a, (hl)
+        cp      e
+        jr      nz, polar_interior_changed$
+        inc     hl
+        ld      a, (hl)
+        or      a
+        dec     hl
+        jr      z, polar_interior_done$
+polar_interior_changed$:
+        ld      (hl), e
         inc     hl
         ld      (hl), #0
+        dec     hl
+        ld      a, (#r_row$)
+        call    _tsp_polar_nt_mark_dirty
+polar_interior_done$:
+        ld      de, #40              ; next RAM name-table row, same column
         add     hl, de
+        ld      a, (#r_row$)
+        inc     a
+        ld      (#r_row$), a
         dec     c
         jr      nz, interior_loop$
         ret
