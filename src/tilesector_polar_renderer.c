@@ -274,8 +274,13 @@ static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c,profile=k_tspf_profile[r->sid];int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);iq=(int16_t)r->inv0<<6;step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);step=shr_signed(step,2);
 #ifdef __SDCC
+    /* The assembly column materializer now branches on profile for FULL
+     * symmetry. Keep the run profile live for BOTH geometry-only and shaded
+     * fast paths; previously only mode 0 initialized it because nothing else
+     * consumed this bridge field. */
+    if(g_tspf_appearance_mode<2u) g_polar_run_profile=profile;
     if(g_tspf_appearance_mode==0u){
-        g_polar_run_c0=c0;g_polar_run_c1=c1;g_polar_run_profile=profile;
+        g_polar_run_c0=c0;g_polar_run_c1=c1;
         g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
         g_polar_run_iq=iq;g_polar_run_step=step;
         tsp_polar_run_geometry_fast();
