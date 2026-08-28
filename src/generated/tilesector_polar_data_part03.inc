@@ -38,6 +38,10 @@ static const uint8_t k_tspf_vy[14] = {
 };
 
 
+static const uint8_t k_tspf_seg_anchor[17] = {
+    0, 1, 3, 4, 5, 2, 7, 8, 7, 8, 10, 11, 12, 13, 2, 6, 6,
+};
+
 static const int8_t k_tspf_nx_q5[17] = {
     0, 32, 32, 0, -32, 0, 0, 32, 32, -10, 20, -13, 32, 0, 32, 32,
     32,
