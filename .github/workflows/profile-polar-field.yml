@@ -217,6 +217,133 @@ jobs:
           print("A/B hashes match. Wrote ab-summary.csv and ab-fps.svg")
           PY
 
+      - name: Build repaired legacy Stage28 oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/legacy-polar-oracle
+          git worktree add --detach /tmp/legacy-polar-oracle "$GITHUB_SHA"
+          cd /tmp/legacy-polar-oracle
+
+          python3 tools/apply_stage10_vertex_rot_lut.py
+          python3 tools/apply_stage12_nametable_runs.py
+          python3 tools/gen_stage12_run_asm.py
+          sed -i 's/        jr      /        jp      /g' src/tilesector_run_gg.s
+          python3 tools/apply_stage13_ntstate.py
+          python3 tools/apply_stage14_span_dirty.py
+          python3 tools/apply_stage18_column_lifetime.py
+          python3 tools/apply_stage18_direct_opaque.py
+          python3 tools/apply_stage19_row_burst_upload.py
+          python3 tools/apply_stage20_row_extents.py
+          python3 tools/apply_stage21_full_symmetry.py
+          python3 tools/apply_stage22_retained_full.py
+          python3 tools/apply_stage23_edge_delta.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Makefile')
+          s=p.read_text()
+          old='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o build/tilesector_raster_gg.o'
+          new='TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_raster_gg.o build/tilesector_candidate_lite_gg.o build/tilesector_run_gg.o build/tilesector_ntstate_gg.o build/tilesector_opaque_gg.o build/tilesector_symfull_gg.o'
+          if old not in s:
+              raise SystemExit('legacy TileSector object list pattern not found')
+          s=s.replace(old,new,1)
+          anchor='''\nbuild/tilesector_raster_gg.o: src/tilesector_raster_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+          rules='''\nbuild/tilesector_candidate_lite_gg.o: src/tilesector_candidate_lite_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n\nbuild/tilesector_run_gg.o: src/tilesector_run_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n\nbuild/tilesector_ntstate_gg.o: src/tilesector_ntstate_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n\nbuild/tilesector_opaque_gg.o: src/tilesector_opaque_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n\nbuild/tilesector_symfull_gg.o: src/tilesector_symfull_gg.s | build\n\t$(LCC) $(GGFLAGS) -c -o $@ $<\n'''
+          if anchor not in s:
+              raise SystemExit('legacy raster rule pattern not found')
+          s=s.replace(anchor,anchor+rules,1)
+          p.write_text(s)
+          PY
+
+          python3 tools/apply_stage24_retained_lifetime.py
+          python3 tools/apply_stage25_active_mask.py
+          python3 tools/apply_stage28_exception_sparse.py
+          python3 tools/apply_stage28b_retained_gates.py
+          python3 tools/apply_stage28c_ownership_gate.py
+          python3 tools/apply_stage28d_deferred_reconcile.py
+
+          make GBDK_HOME="$GITHUB_WORKSPACE/.toolchain/gbdk" gg-tilesector
+          cp build/gg-tilesector-demo.gg "$GITHUB_WORKSPACE/build/polar-modes/legacy-stage28.gg"
+          cp build/gg-tilesector-demo.sym "$GITHUB_WORKSPACE/build/polar-modes/legacy-stage28.sym"
+          cp build/gg-tilesector-demo.map "$GITHUB_WORKSPACE/build/polar-modes/legacy-stage28.map"
+
+      - name: Compare polar geometry to repaired legacy renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/tilesector_profile_runner \
+            build/polar-modes/legacy-stage28.gg \
+            build/polar-modes/legacy-stage28.sym \
+            120 8 demo \
+            build/polar-modes/legacy-stage28-map.bin \
+            build/polar-modes/legacy-stage28-states.bin \
+            | tee build/polar-modes/legacy-stage28-profile.txt
+
+          python3 tools/measure_map_divergence.py \
+            build/polar-modes/legacy-stage28-map.bin \
+            build/polar-modes/polar-profiled-mode0-map.bin \
+            --csv build/polar-modes/legacy-vs-polar-map-divergence.csv \
+            | tee build/polar-modes/legacy-vs-polar-map-divergence.txt
+
+          for tick in 64 128; do
+            ./build/tilesector_state_capture \
+              build/polar-modes/legacy-stage28.gg \
+              build/polar-modes/legacy-stage28.sym \
+              "$tick" \
+              "build/polar-modes/legacy-tick$tick.ppm" \
+              | tee "build/polar-modes/legacy-tick$tick-capture.txt"
+            ./build/tilesector_state_capture \
+              build/polar-modes/polar-profiled-mode0.gg \
+              build/polar-modes/polar-profiled-mode0.sym \
+              "$tick" \
+              "build/polar-modes/polar-tick$tick.ppm" \
+              | tee "build/polar-modes/polar-tick$tick-capture.txt"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def read_ppm(path):
+              b=Path(path).read_bytes()
+              if not b.startswith(b'P6\n'):
+                  raise SystemExit(f'not P6: {path}')
+              p=3
+              toks=[]
+              while len(toks)<3:
+                  while b[p:p+1] in b' \t\r\n':
+                      p+=1
+                  q=p
+                  while b[q:q+1] not in b' \t\r\n':
+                      q+=1
+                  toks.append(int(b[p:q]))
+                  p=q
+              while b[p:p+1] in b' \t\r\n':
+                  p+=1
+              w,h,m=toks
+              return w,h,b[p:p+w*h*3]
+
+          def write_ppm(path,w,h,pix):
+              Path(path).write_bytes(f'P6\n{w} {h}\n255\n'.encode()+pix)
+
+          for tick in (64,128):
+              lw,lh,l=read_ppm(f'build/polar-modes/legacy-tick{tick}.ppm')
+              pw,ph,p=read_ppm(f'build/polar-modes/polar-tick{tick}.ppm')
+              assert (lw,lh)==(pw,ph)
+              diff=bytearray(len(l))
+              neq=0
+              for i in range(0,len(l),3):
+                  same=l[i:i+3]==p[i:i+3]
+                  if not same: neq+=1
+                  diff[i:i+3]=(b'\xff\x20\x20' if not same else bytes(x//5 for x in l[i:i+3]))
+              out=bytearray()
+              for y in range(lh):
+                  a=y*lw*3; z=a+lw*3
+                  out += l[a:z] + p[a:z] + diff[a:z]
+              write_ppm(f'build/polar-modes/legacy-polar-diff-tick{tick}.ppm',lw*3,lh,bytes(out))
+              print(f'tick {tick}: framebuffer differing pixels {neq}/{lw*lh} ({100*neq/(lw*lh):.2f}%)')
+          PY
+
       - name: Upload bring-up artifacts
         if: always()
         uses: actions/upload-artifact@v4
