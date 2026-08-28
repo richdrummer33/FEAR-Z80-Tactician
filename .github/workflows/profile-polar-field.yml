@@ -82,6 +82,7 @@ jobs:
                 build/tilesector_polar_proj_bank*.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" \
             POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=1 POLAR_PROJ_THRESHOLD=2 \
+            POLAR_PROJ_ROWS_PER_BANK=1 POLAR_PROJ_BANK_COUNT=24 POLAR_ROM_BANKS=32 \
             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
             gg-tilesector-polar
           for ext in gg sym map noi cdb ihx; do
