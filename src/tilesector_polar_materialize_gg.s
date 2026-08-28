@@ -18,7 +18,8 @@
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
         .globl  _g_polar_nt_cov_cur
-        .globl  _g_polar_nt_dirty
+        .globl  _g_polar_nt_row_min
+        .globl  _g_polar_nt_row_max
         .globl  _g_map
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
@@ -225,21 +226,6 @@ _tsp_polar_surface_column_fast::
         push    hl
         ld      a, (#_g_polar_mat_col)
         ld      b, a
-
-        ; Stage18 lesson carried forward: dirty addressing belongs to the
-        ; column, not each tile store. Precompute mask + 8-column group once.
-        and     #7
-        ld      l, a
-        ld      h, #0
-        ld      de, #polar_dirty_mask_lut$
-        add     hl, de
-        ld      a, (hl)
-        ld      (#r_dirty_mask$), a
-        ld      a, b
-        srl     a
-        srl     a
-        srl     a
-        ld      (#r_dirty_group$), a
 
         xor     a
         ld      (#r_clip_first$), a
@@ -699,23 +685,30 @@ full_add_border$:
         add     a, e
         ret
 
-; A=row 0..17. Dirty mask/group were precomputed once for this screen column.
-; Clobbers AF/DE/HL only. Edge/full callers are done with their map pointer;
-; the interior loop preserves HL around this helper.
+; A=row 0..17, B=current screen column. Expand the row's horizontal
+; VDP interval directly. This preserves BC, including the interior-loop C count.
 polar_mark_dirty_fast$:
         ld      e, a
-        add     a, a
-        add     a, e                   ; A=row*3
-        ld      e, a
-        ld      a, (#r_dirty_group$)
-        add     a, e
-        ld      l, a
-        ld      h, #0
-        ld      de, #_g_polar_nt_dirty
+        ld      d, #0
+        ld      hl, #_g_polar_nt_row_min
         add     hl, de
-        ld      a, (#r_dirty_mask$)
-        or      (hl)
-        ld      (hl), a
+        ld      a, (hl)
+        cp      #0xff
+        jr      z, polar_dirty_set_min$
+        ld      a, b
+        cp      (hl)
+        jr      nc, polar_dirty_min_done$
+polar_dirty_set_min$:
+        ld      (hl), b
+polar_dirty_min_done$:
+        ld      de, #18
+        add     hl, de
+        ld      a, b
+        cp      (hl)
+        jr      c, polar_dirty_done$
+        jr      z, polar_dirty_done$
+        ld      (hl), b
+polar_dirty_done$:
         ret
 
 ; A=first owned row, C=last owned row, B=column. No register-save ceremony:
@@ -1109,10 +1102,6 @@ r_cap_delta$:
 r_fill_first$:
         .ds     1
 r_full_tile$:
-        .ds     1
-r_dirty_mask$:
-        .ds     1
-r_dirty_group$:
         .ds     1
 r_cov_first$:
         .ds     1

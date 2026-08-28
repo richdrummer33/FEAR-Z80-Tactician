@@ -27,7 +27,8 @@ void tsp_polar_nt_end_frame(void);
 void tsp_polar_surface_column_fast(void);
 void tsp_polar_run_geometry_fast(void);
 extern uint8_t g_polar_nt_cov_cur[60];
-extern uint8_t g_polar_nt_dirty[54];
+extern uint8_t g_polar_nt_row_min[18];
+extern uint8_t g_polar_nt_row_max[18];
 /* Explicit assembly bridge symbols. No C struct layout and no implicit
  * register-argument ABI: the Z80 materializer reads these exact globals. */
 uint8_t g_polar_mat_col;
@@ -137,11 +138,11 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
      * dirties changed words directly. Keep the fallback lifetime-correct too. */
     uint16_t idx=k_row_base[row]+col;
     uint8_t cov_i=(uint8_t)(col+col+col+(row>>3));
-    uint8_t dirty_i=(uint8_t)(row+row+row+(col>>3));
     g_polar_nt_cov_cur[cov_i]|=k_nt_mask8[row&7u];
     if(out[idx]!=word){
         out[idx]=word;
-        g_polar_nt_dirty[dirty_i]|=k_nt_mask8[col&7u];
+        if(g_polar_nt_row_min[row]==0xffu || col<g_polar_nt_row_min[row]) g_polar_nt_row_min[row]=col;
+        if(col>g_polar_nt_row_max[row]) g_polar_nt_row_max[row]=col;
     }
 #else
     uint16_t idx=k_row_base[row]+col;uint8_t *b=&g_touched_bits[idx>>3];uint8_t m=(uint8_t)(1u<<(idx&7u));

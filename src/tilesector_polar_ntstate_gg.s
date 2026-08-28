@@ -56,17 +56,19 @@ nti_floor$:
         ld      bc, #59
         ldir
 
-        ; First visible frame uploads the whole 20x18 name table once.
-        ld      hl, #_g_polar_nt_dirty
+        ; POLAR_STAGE20_ROW_EXTENTS: first visible frame uploads all columns.
+        ld      hl, #_g_polar_nt_row_min
         ld      b, #18
-nti_dirty_rows$:
-        ld      (hl), #0xff
+nti_dirty_min_rows$:
+        ld      (hl), #0
         inc     hl
-        ld      (hl), #0xff
+        djnz    nti_dirty_min_rows$
+        ld      hl, #_g_polar_nt_row_max
+        ld      b, #18
+nti_dirty_max_rows$:
+        ld      (hl), #19
         inc     hl
-        ld      (hl), #0x0f
-        inc     hl
-        djnz    nti_dirty_rows$
+        djnz    nti_dirty_max_rows$
 
         pop     hl
         pop     de
@@ -206,39 +208,34 @@ nts_done$:
         pop     af
         ret
 
-; A=row 0..17, B=column 0..19. Called only when a visible word changed.
+; A=row 0..17, B=column 0..19. Expand the row's VDP dirty interval.
+; min=0xff means clean. This is the exact Stage20 hardware transaction shape.
 _tsp_polar_nt_mark_dirty::
         push    af
         push    bc
         push    de
         push    hl
-        ld      c, a
-        ld      a, b
-        and     #7
         ld      e, a
         ld      d, #0
-        ld      hl, #nt_mask_lut$
+        ld      hl, #_g_polar_nt_row_min
         add     hl, de
         ld      a, (hl)
-        ld      (#ntd_mask$), a
-
-        ld      a, c
-        add     a, a
-        add     a, c
-        ld      e, a
+        cp      #0xff
+        jr      z, ntd20_set_min$
         ld      a, b
-        srl     a
-        srl     a
-        srl     a
-        add     a, e
-        ld      l, a
-        ld      h, #0
-        ld      de, #_g_polar_nt_dirty
+        cp      (hl)
+        jr      nc, ntd20_min_done$
+ntd20_set_min$:
+        ld      (hl), b
+ntd20_min_done$:
+        ld      de, #18
         add     hl, de
-        ld      a, (#ntd_mask$)
-        or      (hl)
-        ld      (hl), a
-
+        ld      a, b
+        cp      (hl)
+        jr      c, ntd20_done$
+        jr      z, ntd20_done$
+        ld      (hl), b
+ntd20_done$:
         pop     hl
         pop     de
         pop     bc
@@ -415,12 +412,12 @@ nt_vdp_rows$:
         .area _BSS
 _g_polar_nt_cov_cur::    .ds 60
 _g_polar_nt_cov_prev::   .ds 60
-_g_polar_nt_dirty::      .ds 54
+_g_polar_nt_row_min::    .ds 18
+_g_polar_nt_row_max::    .ds 18
 ntm_first$:        .ds 1
 ntm_after$:        .ds 1
 ntm_col$:          .ds 1
 nts_row$:          .ds 1
-ntd_mask$:         .ds 1
 nte_col$:          .ds 1
 nte_group$:        .ds 1
 nte_stale$:        .ds 1
