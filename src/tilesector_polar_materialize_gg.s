@@ -17,8 +17,8 @@
         .globl  _g_polar_run_right_real
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
-        .globl  _tsp_polar_nt_mark_span
-        .globl  _tsp_polar_nt_mark_dirty
+        .globl  _g_polar_nt_cov_cur
+        .globl  _g_polar_nt_dirty
         .globl  _g_map
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
@@ -225,6 +225,22 @@ _tsp_polar_surface_column_fast::
         push    hl
         ld      a, (#_g_polar_mat_col)
         ld      b, a
+
+        ; Stage18 lesson carried forward: dirty addressing belongs to the
+        ; column, not each tile store. Precompute mask + 8-column group once.
+        and     #7
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_dirty_mask_lut$
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_dirty_mask$), a
+        ld      a, b
+        srl     a
+        srl     a
+        srl     a
+        ld      (#r_dirty_group$), a
+
         xor     a
         ld      (#r_clip_first$), a
         ld      a, #17
@@ -314,7 +330,7 @@ polar_cov_last_ready$:
         jr      z, polar_cov_emit$
         jr      polar_cov_done$
 polar_cov_emit$:
-        call    _tsp_polar_nt_mark_span ; A=first, C=last, B=column
+        call    polar_mark_span_fast$   ; A=first, C=last, B=column
 polar_cov_done$:
 
         ; Polar runtime semantics: both visible boundaries are vector edges.
@@ -509,7 +525,7 @@ polar_edge_changed$:
         ld      (hl), d
         dec     hl
         ld      a, (#r_row$)
-        call    _tsp_polar_nt_mark_dirty
+        call    polar_mark_dirty_fast$
 polar_edge_done$:
         ld      a, (#r_row$)
         ret
@@ -556,7 +572,7 @@ polar_full_changed$:
         ld      (hl), #0
         dec     hl
         ld      a, (#r_row$)
-        call    _tsp_polar_nt_mark_dirty
+        call    polar_mark_dirty_fast$
         ret
 
 ; Fill top_max+1 .. bot_min-1, clipped to the portal aperture.
@@ -632,8 +648,10 @@ polar_interior_changed$:
         inc     hl
         ld      (hl), #0
         dec     hl
+        push    hl
         ld      a, (#r_row$)
-        call    _tsp_polar_nt_mark_dirty
+        call    polar_mark_dirty_fast$
+        pop     hl
 polar_interior_done$:
         ld      de, #40              ; next RAM name-table row, same column
         add     hl, de
@@ -664,6 +682,106 @@ full_add_border$:
         add     a, e
         ret
 
+; A=row 0..17. Dirty mask/group were precomputed once for this screen column.
+; Clobbers AF/DE/HL only. Edge/full callers are done with their map pointer;
+; the interior loop preserves HL around this helper.
+polar_mark_dirty_fast$:
+        ld      e, a
+        add     a, a
+        add     a, e                   ; A=row*3
+        ld      e, a
+        ld      a, (#r_dirty_group$)
+        add     a, e
+        ld      l, a
+        ld      h, #0
+        ld      de, #_g_polar_nt_dirty
+        add     hl, de
+        ld      a, (#r_dirty_mask$)
+        or      (hl)
+        ld      (hl), a
+        ret
+
+; A=first owned row, C=last owned row, B=column. No register-save ceremony:
+; this call sits at the column-materializer level where AF/C/DE/HL are scratch.
+; span = prefix[last+1] XOR prefix[first], ORed into cov_cur[col*3].
+polar_mark_span_fast$:
+        ld      (#r_cov_first$), a
+        ld      a, c
+        inc     a
+        ld      (#r_cov_after$), a
+
+        ; Save prefix[first].
+        ld      a, (#r_cov_first$)
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_prefix$
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_cov_p0$), a
+        inc     hl
+        ld      a, (hl)
+        ld      (#r_cov_p1$), a
+        inc     hl
+        ld      a, (hl)
+        ld      (#r_cov_p2$), a
+
+        ; HL = prefix[last+1].
+        ld      a, (#r_cov_after$)
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_prefix$
+        add     hl, de
+        push    hl
+
+        ; DE = cov_cur + column*3.
+        ld      a, b
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_polar_nt_cov_cur
+        add     hl, de
+        ex      de, hl                 ; DE=coverage destination
+        pop     hl                     ; HL=prefix after
+
+        ld      a, (hl)
+        ld      c, a
+        ld      a, (#r_cov_p0$)
+        xor     c
+        ex      de, hl
+        or      (hl)
+        ld      (hl), a
+        inc     hl
+        ex      de, hl
+
+        inc     hl
+        ld      a, (hl)
+        ld      c, a
+        ld      a, (#r_cov_p1$)
+        xor     c
+        ex      de, hl
+        or      (hl)
+        ld      (hl), a
+        inc     hl
+        ex      de, hl
+
+        inc     hl
+        ld      a, (hl)
+        ld      c, a
+        ld      a, (#r_cov_p2$)
+        xor     c
+        ex      de, hl
+        or      (hl)
+        ld      (hl), a
+        ret
+
 ; A=row 0..17, B=column 0..19 -> HL=&g_map[row*20+col].
 map_ptr_row_col$:
         ld      l, a
@@ -684,6 +802,29 @@ map_ptr_row_col$:
         ld      de, #_g_map
         add     hl, de
         ret
+
+polar_dirty_mask_lut$:
+        .db 0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80
+polar_prefix$:
+        .db 0x00,0x00,0x00 ; rows < 0
+        .db 0x01,0x00,0x00 ; rows < 1
+        .db 0x03,0x00,0x00 ; rows < 2
+        .db 0x07,0x00,0x00 ; rows < 3
+        .db 0x0f,0x00,0x00 ; rows < 4
+        .db 0x1f,0x00,0x00 ; rows < 5
+        .db 0x3f,0x00,0x00 ; rows < 6
+        .db 0x7f,0x00,0x00 ; rows < 7
+        .db 0xff,0x00,0x00 ; rows < 8
+        .db 0xff,0x01,0x00 ; rows < 9
+        .db 0xff,0x03,0x00 ; rows < 10
+        .db 0xff,0x07,0x00 ; rows < 11
+        .db 0xff,0x0f,0x00 ; rows < 12
+        .db 0xff,0x1f,0x00 ; rows < 13
+        .db 0xff,0x3f,0x00 ; rows < 14
+        .db 0xff,0x7f,0x00 ; rows < 15
+        .db 0xff,0xff,0x00 ; rows < 16
+        .db 0xff,0xff,0x01 ; rows < 17
+        .db 0xff,0xff,0x03 ; rows < 18
 
 ; edge_lut[bottom][slope+7][local+15], shade-zero tile word.
 ; Each entry already contains H/V flip + palette attributes exactly as the
@@ -892,4 +1033,18 @@ r_cap_delta$:
 r_fill_first$:
         .ds     1
 r_full_tile$:
+        .ds     1
+r_dirty_mask$:
+        .ds     1
+r_dirty_group$:
+        .ds     1
+r_cov_first$:
+        .ds     1
+r_cov_after$:
+        .ds     1
+r_cov_p0$:
+        .ds     1
+r_cov_p1$:
+        .ds     1
+r_cov_p2$:
         .ds     1
