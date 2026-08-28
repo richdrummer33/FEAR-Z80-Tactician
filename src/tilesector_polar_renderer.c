@@ -334,21 +334,13 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
 
 static void insert_run(uint8_t idx,uint8_t *count){
     uint8_t i=*count;if(i>=TSPF_MAX_ACTIVE)return;
-#ifdef __SDCC
-    /* Geometry/shade fast path writes complete name-table cells. Traverse
-     * near->far so the first owner of a cell is already the final answer;
-     * the assembly coverage mask then rejects hidden farther writes.
-     * AO remains on the reference-style far->near C materializer for now. */
-    if(g_tspf_appearance_mode<2u){
-        while(i>0u&&g_runs[g_run_order[i-1u]].inv_mid<=g_runs[idx].inv_mid){
-            g_run_order[i]=g_run_order[i-1u];--i;
-        }
-    }else
-#endif
-    {
-        while(i>0u&&g_runs[g_run_order[i-1u]].inv_mid>g_runs[idx].inv_mid){
-            g_run_order[i]=g_run_order[i-1u];--i;
-        }
+    /* POLAR_WRAM_OVERWRITE_AB: restore the original far->near ordering.
+     * The authoritative shadow is ordinary WRAM and VDP upload happens only
+     * after rendering, so hidden intermediate RAM stores may be cheaper than
+     * testing ownership for every edge/fill row. Final nearer words overwrite
+     * farther words before VBlank sees the map. */
+    while(i>0u&&g_runs[g_run_order[i-1u]].inv_mid>g_runs[idx].inv_mid){
+        g_run_order[i]=g_run_order[i-1u];--i;
     }
     g_run_order[i]=idx;*count=(uint8_t)(*count+1u);
 }
