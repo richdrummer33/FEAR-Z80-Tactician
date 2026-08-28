@@ -157,8 +157,9 @@ q6_overflow$:
 profile_half$:
         ld      (#r_run_half$), a
 
-        ; Default FULL top = 72-half, sign-extended to 16 bits.
-        ld      a, #72
+        ; POLAR_STAGE21_FULL_SYMMETRY_A: exact physical-screen mirror.
+        ; FULL top = 71-half, while bottom remains 72+half, so bottom=143-top.
+        ld      a, #71
         ld      c, a
         ld      a, (#r_run_half$)
         ld      b, a

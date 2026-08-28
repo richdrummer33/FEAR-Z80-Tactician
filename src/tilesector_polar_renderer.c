@@ -283,6 +283,10 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
     }
 #endif
     for(c=c0;c<=c1;++c){uint8_t invl=(uint8_t)clamp_u8i((iq+32)>>6,255u),invr=(uint8_t)clamp_u8i((iq+step+32)>>6,255u),mid=(uint8_t)(((uint16_t)invl+invr)>>1),hl=(uint8_t)(invl>>1),hr=(uint8_t)(invr>>1);int16_t tl=(int16_t)(TSPF_HORIZON-hl),tr=(int16_t)(TSPF_HORIZON-hr),bl=(int16_t)(TSPF_HORIZON+hl),br=(int16_t)(TSPF_HORIZON+hr);uint8_t border=0,shade,edge_shade;
+        /* POLAR_STAGE21_FULL_SYMMETRY_A: match the mature GG FULL convention.
+         * The 144-line viewport is centred on y=71.5, so exact mirror geometry
+         * is top=71-half and bottom=72+half. Other profiles stay unchanged. */
+        if(profile==TSP_PROFILE_FULL){tl--;tr--;}
         if(c==c0&&r->left_real) border|=1u;
         if(c==c1&&r->right_real) border|=2u;
         shade=g_tspf_appearance_mode?shade_for(mid,k_tspf_shade_bias[r->sid]):1u;edge_shade=shade;
