@@ -23,20 +23,16 @@ BANKREF(tilesector_polar_renderer_bank)
 
 #ifdef __SDCC
 void tsp_polar_begin_map_fast(void);
-void tsp_polar_surface_column_fast(uint8_t col);
-typedef struct TSPPolarRasterCtx {
-    /* Fresh polar GG assembly ABI, deliberately matching the proven tile
-     * materializer shape: 0 profile, 1 shade, 2/4 top, 6/8 bottom,
-     * 10 border, 11 clip_top*, 13 clip_bottom*. */
-    uint8_t profile;
-    uint8_t shade;
-    int16_t top_l,top_r,bot_l,bot_r;
-    uint8_t border;
-    uint8_t *clip_top,*clip_bottom;
-} TSPPolarRasterCtx;
-TSPPolarRasterCtx g_polar_raster_ctx;
-static uint8_t g_polar_clip_top;
-static uint8_t g_polar_clip_bottom;
+void tsp_polar_surface_column_fast(void);
+/* Explicit assembly bridge symbols. No C struct layout and no implicit
+ * register-argument ABI: the Z80 materializer reads these exact globals. */
+uint8_t g_polar_mat_col;
+uint8_t g_polar_mat_shade;
+uint8_t g_polar_mat_border;
+int16_t g_polar_mat_top_l;
+int16_t g_polar_mat_top_r;
+int16_t g_polar_mat_bot_l;
+int16_t g_polar_mat_bot_r;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
@@ -127,12 +123,6 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 }
 
 void tsp_polar_renderer_reset(void) BANKED {
-#ifdef __SDCC
-    g_polar_clip_top=0u;
-    g_polar_clip_bottom=143u;
-    g_polar_raster_ctx.clip_top=&g_polar_clip_top;
-    g_polar_raster_ctx.clip_bottom=&g_polar_clip_bottom;
-#endif
 #ifndef __SDCC
     g_map_ready=0u;g_touched_count=0u;memset(g_touched_bits,0,sizeof(g_touched_bits));
 #endif
@@ -248,14 +238,12 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
             /* Fast-path geometry/shade materialization. The baked polar
              * renderer supplies final projected endpoints; this kernel only
              * turns them into the existing GG edge/full tile vocabulary. */
-            g_polar_clip_top=0u;
-            g_polar_clip_bottom=143u;
-            g_polar_raster_ctx.profile=profile;
-            g_polar_raster_ctx.shade=shade;
-            g_polar_raster_ctx.top_l=tl;g_polar_raster_ctx.top_r=tr;
-            g_polar_raster_ctx.bot_l=bl;g_polar_raster_ctx.bot_r=br;
-            g_polar_raster_ctx.border=border;
-            tsp_polar_surface_column_fast(c);
+            g_polar_mat_col=c;
+            g_polar_mat_shade=shade;
+            g_polar_mat_border=border;
+            g_polar_mat_top_l=tl;g_polar_mat_top_r=tr;
+            g_polar_mat_bot_l=bl;g_polar_mat_bot_r=br;
+            tsp_polar_surface_column_fast();
         }else
 #endif
         {
