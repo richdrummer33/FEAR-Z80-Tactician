@@ -178,7 +178,7 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     while(en<-512){st=(int16_t)(st+4096);en=(int16_t)(en+4096);}while(st>512){st=(int16_t)(st-4096);en=(int16_t)(en-4096);}
     lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo)return 0u;x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
     r->key_id=keyid;r->sid=sid;r->v0=v0;r->v1=v1;r->lo_q12=lo;r->hi_q12=hi;r->x0=x0;r->x1=x1;r->left_real=(uint8_t)(lo==st);r->right_real=(uint8_t)(hi==en);
-    r->inv0=inv_at(sid,v0,(uint16_t)(yawq+lo)&4095u,lo,s);r->inv1=inv_at(sid,v0,(uint16_t)(yawq+hi)&4095u,hi,s);r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);return 1u;
+    r->inv0=inv_at(sid,k_tspf_seg_anchor[sid],(uint16_t)(yawq+lo)&4095u,lo,s);r->inv1=inv_at(sid,k_tspf_seg_anchor[sid],(uint16_t)(yawq+hi)&4095u,hi,s);r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);return 1u;
 }
 
 static uint16_t edge_entry(uint8_t shade,int16_t local_left,int8_t slope,uint8_t bottom){
