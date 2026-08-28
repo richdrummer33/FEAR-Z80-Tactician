@@ -30,13 +30,18 @@ POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
 POLAR_LOCAL_PROJECTION ?= 1
 POLAR_PROJ_THRESHOLD ?= 4
+POLAR_PROJ_ROWS_PER_BANK ?= 4
+POLAR_PROJ_BANK_COUNT ?= 6
+POLAR_ROM_BANKS ?= 8
 POLAR_PROJ_GEN_DIR := build/generated/polar_projection
 POLAR_PROJ_STAMP := $(POLAR_PROJ_GEN_DIR)/.stamp
 POLAR_PROJ_META := $(POLAR_PROJ_GEN_DIR)/tilesector_polar_projection_meta.h
-POLAR_PROJ_BANKS := 0 1 2 3 4 5
+POLAR_PROJ_BANKS_6 := 0 1 2 3 4 5
+POLAR_PROJ_BANKS_24 := 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
+POLAR_PROJ_BANKS := $(POLAR_PROJ_BANKS_$(POLAR_PROJ_BANK_COUNT))
 POLAR_PROJ_SRCS := $(addprefix $(POLAR_PROJ_GEN_DIR)/tilesector_polar_proj_bank,$(addsuffix .c,$(POLAR_PROJ_BANKS)))
 POLAR_PROJ_OBJS := $(addprefix build/tilesector_polar_proj_bank,$(addsuffix .o,$(POLAR_PROJ_BANKS)))
-POLAR_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo8 -I$(POLAR_PROJ_GEN_DIR)
+POLAR_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo$(POLAR_ROM_BANKS) -I$(POLAR_PROJ_GEN_DIR)
 POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS) -DTSPF_LOCAL_PROJECTION=$(POLAR_LOCAL_PROJECTION)
 ifeq ($(POLAR_PROFILE_HOOKS),0)
 POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_raw_gg.o
@@ -130,7 +135,7 @@ gg-tilesector: $(TILESECTOR_GG_OBJS)
 
 $(POLAR_PROJ_STAMP): experiments/adaptive_polar_field/local_projection_field_poc.py src/generated/tilesector_polar_data_part00.inc src/generated/tilesector_polar_data_part01.inc src/generated/tilesector_polar_data_part02.inc src/generated/tilesector_polar_data_part03.inc src/generated/tilesector_polar_data_part04.inc | build
 	mkdir -p $(POLAR_PROJ_GEN_DIR)
-	python3 experiments/adaptive_polar_field/local_projection_field_poc.py --emit-dir $(POLAR_PROJ_GEN_DIR) --emit-threshold $(POLAR_PROJ_THRESHOLD) --min-q4 8 --rows-per-bank 4 --emit-only
+	python3 experiments/adaptive_polar_field/local_projection_field_poc.py --emit-dir $(POLAR_PROJ_GEN_DIR) --emit-threshold $(POLAR_PROJ_THRESHOLD) --min-q4 8 --rows-per-bank $(POLAR_PROJ_ROWS_PER_BANK) --emit-only
 	touch $@
 
 $(POLAR_PROJ_META) $(POLAR_PROJ_SRCS): $(POLAR_PROJ_STAMP)
