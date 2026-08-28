@@ -39,9 +39,24 @@ Every optimization must say which runtime class of work it deletes. If it merely
 7. **Do not trust helper names in profiles:** linked symbols are authoritative. Current real generic multiply target is `__mul16`, about 33K T/update; `__mullong` is not linked.
 8. **Two correctness gates:** Polar-to-Polar optimizations must preserve exact map hashes. Polar-to-legacy differences need semantic/first-divergence classification; absence of geometry is not dismissed as cosmetic.
 
+## Accepted results
+
+### A. Stage20-shaped row dirty extents - ACCEPTED
+
+Run 83 is fully green and preserves the exact Polar map hash plus the same legacy first-divergence location.
+
+- Raw Mode 0: **588,886 -> 581,424 T/update** (-7,462 T, **-1.27%**).
+- Update rate: **6.079 -> 6.157 updates/s**.
+- Render/build: **529,848 -> 526,230 T/update** (-3,618 T).
+- VRAM upload: **16,398 -> 11,827 T/update** (-4,571 T, **-27.9%**).
+- Transmitted words remain **110.5/update**: this is bookkeeping/addressing savings, not a changed transfer policy.
+- WRAM dirty metadata: **54-byte bitset -> 36 bytes of row first/last extents**.
+
+This is exactly the old Stage20 lesson: VDP dirtiness should already be stored in the shape consumed by the horizontal transaction.
+
 ## Priority experiments
 
-A. **Stage20-shaped row extent A/B** - small/clean hardware-fit carry-over. Expected effect: lower VBlank bookkeeping; not an architectural breakthrough.
+A. **Stage20-shaped row extent A/B** - DONE / ACCEPTED.
 
 B. **FULL VFLIP/symmetry A/B** - specifically target duplicated top/bottom edge work in the 252K materializer hotspot. Must prove the geometry convention before adopting.
 
