@@ -16,6 +16,13 @@ BANKREF(tilesector_polar_renderer_bank)
 #include "tilesector_polar.h"
 #include "generated/tilesector_polar_data.inc"
 
+#ifndef TSPF_LOCAL_PROJECTION
+#define TSPF_LOCAL_PROJECTION 0
+#endif
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
+#include "tilesector_polar_projection_meta.h"
+#endif
+
 #define TSPF_MAX_ACTIVE 20u
 #define TSPF_HORIZON 72
 #define TSPF_NEAR_Z_Q4 (10<<4)
@@ -96,6 +103,14 @@ static uint8_t g_run_order[TSPF_MAX_ACTIVE];
  * need only 28 bytes plus a 16-bit validity mask. */
 static uint16_t g_corner_bearing_q12[14];
 static uint16_t g_corner_bearing_valid;
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
+/* Cell-local ROM projection field. The selected cell block is copied once on
+ * cell transition; ordinary render updates consume only WRAM thereafter. */
+static uint8_t g_proj_cell[TSPF_PROJ_MAX_CELL_BYTES];
+static uint16_t g_proj_corner_off[14];
+static uint8_t g_proj_corner_depth[14];
+static uint16_t g_proj_cached_gi=0xffffu;
+#endif
 static const uint16_t k_corner_mask[14] = {
     0x0001u,0x0002u,0x0004u,0x0008u,0x0010u,0x0020u,0x0040u,
     0x0080u,0x0100u,0x0200u,0x0400u,0x0800u,0x1000u,0x2000u
@@ -152,6 +167,9 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 }
 
 void tsp_polar_renderer_reset(void) BANKED {
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
+    g_proj_cached_gi=0xffffu;
+#endif
 #ifndef __SDCC
     g_map_ready=0u;g_touched_count=0u;memset(g_touched_bits,0,sizeof(g_touched_bits));
 #endif
@@ -167,6 +185,75 @@ static uint8_t selector_pass(uint8_t sid,uint8_t lx,uint8_t ly){
     TSPF_SELECTOR_HIT();
     return (uint8_t)(((v>=0)?1u:0u)^k_tspf_sel_inv[sid]);
 }
+
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
+/* Exact signed-byte x unsigned-6-bit product without pulling SDCC __mul16.
+ * Six fixed bit tests are cheaper than keeping atan/reciprocal math alive. */
+static int16_t proj_mul_s8_u6(int8_t a,uint8_t b){
+    int16_t x=(int16_t)a,r=0;
+    if(b&1u)r=(int16_t)(r+x);x=(int16_t)(x+x);
+    if(b&2u)r=(int16_t)(r+x);x=(int16_t)(x+x);
+    if(b&4u)r=(int16_t)(r+x);x=(int16_t)(x+x);
+    if(b&8u)r=(int16_t)(r+x);x=(int16_t)(x+x);
+    if(b&16u)r=(int16_t)(r+x);x=(int16_t)(x+x);
+    if(b&32u)r=(int16_t)(r+x);
+    return r;
+}
+
+static void projection_load_cell(uint8_t gx,uint8_t gy,uint16_t gi){
+    uint16_t local=(uint16_t)((uint16_t)(gy&3u)*48u+gx);
+    const uint8_t *p;
+    uint16_t mask;
+    uint8_t v,d;
+    if(gi==g_proj_cached_gi)return;
+    switch(gy>>2){
+        case 0u:tsp_polar_proj_load_bank0(local,g_proj_cell);break;
+        case 1u:tsp_polar_proj_load_bank1(local,g_proj_cell);break;
+        case 2u:tsp_polar_proj_load_bank2(local,g_proj_cell);break;
+        case 3u:tsp_polar_proj_load_bank3(local,g_proj_cell);break;
+        case 4u:tsp_polar_proj_load_bank4(local,g_proj_cell);break;
+        default:tsp_polar_proj_load_bank5(local,g_proj_cell);break;
+    }
+    p=g_proj_cell;
+    mask=(uint16_t)p[0]|((uint16_t)p[1]<<8);p+=2;
+    for(v=0u;v<14u;++v){
+        g_proj_corner_depth[v]=0xffu;
+        g_proj_corner_off[v]=0u;
+        if(mask&k_corner_mask[v]){
+            d=*p++;
+            if(d!=0xffu){
+                g_proj_corner_depth[v]=d;
+                g_proj_corner_off[v]=(uint16_t)(p-g_proj_cell);
+                p+=(uint16_t)(4u<<((uint8_t)(d+d)));
+            }
+        }
+    }
+    g_proj_cached_gi=gi;
+}
+
+static uint8_t projection_bearing_q12(uint8_t vid,const TSPState *s,uint16_t *out){
+    uint8_t d=g_proj_corner_depth[vid],shift,lx,ly,ix,iy,leaf,mask;
+    const uint8_t *p;
+    uint16_t base;
+    int16_t cx,cy,q;
+    if(d==0xffu)return 0u;
+    shift=(uint8_t)(6u-d);
+    lx=(uint8_t)((uint16_t)s->x_q4&63u);
+    ly=(uint8_t)((uint16_t)s->y_q4&63u);
+    ix=(uint8_t)(lx>>shift);
+    iy=(uint8_t)(ly>>shift);
+    leaf=(uint8_t)((iy<<d)|ix);
+    p=&g_proj_cell[g_proj_corner_off[vid]+((uint16_t)leaf<<2)];
+    base=(uint16_t)p[0]|((uint16_t)(p[1]&15u)<<8);
+    mask=(uint8_t)((1u<<shift)-1u);
+    cx=proj_mul_s8_u6((int8_t)p[2],(uint8_t)(lx&mask));
+    cy=proj_mul_s8_u6((int8_t)p[3],(uint8_t)(ly&mask));
+    q=(int16_t)base;
+    q=(int16_t)(q+shr_signed(cx,shift)+shr_signed(cy,shift));
+    *out=(uint16_t)q&4095u;
+    return 1u;
+}
+#endif
 
 /* Exact modulo-8-bit equivalent of ((uint32_t)n*recip_q16 + 128)>>8,
  * decomposed into two 8x8->16 products so SDCC never pulls __mullong. */
@@ -195,6 +282,11 @@ static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4){
 static uint16_t bearing_vertex_q12(uint8_t vid,const TSPState *s){
     uint16_t mask=k_corner_mask[vid];
     if(!(g_corner_bearing_valid&mask)){
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
+        uint16_t baked;
+        if(projection_bearing_q12(vid,s,&baked))g_corner_bearing_q12[vid]=baked;
+        else
+#endif
         g_corner_bearing_q12[vid]=bearing_q12(
             (int16_t)((int16_t)k_tspf_vx[vid]<<4)-s->x_q4,
             (int16_t)((int16_t)k_tspf_vy[vid]<<4)-s->y_q4);
@@ -373,6 +465,9 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
     g_tspf_selector_tests=0u;
 #endif
 gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u||gy>=24u)goto done;gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);recipe=k_tspf_recipe_grid[gi];if(recipe==0xffu)goto done;lx=(uint8_t)((uint16_t)s->x_q4&63u);ly=(uint8_t)((uint16_t)s->y_q4&63u);
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
+    projection_load_cell(gx,gy,gi);
+#endif
     off=k_tspf_recipe_off[recipe];p=&k_tspf_recipe_stream[off];base_id=*p++;cond_count=*p++;b=&k_tspf_base_stream[k_tspf_base_off[base_id]];i=*b++;for(;i;--i)add_key(*b++,s,&count);
     for(i=0;i<cond_count;++i){uint8_t key=*p++,sel=*p++;if(selector_pass(sel,lx,ly))add_key(key,s,&count);}
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
