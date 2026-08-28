@@ -171,15 +171,21 @@ slope_negative$:
         ld      a, #0xF9
 slope_store$:
         ld      (#r_edge_slope$), a
+        ; Polar path may cross more than two tile rows at steep/near
+        ; perspective. Match the C oracle: draw every row from min..max while
+        ; using the clamped [-7,+7] edge slope for tile selection.
         ld      a, (#r_edge_min$)
+edge_rows_loop$:
+        ld      (#r_edge_iter$), a
         call    draw_edge_row$
-        ld      a, (#r_edge_max$)
+        ld      a, (#r_edge_iter$)
         ld      c, a
-        ld      a, (#r_edge_min$)
+        ld      a, (#r_edge_max$)
         cp      c
         ret     z
         ld      a, c
-        jp      draw_edge_row$
+        inc     a
+        jr      edge_rows_loop$
 
 ; A=signed row. Reject offscreen/occluded rows, then table-lookup the exact
 ; edge tile+flip attributes and write it into g_map.
@@ -605,6 +611,8 @@ r_edge_bottom$:
 r_edge_min$:
         .ds     1
 r_edge_max$:
+        .ds     1
+r_edge_iter$:
         .ds     1
 r_row$:
         .ds     1
