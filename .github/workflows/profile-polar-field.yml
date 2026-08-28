@@ -72,6 +72,24 @@ jobs:
             fi
           done
 
+      - name: Build half-pixel baked-bearing diagnostic ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/generated/polar_projection
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+                build/tilesector_polar_renderer_gg.o build/tilesector_polar_projection_gg.o \
+                build/tilesector_polar_proj_bank*.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=1 POLAR_PROJ_THRESHOLD=2 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar
+          for ext in gg sym map noi cdb ihx; do
+            if [ -f "build/gg-tilesector-polar.$ext" ]; then
+              cp "build/gg-tilesector-polar.$ext" "build/polar-modes/polar-halfpx-mode0.$ext"
+            fi
+          done
+
       - name: Inspect linked memory maps
         shell: bash
         run: |
@@ -133,6 +151,19 @@ jobs:
             --csv build/polar-modes/exact-vs-baked-map-divergence.csv \
             | tee build/polar-modes/exact-vs-baked-map-divergence.txt
 
+          ./build/polar_raw_profile_runner \
+            build/polar-modes/polar-halfpx-mode0.gg \
+            build/polar-modes/polar-halfpx-mode0.sym \
+            120 8 build/polar-modes/cadence-halfpx-mode0.csv \
+            build/polar-modes/polar-halfpx-mode0-map.bin \
+            | tee build/polar-modes/cadence-halfpx-mode0.txt
+
+          python3 tools/measure_map_divergence.py \
+            build/polar-modes/polar-exact-mode0-map.bin \
+            build/polar-modes/polar-halfpx-mode0-map.bin \
+            --csv build/polar-modes/exact-vs-halfpx-map-divergence.csv \
+            | tee build/polar-modes/exact-vs-halfpx-map-divergence.txt
+
           python3 - <<'PY' | tee build/polar-modes/exact-vs-baked-summary.txt
           from pathlib import Path
           import re
@@ -144,7 +175,9 @@ jobs:
 
           exact=grab("build/polar-modes/cadence-exact-mode0.txt",r"update T\s+mean=\s*([0-9.]+)")
           baked=grab("build/polar-modes/cadence-raw-mode0.txt",r"update T\s+mean=\s*([0-9.]+)")
+          halfpx=grab("build/polar-modes/cadence-halfpx-mode0.txt",r"update T\s+mean=\s*([0-9.]+)")
           print(f"EXACT_VS_BAKED raw exact={exact:.1f} baked={baked:.1f} delta={baked-exact:+.1f} T ({(baked/exact-1)*100:+.2f}%)")
+          print(f"EXACT_VS_HALFPIX raw exact={exact:.1f} halfpx={halfpx:.1f} delta={halfpx-exact:+.1f} T ({(halfpx/exact-1)*100:+.2f}%)")
           PY
 
       - name: Bottom-up renderer PC cycle profile
