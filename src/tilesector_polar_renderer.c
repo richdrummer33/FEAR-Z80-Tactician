@@ -193,6 +193,8 @@ static uint8_t selector_pass(uint8_t sid,uint8_t lx,uint8_t ly){
     return (uint8_t)(((v>=0)?1u:0u)^k_tspf_sel_inv[sid]);
 }
 
+static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4);
+
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 static void projection_load_cell(uint8_t gx,uint8_t gy,uint16_t gi){
     uint16_t local=(uint16_t)((uint16_t)(gy&3u)*48u+gx);

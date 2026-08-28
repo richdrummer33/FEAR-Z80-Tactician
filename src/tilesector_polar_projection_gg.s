@@ -154,14 +154,20 @@ pe_leaf_ready$:
         ld      (#pe_sy$), a
 
         ld      a, (#pe_sx$)
-        ld      c, (#pe_localx$)
-        ld      b, (#pe_shift$)
+        ld      c, a
+        ld      a, (#pe_localx$)
+        ld      c, a
+        ld      a, (#pe_shift$)
+        ld      b, a
+        ld      a, (#pe_sx$)
         call    pe_scaled_mul8$
         ld      (#pe_corrx$), a
 
+        ld      a, (#pe_localy$)
+        ld      c, a
+        ld      a, (#pe_shift$)
+        ld      b, a
         ld      a, (#pe_sy$)
-        ld      c, (#pe_localy$)
-        ld      b, (#pe_shift$)
         call    pe_scaled_mul8$
         ld      c, a                    ; signed y correction
 
@@ -210,13 +216,20 @@ pe_corner_done$:
 ; A=signed slope (-127..127), C=unsigned local coordinate (0..63),
 ; B=right shift 3..6. Return A=trunc_toward_zero(slope*local / 2^B).
 pe_scaled_mul8$:
-        ld      (#pe_mul_sign$), #0
+        ld      e, a
+        xor     a
+        ld      (#pe_mul_sign$), a
+        ld      a, e
         bit     7, a
         jr      z, pe_mul_abs_ready$
         neg
-        ld      (#pe_mul_sign$), #1
+        ld      e, a
+        ld      a, #1
+        ld      (#pe_mul_sign$), a
+        jr      pe_mul_mag_ready$
 pe_mul_abs_ready$:
         ld      e, a
+pe_mul_mag_ready$:
         ld      d, #0
         ld      hl, #0
         ld      a, c
