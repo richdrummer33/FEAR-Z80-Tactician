@@ -28,13 +28,21 @@ TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o buil
 POLAR_TEST_BIN := build/test_tilesector_polar
 POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
-POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS)
+POLAR_LOCAL_PROJECTION ?= 1
+POLAR_PROJ_GEN_DIR := build/generated/polar_projection
+POLAR_PROJ_STAMP := $(POLAR_PROJ_GEN_DIR)/.stamp
+POLAR_PROJ_META := $(POLAR_PROJ_GEN_DIR)/tilesector_polar_projection_meta.h
+POLAR_PROJ_BANKS := 0 1 2 3 4 5
+POLAR_PROJ_SRCS := $(addprefix $(POLAR_PROJ_GEN_DIR)/tilesector_polar_proj_bank,$(addsuffix .c,$(POLAR_PROJ_BANKS)))
+POLAR_PROJ_OBJS := $(addprefix build/tilesector_polar_proj_bank,$(addsuffix .o,$(POLAR_PROJ_BANKS)))
+POLAR_GGFLAGS := $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo8 -I$(POLAR_PROJ_GEN_DIR)
+POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS) -DTSPF_LOCAL_PROJECTION=$(POLAR_LOCAL_PROJECTION)
 ifeq ($(POLAR_PROFILE_HOOKS),0)
 POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_raw_gg.o
 else
 POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_profiled_gg.o
 endif
-POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ)
+POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ) $(POLAR_PROJ_OBJS)
 
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # Speed bias is cheap enough for normal iteration. GBDK's documented
@@ -116,38 +124,49 @@ build/tilesector_raster_gg.o: src/tilesector_raster_gg.s | build
 gg-tilesector: $(TILESECTOR_GG_OBJS)
 	$(LCC) $(GGFLAGS) -Wm-yS -o $(TILESECTOR_ROM) $(TILESECTOR_GG_OBJS)
 
+$(POLAR_PROJ_STAMP): experiments/adaptive_polar_field/local_projection_field_poc.py src/generated/tilesector_polar_data_part00.inc src/generated/tilesector_polar_data_part01.inc src/generated/tilesector_polar_data_part02.inc src/generated/tilesector_polar_data_part03.inc src/generated/tilesector_polar_data_part04.inc | build
+	mkdir -p $(POLAR_PROJ_GEN_DIR)
+	python3 experiments/adaptive_polar_field/local_projection_field_poc.py --emit-dir $(POLAR_PROJ_GEN_DIR) --emit-threshold 4 --min-q4 8 --rows-per-bank 4 --emit-only
+	touch $@
+
+$(POLAR_PROJ_META) $(POLAR_PROJ_SRCS): $(POLAR_PROJ_STAMP)
+	@:
+
+build/tilesector_polar_proj_bank%.o: $(POLAR_PROJ_GEN_DIR)/tilesector_polar_proj_bank%.c $(POLAR_PROJ_META) | build
+	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
+
 build/main_tilesector_polar_gg.o: src/main_tilesector_polar_gg.c | build
-	$(LCC) $(GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_motion_gg.o: src/tilesector_polar_motion.c | build
-	$(LCC) $(GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
-build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c | build
-	$(LCC) $(GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
+build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c $(POLAR_PROJ_META) | build
+	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_materialize_gg.o: src/tilesector_polar_materialize_gg.s | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_ntstate_gg.o: src/tilesector_polar_ntstate_gg.s | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_ntupload_profiled_gg.o: src/tilesector_polar_ntupload_profiled_gg.s | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_ntupload_raw_gg.o: src/tilesector_polar_ntupload_raw_gg.s | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_vram_profiled_gg.o: src/tilesector_polar_vram_profiled_gg.s | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/tilesector_polar_vram_raw_gg.o: src/tilesector_polar_vram_raw_gg.s | build
-	$(LCC) $(GGFLAGS) -c -o $@ $<
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 gg-tilesector-polar: $(POLAR_GG_OBJS)
-	$(LCC) $(GGFLAGS) -Wm-yS -o $(POLAR_ROM) $(POLAR_GG_OBJS)
+	$(LCC) $(POLAR_GGFLAGS) -Wm-yS -o $(POLAR_ROM) $(POLAR_GG_OBJS)
 
 clean:
 	rm -rf build/*
