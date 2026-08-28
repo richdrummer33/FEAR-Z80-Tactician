@@ -47,7 +47,7 @@ int main(int argc,char**argv) {
     unsigned target=(argc>3)?(unsigned)std::strtoul(argv[3],nullptr,0):120u;
     unsigned warmup=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):8u;
     std::string scenario=(argc>5)?argv[5]:"demo";
-    if(scenario!="demo" && scenario!="roomA-turn") {
+    if(scenario!="demo" && scenario!="roomA-turn" && scenario!="manual-forward" && scenario!="manual-turn" && scenario!="manual-forward-turn") {
         std::fprintf(stderr,"unknown scenario: %s\n",scenario.c_str());
         return 2;
     }
@@ -66,6 +66,15 @@ int main(int argc,char**argv) {
         statedump.open(statedump_path,std::ios::binary|std::ios::trunc);
         if(!statedump) {
             std::fprintf(stderr,"cannot open state dump: %s\n",statedump_path);
+            return 2;
+        }
+    }
+    const char* timingdump_path=(argc>8)?argv[8]:nullptr;
+    std::ofstream timingdump;
+    if(timingdump_path) {
+        timingdump.open(timingdump_path,std::ios::binary|std::ios::trunc);
+        if(!timingdump) {
+            std::fprintf(stderr,"cannot open timing dump: %s\n",timingdump_path);
             return 2;
         }
     }
@@ -143,10 +152,22 @@ int main(int argc,char**argv) {
     unsigned map_hash_frames=0;
     const uint64_t instruction_limit=50000000ull;
 
-    // External deterministic input scenario: no ROM instrumentation or hot-path
-    // branches. RIGHT-only forces manual in-place yaw while staying in Room A.
+    // External deterministic input scenarios: no ROM instrumentation or hot-path
+    // branches. The manual-* variants let the demo path warm up to a chosen
+    // world location, then take over exactly at the first measured loop.
     if(scenario=="roomA-turn")
         core.KeyPressed(Joypad_1,Key_Right);
+    const bool delayed_manual =
+        scenario=="manual-forward" || scenario=="manual-turn" || scenario=="manual-forward-turn";
+    bool delayed_manual_started=false;
+    auto start_delayed_manual=[&]() {
+        if(scenario=="manual-forward" || scenario=="manual-forward-turn")
+            core.KeyPressed(Joypad_1,Key_Up);
+        if(scenario=="manual-turn" || scenario=="manual-forward-turn")
+            core.KeyPressed(Joypad_1,Key_Right);
+        delayed_manual_started=true;
+    };
+    if(delayed_manual && warmup==0u) start_delayed_manual();
 
     while(loops_measured<target&&instructions<instruction_limit) {
         samples=0;
@@ -180,7 +201,10 @@ int main(int argc,char**argv) {
             if(p==1u) {
                 if(have_loop_start) {
                     if(loops_seen>=warmup) {
-                        loop_stats.add(now-loop_start);
+                        const uint64_t loop_dt=now-loop_start;
+                        loop_stats.add(loop_dt);
+                        if(timingdump)
+                            timingdump.write(reinterpret_cast<const char*>(&loop_dt),sizeof(loop_dt));
                         if(have_map) {
                             for(unsigned i=0;i<720u;++i) {
                                 const uint8_t v=mem->DebugRetrieve((u16)(map_addr+i));
@@ -198,6 +222,8 @@ int main(int argc,char**argv) {
                         ++loops_measured;
                     }
                     ++loops_seen;
+                    if(delayed_manual && !delayed_manual_started && loops_seen>=warmup)
+                        start_delayed_manual();
                 } else have_loop_start=true;
                 loop_start=now;
                 if(have_state && loops_seen>=warmup && loops_measured<target) {
