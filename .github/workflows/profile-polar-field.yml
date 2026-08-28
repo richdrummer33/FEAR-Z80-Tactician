@@ -86,6 +86,15 @@ jobs:
               | tee "build/polar-modes/profile-detailed-mode$mode.txt"
           done
 
+      - name: Bottom-up renderer PC cycle profile
+        shell: bash
+        run: |
+          ./build/polar_function_profile_runner \
+            build/polar-modes/polar-profiled-mode0.gg \
+            build/polar-modes/polar-profiled-mode0.sym \
+            build/polar-modes/polar-profiled-mode0.noi \
+            60 8 | tee build/polar-modes/function-profile-mode0.txt
+
       - name: External zero-hook cadence A/B
         shell: bash
         run: |
