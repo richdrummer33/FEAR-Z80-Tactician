@@ -27,7 +27,14 @@ TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o buil
 
 POLAR_TEST_BIN := build/test_tilesector_polar
 POLAR_ROM := build/gg-tilesector-polar.gg
-POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_frame_gg.o build/tilesector_vram_gg.o
+POLAR_PROFILE_HOOKS ?= 1
+POLAR_CFLAGS := $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS)
+ifeq ($(POLAR_PROFILE_HOOKS),0)
+POLAR_VRAM_OBJ := build/tilesector_polar_vram_raw_gg.o
+else
+POLAR_VRAM_OBJ := build/tilesector_vram_gg.o
+endif
+POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_frame_gg.o $(POLAR_VRAM_OBJ)
 
 GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # Speed bias is cheap enough for normal iteration. GBDK's documented
@@ -110,15 +117,18 @@ gg-tilesector: $(TILESECTOR_GG_OBJS)
 	$(LCC) $(GGFLAGS) -Wm-yS -o $(TILESECTOR_ROM) $(TILESECTOR_GG_OBJS)
 
 build/main_tilesector_polar_gg.o: src/main_tilesector_polar_gg.c | build
-	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
+	$(LCC) $(GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_motion_gg.o: src/tilesector_polar_motion.c | build
-	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
+	$(LCC) $(GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c | build
-	$(LCC) $(GGFLAGS) $(TILESECTOR_FASTFLAGS) -c -o $@ $<
+	$(LCC) $(GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
+	$(LCC) $(GGFLAGS) -c -o $@ $<
+
+build/tilesector_polar_vram_raw_gg.o: src/tilesector_polar_vram_raw_gg.s | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
 
 gg-tilesector-polar: $(POLAR_GG_OBJS)
