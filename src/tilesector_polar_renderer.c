@@ -65,6 +65,11 @@ typedef struct PolarRun {
 } PolarRun;
 
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
+/* Original polar-field design: connected spans share authored corners.
+ * Compute each corner bearing at most once per rendered update. 14 vertices
+ * need only 28 bytes plus a 16-bit validity mask. */
+static uint16_t g_corner_bearing_q12[14];
+static uint16_t g_corner_bearing_valid;
 #ifndef __SDCC
 static uint8_t g_touched_bits[45];
 static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
@@ -136,6 +141,16 @@ static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4){
     if(sy) a=(uint16_t)(0u-a);
     return (uint16_t)(a&4095u);
 }
+static uint16_t bearing_vertex_q12(uint8_t vid,const TSPState *s){
+    uint16_t mask=(uint16_t)((uint16_t)1u<<vid);
+    if(!(g_corner_bearing_valid&mask)){
+        g_corner_bearing_q12[vid]=bearing_q12(
+            (int16_t)((int16_t)k_tspf_vx[vid]<<4)-s->x_q4,
+            (int16_t)((int16_t)k_tspf_vy[vid]<<4)-s->y_q4);
+        g_corner_bearing_valid|=mask;
+    }
+    return g_corner_bearing_q12[vid];
+}
 static uint8_t angle_x(int16_t rel){
     uint16_t a=(uint16_t)(rel<0?-rel:rel);uint16_t x;if(a>512u)a=512u;
     x=rel<0?(uint16_t)(160u-k_tspf_angle_x_pos[a]):k_tspf_angle_x_pos[a];
@@ -165,8 +180,8 @@ static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else 
 
 static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     uint16_t w=k_tspf_keys[keyid];uint8_t sid=(uint8_t)(w&31u),v0=(uint8_t)((w>>5)&15u),v1=(uint8_t)((w>>9)&15u);uint16_t a0,a1,len,yawq;int16_t st,en,lo,hi;uint8_t x0,x1;
-    a0=bearing_q12((int16_t)((int16_t)k_tspf_vx[v0]<<4)-s->x_q4,(int16_t)((int16_t)k_tspf_vy[v0]<<4)-s->y_q4);
-    a1=bearing_q12((int16_t)((int16_t)k_tspf_vx[v1]<<4)-s->x_q4,(int16_t)((int16_t)k_tspf_vy[v1]<<4)-s->y_q4);
+    a0=bearing_vertex_q12(v0,s);
+    a1=bearing_vertex_q12(v1,s);
     len=(uint16_t)((a1-a0)&4095u);if(len==0u||len>=2048u)return 0u;yawq=(uint16_t)s->yaw<<4;st=signed_q12((uint16_t)(a0-yawq));en=(int16_t)(st+(int16_t)len);
     while(en<-512){st=(int16_t)(st+4096);en=(int16_t)(en+4096);}while(st>512){st=(int16_t)(st-4096);en=(int16_t)(en-4096);}
     lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo)return 0u;x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
@@ -211,6 +226,7 @@ static void add_key(uint8_t key,const TSPState *s,uint8_t *count){PolarRun r;if(
 
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED {
     uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0,i;uint16_t gi,off;const uint8_t *p,*b;
+    g_corner_bearing_valid=0u;
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
     tsp_polar_begin_map_fast();
