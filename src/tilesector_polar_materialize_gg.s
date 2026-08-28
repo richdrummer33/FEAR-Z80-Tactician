@@ -240,12 +240,19 @@ _tsp_polar_surface_column_fast::
         ld      hl, (#_g_polar_mat_top_r)
         call    row_floor_hl$
         ld      (#r_top_r_row$), a
+
+        ; POLAR_STAGE21_FULL_VFLIP: exact FULL bottom rows are 17-top rows.
+        ; Do not floor two pixel endpoints that are already implied by the top.
+        ld      a, (#_g_polar_run_profile)
+        or      a
+        jp      z, polar_endpoint_rows_ready$
         ld      hl, (#_g_polar_mat_bot_l)
         call    row_floor_hl$
         ld      (#r_bot_l_row$), a
         ld      hl, (#_g_polar_mat_bot_r)
         call    row_floor_hl$
         ld      (#r_bot_r_row$), a
+polar_endpoint_rows_ready$:
 
         ; Signed min/max for top endpoints.
         ld      a, (#r_top_l_row$)
@@ -269,7 +276,24 @@ top_r_is_min$:
         ld      (#r_top_max$), a
 top_minmax_done$:
 
-        ; Signed min/max for bottom endpoints.
+        ; Exact FULL mirror: bottom_min=17-top_max,
+        ; bottom_max=17-top_min. Asymmetric profiles keep generic comparison.
+        ld      a, (#_g_polar_run_profile)
+        or      a
+        jp      nz, polar_bot_generic$
+        ld      a, (#r_top_max$)
+        ld      c, a
+        ld      a, #17
+        sub     c
+        ld      (#r_bot_min$), a
+        ld      a, (#r_top_min$)
+        ld      c, a
+        ld      a, #17
+        sub     c
+        ld      (#r_bot_max$), a
+        jp      bot_minmax_done$
+
+polar_bot_generic$:
         ld      a, (#r_bot_l_row$)
         ld      e, a
         xor     #0x80
@@ -322,14 +346,21 @@ polar_cov_emit$:
         jp      z, raster_done$         ; nearer geometry already owns whole span
 polar_cov_done$:
 
-        ; Polar runtime semantics: both visible boundaries are vector edges.
-        ; LINTEL/RISER/RAISED only change projected endpoint Y upstream.
+        ; FULL is exact hardware symmetry: calculate each top edge word once
+        ; and emit its floor partner with VFLIP+palette. Other profiles retain
+        ; independent top/bottom vector edges.
+        ld      a, (#_g_polar_run_profile)
+        or      a
+        jp      z, polar_draw_symfull$
         xor     a
         call    prepare_edge$          ; top
-
         ld      a, #1
         call    prepare_edge$          ; bottom
+        call    draw_plain_interior$
+        jr      raster_done$
 
+polar_draw_symfull$:
+        call    prepare_symfull_edges$
         call    draw_plain_interior$
         jr      raster_done$
 
@@ -348,6 +379,174 @@ row_floor_hl$:
         sra     h
         rr      l
         ld      a, l
+        ret
+
+; POLAR_STAGE21_FULL_VFLIP
+; FULL walls use one top-edge solution. For every visible top edge row R, the
+; exact floor partner is row 17-R and the same tile word ORed with
+; VFLIP|palette (high-byte 0x0C). The unclaimed mask is from the state before
+; this surface entered, so top/bottom members can be tested independently.
+prepare_symfull_edges$:
+        ld      hl, (#_g_polar_mat_top_l)
+        ld      (#r_edge_left$), hl
+        ld      de, (#_g_polar_mat_top_r)
+        ex      de, hl                  ; HL=right, DE=left
+        or      a
+        sbc     hl, de
+        ld      a, l
+        bit     7, a
+        jr      nz, sym_slope_negative$
+        cp      #8
+        jr      c, sym_slope_store$
+        ld      a, #7
+        jr      sym_slope_store$
+sym_slope_negative$:
+        cp      #0xF9
+        jr      nc, sym_slope_store$
+        ld      a, #0xF9
+sym_slope_store$:
+        ld      (#r_edge_slope$), a
+        ld      a, (#r_top_min$)
+sym_edge_rows_loop$:
+        ld      (#r_edge_iter$), a
+        call    draw_symfull_edge_pair$
+        ld      a, (#r_edge_iter$)
+        ld      c, a
+        ld      a, (#r_top_max$)
+        cp      c
+        ret     z
+        ld      a, c
+        inc     a
+        jr      sym_edge_rows_loop$
+
+; A=signed TOP tile row.
+draw_symfull_edge_pair$:
+        ld      (#r_row$), a
+        bit     7, a
+        ret     nz
+        cp      #18
+        ret     nc
+
+        ld      c, a
+        ld      a, #17
+        sub     c
+        ld      (#r_sym_bottom_row$), a
+
+        ; Check both mirrored rows before paying for the LUT lookup.
+        ld      a, c
+        call    polar_row_unclaimed_fast$
+        ld      (#r_sym_top_draw$), a
+        ld      a, (#r_sym_bottom_row$)
+        call    polar_row_unclaimed_fast$
+        ld      (#r_sym_bot_draw$), a
+        ld      c, a
+        ld      a, (#r_sym_top_draw$)
+        or      c
+        ret     z
+
+        ; Top local coordinate and canonical top-edge LUT index.
+        ld      a, (#r_row$)
+        add     a, a
+        add     a, a
+        add     a, a
+        ld      e, a
+        ld      a, (#r_edge_left$)
+        sub     e
+        cp      #0x80
+        jr      c, sym_local_positive$
+        cp      #0xF1
+        jr      nc, sym_local_ready$
+        ld      a, #0xF1
+        jr      sym_local_ready$
+sym_local_positive$:
+        cp      #16
+        jr      c, sym_local_ready$
+        ld      a, #15
+sym_local_ready$:
+        add     a, #15
+        ld      (#r_local_index$), a
+
+        ld      a, (#r_edge_slope$)
+        add     a, #7
+        ld      e, a
+        ld      l, e
+        ld      h, #0
+        ld      d, #0
+        push    de
+        add     hl, hl
+        add     hl, hl
+        add     hl, hl
+        add     hl, hl
+        add     hl, hl                  ; *32
+        pop     de
+        or      a
+        sbc     hl, de                  ; *31
+        ld      a, (#r_local_index$)
+        ld      e, a
+        ld      d, #0
+        add     hl, de
+        add     hl, hl
+        ld      de, #edge_lut$
+        add     hl, de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+
+        ; Same shade-family adjustment as the generic edge path.
+        ld      a, (#_g_polar_mat_shade)
+        or      a
+        jr      z, sym_edge_word_ready$
+        dec     a
+        jr      nz, sym_edge_shade_two$
+        ld      a, e
+        add     a, #0x80
+        ld      e, a
+        jr      nc, sym_edge_word_ready$
+        inc     d
+        jr      sym_edge_word_ready$
+sym_edge_shade_two$:
+        inc     d
+sym_edge_word_ready$:
+        ld      (#r_sym_word$), de
+
+        ld      a, (#r_sym_top_draw$)
+        or      a
+        jr      z, sym_skip_top_store$
+        ld      de, (#r_sym_word$)
+        ld      a, (#r_row$)
+        call    sym_store_word$
+sym_skip_top_store$:
+        ld      a, (#r_sym_bot_draw$)
+        or      a
+        ret     z
+        ld      de, (#r_sym_word$)
+        ld      a, d
+        or      #0x0c                  ; VFLIP | palette 1
+        ld      d, a
+        ld      a, (#r_sym_bottom_row$)
+        call    sym_store_word$
+        ret
+
+; A=row, DE=final word. B remains the current hardware column.
+sym_store_word$:
+        ld      (#r_sym_store_row$), a
+        push    de
+        call    map_ptr_row_col$
+        pop     de
+        ld      a, (hl)
+        cp      e
+        jr      nz, sym_word_changed$
+        inc     hl
+        ld      a, (hl)
+        cp      d
+        ret     z
+        dec     hl
+sym_word_changed$:
+        ld      (hl), e
+        inc     hl
+        ld      (hl), d
+        ld      a, (#r_sym_store_row$)
+        call    polar_mark_dirty_fast$
         ret
 
 ; A=0 top / 1 bottom. Prepares original edge endpoints/slope then draws the
@@ -1094,6 +1293,16 @@ r_edge_max$:
         .ds     1
 r_edge_iter$:
         .ds     1
+r_sym_bottom_row$:
+        .ds     1
+r_sym_top_draw$:
+        .ds     1
+r_sym_bot_draw$:
+        .ds     1
+r_sym_store_row$:
+        .ds     1
+r_sym_word$:
+        .ds     2
 r_row$:
         .ds     1
 r_local_index$:
