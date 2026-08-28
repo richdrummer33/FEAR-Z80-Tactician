@@ -40,15 +40,15 @@ jobs:
                     build/gg-tilesector-polar.*
               make GBDK_HOME="$PWD/.toolchain/gbdk" \
                 POLAR_PROFILE_HOOKS="$hooks" \
-                TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=\${mode}u" \
-                gg-tilesector-polar 2>&1 | tee "build/polar-modes/build-\${label}-mode\${mode}.txt"
+                TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=$modeu" \
+                gg-tilesector-polar 2>&1 | tee "build/polar-modes/build-$label-mode$mode.txt"
               for ext in gg sym map noi cdb ihx; do
                 if [ -f "build/gg-tilesector-polar.$ext" ]; then
-                  cp "build/gg-tilesector-polar.$ext" "build/polar-modes/polar-\${label}-mode\${mode}.$ext"
+                  cp "build/gg-tilesector-polar.$ext" "build/polar-modes/polar-$label-mode$mode.$ext"
                 fi
               done
-              sha256sum build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-\${label}-mode\${mode}.sha256"
-              wc -c build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-\${label}-mode\${mode}.bytes"
+              sha256sum build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-$label-mode$mode.sha256"
+              wc -c build/gg-tilesector-polar.gg | tee "build/polar-modes/polar-$label-mode$mode.bytes"
             done
           done
 
@@ -58,10 +58,10 @@ jobs:
           set -euo pipefail
           for label in profiled raw; do
             for mode in 0 1 2; do
-              echo "===== $label MODE $mode MAP SECTIONS =====" | tee "build/polar-modes/map-summary-\${label}-mode\${mode}.txt"
+              echo "===== $label MODE $mode MAP SECTIONS =====" | tee "build/polar-modes/map-summary-$label-mode$mode.txt"
               grep -E '(_CODE|_HOME|_DATA|_BSS|_HEAP|ROM|bank|BANK|Area)' \
-                "build/polar-modes/polar-\${label}-mode\${mode}.map" \
-                | tee -a "build/polar-modes/map-summary-\${label}-mode\${mode}.txt" || true
+                "build/polar-modes/polar-$label-mode$mode.map" \
+                | tee -a "build/polar-modes/map-summary-$label-mode$mode.txt" || true
             done
           done
           find .toolchain/gbdk -type f -iname 'romusage*' -print | tee build/polar-modes/romusage-tools.txt
@@ -78,12 +78,12 @@ jobs:
           set -euo pipefail
           for mode in 0 1 2; do
             ./build/tilesector_profile_runner \
-              "build/polar-modes/polar-profiled-mode\${mode}.gg" \
-              "build/polar-modes/polar-profiled-mode\${mode}.sym" \
+              "build/polar-modes/polar-profiled-mode$mode.gg" \
+              "build/polar-modes/polar-profiled-mode$mode.sym" \
               120 8 demo \
-              "build/polar-modes/polar-profiled-mode\${mode}-map.bin" \
-              "build/polar-modes/polar-profiled-mode\${mode}-states.bin" \
-              | tee "build/polar-modes/profile-detailed-mode\${mode}.txt"
+              "build/polar-modes/polar-profiled-mode$mode-map.bin" \
+              "build/polar-modes/polar-profiled-mode$mode-states.bin" \
+              | tee "build/polar-modes/profile-detailed-mode$mode.txt"
           done
 
       - name: External zero-hook cadence A/B
@@ -93,11 +93,11 @@ jobs:
           for label in profiled raw; do
             for mode in 0 1 2; do
               ./build/polar_raw_profile_runner \
-                "build/polar-modes/polar-\${label}-mode\${mode}.gg" \
-                "build/polar-modes/polar-\${label}-mode\${mode}.sym" \
+                "build/polar-modes/polar-$label-mode$mode.gg" \
+                "build/polar-modes/polar-$label-mode$mode.sym" \
                 120 8 \
-                "build/polar-modes/cadence-\${label}-mode\${mode}.csv" \
-                | tee "build/polar-modes/cadence-\${label}-mode\${mode}.txt"
+                "build/polar-modes/cadence-$label-mode$mode.csv" \
+                | tee "build/polar-modes/cadence-$label-mode$mode.txt"
             done
           done
 
