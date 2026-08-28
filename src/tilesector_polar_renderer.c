@@ -196,9 +196,10 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
         shade=g_tspf_appearance_mode?shade_for(mid,k_tspf_shade_bias[r->sid]):1u;edge_shade=shade;
         if(g_tspf_appearance_mode>=2u&&border){uint8_t cls=0;if((border&1u)&&r->left_real)cls=ao_class(r->v0);if((border&2u)&&r->right_real){uint8_t q=ao_class(r->v1);if(q>cls)cls=q;}if(cls&&edge_shade) --edge_shade;}
         profile_y(profile,invl,&tl,&bl);profile_y(profile,invr,&tr,&br);draw_edge(out,c,tl,tr,edge_shade,0u);draw_edge(out,c,bl,br,edge_shade,1u);draw_full(out,c,(int8_t)(row_floor(tl>tr?tl:tr)+1),(int8_t)(row_floor(bl<br?bl:br)-1),shade,border);
-#ifndef __SDCC
+        /* Keep this NULL-guarded diagnostic shape even on SDCC. The GG main
+         * passes NULL, so no diagnostic RAM is touched, but SDCC 4.5 otherwise
+         * spills draw_run much more aggressively (~65K T/update regression). */
         if(cols&&mid>cols[c].invz){cols[c].invz=mid;cols[c].wall_id=r->sid;cols[c].shade=shade;cols[c].top=clamp_u8i(tl,143u);cols[c].bottom=clamp_u8i(bl,143u);cols[c].top_step=clamp_s8((int16_t)(tr-tl),-7,7);cols[c].bottom_step=clamp_s8((int16_t)(br-bl),-7,7);}
-#endif
         iq=(int16_t)(iq+step);
     }
 }
