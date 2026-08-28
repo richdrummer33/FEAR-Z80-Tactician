@@ -245,6 +245,38 @@ def corner_quant_depth(d,v,gx,gy,thr,minq):
     return None,float("inf")
 
 
+
+def quantized_cell_bytes(d,gx,gy,thr,minq):
+    """Exact byte count for the proposed cell block:
+       uint16 relevant mask;
+       for each relevant corner, one depth byte (0xff=fallback);
+       for baked corners, 4 bytes per regular-grid affine leaf.
+    """
+    corners,_=relevant(d,gx,gy)
+    if not corners:return 0
+    n=2
+    for v in corners:
+        n+=1
+        dep,_=corner_quant_depth(d,v,gx,gy,thr,minq)
+        if dep is not None:n+=4*(4**dep)
+    return n
+
+
+def analyse_bank_partition(d,thr,minq,rows_per_bank=6):
+    cell_sizes=[]
+    for gy in range(GRID_H):
+      for gx in range(GRID_W):
+        cell_sizes.append(quantized_cell_bytes(d,gx,gy,thr,minq))
+    groups=[]
+    for y0 in range(0,GRID_H,rows_per_bank):
+        y1=min(GRID_H,y0+rows_per_bank)
+        payload=sum(cell_sizes[gy*GRID_W+gx] for gy in range(y0,y1) for gx in range(GRID_W))
+        entries=(y1-y0)*GRID_W
+        # uint16 offsets[entries+1] + one tiny banked loader function (code excluded here)
+        groups.append((y0,y1,payload,(entries+1)*2,payload+(entries+1)*2))
+    nonzero=[x for x in cell_sizes if x]
+    return cell_sizes,groups,max(nonzero,default=0),sum(nonzero)/max(1,len(nonzero))
+
 def analyse_quantized_pack(d,thr,minq):
     cells=[]
     for gy in range(GRID_H):
@@ -338,6 +370,11 @@ def main():
     print(f"  cells={len(qcells)} corner-records={qcorners} fallback-corners={qfb}")
     print(f"  depth histogram={dict(sorted(qhist.items()))}; affine leaves={qleaves}; concrete pack={qpack} bytes")
     print(f"  exhaustive worst accepted={qworst:.3f} Q12")
+    sizes,groups,maxcell,avgcell=analyse_bank_partition(d,target,a.min_q4,6)
+    print(f"  serialized cell block: avg nonempty={avgcell:.1f} bytes; max={maxcell} bytes")
+    print("  proposed 4-bank / 6-row partition (payload + uint16 offset table; loader code excluded):")
+    for y0,y1,payload,offs,total in groups:
+        print(f"    rows {y0:02d}-{y1-1:02d}: payload={payload} offsets={offs} total={total} bytes")
     print("Fallback corner records are exactly where smaller cells or exact special handling belongs; they are not ordinary runtime-general-math justification.")
 
 if __name__=="__main__":main()
