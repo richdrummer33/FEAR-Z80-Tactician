@@ -65,37 +65,24 @@ typedef struct PolarRun {
 } PolarRun;
 
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
+#ifndef __SDCC
 static uint8_t g_touched_bits[45];
-static uint16_t g_touched_list[TSP_MAP_CELLS]; /* row in high byte, col in low */
+static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
 static uint16_t g_touched_count;
 static uint8_t g_map_ready;
+#endif
 
 static int8_t clamp_s8(int16_t v,int8_t lo,int8_t hi){if(v<lo)return lo;if(v>hi)return hi;return (int8_t)v;}
 static uint8_t clamp_u8i(int16_t v,uint8_t hi){if(v<0)return 0;if(v>hi)return hi;return (uint8_t)v;}
 static int16_t shr_signed(int16_t v,uint8_t n){return v>=0?(int16_t)(v>>n):(int16_t)-(((-v)>>n));}
 static int16_t signed_q12(uint16_t v){v&=4095u;return v>=2048u?(int16_t)v-4096:(int16_t)v;}
 
+#ifndef __SDCC
 static uint16_t base_word(uint8_t row){
     if(row<9u)return TSP_TILE_CEILING;
     if(row==9u)return TSP_TILE_HORIZON;
     return TSP_TILE_FLOOR;
 }
-#ifdef __SDCC
-static void map_init(uint16_t *out){
-    (void)out;
-    tsp_polar_begin_map_fast();
-    g_touched_count=0u;
-    g_map_ready=1u;
-}
-static void restore_touched(uint16_t *out){
-    (void)out;
-    tsp_polar_begin_map_fast();
-    g_touched_count=0u;
-}
-static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
-    out[k_row_base[row]+col]=word;
-}
-#else
 static void map_init(uint16_t *out){
     uint8_t r,c;
     for(r=0;r<TSP_ROWS;++r)for(c=0;c<TSP_COLS;++c)out[k_row_base[r]+c]=base_word(r);
@@ -109,15 +96,21 @@ static void restore_touched(uint16_t *out){
     }
     g_touched_count=0u;
 }
+#endif
 static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
+#ifdef __SDCC
+    out[k_row_base[row]+col]=word;
+#else
     uint16_t idx=k_row_base[row]+col;uint8_t *b=&g_touched_bits[idx>>3];uint8_t m=(uint8_t)(1u<<(idx&7u));
     if(!(*b&m)){*b|=m;g_touched_list[g_touched_count++]=(uint16_t)(((uint16_t)row<<8)|col);}
     out[idx]=word;
-}
 #endif
+}
 
 void tsp_polar_renderer_reset(void) BANKED {
+#ifndef __SDCC
     g_map_ready=0u;g_touched_count=0u;memset(g_touched_bits,0,sizeof(g_touched_bits));
+#endif
     TSPF_SET_STAGE(0u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_active_runs=0u;g_tspf_selector_tests=0u;g_tspf_touched_cells=0u;
@@ -203,7 +196,10 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
         shade=g_tspf_appearance_mode?shade_for(mid,k_tspf_shade_bias[r->sid]):1u;edge_shade=shade;
         if(g_tspf_appearance_mode>=2u&&border){uint8_t cls=0;if((border&1u)&&r->left_real)cls=ao_class(r->v0);if((border&2u)&&r->right_real){uint8_t q=ao_class(r->v1);if(q>cls)cls=q;}if(cls&&edge_shade) --edge_shade;}
         profile_y(profile,invl,&tl,&bl);profile_y(profile,invr,&tr,&br);draw_edge(out,c,tl,tr,edge_shade,0u);draw_edge(out,c,bl,br,edge_shade,1u);draw_full(out,c,(int8_t)(row_floor(tl>tr?tl:tr)+1),(int8_t)(row_floor(bl<br?bl:br)-1),shade,border);
-        if(cols&&mid>cols[c].invz){cols[c].invz=mid;cols[c].wall_id=r->sid;cols[c].shade=shade;cols[c].top=clamp_u8i(tl,143u);cols[c].bottom=clamp_u8i(bl,143u);cols[c].top_step=clamp_s8((int16_t)(tr-tl),-7,7);cols[c].bottom_step=clamp_s8((int16_t)(br-bl),-7,7);}iq=(int16_t)(iq+step);
+#ifndef __SDCC
+        if(cols&&mid>cols[c].invz){cols[c].invz=mid;cols[c].wall_id=r->sid;cols[c].shade=shade;cols[c].top=clamp_u8i(tl,143u);cols[c].bottom=clamp_u8i(bl,143u);cols[c].top_step=clamp_s8((int16_t)(tr-tl),-7,7);cols[c].bottom_step=clamp_s8((int16_t)(br-bl),-7,7);}
+#endif
+        iq=(int16_t)(iq+step);
     }
 }
 
@@ -214,7 +210,14 @@ static void add_key(uint8_t key,const TSPState *s,uint8_t *count){PolarRun r;if(
 
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED {
     uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0,i;uint16_t gi,off;const uint8_t *p,*b;
-    TSPF_SET_STAGE(1u);if(!g_map_ready)map_init(out_map);else restore_touched(out_map);if(cols)memset(cols,0,sizeof(TSPColumn)*TSP_COLS);
+    TSPF_SET_STAGE(1u);
+#ifdef __SDCC
+    tsp_polar_begin_map_fast();
+    (void)cols;
+#else
+    if(!g_map_ready)map_init(out_map);else restore_touched(out_map);
+    if(cols)memset(cols,0,sizeof(TSPColumn)*TSP_COLS);
+#endif
     TSPF_SET_STAGE(2u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_selector_tests=0u;
@@ -228,8 +231,10 @@ gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u
     TSPF_SET_STAGE(3u); /* runs are insertion-sorted far -> near during collection */
     TSPF_SET_STAGE(4u);for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[i]);
 done:
-#if TSPF_PROFILE_HOOKS || !defined(__SDCC)
+#if !defined(__SDCC)
     g_tspf_touched_cells=g_touched_count;
+#elif TSPF_PROFILE_HOOKS
+    g_tspf_touched_cells=0u;
 #endif
     TSPF_SET_STAGE(0u);
 }
