@@ -70,12 +70,9 @@ static const uint8_t k_col_recip_q8[21] = {
 };
 
 typedef struct PolarRun {
-    uint8_t key_id;
     uint8_t sid;
     uint8_t v0;
     uint8_t v1;
-    int16_t lo_q12;
-    int16_t hi_q12;
     uint8_t x0;
     uint8_t x1;
     uint8_t inv0;
@@ -240,7 +237,7 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     len=(uint16_t)((a1-a0)&4095u);if(len==0u||len>=2048u)return 0u;yawq=(uint16_t)s->yaw<<4;st=signed_q12((uint16_t)(a0-yawq));en=(int16_t)(st+(int16_t)len);
     while(en<-512){st=(int16_t)(st+4096);en=(int16_t)(en+4096);}while(st>512){st=(int16_t)(st-4096);en=(int16_t)(en-4096);}
     lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo)return 0u;x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
-    r->key_id=keyid;r->sid=sid;r->v0=v0;r->v1=v1;r->lo_q12=lo;r->hi_q12=hi;r->x0=x0;r->x1=x1;r->left_real=(uint8_t)(lo==st);r->right_real=(uint8_t)(hi==en);
+    r->sid=sid;r->v0=v0;r->v1=v1;r->x0=x0;r->x1=x1;r->left_real=(uint8_t)(lo==st);r->right_real=(uint8_t)(hi==en);
     invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
     r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+lo)&4095u,lo);
     r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+hi)&4095u,hi);
