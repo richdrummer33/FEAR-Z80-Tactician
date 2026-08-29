@@ -148,7 +148,7 @@ static void apply_point_light(void){
     double dxw=lxw-cx,dyw=lyw-cy,dist=sqrt(dxw*dxw+dyw*dyw);
     double bearing=atan2(dyw,dxw),yaw=(double)g_camera_yaw*(2.0*pi/256.0);
     double rel=bearing-yaw;
-    int lx,ly,radius,r2,y,x;
+    int lx,ly,radius,r2,row,col;
 
     while(rel>pi)rel-=2.0*pi;
     while(rel<-pi)rel+=2.0*pi;
@@ -162,26 +162,37 @@ static void apply_point_light(void){
     r2=radius*radius;
 
     memcpy(g_light_src,g_cells,sizeof(g_cells));
-    for(y=0;y<144;++y)for(x=0;x<160;++x){
-        int sdx=x-lx,sdy=y-ly,d2=sdx*sdx+sdy*sdy;
-        uint8_t v,blocked;
-        int strength;
-        if(d2>r2)continue;
-        v=sem_at(g_light_src,x,y);
-        if(v==SEM_BLACK||v==SEM_CEILING)continue;
-        strength=((r2-d2)*255)/r2;
-        blocked=(uint8_t)shadow_blocked(lx,ly,x,y);
 
-        if(blocked){
-            if(v>=SEM_MID){
-                if(strength>96||(((x+y)&1)==0))sem_set(x,y,SEM_FAR);
+    /*
+     * Quantize light/shadow ownership once per 8x8 display cell.  The cell's
+     * existing sub-pixel wall/portal silhouette is retained exactly; only its
+     * semantic shade indices are remapped.  This is the critical compression
+     * guardrail: arbitrary per-pixel radial masks produced thousands of
+     * one-off tile patterns and exceeded 48 tile uploads/VBlank.
+     */
+    for(row=0;row<TSP_ROWS;++row)for(col=0;col<TSP_COLS;++col){
+        int sx=col*8+4,sy=row*8+4;
+        int dx=sx-lx,dy=sy-ly,d2=dx*dx+dy*dy,strength;
+        uint8_t blocked;
+        uint8_t *cell;
+        uint8_t i;
+
+        if(d2>r2)continue;
+        strength=((r2-d2)*255)/r2;
+        if(strength<54)continue;
+        blocked=(uint8_t)shadow_blocked(lx,ly,sx,sy);
+        cell=g_cells[(uint16_t)row*TSP_COLS+col];
+
+        for(i=0u;i<PIXELS;++i){
+            uint8_t v=cell[i];
+            if(v==SEM_BLACK||v==SEM_CEILING)continue;
+            if(blocked){
+                if(v>=SEM_MID)cell[i]=SEM_FAR;
+            }else if(v==SEM_FLOOR){
+                if(strength>112)cell[i]=SEM_FAR;
+            }else if(v>=SEM_FAR&&v<SEM_NEAR){
+                cell[i]=(uint8_t)(v+1u);
             }
-            /* Floor is already the darkest material; leaving it untouched
-             * makes the surrounding lit floor act as the visible shadow. */
-        }else if(v==SEM_FLOOR){
-            if(strength>176||(strength>88&&(((x^y)&1)==0)))sem_set(x,y,SEM_FAR);
-        }else if(v>=SEM_FAR&&v<SEM_NEAR){
-            if(strength>72)sem_set(x,y,(uint8_t)(v+1u));
         }
     }
 }
