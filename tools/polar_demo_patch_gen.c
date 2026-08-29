@@ -59,6 +59,23 @@ typedef struct Bank {
     uint32_t bytes;
 } Bank;
 
+static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
+static const char *g_lighting_name="baseline";
+
+static uint8_t parse_lighting_stage(const char *s){
+    if(!strcmp(s,"baseline"))return TSP_HOST_LIGHT_BASELINE;
+    if(!strcmp(s,"ao"))return TSP_HOST_LIGHT_AO;
+    if(!strcmp(s,"point"))return TSP_HOST_LIGHT_POINT;
+    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|point)\n",s);
+    exit(2);
+}
+static int capture_frame(uint16_t frame){
+    static const uint16_t k[] = {0u,120u,300u,520u,680u,760u,1000u,1113u};
+    uint8_t i;
+    for(i=0u;i<(uint8_t)(sizeof(k)/sizeof(k[0]));++i)if(frame==k[i])return 1;
+    return 0;
+}
+
 static void die(const char *msg){
     fprintf(stderr,"fatal: %s\n",msg);
     exit(2);
@@ -92,7 +109,11 @@ static void render_fresh(const TSPState *src,uint16_t out[TSP_MAP_CELLS]){
     TSPState s;
     memset(out,0,sizeof(uint16_t)*TSP_MAP_CELLS);
     state_at(&s,src->x_q4,src->y_q4,src->yaw);
+    /* Keep the geometric oracle fixed at appearance mode zero. AO and static
+     * light are composed only after host rasterization, so the experiment
+     * cannot smuggle extra Z80 projection/shading work into the runtime. */
     g_tspf_appearance_mode=0u;
+    tsp_host_composite_set_lighting(g_lighting_stage,&s);
     tsp_host_composite_begin_frame();
     tsp_polar_renderer_reset();
     tsp_polar_render(&s,out,(TSPColumn *)0);
@@ -429,19 +450,40 @@ int main(int argc,char **argv){
     TSPState s;
     uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],base[TSP_MAP_CELLS];
     uint16_t *all_maps=(uint16_t *)malloc((size_t)PATCH_COUNT*TSP_MAP_CELLS*sizeof(uint16_t));
-    FILE *refs;
-    char refpath[512];
+    FILE *refs,*camera_csv,*lighting_info;
+    char refpath[512],camerapath[512],lightpath[512];
     uint64_t seq_hash=UINT64_C(1469598103934665603),total=0u;
     uint32_t zero=0u,changed_total=0u;
     uint16_t i;
     unsigned bank_count=0u,tilebank_count=0u,tile_vblank_budget=0u;
     PolarExploreCursor explore;
 
-    if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
+    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|point]\n",argv[0]);return 2;}
     if(!tilepatches||!all_maps)die("out of memory allocating bake tables");
     dir=argv[1];
+    if(argc==3){g_lighting_name=argv[2];g_lighting_stage=parse_lighting_stage(argv[2]);}
+
+    path_join(camerapath,sizeof(camerapath),dir,"camera_poses.csv");
+    camera_csv=fopen(camerapath,"w");
+    if(!camera_csv){fprintf(stderr,"cannot write %s: %s\n",camerapath,strerror(errno));return 2;}
+    fprintf(camera_csv,"stage,frame,x_world,y_world,yaw_u8,yaw_deg\n");
+
+    path_join(lightpath,sizeof(lightpath),dir,"lighting_stage.txt");
+    lighting_info=fopen(lightpath,"w");
+    if(!lighting_info){fprintf(stderr,"cannot write %s: %s\n",lightpath,strerror(errno));return 2;}
+    fprintf(lighting_info,"stage=%s\n",g_lighting_name);
+    if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)
+        fprintf(lighting_info,"static_point_light_world=92.0,50.0 height=8.0 radius=76\n");
+    fclose(lighting_info);
 
     tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
+    if(capture_frame(0u)){
+        char shotpath[512];
+        path_join(shotpath,sizeof(shotpath),dir,"host_composite_frame_0.ppm");
+        if(!tsp_host_composite_write_ppm(shotpath))die("host composite screenshot write failed");
+        fprintf(camera_csv,"%s,0,%.4f,%.4f,%u,%.3f\n",g_lighting_name,
+                s.x_q4/16.0,s.y_q4/16.0,(unsigned)s.yaw,(double)s.yaw*360.0/256.0);
+    }
     capture_tile_patch(&tilepatches[0]);
     patches[0].len=(uint16_t)build_patch(base,cur,patches[0].bytes,
                                          &patches[0].changed,&patches[0].runs);
@@ -458,11 +500,13 @@ int main(int argc,char **argv){
     for(i=1u;i<PATCH_COUNT;++i){
         size_t len;
         tsp_step(&s,polar_explore_next(&explore));render_fresh(&s,cur);
-        if(i==120u||i==300u||i==520u||i==760u||i==1000u||i==1113u){
+        if(capture_frame(i)){
             char shotname[96],shotpath[512];
             snprintf(shotname,sizeof(shotname),"host_composite_frame_%u.ppm",(unsigned)i);
             path_join(shotpath,sizeof(shotpath),dir,shotname);
             if(!tsp_host_composite_write_ppm(shotpath))die("host composite screenshot write failed");
+            fprintf(camera_csv,"%s,%u,%.4f,%.4f,%u,%.3f\n",g_lighting_name,(unsigned)i,
+                    s.x_q4/16.0,s.y_q4/16.0,(unsigned)s.yaw,(double)s.yaw*360.0/256.0);
         }
         capture_tile_patch(&tilepatches[i]);
         len=build_patch(prev,cur,patches[i].bytes,&patches[i].changed,&patches[i].runs);
@@ -478,6 +522,7 @@ int main(int argc,char **argv){
         memcpy(prev,cur,sizeof(prev));
     }
     fclose(refs);
+    fclose(camera_csv);
 
     tile_vblank_budget=schedule_tilepatches(tilepatches,all_maps);
 
@@ -523,6 +568,7 @@ int main(int argc,char **argv){
 
     for(i=0u;i<PATCH_COUNT;++i)total+=patches[i].len;
     printf("=== POLAR PLAYER-LIKE EXPLORE PATCH GENERATOR ===\n");
+    printf("lighting_stage=%s (%u)\n",g_lighting_name,(unsigned)g_lighting_stage);
     printf("patches=%u initial+%u; raw_stream=%" PRIu64 " bytes; banks=%u cap=%u\n",
            PATCH_COUNT,DEMO_FRAMES,total,bank_count,MAX_BANK_STREAM);
     printf("motion transitions: zero=%" PRIu32 "/%u (%.2f%%); mean_changed=%.2f words\n",
