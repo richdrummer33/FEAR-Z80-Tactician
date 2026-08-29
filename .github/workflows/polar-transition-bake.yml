@@ -92,15 +92,53 @@ jobs:
           set -euo pipefail
           ./build/tilesector_profile_runner             build/transition-proof/patch-profiled.gg             build/transition-proof/patch-profiled.sym             120 8 demo             build/transition-proof/patch-profiled-map.bin             build/transition-proof/patch-profiled-state.bin             | tee build/transition-proof/patch-profiled-detail.txt
 
-      - name: Exact runtime A/B against full renderer
+      - name: Exact runtime proof and control diagnostic
         shell: bash
         run: |
           set -euo pipefail
-          ./build/polar_raw_profile_runner             build/transition-proof/polar-exact-control.gg             build/transition-proof/polar-exact-control.sym             120 8 build/transition-proof/control-cadence.csv             build/transition-proof/control-map.bin             | tee build/transition-proof/control-cadence.txt
+          ./build/polar_raw_profile_runner \
+            build/transition-proof/polar-exact-control.gg \
+            build/transition-proof/polar-exact-control.sym \
+            120 8 build/transition-proof/control-cadence.csv \
+            build/transition-proof/control-map.bin \
+            | tee build/transition-proof/control-cadence.txt
 
-          ./build/polar_raw_profile_runner             build/transition-proof/patch-raw.gg             build/transition-proof/patch-raw.sym             120 8 build/transition-proof/patch-cadence.csv             build/transition-proof/patch-map.bin             | tee build/transition-proof/patch-cadence.txt
+          ./build/polar_raw_profile_runner \
+            build/transition-proof/patch-raw.gg \
+            build/transition-proof/patch-raw.sym \
+            120 8 build/transition-proof/patch-cadence.csv \
+            build/transition-proof/patch-map.bin \
+            | tee build/transition-proof/patch-cadence.txt
 
-          python3 tools/measure_map_divergence.py             build/transition-proof/control-map.bin             build/transition-proof/patch-map.bin             --csv build/transition-proof/control-vs-patch-divergence.csv             | tee build/transition-proof/control-vs-patch-divergence.txt
+          # The host renderer is the locked correctness oracle for the compiled
+          # transition architecture. Search the 361-frame exact host sequence
+          # for the measured runtime window instead of guessing warm-up offset.
+          python3 tools/compare_patch_reference.py \
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin \
+            build/transition-proof/patch-map.bin \
+            --label patch-raw --require-exact \
+            | tee build/transition-proof/patch-vs-host-reference.txt
+
+          python3 tools/compare_patch_reference.py \
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin \
+            build/transition-proof/patch-profiled-map.bin \
+            --label patch-profiled --require-exact \
+            | tee build/transition-proof/patch-profiled-vs-host-reference.txt
+
+          # Today's optimized GG renderer is useful as a performance/control
+          # comparator, but it is not the oracle for these host-compiled final
+          # name tables. Preserve its divergence as diagnostic evidence only.
+          python3 tools/measure_map_divergence.py \
+            build/transition-proof/control-map.bin \
+            build/transition-proof/patch-map.bin \
+            --csv build/transition-proof/control-vs-patch-divergence.csv \
+            | tee build/transition-proof/control-vs-patch-divergence.txt
+
+          python3 tools/compare_patch_reference.py \
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin \
+            build/transition-proof/control-map.bin \
+            --label current-gg-control \
+            | tee build/transition-proof/control-vs-host-reference.txt
 
           python3 - <<'PY' | tee build/transition-proof/perf-summary.txt
           from pathlib import Path
@@ -123,17 +161,21 @@ jobs:
           patch=phase_t("build/transition-proof/patch-profiled-detail.txt","render/build")
           upload=phase_t("build/transition-proof/patch-profiled-detail.txt","VRAM-upload")
           motion=phase_t("build/transition-proof/patch-profiled-detail.txt","input+motion")
+          budget=3579545.0/20.0
+          subtotal=patch+motion+upload
           print(f"PATCH_PROOF raw whole-loop control={ctl:.1f} T patch={raw:.1f} T delta={raw-ctl:+.1f} T ({(raw/ctl-1)*100:+.2f}%)")
           print(f"PATCH_PROOF profiled phase patch-apply={patch:.1f} T input+motion={motion:.1f} T upload={upload:.1f} T")
-          print(f"PATCH_PROOF profiled non-vsync subtotal={patch+motion+upload:.1f} T")
+          print(f"PATCH_PROOF profiled non-vsync subtotal={subtotal:.1f} T")
+          print(f"PATCH_PROOF 20Hz CPU budget={budget:.1f} T headroom_after_nonvsync={budget-subtotal:.1f} T")
           PY
 
-          if ! grep -Eq 'total differing words[^0-9]*0|total_diff_words[^0-9]*0|differing[^0-9]*0'               build/transition-proof/control-vs-patch-divergence.txt; then
-            echo "Divergence tool output did not prove zero; inspecting exact byte equality instead."
-          fi
-          cmp build/transition-proof/control-map.bin build/transition-proof/patch-map.bin
+          # Both profiled and raw patch players execute the same compiled patch
+          # stream. Their map windows should therefore be identical as another
+          # integration sanity check.
+          cmp build/transition-proof/patch-profiled-map.bin build/transition-proof/patch-map.bin
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: polar-exact-transition-bake
           path: |
