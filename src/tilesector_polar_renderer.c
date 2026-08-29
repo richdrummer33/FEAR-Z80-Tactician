@@ -33,8 +33,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #endif
 #if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
-void tsp_host_composite_edge(uint8_t row,uint8_t col,int16_t yl,int16_t yr,
-                             uint8_t shade,uint8_t bottom);
+void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                uint8_t shade,uint8_t border);
 #endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
@@ -199,13 +200,6 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 #else
     uint16_t idx=k_row_base[row]+col;uint8_t *b=&g_touched_bits[idx>>3];uint8_t m=(uint8_t)(1u<<(idx&7u));
     if(!(*b&m)){*b|=m;g_touched_list[g_touched_count++]=(uint16_t)(((uint16_t)row<<8)|col);}
-#if TSPF_HOST_PIXEL_COMPOSITE
-    {
-        uint16_t tid=(uint16_t)(word&TSP_TILE_ID_MASK);
-        if(tid<TSP_TILE_EDGE_BASE || tid>=TSP_GENERATED_TILE_COUNT)
-            tsp_host_composite_write(row,col,word);
-    }
-#endif
     out[idx]=word;
 #endif
 }
@@ -469,18 +463,6 @@ static void draw_edge(uint16_t *out,uint8_t col,int16_t yl,int16_t yr,uint8_t sh
     int8_t slope=clamp_s8((int16_t)(yr-yl),-7,7),r0=row_floor(yl<yr?yl:yr),r1=row_floor(yl>yr?yl:yr),r;
     if(r0<0)r0=0;
     if(r1>=(int8_t)TSP_ROWS)r1=(int8_t)(TSP_ROWS-1u);
-#if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
-    /* Host bake is no longer constrained by the generic edge-tile vocabulary.
-     * Raster the true projected boundary into every touched 8x8 cell, use the
-     * outside half as transparency, then let put_cell() maintain the ordinary
-     * oracle/touched bookkeeping without re-applying the opaque edge tile. */
-    for(r=r0;r<=r1;++r){
-        tsp_host_composite_edge((uint8_t)r,col,yl,yr,shade,bottom);
-        put_cell(out,(uint8_t)r,col,
-                 edge_entry(shade,(int16_t)(yl-((int16_t)r<<3)),slope,bottom));
-    }
-    return;
-#endif
 #if TSPF_EDGE_CHEMTRAIL_FIX
     /*
      * A projected edge can cross one screen-tile row boundary inside this
@@ -560,6 +542,15 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
         }else if(profile==TSP_PROFILE_RISER){
             tl=(int16_t)(TSPF_HORIZON+hl-(hl>>2));tr=(int16_t)(TSPF_HORIZON+hr-(hr>>2));
         }
+#if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
+        {
+            uint8_t coarse0=(uint8_t)(c<<3),coarse1=(uint8_t)(coarse0+7u);
+            uint8_t clip0=r->x0>coarse0?r->x0:coarse0;
+            uint8_t clip1=r->x1<coarse1?r->x1:coarse1;
+            if(clip0<=clip1)
+                tsp_host_composite_surface(c,clip0,clip1,tl,tr,bl,br,shade,border);
+        }
+#endif
 #if defined(__SDCC) && !TSPF_FORCE_C_MATERIALIZER
         if(g_tspf_appearance_mode<2u){
             /* Fast-path geometry/shade materialization. The baked polar
