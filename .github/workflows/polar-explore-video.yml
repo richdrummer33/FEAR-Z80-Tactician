@@ -68,7 +68,7 @@ jobs:
             .toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so \
             build/polar-explore.gg \
             build/explore-capture \
-            30 1.5 | tee build/explore-capture/capture.txt
+            45 1.5 | tee build/explore-capture/capture.txt
           cat build/explore-capture/capture.txt
           head -8 build/explore-capture/timing.csv
           tail -8 build/explore-capture/timing.csv
@@ -84,12 +84,12 @@ jobs:
 
           ffmpeg -y -hide_banner -loglevel warning \
             -f concat -safe 0 -i build/explore-capture/frames.ffconcat \
-            -fps_mode vfr -c:v ffv1 -level 3 -pix_fmt bgr0 \
+            -vsync vfr -c:v ffv1 -level 3 -pix_fmt bgr0 \
             build/polar-explore-native-vfr-lossless.mkv
 
           ffmpeg -y -hide_banner -loglevel warning \
             -f concat -safe 0 -i build/explore-capture/frames.ffconcat \
-            -fps_mode vfr -c:v libx264 -preset medium -crf 12 -pix_fmt yuv420p \
+            -vsync vfr -c:v libx264 -preset medium -crf 12 -pix_fmt yuv420p \
             -movflags +faststart \
             build/polar-explore-native-vfr.mp4
 
