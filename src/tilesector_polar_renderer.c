@@ -35,7 +35,8 @@ BANKREF(tilesector_polar_renderer_bank)
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 int16_t tl,int16_t tr,int16_t bl,int16_t br,
-                                uint8_t shade,uint8_t border);
+                                uint8_t shade,uint8_t border,
+                                uint8_t ao_left,uint8_t ao_right);
 #endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
@@ -547,8 +548,12 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
             uint8_t coarse0=(uint8_t)(c<<3),coarse1=(uint8_t)(coarse0+7u);
             uint8_t clip0=r->x0>coarse0?r->x0:coarse0;
             uint8_t clip1=r->x1<coarse1?r->x1:coarse1;
-            if(clip0<=clip1)
-                tsp_host_composite_surface(c,clip0,clip1,tl,tr,bl,br,shade,border);
+            if(clip0<=clip1){
+                uint8_t ao_left=(uint8_t)(((border&1u)&&r->left_real)?ao_class(r->v0):0u);
+                uint8_t ao_right=(uint8_t)(((border&2u)&&r->right_real)?ao_class(r->v1):0u);
+                tsp_host_composite_surface(c,clip0,clip1,tl,tr,bl,br,shade,border,
+                                           ao_left,ao_right);
+            }
         }
 #endif
 #if defined(__SDCC) && !TSPF_FORCE_C_MATERIALIZER
