@@ -22,8 +22,9 @@ typedef struct TSPHostTileLoad {
  */
 void tsp_host_composite_begin_frame(void);
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
-void tsp_host_composite_edge(uint8_t row,uint8_t col,int16_t yl,int16_t yr,
-                             uint8_t shade,uint8_t bottom);
+void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                uint8_t shade,uint8_t border);
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
 uint16_t tsp_host_composite_frame_load_count(void);
