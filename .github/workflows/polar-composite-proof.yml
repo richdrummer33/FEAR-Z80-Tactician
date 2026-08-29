@@ -61,8 +61,11 @@ jobs:
           mkdir -p build/composite-shots
           CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
           ROM=build/GG-Polar-Baked-Edge-Composite.gg
+          PATCH_ADDR="$(awk '$2=="_g_patch_index"{split($1,a,":"); print a[2]; exit}' build/gg-polar-patch-demo.sym)"
+          test -n "$PATCH_ADDR"
+          echo "g_patch_index CPU address=$PATCH_ADDR"
           for N in 120 300 520 760 1000 1113; do
-            ./build/libretro_runner "$CORE" "$ROM" "$N" "build/composite-shots/frame_${N}.ppm"
+            ./build/libretro_runner "$CORE" "$ROM" "$N" "build/composite-shots/frame_${N}.ppm" "$PATCH_ADDR" 2
           done
 
       - uses: actions/upload-artifact@v4
@@ -75,5 +78,7 @@ jobs:
             build/composite-sha256.txt
             build/composite-shots/*.ppm
             build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin
+            build/gg-polar-patch-demo.sym
             build/generated/polar_demo_patch/host_composite_frame_*.ppm
           retention-days: 30
