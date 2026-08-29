@@ -38,7 +38,13 @@ POLAR_PATCH_OBJS := $(addprefix build/polar_demo_patch_bank,$(addsuffix _gg.o,$(
 POLAR_PATCH_DISPATCH_SRC := $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_dispatch.c
 POLAR_PATCH_DISPATCH_OBJ := build/polar_demo_patch_dispatch_gg.o
 POLAR_PATCH_GGFLAGS := $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo32 -I$(POLAR_PATCH_GEN_DIR)
-POLAR_PATCH_GG_OBJS := build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o build/tilesector_polar_patch_ntstate_gg.o build/tilesector_polar_patch_ntupload_raw_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
+POLAR_PATCH_PROFILE_HOOKS ?= 0
+ifeq ($(POLAR_PATCH_PROFILE_HOOKS),0)
+POLAR_PATCH_NTUPLOAD_OBJ := build/tilesector_polar_patch_ntupload_raw_gg.o
+else
+POLAR_PATCH_NTUPLOAD_OBJ := build/tilesector_polar_patch_ntupload_profiled_gg.o
+endif
+POLAR_PATCH_GG_OBJS := build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o build/tilesector_polar_patch_ntstate_gg.o $(POLAR_PATCH_NTUPLOAD_OBJ) $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
 POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
 POLAR_LOCAL_PROJECTION ?= 1
@@ -218,10 +224,10 @@ build/tilesector_polar_ntupload_raw_gg.o: src/tilesector_polar_ntupload_raw_gg.s
 	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
 build/main_tilesector_polar_patch_gg.o: src/main_tilesector_polar_patch_gg.c $(POLAR_PATCH_META) | build
-	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=0 -c -o $@ $<
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PATCH_PROFILE_HOOKS) -c -o $@ $<
 
 build/tilesector_polar_patch_motion_gg.o: src/tilesector_polar_motion.c | build
-	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=0 -c -o $@ $<
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PATCH_PROFILE_HOOKS) -c -o $@ $<
 
 build/tilesector_polar_patch_ntstate_gg.o: src/tilesector_polar_ntstate_gg.s | build
 	$(LCC) $(POLAR_PATCH_GGFLAGS) -c -o $@ $<
@@ -229,11 +235,14 @@ build/tilesector_polar_patch_ntstate_gg.o: src/tilesector_polar_ntstate_gg.s | b
 build/tilesector_polar_patch_ntupload_raw_gg.o: src/tilesector_polar_ntupload_raw_gg.s | build
 	$(LCC) $(POLAR_PATCH_GGFLAGS) -c -o $@ $<
 
+build/tilesector_polar_patch_ntupload_profiled_gg.o: src/tilesector_polar_ntupload_profiled_gg.s | build
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -c -o $@ $<
+
 build/polar_demo_patch_dispatch_gg.o: $(POLAR_PATCH_DISPATCH_SRC) $(POLAR_PATCH_META) | build
-	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=0 -c -o $@ $<
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PATCH_PROFILE_HOOKS) -c -o $@ $<
 
 build/polar_demo_patch_bank%_gg.o: $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_bank%.c $(POLAR_PATCH_META) | build
-	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=0 -c -o $@ $<
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PATCH_PROFILE_HOOKS) -c -o $@ $<
 
 gg-polar-patch-demo: $(POLAR_PATCH_GG_OBJS)
 	$(LCC) $(POLAR_PATCH_GGFLAGS) -Wm-yS -o $(POLAR_PATCH_ROM) $(POLAR_PATCH_GG_OBJS)
