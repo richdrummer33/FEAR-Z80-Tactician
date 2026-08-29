@@ -5,6 +5,7 @@ on:
     branches:
       - feature/gg-tilesector-polar-field
       - feature/gg-tilesector-polar-field--hardware-fit-recovery
+      - feature/gg-polar-run-bake
   workflow_dispatch:
 
 jobs:
