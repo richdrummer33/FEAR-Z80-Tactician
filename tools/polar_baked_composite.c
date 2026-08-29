@@ -12,11 +12,17 @@
 
 #include "polar_baked_composite.h"
 
-/* Standard GG VRAM map: pattern generator is 0000h..37FFh because the
- * 32x28 name table begins at 3800h. 32 bytes/tile => slots 0..447 only.
- * Slots 448..511 are NOT spare background tiles; writing them overwrites
- * the name table itself. */
-#define HW_TILES 448u
+/* This ROM uses GBDK's SMS/GG default VRAM layout, not Sega's optional
+ * 0x3800 name-table placement. crt0 sets VDP R2 to R2_MAP_0x1800 and our
+ * mature row uploader writes visible cells at 0x18CC..0x1D33.
+ *
+ * Therefore pattern bytes must stay strictly below 0x1800:
+ *   0x1800 / 32 bytes = 192 background tile slots (0..191).
+ *
+ * The earlier 448/512-slot cache model was globally inconsistent with the
+ * known-good renderer's actual VDP layout: dynamic tile writes at slot 192+
+ * were literally overwriting the pattern name table / adjacent VRAM state. */
+#define HW_TILES 192u
 #define PIXELS 64u
 #define FRAME_HASH 1024u
 
