@@ -37,7 +37,7 @@ POLAR_PATCH_SRCS := $(addprefix $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_bank,$(a
 POLAR_PATCH_OBJS := $(addprefix build/polar_demo_patch_bank,$(addsuffix _gg.o,$(POLAR_PATCH_BANKS)))
 POLAR_PATCH_DISPATCH_SRC := $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_dispatch.c
 POLAR_PATCH_DISPATCH_OBJ := build/polar_demo_patch_dispatch_gg.o
-POLAR_PATCH_GGFLAGS := $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo32 -I$(POLAR_PATCH_GEN_DIR)
+POLAR_PATCH_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo32 -I$(POLAR_PATCH_GEN_DIR)
 POLAR_PATCH_PROFILE_HOOKS ?= 0
 ifeq ($(POLAR_PATCH_PROFILE_HOOKS),0)
 POLAR_PATCH_NTUPLOAD_OBJ := build/tilesector_polar_patch_ntupload_raw_gg.o
