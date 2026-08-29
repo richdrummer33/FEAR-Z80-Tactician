@@ -72,6 +72,21 @@ template<typename T> static T sym(void *h,const char *name) {
     return reinterpret_cast<T>(p);
 }
 
+static bool frame_has_visible_content() {
+    if(g_frame.empty()||!g_w||!g_h) return false;
+    for(unsigned y=0;y<g_h;++y) {
+        const uint8_t *row=&g_frame[(size_t)y*g_pitch];
+        if(g_pixfmt==RETRO_PIXEL_FORMAT_XRGB8888) {
+            const uint32_t *p=(const uint32_t*)row;
+            for(unsigned x=0;x<g_w;++x) if((p[x]&0x00ffffffu)!=0u) return true;
+        } else {
+            const uint16_t *p=(const uint16_t*)row;
+            for(unsigned x=0;x<g_w;++x) if(p[x]!=0u) return true;
+        }
+    }
+    return false;
+}
+
 static uint64_t fnv64(const std::vector<uint8_t>& v) {
     uint64_t h=1469598103934665603ull;
     for(uint8_t b:v){h^=b;h*=1099511628211ull;}
@@ -165,9 +180,20 @@ int main(int argc,char **argv) {
     std::vector<Entry> entries;
     uint64_t last_hash=0;
     unsigned same_run=0;
+    bool started=false;
+    unsigned skipped_startup=0u;
     for(unsigned i=0;i<max_frames;++i) {
         retro_run();
         if(g_frame.empty()) continue;
+
+        /* DISPLAY_OFF tile construction can take many source VBlanks.  Do not
+         * let that black startup become eight seconds of "video".  Begin on
+         * the first genuinely visible GG framebuffer. */
+        if(!started) {
+            if(!frame_has_visible_content()) { ++skipped_startup; continue; }
+            started=true;
+        }
+
         uint64_t hash=fnv64(g_frame);
         bool same=!entries.empty() && hash==last_hash;
         if(same) {
@@ -181,7 +207,7 @@ int main(int argc,char **argv) {
             last_hash=hash;
             same_run=1u;
         }
-        if(i>=min_before_stable && same_run>=stable_frames) break;
+        if(entries.size()>=3u && i>=min_before_stable && same_run>=stable_frames) break;
     }
 
     if(entries.empty()){std::fprintf(stderr,"no video frames captured\n");return 6;}
@@ -215,7 +241,8 @@ int main(int argc,char **argv) {
         <<" duration="<<t
         <<" seconds geometry="<<g_w<<"x"<<g_h
         <<" pixfmt="<<(int)g_pixfmt
-        <<" rom_bytes="<<rom.size()<<"\n";
+        <<" rom_bytes="<<rom.size()
+        <<" skipped_startup_vblanks="<<skipped_startup<<"\n";
     std::cout<<"No interpolation: each unique emulator framebuffer is held for its exact count of source VBlanks.\n";
 
     retro_unload_game(); retro_deinit(); dlclose(h);
