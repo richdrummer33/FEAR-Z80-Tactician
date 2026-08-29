@@ -161,7 +161,7 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps){
         uint32_t done=0u;
         for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
         for(t=0u;t<PATCH_COUNT;++t){
-            unsigned cap=(t==0u)?509u:budget,k;
+            unsigned cap=(t==0u)?400u:budget,k;
             for(k=0u;k<cap;++k){
                 uint32_t best=UINT32_MAX,x;
                 uint16_t best_deadline=0xffffu;
