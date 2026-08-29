@@ -93,7 +93,7 @@ template<typename T> static T sym(void *h, const char *name) {
 }
 
 int main(int argc,char **argv){
-    if(argc<4){fprintf(stderr,"usage: %s <core.so> <rom.gg> <frames> [frame.ppm]\n",argv[0]);return 2;}
+    if(argc<4){fprintf(stderr,"usage: %s <core.so> <rom.gg> <frames> [frame.ppm] [ram_addr_hex] [ram_len]\n",argv[0]);return 2;}
     const char *core_path=argv[1], *rom_path=argv[2]; unsigned frames=(unsigned)strtoul(argv[3],nullptr,10);
     const char *ppm=(argc>=5)?argv[4]:nullptr;
     std::ifstream f(rom_path,std::ios::binary); if(!f){perror("rom");return 2;}
@@ -109,6 +109,8 @@ int main(int argc,char **argv){
     auto retro_load_game=sym<bool(*)(const retro_game_info*)>(h,"retro_load_game"); auto retro_unload_game=sym<void(*)()>(h,"retro_unload_game");
     auto retro_run=sym<void(*)()>(h,"retro_run");
     auto retro_get_system_av_info=sym<void(*)(retro_system_av_info*)>(h,"retro_get_system_av_info");
+    auto retro_get_memory_data=sym<void*(*)(unsigned)>(h,"retro_get_memory_data");
+    auto retro_get_memory_size=sym<size_t(*)(unsigned)>(h,"retro_get_memory_size");
     retro_set_environment(env_cb); retro_set_video_refresh(video_cb); retro_set_audio_sample(audio_cb); retro_set_audio_sample_batch(audio_batch_cb); retro_set_input_poll(input_poll_cb); retro_set_input_state(input_state_cb);
     retro_init();
     retro_game_info gi{}; gi.path=rom_path; gi.data=rom.data(); gi.size=rom.size();
@@ -117,5 +119,17 @@ int main(int argc,char **argv){
     for(unsigned i=0;i<frames;i++) retro_run();
     printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",frames,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
     if(ppm){ if(!save_ppm(ppm)){fprintf(stderr,"failed to save ppm\n");return 5;} printf("saved=%s\n",ppm); }
+    if(argc>=6){
+        unsigned addr=(unsigned)strtoul(argv[5],nullptr,16);
+        unsigned len=(argc>=7)?(unsigned)strtoul(argv[6],nullptr,0):2u;
+        uint8_t *ram=(uint8_t*)retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+        size_t ram_size=retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+        if(!ram||!ram_size){fprintf(stderr,"system RAM unavailable\n");return 6;}
+        size_t off=(addr>=0xC000u)?((size_t)(addr-0xC000u)%ram_size):((size_t)addr%ram_size);
+        if(len>64u)len=64u;
+        printf("RAM addr=%04X off=%zu size=%zu data=",addr&0xffffu,off,ram_size);
+        for(unsigned i=0;i<len;++i)printf("%02X",ram[(off+i)%ram_size]);
+        printf("\n");
+    }
     retro_unload_game(); retro_deinit(); dlclose(h); return 0;
 }
