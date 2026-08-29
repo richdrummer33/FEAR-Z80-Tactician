@@ -161,30 +161,37 @@ void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word){
     for(i=0u;i<PIXELS;++i)if(mask[i])dst[i]=sem[i];
 }
 
-void tsp_host_composite_edge(uint8_t row,uint8_t col,int16_t yl,int16_t yr,
-                             uint8_t shade,uint8_t bottom){
-    uint8_t *dst;
-    uint8_t x,y,color=shade_sem(shade);
-    int16_t dy=(int16_t)(yr-yl);
-    if(row>=TSP_ROWS||col>=TSP_COLS)die("exact edge cell out of range");
-    dst=g_cells[(uint16_t)row*TSP_COLS+col];
+static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x){
+    int16_t d=(int16_t)(b-a),n=(int16_t)(d*(int16_t)x);
+    int16_t q=n>=0?(int16_t)((n+3)/7):(int16_t)-(((-n)+3)/7);
+    return (int16_t)(a+q);
+}
 
-    for(x=0u;x<8u;++x){
-        int16_t num=(int16_t)(dy*(int16_t)x);
-        int16_t step=num>=0?(int16_t)((num+3)/7):(int16_t)-(((-num)+3)/7);
-        int16_t line=(int16_t)(yl+step);
-        for(y=0u;y<8u;++y){
-            int16_t gy=(int16_t)((int16_t)row*8+(int16_t)y);
-            uint16_t i=(uint16_t)y*8u+x;
-            if(!bottom){
-                if(gy==line)dst[i]=SEM_BLACK;
-                else if(gy>line)dst[i]=color;
-                /* gy<line: transparent, preserve farther surface */
-            }else{
-                if(gy==line)dst[i]=SEM_BLACK;
-                else if(gy<line)dst[i]=color;
-                /* gy>line: transparent, preserve farther surface */
-            }
+void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                uint8_t shade,uint8_t border){
+    uint8_t sx,color=shade_sem(shade);
+    uint16_t coarse_x=(uint16_t)col*8u;
+    if(col>=TSP_COLS||clip_x0>clip_x1||clip_x1>159u)die("surface raster bounds invalid");
+
+    for(sx=clip_x0;sx<=clip_x1;++sx){
+        uint8_t local=(uint8_t)((uint16_t)sx-coarse_x);
+        int16_t top=lerp_edge7(tl,tr,local);
+        int16_t bot=lerp_edge7(bl,br,local);
+        int16_t y0=top<0?0:top;
+        int16_t y1=bot>143?143:bot;
+        int16_t y;
+
+        if(y0>y1)continue;
+        for(y=y0;y<=y1;++y){
+            uint8_t row=(uint8_t)((uint16_t)y>>3);
+            uint8_t py=(uint8_t)((uint16_t)y&7u);
+            uint8_t px=(uint8_t)((uint16_t)sx&7u);
+            uint8_t *dst=g_cells[(uint16_t)row*TSP_COLS+col];
+            uint8_t black=(uint8_t)(y==top||y==bot);
+            if((border&1u)&&sx==clip_x0)black=1u;
+            if((border&2u)&&sx==clip_x1)black=1u;
+            dst[(uint16_t)py*8u+px]=black?SEM_BLACK:color;
         }
     }
 }
