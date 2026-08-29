@@ -22,7 +22,6 @@ jobs:
           set -euo pipefail
           make polar-demo-patch-gen | tee build/composite-gen.txt
           cat build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
-          cat build/generated/polar_demo_patch/polar_demo_tiles_meta.h
 
       - name: Install GBDK 4.5.0
         shell: bash
@@ -76,5 +75,4 @@ jobs:
             build/composite-sha256.txt
             build/composite-shots/*.ppm
             build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
-            build/generated/polar_demo_patch/polar_demo_tiles_meta.h
           retention-days: 30
