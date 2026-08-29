@@ -107,9 +107,15 @@ static void init_tiles(void){
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);
 }
 
+static void init_baked_base_tiles(void){
+    emit_solid(TSP_TILE_CEILING,C_OUT);
+    emit_solid(TSP_TILE_FLOOR,C_FLOOR);
+    emit_horizon();
+}
+
 void main(void){
     DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);
-    set_bkg_palette(0u,2u,k_palettes);init_tiles();
+    set_bkg_palette(0u,2u,k_palettes);init_baked_base_tiles();
 
     tsp_reset(&g_state);
     polar_explore_cursor_reset(&g_explore);
