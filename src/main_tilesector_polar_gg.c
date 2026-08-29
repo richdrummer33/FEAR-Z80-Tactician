@@ -71,7 +71,7 @@ static uint8_t read_input(void){
 }
 
 void main(void){
-    DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
+    DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
     tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
 #if TSPF_PROFILE_HOOKS
     g_ts_prof_phase=0u;g_ts_loop_count=0u;g_ts_dirty_words=0u;
