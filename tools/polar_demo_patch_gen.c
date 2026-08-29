@@ -150,7 +150,7 @@ static uint32_t count_tile_jobs(const TilePatch *tp){
  * is not referenced by the visible name table. This is the important second
  * half of baked compositing: the PC resolves both WHAT a cell looks like and
  * WHEN the 32-byte pattern can safely enter VRAM. */
-static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps){
+static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const char *dir){
     uint32_t job_count=count_tile_jobs(tp),j=0u;
     TileJob *jobs=(TileJob *)malloc((size_t)job_count*sizeof(TileJob));
     int16_t last_use[512];
@@ -200,6 +200,22 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps){
         if(done==job_count)chosen_budget=budget;
     }
     if(!chosen_budget)die("could not schedule tile uploads within 48 tiles/VBlank");
+
+    /* Durable scheduler trace: lets us distinguish a bad visual bake from a
+     * stale/reused VRAM slot without reverse-engineering generated C banks. */
+    {
+        char tracepath[512];
+        FILE *trace;
+        path_join(tracepath,sizeof(tracepath),dir,"tile_schedule.csv");
+        trace=fopen(tracepath,"w");
+        if(!trace)die("cannot write tile schedule trace");
+        fprintf(trace,"job,slot,release,deadline,assigned\n");
+        for(j=0u;j<job_count;++j)
+            fprintf(trace,"%" PRIu32 ",%u,%u,%u,%u\n",j,(unsigned)jobs[j].slot,
+                    (unsigned)jobs[j].release,(unsigned)jobs[j].deadline,
+                    (unsigned)jobs[j].assigned);
+        fclose(trace);
+    }
 
     for(t=0u;t<PATCH_COUNT;++t){free(tp[t].bytes);tp[t].bytes=0;tp[t].len=0;tp[t].loads=0;}
     for(j=0u;j<job_count;++j)++tp[jobs[j].assigned].loads;
@@ -524,7 +540,7 @@ int main(int argc,char **argv){
     fclose(refs);
     fclose(camera_csv);
 
-    tile_vblank_budget=schedule_tilepatches(tilepatches,all_maps);
+    tile_vblank_budget=schedule_tilepatches(tilepatches,all_maps,dir);
 
     memset(banks,0,sizeof(banks));
     for(i=0u;i<PATCH_COUNT;){
