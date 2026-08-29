@@ -364,6 +364,12 @@ int main(int argc,char **argv){
     for(i=1u;i<PATCH_COUNT;++i){
         size_t len;
         tsp_step(&s,polar_explore_next(&explore));render_fresh(&s,cur);
+        if(i==120u||i==300u||i==520u||i==760u||i==1000u||i==1113u){
+            char shotname[96],shotpath[512];
+            snprintf(shotname,sizeof(shotname),"host_composite_frame_%u.ppm",(unsigned)i);
+            path_join(shotpath,sizeof(shotpath),dir,shotname);
+            if(!tsp_host_composite_write_ppm(shotpath))die("host composite screenshot write failed");
+        }
         capture_tile_patch(&tilepatches[i]);
         len=build_patch(prev,cur,patches[i].bytes,&patches[i].changed,&patches[i].runs);
         patches[i].len=(uint16_t)len;verify(prev,cur,&patches[i]);
