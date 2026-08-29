@@ -161,6 +161,34 @@ void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word){
     for(i=0u;i<PIXELS;++i)if(mask[i])dst[i]=sem[i];
 }
 
+void tsp_host_composite_edge(uint8_t row,uint8_t col,int16_t yl,int16_t yr,
+                             uint8_t shade,uint8_t bottom){
+    uint8_t *dst;
+    uint8_t x,y,color=shade_sem(shade);
+    int16_t dy=(int16_t)(yr-yl);
+    if(row>=TSP_ROWS||col>=TSP_COLS)die("exact edge cell out of range");
+    dst=g_cells[(uint16_t)row*TSP_COLS+col];
+
+    for(x=0u;x<8u;++x){
+        int16_t num=(int16_t)(dy*(int16_t)x);
+        int16_t step=num>=0?(int16_t)((num+3)/7):(int16_t)-(((-num)+3)/7);
+        int16_t line=(int16_t)(yl+step);
+        for(y=0u;y<8u;++y){
+            int16_t gy=(int16_t)((int16_t)row*8+(int16_t)y);
+            uint16_t i=(uint16_t)y*8u+x;
+            if(!bottom){
+                if(gy==line)dst[i]=SEM_BLACK;
+                else if(gy>line)dst[i]=color;
+                /* gy<line: transparent, preserve farther surface */
+            }else{
+                if(gy==line)dst[i]=SEM_BLACK;
+                else if(gy<line)dst[i]=color;
+                /* gy>line: transparent, preserve farther surface */
+            }
+        }
+    }
+}
+
 static void flip_pattern(const uint8_t src[PIXELS],uint8_t dst[PIXELS],uint8_t fx,uint8_t fy){
     uint8_t x,y;
     for(y=0u;y<8u;++y)for(x=0u;x<8u;++x){
