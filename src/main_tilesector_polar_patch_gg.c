@@ -10,6 +10,7 @@
 #include "tilesector_polar.h"
 #include "polar_explore_script.h"
 #include "polar_demo_patch_meta.h"
+#include "polar_demo_tiles_meta.h"
 
 #define C_BLACK 0u
 #define C_OUT   1u
@@ -51,6 +52,7 @@ static PolarExploreCursor g_explore;
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
 void tsp_polar_demo_patch_apply(uint16_t patch);
+void tsp_polar_demo_tiles_init(void);
 
 static uint16_t upload_dirty_map(void){
     tsp_polar_nt_upload_dirty();
@@ -108,7 +110,7 @@ static void init_tiles(void){
 
 void main(void){
     DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);
-    set_bkg_palette(0u,2u,k_palettes);init_tiles();
+    set_bkg_palette(0u,2u,k_palettes);tsp_polar_demo_tiles_init();
 
     tsp_reset(&g_state);
     polar_explore_cursor_reset(&g_explore);
