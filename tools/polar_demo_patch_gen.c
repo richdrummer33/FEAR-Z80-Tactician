@@ -276,10 +276,64 @@ static void emit_manifest(const char *dir,const Patch *patches,const Bank banks[
     fclose(f);
 }
 
+static void emit_tilepatch_bank(const char *dir,unsigned bank,const TilePatch *tp,const Bank *b){
+    char name[128],path[512];FILE *f;
+    uint16_t *off=(uint16_t *)malloc((size_t)(b->count+1u)*sizeof(uint16_t));
+    uint8_t *data=(uint8_t *)malloc(b->bytes?b->bytes:1u);
+    uint32_t pos=0u;uint16_t i;
+    if(!off||!data)die("out of memory emitting tilepatch bank");
+    off[0]=0u;
+    for(i=0u;i<b->count;++i){
+        const TilePatch *p=&tp[b->first+i];
+        if(pos+p->len>65535u)die("tilepatch bank offset overflow");
+        memcpy(data+pos,p->bytes,p->len);pos+=p->len;off[i+1u]=(uint16_t)pos;
+    }
+    snprintf(name,sizeof(name),"polar_demo_tilepatch_bank%u.c",bank);
+    path_join(path,sizeof(path),dir,name);f=fopen(path,"w");
+    if(!f)die("cannot write tilepatch bank");
+    fprintf(f,
+      "/* GENERATED baked composite tile-pattern update bank %u. */\n"
+      "#include <stdint.h>\n#include <gbdk/platform.h>\n"
+      "#pragma bank 255\nBANKREF(polar_demo_tilepatch_bank%u)\n\n",
+      bank,bank);
+    emit_u16_array(f,"k_off",off,(uint32_t)b->count+1u);
+    emit_u8_array(f,"k_data",data,pos);
+    fprintf(f,
+      "#define PATCHS_IN_BANK %uu\n"
+      "void tsp_polar_demo_tilepatch_bank%u(uint16_t local) BANKED {\n"
+      "    const uint8_t *p; uint16_t n,i;\n"
+      "    if(local>=PATCHS_IN_BANK)return;\n"
+      "    p=&k_data[k_off[local]]; n=(uint16_t)*p++; n|=(uint16_t)*p++<<8;\n"
+      "    for(i=0u;i<n;++i){\n"
+      "        uint16_t slot=(uint16_t)*p++; slot|=(uint16_t)*p++<<8;\n"
+      "        set_bkg_4bpp_data(slot,1u,p); p+=32u;\n"
+      "    }\n"
+      "}\n",
+      b->count,bank);
+    fclose(f);free(off);free(data);
+}
+static void emit_tilepatch_dispatch(const char *dir,const Bank *banks,unsigned bank_count){
+    char path[512];FILE *f;unsigned i;
+    path_join(path,sizeof(path),dir,"polar_demo_tilepatch_dispatch.c");f=fopen(path,"w");
+    if(!f)die("cannot write tilepatch dispatcher");
+    fprintf(f,"/* GENERATED baked composite tilepatch dispatcher. */\n"
+              "#include <stdint.h>\n#include <gbdk/platform.h>\n\n");
+    for(i=0u;i<MAX_TILEPATCH_BANKS;++i)
+        fprintf(f,"void tsp_polar_demo_tilepatch_bank%u(uint16_t local) BANKED;\n",i);
+    fprintf(f,"\nvoid tsp_polar_demo_tilepatch_apply(uint16_t patch){\n");
+    for(i=0u;i<bank_count;++i){
+        uint16_t end=(uint16_t)(banks[i].first+banks[i].count);
+        fprintf(f,"    %s(patch<%uu){tsp_polar_demo_tilepatch_bank%u((uint16_t)(patch-%uu));return;}\n",
+                i?"else if":"if",end,i,banks[i].first);
+    }
+    fprintf(f,"}\n");fclose(f);
+}
+
 int main(int argc,char **argv){
     const char *dir;
     Patch patches[PATCH_COUNT];
-    Bank banks[MAX_BANKS];
+    TilePatch *tilepatches=(TilePatch *)calloc(PATCH_COUNT,sizeof(TilePatch));
+    Bank banks[MAX_BANKS],tilebanks[MAX_TILEPATCH_BANKS];
     TSPState s;
     uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],base[TSP_MAP_CELLS];
     FILE *refs;
@@ -287,13 +341,15 @@ int main(int argc,char **argv){
     uint64_t seq_hash=UINT64_C(1469598103934665603),total=0u;
     uint32_t zero=0u,changed_total=0u;
     uint16_t i;
-    unsigned bank_count=0u;
+    unsigned bank_count=0u,tilebank_count=0u;
     PolarExploreCursor explore;
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
+    if(!tilepatches)die("out of memory allocating tilepatch table");
     dir=argv[1];
 
     tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
+    capture_tile_patch(&tilepatches[0]);
     patches[0].len=(uint16_t)build_patch(base,cur,patches[0].bytes,
                                          &patches[0].changed,&patches[0].runs);
     verify(base,cur,&patches[0]);
@@ -308,6 +364,7 @@ int main(int argc,char **argv){
     for(i=1u;i<PATCH_COUNT;++i){
         size_t len;
         tsp_step(&s,polar_explore_next(&explore));render_fresh(&s,cur);
+        capture_tile_patch(&tilepatches[i]);
         len=build_patch(prev,cur,patches[i].bytes,&patches[i].changed,&patches[i].runs);
         patches[i].len=(uint16_t)len;verify(prev,cur,&patches[i]);
         if(!patches[i].changed)++zero;
@@ -341,7 +398,25 @@ int main(int argc,char **argv){
     emit_dispatch(dir,banks,bank_count);
     emit_meta(dir,banks,bank_count,seq_hash);
     emit_manifest(dir,patches,banks,bank_count,seq_hash);
-    if(!tsp_host_composite_emit_tiles(dir))die("failed to emit baked composite tile dictionary");
+
+    memset(tilebanks,0,sizeof(tilebanks));
+    for(i=0u;i<PATCH_COUNT;){
+        Bank *b;
+        if(tilebank_count>=MAX_TILEPATCH_BANKS)die("tilepatches exceed generated bank budget");
+        b=&tilebanks[tilebank_count];b->first=i;
+        while(i<PATCH_COUNT){
+            uint32_t next=b->bytes+tilepatches[i].len;
+            if(b->count&&next>MAX_TILEPATCH_BANK_STREAM)break;
+            if(next>MAX_TILEPATCH_BANK_STREAM)die("single tilepatch exceeds bank stream cap");
+            b->bytes=next;++b->count;++i;
+        }
+        ++tilebank_count;
+    }
+    for(i=0u;i<MAX_TILEPATCH_BANKS;++i){
+        Bank empty={0u,0u,0u};
+        emit_tilepatch_bank(dir,i,tilepatches,i<tilebank_count?&tilebanks[i]:&empty);
+    }
+    emit_tilepatch_dispatch(dir,tilebanks,tilebank_count);
 
     for(i=0u;i<PATCH_COUNT;++i)total+=patches[i].len;
     printf("=== POLAR PLAYER-LIKE EXPLORE PATCH GENERATOR ===\n");
@@ -354,8 +429,12 @@ int main(int argc,char **argv){
         printf("  bank%u first=%u count=%u stream=%" PRIu32 " bytes\n",
                i,banks[i].first,banks[i].count,banks[i].bytes);
     printf("generated runtime sources + exact %u-map exploration reference sequence; replay=PASS\n", PATCH_COUNT);
-    printf("baked composite tile dictionary=%u/512 hardware tiles\n",
-           (unsigned)tsp_host_composite_tile_count());
+    printf("baked composite cache: peak_unique/frame=%u peak_tile_loads/frame=%u total_tile_loads=%" PRIu32 " tilepatch_banks=%u\n",
+           (unsigned)tsp_host_composite_peak_unique_count(),
+           (unsigned)tsp_host_composite_peak_load_count(),
+           tsp_host_composite_total_load_count(),tilebank_count);
     printf("final state=(%.2f,%.2f) yaw=%u\n",s.x_q4/16.0,s.y_q4/16.0,s.yaw);
+    for(i=0u;i<PATCH_COUNT;++i)free(tilepatches[i].bytes);
+    free(tilepatches);
     return 0;
 }
