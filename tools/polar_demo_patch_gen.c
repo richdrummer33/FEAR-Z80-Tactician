@@ -24,7 +24,7 @@
 
 #define DEMO_FRAMES 360u
 #define PATCH_COUNT (DEMO_FRAMES+1u)
-#define MAX_BANKS 16u
+#define MAX_BANKS 8u
 #define MAX_BANK_STREAM 10000u
 #define PATCH_SCRATCH_MAX (1u + TSP_ROWS * (3u + TSP_COLS * 2u))
 
