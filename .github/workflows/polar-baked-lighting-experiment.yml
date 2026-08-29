@@ -197,14 +197,17 @@ jobs:
           for f in frames:
               a=semantics(f"build/lighting-point/host_composite_frame_{f}.ppm",HOST)
               b=semantics(f"build/lighting-gg-shots/patch_{f}.ppm",GG)
-              diff=sum(x!=y for x,y in zip(a,b))
+              mismatch=[(i%160,i//160,x,y) for i,(x,y) in enumerate(zip(a,b)) if x!=y]
+              diff=len(mismatch)
               print(f"frame={f} semantic_pixel_diff={diff}/{len(a)}")
-              if len(a)!=len(b) or diff: bad.append((f,diff,len(a),len(b)))
+              if mismatch: print("  mismatch_xy_host_gg=",mismatch[:24])
+              if len(a)!=len(b) or diff: bad.append((f,diff,len(a),len(b),mismatch[:24]))
           if bad:
               raise SystemExit(f"host/GG point-light semantic mismatch: {bad}")
           PY
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: polar-baked-lighting-experiment
           path: |
