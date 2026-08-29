@@ -22,6 +22,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_SCREEN_DEPTH_PLANE
 #define TSPF_SCREEN_DEPTH_PLANE 0
 #endif
+#ifndef TSPF_EDGE_CHEMTRAIL_FIX
+#define TSPF_EDGE_CHEMTRAIL_FIX 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -445,8 +448,45 @@ static uint16_t edge_entry(uint8_t shade,int16_t local_left,int8_t slope,uint8_t
 }
 static int8_t row_floor(int16_t y){return y>=0?(int8_t)(y>>3):(int8_t)-(((-y)+7)>>3);}
 static void draw_edge(uint16_t *out,uint8_t col,int16_t yl,int16_t yr,uint8_t shade,uint8_t bottom){
-    int8_t slope=clamp_s8((int16_t)(yr-yl),-7,7),r0=row_floor(yl<yr?yl:yr),r1=row_floor(yl>yr?yl:yr),r;if(r0<0)r0=0;if(r1>=(int8_t)TSP_ROWS)r1=(int8_t)(TSP_ROWS-1u);
-    for(r=r0;r<=r1;++r)put_cell(out,(uint8_t)r,col,edge_entry(shade,(int16_t)(yl-((int16_t)r<<3)),slope,bottom));
+    int8_t slope=clamp_s8((int16_t)(yr-yl),-7,7),r0=row_floor(yl<yr?yl:yr),r1=row_floor(yl>yr?yl:yr),r;
+    if(r0<0)r0=0;
+    if(r1>=(int8_t)TSP_ROWS)r1=(int8_t)(TSP_ROWS-1u);
+#if TSPF_EDGE_CHEMTRAIL_FIX
+    /*
+     * A projected edge can cross one screen-tile row boundary inside this
+     * 8-pixel-wide column.  The old path emitted an independent partial edge
+     * tile into BOTH rows.  That is mathematically literal but visually ugly
+     * on a tile renderer: the secondary row becomes a moving 8x8 sliver whose
+     * generic fill/outside half reads as the detached "edge chemtrail".
+     *
+     * Represent the crossing with ONE adaptive edge tile, chosen by the edge
+     * midpoint.  The row on the solid-wall side is completed with a normal
+     * wall tile; the row on the outside side is left untouched so the already
+     * rendered farther/background surface survives.
+     *
+     * This is deliberately a tile-space ownership rule, not temporal state.
+     */
+    if(r0<r1){
+        int16_t mid=(int16_t)((yl+yr)>>1);
+        int8_t owner=row_floor(mid);
+        if(owner<r0)owner=r0;
+        if(owner>r1)owner=r1;
+
+        put_cell(out,(uint8_t)owner,col,
+                 edge_entry(shade,(int16_t)(yl-((int16_t)owner<<3)),slope,bottom));
+
+        for(r=r0;r<=r1;++r){
+            if(r==owner)continue;
+            if((!bottom && r>owner) || (bottom && r<owner))
+                put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,0u));
+            /* Outside-side row intentionally preserves the background. */
+        }
+        return;
+    }
+#endif
+    for(r=r0;r<=r1;++r)
+        put_cell(out,(uint8_t)r,col,
+                 edge_entry(shade,(int16_t)(yl-((int16_t)r<<3)),slope,bottom));
 }
 static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t shade,uint8_t border){
     int8_t r;if(first<0)first=0;if(last>=(int8_t)TSP_ROWS)last=(int8_t)(TSP_ROWS-1u);if(first>last)return;for(r=first;r<=last;++r)put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,border));
