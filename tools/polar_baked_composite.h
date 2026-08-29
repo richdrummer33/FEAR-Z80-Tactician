@@ -4,22 +4,31 @@
 #include <stdint.h>
 #include "tilesector_polar.h"
 
+#define TSP_HOST_TILE_BYTES 32u
+#define TSP_HOST_MAX_FRAME_LOADS TSP_MAP_CELLS
+
+typedef struct TSPHostTileLoad {
+    uint16_t slot;
+    uint8_t bytes[TSP_HOST_TILE_BYTES];
+} TSPHostTileLoad;
+
 /*
- * Host-only sub-tile compositor used by the baked patch generator.
+ * Host-only sub-tile compositor + persistent 512-slot VRAM cache model.
  *
- * The renderer still computes visibility/projection in its normal coarse
- * name-table vocabulary. Every put_cell() is mirrored here before the opaque
- * name-table write happens. Full tiles replace a cell. Edge tiles contribute
- * only their wall/black coverage; the nominal "outside" pixels are transparent
- * and preserve the farther surface already present in the host pixel cell.
- *
- * Export then deduplicates the resulting 8x8 semantic-color patterns (including
- * H/V flip equivalence) into a <=512-tile dictionary for the Game Gear.
+ * The host resolves partial edge coverage at 8x8 pixel granularity. Final
+ * patterns are canonicalized under H/V flips, then assigned to a simulated
+ * Game Gear tile cache. Patterns retained between frames keep their slot;
+ * newly needed patterns generate explicit pre-baked tile-pattern uploads.
  */
 void tsp_host_composite_begin_frame(void);
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
-uint16_t tsp_host_composite_tile_count(void);
-int tsp_host_composite_emit_tiles(const char *dir);
+
+uint16_t tsp_host_composite_frame_load_count(void);
+const TSPHostTileLoad *tsp_host_composite_frame_loads(void);
+uint16_t tsp_host_composite_frame_unique_count(void);
+uint16_t tsp_host_composite_peak_unique_count(void);
+uint16_t tsp_host_composite_peak_load_count(void);
+uint32_t tsp_host_composite_total_load_count(void);
 
 #endif
