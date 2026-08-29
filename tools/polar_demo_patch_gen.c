@@ -4,7 +4,7 @@
  *
  * This is intentionally a proof harness, not the final world-state format:
  *   - initial patch: static GG name-table base -> exact initial Polar view
- *   - 360 demo transitions: exact previous view -> exact next view
+ *   - player-like exploration transitions: exact previous view -> exact next view
  *   - patch encoding: [run_count] then row,x,len + little-endian words
  *   - generated banks are capped conservatively and replay every changed word
  *
@@ -21,10 +21,11 @@
 #include <string.h>
 
 #include "tilesector_polar.h"
+#include "polar_explore_script.h"
 
-#define DEMO_FRAMES 360u
+#define DEMO_FRAMES POLAR_EXPLORE_FRAMES
 #define PATCH_COUNT (DEMO_FRAMES+1u)
-#define MAX_BANKS 8u
+#define MAX_BANKS 24u
 #define MAX_BANK_STREAM 10000u
 #define PATCH_SCRATCH_MAX (1u + TSP_ROWS * (3u + TSP_COLS * 2u))
 
@@ -261,11 +262,12 @@ int main(int argc,char **argv){
     uint32_t zero=0u,changed_total=0u;
     uint16_t i;
     unsigned bank_count=0u;
+    PolarExploreCursor explore;
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
     dir=argv[1];
 
-    tsp_reset(&s);make_base(base);render_fresh(&s,cur);
+    tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
     patches[0].len=(uint16_t)build_patch(base,cur,patches[0].bytes,
                                          &patches[0].changed,&patches[0].runs);
     verify(base,cur,&patches[0]);
@@ -279,7 +281,7 @@ int main(int argc,char **argv){
 
     for(i=1u;i<PATCH_COUNT;++i){
         size_t len;
-        tsp_step(&s,0u);render_fresh(&s,cur);
+        tsp_step(&s,polar_explore_next(&explore));render_fresh(&s,cur);
         len=build_patch(prev,cur,patches[i].bytes,&patches[i].changed,&patches[i].runs);
         patches[i].len=(uint16_t)len;verify(prev,cur,&patches[i]);
         if(!patches[i].changed)++zero;
@@ -315,7 +317,7 @@ int main(int argc,char **argv){
     emit_manifest(dir,patches,banks,bank_count,seq_hash);
 
     for(i=0u;i<PATCH_COUNT;++i)total+=patches[i].len;
-    printf("=== POLAR SCRIPTED DEMO PATCH GENERATOR ===\n");
+    printf("=== POLAR PLAYER-LIKE EXPLORE PATCH GENERATOR ===\n");
     printf("patches=%u initial+%u; raw_stream=%" PRIu64 " bytes; banks=%u cap=%u\n",
            PATCH_COUNT,DEMO_FRAMES,total,bank_count,MAX_BANK_STREAM);
     printf("motion transitions: zero=%" PRIu32 "/%u (%.2f%%); mean_changed=%.2f words\n",
@@ -324,7 +326,7 @@ int main(int argc,char **argv){
     for(i=0u;i<bank_count;++i)
         printf("  bank%u first=%u count=%u stream=%" PRIu32 " bytes\n",
                i,banks[i].first,banks[i].count,banks[i].bytes);
-    printf("generated runtime sources + exact 361-map reference sequence; replay=PASS\n");
+    printf("generated runtime sources + exact %u-map exploration reference sequence; replay=PASS\n", PATCH_COUNT);
     printf("final state=(%.2f,%.2f) yaw=%u\n",s.x_q4/16.0,s.y_q4/16.0,s.yaw);
     return 0;
 }
