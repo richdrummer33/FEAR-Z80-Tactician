@@ -39,7 +39,8 @@ jobs:
           set -euo pipefail
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 gg-polar-patch-demo
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=64 gg-polar-manual-explore
-          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=0 POLAR_ROM_BANKS=32 gg-tilesector-polar
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=0 POLAR_ROM_BANKS=32 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" gg-tilesector-polar
           cp build/gg-polar-patch-demo.gg build/GG-Polar-Baked-Edge-Composite.gg
           cp build/gg-polar-manual-explore.gg build/GG-Polar-Baked-Edge-Composite-Manual.gg
           cp build/gg-tilesector-polar.gg build/GG-Polar-Live-3800.gg
