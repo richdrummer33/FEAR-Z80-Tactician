@@ -16,6 +16,7 @@
 #include "tilesector_polar.h"
 #include "polar_explore_script.h"
 #include "polar_demo_patch_meta.h"
+#include "polar_demo_tiles_meta.h"
 
 #define C_BLACK 0u
 #define C_OUT   1u
@@ -49,6 +50,7 @@ static PolarExploreCursor g_explore;
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
 void tsp_polar_demo_patch_apply(uint16_t patch);
+void tsp_polar_demo_tiles_init(void);
 
 static uint8_t shade_color(uint8_t shade){return shade==0u?C_FAR:(shade==1u?C_MID:C_NEAR);}
 static void clear_tile(void){uint8_t i;for(i=0u;i<32u;++i)g_tile[i]=0u;}
@@ -126,6 +128,10 @@ static void switch_to_dynamic_renderer(void){
     /* Patch playback does not maintain the conventional renderer's coverage
      * history. Reinitialize the authoritative map/lifetime state once, then
      * render the CURRENT camera position so manual takeover starts cleanly. */
+    /* Baked rails use their compact composite dictionary.  Manual takeover
+     * returns to the live renderer, so restore its generic 423-tile vocabulary
+     * before materializing the current camera state. */
+    init_tiles();
     tsp_polar_nt_init();
     tsp_polar_renderer_reset();
     tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
@@ -137,7 +143,7 @@ void main(void){
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);
-    init_tiles();
+    tsp_polar_demo_tiles_init();
 
     tsp_reset(&g_state);
     polar_explore_cursor_reset(&g_explore);
