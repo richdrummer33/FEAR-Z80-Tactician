@@ -12,7 +12,11 @@
 
 #include "polar_baked_composite.h"
 
-#define HW_TILES 512u
+/* Standard GG VRAM map: pattern generator is 0000h..37FFh because the
+ * 32x28 name table begins at 3800h. 32 bytes/tile => slots 0..447 only.
+ * Slots 448..511 are NOT spare background tiles; writing them overwrites
+ * the name table itself. */
+#define HW_TILES 448u
 #define PIXELS 64u
 #define FRAME_HASH 1024u
 
