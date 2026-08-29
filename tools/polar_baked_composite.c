@@ -306,3 +306,21 @@ uint16_t tsp_host_composite_frame_unique_count(void){return g_frame_unique;}
 uint16_t tsp_host_composite_peak_unique_count(void){return g_peak_unique;}
 uint16_t tsp_host_composite_peak_load_count(void){return g_peak_loads;}
 uint32_t tsp_host_composite_total_load_count(void){return g_total_loads;}
+
+int tsp_host_composite_write_ppm(const char *path){
+    static const uint8_t rgb[6][3]={
+        {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240}
+    };
+    FILE *f=fopen(path,"wb");
+    uint16_t y,x;
+    if(!f)return 0;
+    fprintf(f,"P6\n160 144\n255\n");
+    for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
+        uint8_t row=(uint8_t)(y>>3),col=(uint8_t)(x>>3);
+        uint8_t py=(uint8_t)(y&7u),px=(uint8_t)(x&7u);
+        uint8_t v=g_cells[(uint16_t)row*TSP_COLS+col][(uint16_t)py*8u+px];
+        if(v>5u)v=0u;
+        fwrite(rgb[v],1,3,f);
+    }
+    fclose(f);return 1;
+}
