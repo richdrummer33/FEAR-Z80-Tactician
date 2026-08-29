@@ -67,6 +67,11 @@ jobs:
           for N in 120 300 520 760 1000 1113; do
             ./build/libretro_runner "$CORE" "$ROM" "$N" "build/composite-shots/frame_${N}.ppm" "$PATCH_ADDR" 2
           done
+          echo "=== logical-patch-aligned captures (framebuffer is two patch-index counts behind) ==="
+          for P in 120 300 520 760 1000 1113; do
+            TARGET=$((P + 2))
+            ./build/libretro_runner "$CORE" "$ROM" 5000 "build/composite-shots/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
