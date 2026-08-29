@@ -1,0 +1,132 @@
+name: Polar player-like exploration video
+
+on:
+  push:
+    branches:
+      - feature/gg-polar-explore-video
+  workflow_dispatch:
+
+jobs:
+  capture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate host Polar oracle
+        run: make polar-test
+
+      - name: Generate exploration patch stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-demo-patch-gen | tee build/explore-patch-gen.txt
+          cat build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build exploration patch-player ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o \
+                build/tilesector_polar_patch_ntstate_gg.o \
+                build/tilesector_polar_patch_ntupload_raw_gg.o build/tilesector_polar_patch_ntupload_profiled_gg.o \
+                build/polar_demo_patch_dispatch_gg.o build/polar_demo_patch_bank*_gg.o \
+                build/gg-polar-patch-demo.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+               POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=32 \
+               gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/polar-explore.gg
+          cp build/gg-polar-patch-demo.sym build/polar-explore.sym
+          wc -c build/polar-explore.gg
+
+      - name: Build Gearsystem libretro core and VFR capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            -I.toolchain/Gearsystem/platforms/libretro \
+            tools/gearsystem_vfr_capture.cpp -ldl -o build/gearsystem_vfr_capture
+
+      - name: Capture raw emulator output at native display cadence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/explore-capture
+          ./build/gearsystem_vfr_capture \
+            .toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so \
+            build/polar-explore.gg \
+            build/explore-capture \
+            30 1.5 | tee build/explore-capture/capture.txt
+          cat build/explore-capture/capture.txt
+          head -8 build/explore-capture/timing.csv
+          tail -8 build/explore-capture/timing.csv
+
+      - name: Encode native-resolution VFR videos
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y ffmpeg
+          fi
+
+          ffmpeg -y -hide_banner -loglevel warning \
+            -f concat -safe 0 -i build/explore-capture/frames.ffconcat \
+            -fps_mode vfr -c:v ffv1 -level 3 -pix_fmt bgr0 \
+            build/polar-explore-native-vfr-lossless.mkv
+
+          ffmpeg -y -hide_banner -loglevel warning \
+            -f concat -safe 0 -i build/explore-capture/frames.ffconcat \
+            -fps_mode vfr -c:v libx264 -preset medium -crf 12 -pix_fmt yuv420p \
+            -movflags +faststart \
+            build/polar-explore-native-vfr.mp4
+
+          {
+            echo "LOSSLESS MKV"
+            ffprobe -v error -select_streams v:0 \
+              -show_entries stream=width,height,r_frame_rate,avg_frame_rate,nb_frames \
+              -show_entries format=duration,size -of default=noprint_wrappers=1 \
+              build/polar-explore-native-vfr-lossless.mkv
+            echo
+            echo "ANDROID-FRIENDLY MP4"
+            ffprobe -v error -select_streams v:0 \
+              -show_entries stream=width,height,r_frame_rate,avg_frame_rate,nb_frames \
+              -show_entries format=duration,size -of default=noprint_wrappers=1 \
+              build/polar-explore-native-vfr.mp4
+          } | tee build/explore-video-info.txt
+
+          sha256sum build/polar-explore-native-vfr-lossless.mkv \
+                    build/polar-explore-native-vfr.mp4 \
+                    build/polar-explore.gg \
+            | tee build/explore-sha256.txt
+
+          ls -lh build/polar-explore-native-vfr-lossless.mkv \
+                 build/polar-explore-native-vfr.mp4 \
+                 build/polar-explore.gg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-player-like-exploration-video
+          path: |
+            build/polar-explore-native-vfr-lossless.mkv
+            build/polar-explore-native-vfr.mp4
+            build/polar-explore.gg
+            build/explore-patch-gen.txt
+            build/explore-video-info.txt
+            build/explore-sha256.txt
+            build/explore-capture/capture.txt
+            build/explore-capture/timing.csv
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+          retention-days: 30
