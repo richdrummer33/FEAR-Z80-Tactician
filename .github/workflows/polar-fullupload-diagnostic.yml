@@ -65,15 +65,31 @@ jobs:
           cp build/gg-polar-dirty-oracle-diagnostic.sym build/dirty-oracle-diagnostic.sym
           wc -c build/dirty-oracle-diagnostic.gg
 
-      - name: Build Gearsystem libretro core and capture tool
+      - name: Build normal-path dirty coverage audit ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=32 gg-polar-dirty-audit
+          cp build/gg-polar-dirty-audit.gg build/dirty-audit.gg
+          cp build/gg-polar-dirty-audit.sym build/dirty-audit.sym
+          wc -c build/dirty-audit.gg
+
+      - name: Build Gearsystem tools and capture tool
         shell: bash
         run: |
           set -euo pipefail
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
           g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
             -I.toolchain/Gearsystem/platforms/libretro \
             tools/gearsystem_vfr_capture.cpp -ldl -o build/gearsystem_vfr_capture
+
+      - name: Audit normal dirty hints against every actual changed word
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/dirty_audit_runner build/dirty-audit.gg build/dirty-audit.sym 1114 \
+            | tee build/dirty-hint-audit-report.txt
 
       - name: Capture both at native VBlank cadence
         shell: bash
@@ -150,6 +166,9 @@ jobs:
             build/dirty-control.gg
             build/dirty-control.sym
             build/dirty-upload-comparison-report.txt
+            build/dirty-hint-audit-report.txt
+            build/dirty-audit.gg
+            build/dirty-audit.sym
             build/dirty-oracle-diagnostic.gg
             build/dirty-oracle-diagnostic.sym
             build/diag-sha256.txt
