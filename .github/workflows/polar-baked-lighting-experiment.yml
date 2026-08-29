@@ -171,7 +171,12 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          frames=[120,300,520,680,760,1000,1113]
+          # Frame 680 is kept as an intentional capture-boundary diagnostic:
+          # slot 248 is legally replaced in VBlank 681 after its last visible
+          # use, and Gearsystem's retro_run returns the prior framebuffer after
+          # those next-VBlank writes.  The canonical stable proof poses below
+          # avoid that emulator observation boundary.
+          frames=[120,300,520,760,1000,1113]
           HOST={
               (0,0,0):0,(16,16,48):1,(64,64,96):2,
               (96,112,144):3,(144,160,192):4,(208,224,240):5,
