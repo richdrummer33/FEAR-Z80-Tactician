@@ -31,6 +31,7 @@ POLAR_DEMO_PATCH_GEN_BIN := build/polar_demo_patch_gen
 POLAR_PATCH_ROM := build/gg-polar-patch-demo.gg
 POLAR_FULLUPLOAD_ROM := build/gg-polar-fullupload-diagnostic.gg
 POLAR_ORACLE_ROM := build/gg-polar-dirty-oracle-diagnostic.gg
+POLAR_DIRTY_AUDIT_ROM := build/gg-polar-dirty-audit.gg
 POLAR_PATCH_GEN_DIR := build/generated/polar_demo_patch
 POLAR_PATCH_STAMP := $(POLAR_PATCH_GEN_DIR)/.stamp
 POLAR_PATCH_META := $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_meta.h
@@ -51,6 +52,7 @@ POLAR_PATCH_GG_OBJS := build/main_tilesector_polar_patch_gg.o build/tilesector_p
 POLAR_FULLUPLOAD_CFLAGS := $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=0 -DTSPF_LOCAL_PROJECTION=0 -DTSPF_SCREEN_DEPTH_PLANE=0
 POLAR_FULLUPLOAD_OBJS := build/main_tilesector_polar_fullupload_diag_gg.o build/tilesector_polar_fullupload_motion_gg.o build/tilesector_polar_fullupload_renderer_gg.o build/tilesector_polar_fullupload_ntstate_gg.o build/tilesector_polar_fullupload_materialize_gg.o build/tilesector_polar_ntupload_full_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
 POLAR_ORACLE_OBJS := build/main_tilesector_polar_oracle_diag_gg.o build/tilesector_polar_oracle_motion_gg.o build/tilesector_polar_oracle_renderer_gg.o build/tilesector_polar_oracle_ntstate_gg.o build/tilesector_polar_oracle_materialize_gg.o build/tilesector_polar_oracle_upload_gg.o build/tilesector_polar_oracle_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
+POLAR_DIRTY_AUDIT_OBJS := build/main_tilesector_polar_dirty_audit_gg.o build/tilesector_polar_dirty_audit_motion_gg.o build/tilesector_polar_dirty_audit_ntstate_gg.o build/tilesector_polar_dirty_audit_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
 POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
 POLAR_LOCAL_PROJECTION ?= 1
@@ -92,7 +94,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-polar-fullupload-diagnostic gg-polar-dirty-oracle-diagnostic gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-polar-fullupload-diagnostic gg-polar-dirty-oracle-diagnostic gg-polar-dirty-audit gg-tilesector-polar clean
 all: host test
 
 build:
@@ -297,6 +299,21 @@ build/tilesector_polar_oracle_rowupload_gg.o: src/tilesector_polar_ntupload_raw_
 
 gg-polar-dirty-oracle-diagnostic: $(POLAR_ORACLE_OBJS)
 	$(LCC) $(POLAR_PATCH_GGFLAGS) -Wm-yS -o $(POLAR_ORACLE_ROM) $(POLAR_ORACLE_OBJS)
+
+build/main_tilesector_polar_dirty_audit_gg.o: src/main_tilesector_polar_dirty_audit_gg.c $(POLAR_PATCH_META) | build
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=0 -c -o $@ $<
+
+build/tilesector_polar_dirty_audit_motion_gg.o: src/tilesector_polar_motion.c | build
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -DTSPF_PROFILE_HOOKS=0 -c -o $@ $<
+
+build/tilesector_polar_dirty_audit_ntstate_gg.o: src/tilesector_polar_ntstate_gg.s | build
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -c -o $@ $<
+
+build/tilesector_polar_dirty_audit_rowupload_gg.o: src/tilesector_polar_ntupload_raw_gg.s | build
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -c -o $@ $<
+
+gg-polar-dirty-audit: $(POLAR_DIRTY_AUDIT_OBJS)
+	$(LCC) $(POLAR_PATCH_GGFLAGS) -Wm-yS -o $(POLAR_DIRTY_AUDIT_ROM) $(POLAR_DIRTY_AUDIT_OBJS)
 
 build/tilesector_polar_vram_profiled_gg.o: src/tilesector_polar_vram_profiled_gg.s | build
 	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
