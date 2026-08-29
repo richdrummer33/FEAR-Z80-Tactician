@@ -112,6 +112,11 @@ typedef struct PolarRun {
 
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
 static uint8_t g_run_order[TSPF_MAX_ACTIVE];
+#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+static int8_t g_depth_nf_q7[TSPF_DEPTH_NORMAL_CLASS_COUNT];
+static int8_t g_depth_stepfac_q4[TSPF_DEPTH_NORMAL_CLASS_COUNT];
+static uint8_t g_depth_yaw_cache=0xffu;
+#endif
 /* Original polar-field design: connected spans share authored corners.
  * Compute each corner bearing at most once per rendered update. 14 vertices
  * need only 28 bytes plus a 16-bit validity mask. */
@@ -187,6 +192,9 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 void tsp_polar_renderer_reset(void) BANKED {
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
     g_proj_cached_gi=0xffffu;
+#endif
+#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+    g_depth_yaw_cache=0xffu;
 #endif
 #ifndef __SDCC
     g_map_ready=0u;g_touched_count=0u;memset(g_touched_bits,0,sizeof(g_touched_bits));
@@ -382,9 +390,9 @@ static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else 
  * instead of evaluating two endpoint ray/normal/secant expressions and then
  * reconstructing a step from them.  If the signed wall plane crosses zero
  * inside the visible run, keep the old endpoint path as the exact fallback. */
-static uint8_t screen_depth_plane(uint8_t sid,uint8_t yaw,uint8_t invd,uint8_t c0,uint8_t c1,PolarRun *r){
-    uint16_t oi=((uint16_t)k_tspf_depth_normal_class[sid]<<8)|yaw;
-    int8_t nf=k_tspf_depth_nf_q7[oi],sf=k_tspf_depth_stepfac_q4[oi];
+static uint8_t screen_depth_plane(uint8_t sid,uint8_t invd,uint8_t c0,uint8_t c1,PolarRun *r){
+    uint8_t cls=k_tspf_depth_normal_class[sid];
+    int8_t nf=g_depth_nf_q7[cls],sf=g_depth_stepfac_q4[cls];
     int16_t iq=shr_signed((int16_t)((int16_t)invd*(int16_t)nf),1);
     int16_t step=shr_signed((int16_t)((int16_t)invd*(int16_t)sf),4);
     int16_t endq=iq,midq;
@@ -424,7 +432,7 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     if(g_tspf_appearance_mode<2u){
         uint8_t c0=(uint8_t)(x0>>3),c1=(uint8_t)(x1>>3);
         if(c0>=TSP_COLS)c0=TSP_COLS-1u;if(c1>=TSP_COLS)c1=TSP_COLS-1u;
-        if(c1>=c0&&screen_depth_plane(sid,s->yaw,invd,c0,c1,r))return 1u;
+        if(c1>=c0&&screen_depth_plane(sid,invd,c0,c1,r))return 1u;
     }
 #endif
     r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+lo)&4095u,lo);
@@ -550,6 +558,12 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
     g_tspf_selector_tests=0u;
 #endif
 gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u||gy>=24u)goto done;gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);recipe=k_tspf_recipe_grid[gi];if(recipe==0xffu)goto done;lx=(uint8_t)((uint16_t)s->x_q4&63u);ly=(uint8_t)((uint16_t)s->y_q4&63u);
+#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+    if(g_tspf_appearance_mode<2u&&s->yaw!=g_depth_yaw_cache){
+        tsp_polar_depthplane_load(s->yaw,g_depth_nf_q7,g_depth_stepfac_q4);
+        g_depth_yaw_cache=s->yaw;
+    }
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
     if(gi!=g_proj_cached_gi)projection_load_cell(gx,gy,gi);
     g_proj_lx=lx;g_proj_ly=ly;
