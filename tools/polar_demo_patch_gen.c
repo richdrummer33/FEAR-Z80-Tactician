@@ -22,6 +22,7 @@
 
 #include "tilesector_polar.h"
 #include "polar_explore_script.h"
+#include "polar_baked_composite.h"
 
 #define DEMO_FRAMES POLAR_EXPLORE_FRAMES
 #define PATCH_COUNT (DEMO_FRAMES+1u)
@@ -66,9 +67,9 @@ static void state_at(TSPState *s,int16_t xq,int16_t yq,uint8_t yaw){
     s->x_q4=xq;s->y_q4=yq;s->yaw=yaw;s->speed_scale=1u;
 }
 static int map_valid(const uint16_t map[TSP_MAP_CELLS]){
-    uint16_t i;
+    uint16_t i,count=tsp_host_composite_tile_count();
     for(i=0u;i<TSP_MAP_CELLS;++i)
-        if((map[i]&TSP_TILE_ID_MASK)>=TSP_GENERATED_TILE_COUNT)return 0;
+        if((map[i]&TSP_TILE_ID_MASK)>=count)return 0;
     return 1;
 }
 static void render_fresh(const TSPState *src,uint16_t out[TSP_MAP_CELLS]){
@@ -76,9 +77,11 @@ static void render_fresh(const TSPState *src,uint16_t out[TSP_MAP_CELLS]){
     memset(out,0,sizeof(uint16_t)*TSP_MAP_CELLS);
     state_at(&s,src->x_q4,src->y_q4,src->yaw);
     g_tspf_appearance_mode=0u;
+    tsp_host_composite_begin_frame();
     tsp_polar_renderer_reset();
     tsp_polar_render(&s,out,(TSPColumn *)0);
-    if(!map_valid(out))die("host oracle emitted invalid name-table word");
+    tsp_host_composite_export(out);
+    if(!map_valid(out))die("host compositor emitted invalid name-table word");
 }
 static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                           uint16_t *changed_out,uint8_t *runs_out){
@@ -315,6 +318,7 @@ int main(int argc,char **argv){
     emit_dispatch(dir,banks,bank_count);
     emit_meta(dir,banks,bank_count,seq_hash);
     emit_manifest(dir,patches,banks,bank_count,seq_hash);
+    if(!tsp_host_composite_emit_tiles(dir))die("failed to emit baked composite tile dictionary");
 
     for(i=0u;i<PATCH_COUNT;++i)total+=patches[i].len;
     printf("=== POLAR PLAYER-LIKE EXPLORE PATCH GENERATOR ===\n");
@@ -327,6 +331,8 @@ int main(int argc,char **argv){
         printf("  bank%u first=%u count=%u stream=%" PRIu32 " bytes\n",
                i,banks[i].first,banks[i].count,banks[i].bytes);
     printf("generated runtime sources + exact %u-map exploration reference sequence; replay=PASS\n", PATCH_COUNT);
+    printf("baked composite tile dictionary=%u/512 hardware tiles\n",
+           (unsigned)tsp_host_composite_tile_count());
     printf("final state=(%.2f,%.2f) yaw=%u\n",s.x_q4/16.0,s.y_q4/16.0,s.yaw);
     return 0;
 }
