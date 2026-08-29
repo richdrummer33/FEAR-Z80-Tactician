@@ -72,6 +72,8 @@ jobs:
             TARGET=$((P + 2))
             ./build/libretro_runner "$CORE" "$ROM" 5000 "build/composite-shots/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
           done
+          echo "=== manual takeover: hold RIGHT from boot ==="
+          LIBRETRO_JOYPAD_MASK=0x80 ./build/libretro_runner "$CORE" build/GG-Polar-Baked-Edge-Composite-Manual.gg 180 build/composite-shots/manual_right_180.ppm
 
       - name: Pixel-compare host oracle and GG output
         shell: bash
