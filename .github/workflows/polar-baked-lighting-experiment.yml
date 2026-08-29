@@ -6,6 +6,9 @@ on:
       - experiment/gg-polar-baked-lighting
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   lighting:
     runs-on: ubuntu-22.04
