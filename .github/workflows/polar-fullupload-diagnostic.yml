@@ -56,6 +56,15 @@ jobs:
           cp build/gg-polar-fullupload-diagnostic.sym build/fullupload-diagnostic.sym
           wc -c build/fullupload-diagnostic.gg
 
+      - name: Build ground-truth dirty-oracle diagnostic ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=32 gg-polar-dirty-oracle-diagnostic
+          cp build/gg-polar-dirty-oracle-diagnostic.gg build/dirty-oracle-diagnostic.gg
+          cp build/gg-polar-dirty-oracle-diagnostic.sym build/dirty-oracle-diagnostic.sym
+          wc -c build/dirty-oracle-diagnostic.gg
+
       - name: Build Gearsystem libretro core and capture tool
         shell: bash
         run: |
@@ -70,18 +79,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/cap-dirty build/cap-full
+          mkdir -p build/cap-dirty build/cap-full build/cap-oracle
           CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
           ./build/gearsystem_vfr_capture "$CORE" build/dirty-control.gg build/cap-dirty 30 1.5 \
             | tee build/cap-dirty/capture.txt
           ./build/gearsystem_vfr_capture "$CORE" build/fullupload-diagnostic.gg build/cap-full 30 1.5 \
             | tee build/cap-full/capture.txt
+          ./build/gearsystem_vfr_capture "$CORE" build/dirty-oracle-diagnostic.gg build/cap-oracle 30 1.5 \
+            | tee build/cap-oracle/capture.txt
 
       - name: Compare exact framebuffer hash timelines
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY' | tee build/dirty-vs-full-report.txt
+          python3 - <<'PY' | tee build/dirty-upload-comparison-report.txt
           import csv
           from pathlib import Path
 
@@ -92,36 +103,42 @@ jobs:
                       out.extend([r["fnv64"]]*int(r["source_vblanks"]))
               return out
 
+          def compare(label,a,b):
+              n=min(len(a),len(b))
+              diffs=[i for i in range(n) if a[i]!=b[i]]
+              print(f"[{label}] a_vblanks={len(a)} b_vblanks={len(b)} compared={n}")
+              print(f"[{label}] differing_vblanks={len(diffs)}")
+              if diffs:
+                  runs=[]
+                  s=p=diffs[0]
+                  for x in diffs[1:]:
+                      if x==p+1:
+                          p=x
+                      else:
+                          runs.append((s,p));s=p=x
+                  runs.append((s,p))
+                  print(f"[{label}] first_diff={diffs[0]} last_diff={diffs[-1]} diff_runs={len(runs)} first_runs={runs[:20]}")
+              else:
+                  print(f"[{label}] FRAMEBUFFER_TIMELINES_IDENTICAL=1")
+              if len(a)!=len(b):
+                  print(f"[{label}] timeline_length_delta={len(b)-len(a):+d}")
+              return len(diffs)
+
           dirty=expand("build/cap-dirty/timing.csv")
           full=expand("build/cap-full/timing.csv")
-          n=min(len(dirty),len(full))
-          diffs=[i for i in range(n) if dirty[i]!=full[i]]
+          oracle=expand("build/cap-oracle/timing.csv")
 
-          print(f"dirty_vblanks={len(dirty)} full_vblanks={len(full)} compared={n}")
-          print(f"differing_vblanks={len(diffs)}")
-          if diffs:
-              print(f"first_diff={diffs[0]} last_diff={diffs[-1]}")
-              runs=[]
-              s=p=diffs[0]
-              for x in diffs[1:]:
-                  if x==p+1:
-                      p=x
-                  else:
-                      runs.append((s,p));s=p=x
-              runs.append((s,p))
-              print(f"diff_runs={len(runs)} first_runs={runs[:20]}")
-          else:
-              print("FRAMEBUFFER_TIMELINES_IDENTICAL=1")
-
-          if len(dirty)!=len(full):
-              print(f"timeline_length_delta={len(full)-len(dirty):+d}")
+          d1=compare("DIRTY_vs_LITERAL_FULL",dirty,full)
+          d2=compare("DIRTY_vs_360WORD_ORACLE",dirty,oracle)
+          d3=compare("FULL_vs_360WORD_ORACLE",full,oracle)
+          print(f"SUMMARY dirty_vs_oracle_different={int(d2!=0)} literal_full_confounded={int(d1!=0 and d3!=0)}")
           PY
 
       - name: Package diagnostic ROM and evidence
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum build/dirty-control.gg build/fullupload-diagnostic.gg > build/diag-sha256.txt
+          sha256sum build/dirty-control.gg build/fullupload-diagnostic.gg build/dirty-oracle-diagnostic.gg > build/diag-sha256.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -132,11 +149,15 @@ jobs:
             build/fullupload-diagnostic.sym
             build/dirty-control.gg
             build/dirty-control.sym
-            build/dirty-vs-full-report.txt
+            build/dirty-upload-comparison-report.txt
+            build/dirty-oracle-diagnostic.gg
+            build/dirty-oracle-diagnostic.sym
             build/diag-sha256.txt
             build/cap-dirty/capture.txt
             build/cap-dirty/timing.csv
             build/cap-full/capture.txt
             build/cap-full/timing.csv
+            build/cap-oracle/capture.txt
+            build/cap-oracle/timing.csv
             build/diag-patch-gen.txt
           retention-days: 30
