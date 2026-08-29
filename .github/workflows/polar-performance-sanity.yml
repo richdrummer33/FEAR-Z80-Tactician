@@ -1,0 +1,243 @@
+name: Polar performance sanity
+
+on:
+  push:
+    branches:
+      - feature/gg-polar-baked-edge-composite
+  workflow_dispatch:
+
+concurrency:
+  group: polar-performance-sanity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  performance-sanity:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host Polar acceptance
+        run: make polar-test
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Generate baked composite patch corpus
+        run: make polar-demo-patch-gen
+
+      - name: Build raw and profiled patch-player ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/perf
+
+          clean_patch() {
+            rm -f build/main_tilesector_polar_patch_gg.o \
+                  build/tilesector_polar_patch_motion_gg.o \
+                  build/tilesector_polar_patch_ntstate_gg.o \
+                  build/tilesector_polar_patch_ntupload_raw_gg.o \
+                  build/tilesector_polar_patch_ntupload_profiled_gg.o \
+                  build/polar_demo_patch_dispatch_gg.o \
+                  build/polar_demo_patch_bank*_gg.o \
+                  build/polar_demo_tilepatch_dispatch_gg.o \
+                  build/polar_demo_tilepatch_bank*_gg.o \
+                  build/gg-polar-patch-demo.*
+          }
+
+          clean_patch
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+            gg-polar-patch-demo
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/perf/patch-raw.$ext"
+          done
+
+          clean_patch
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PATCH_PROFILE_HOOKS=1 POLAR_PATCH_ROM_BANKS=64 \
+            gg-polar-patch-demo
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/perf/patch-profiled.$ext"
+          done
+
+      - name: Build raw and profiled live Polar controls
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clean_live() {
+            rm -f build/main_tilesector_polar_gg.o \
+                  build/tilesector_polar_motion_gg.o \
+                  build/tilesector_polar_renderer_gg.o \
+                  build/tilesector_polar_projection_gg.o \
+                  build/tilesector_polar_proj_bank*.o \
+                  build/tilesector_polar_depthplane_gg.o \
+                  build/tilesector_polar_ntstate_gg.o \
+                  build/tilesector_polar_materialize_gg.o \
+                  build/tilesector_polar_ntupload_raw_gg.o \
+                  build/tilesector_polar_ntupload_profiled_gg.o \
+                  build/gg-tilesector-polar.*
+          }
+
+          clean_live
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=0 POLAR_ROM_BANKS=32 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-tilesector-polar.$ext" ] || cp "build/gg-tilesector-polar.$ext" "build/perf/live-raw.$ext"
+          done
+
+          clean_live
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_ROM_BANKS=32 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-tilesector-polar.$ext" ] || cp "build/gg-tilesector-polar.$ext" "build/perf/live-profiled.$ext"
+          done
+
+      - name: Build Gearsystem cycle profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: External zero-hook cadence A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./build/polar_raw_profile_runner \
+            build/perf/live-raw.gg build/perf/live-raw.sym \
+            120 8 build/perf/live-raw-cadence.csv build/perf/live-raw-map.bin \
+            | tee build/perf/live-raw-cadence.txt
+
+          ./build/polar_raw_profile_runner \
+            build/perf/live-profiled.gg build/perf/live-profiled.sym \
+            120 8 build/perf/live-profiled-cadence.csv build/perf/live-profiled-map.bin \
+            | tee build/perf/live-profiled-cadence.txt
+
+          cmp build/perf/live-raw-map.bin build/perf/live-profiled-map.bin
+
+          # g_patch_index is normal runtime state, not profiler instrumentation.
+          # Six hundred transitions cover substantially more of the player-like
+          # exploration than the historical 120-update opening benchmark.
+          ./build/polar_raw_profile_runner \
+            build/perf/patch-raw.gg build/perf/patch-raw.sym \
+            600 8 build/perf/patch-raw-cadence.csv build/perf/patch-raw-map.bin \
+            _g_patch_index 16 \
+            | tee build/perf/patch-raw-cadence.txt
+
+          ./build/polar_raw_profile_runner \
+            build/perf/patch-profiled.gg build/perf/patch-profiled.sym \
+            600 8 build/perf/patch-profiled-cadence.csv build/perf/patch-profiled-map.bin \
+            _g_patch_index 16 \
+            | tee build/perf/patch-profiled-cadence.txt
+
+          cmp build/perf/patch-raw-map.bin build/perf/patch-profiled-map.bin
+
+          python3 tools/compare_patch_reference.py \
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin \
+            build/perf/patch-raw-map.bin \
+            --label patch-raw-perf --require-exact \
+            | tee build/perf/patch-vs-host-reference.txt
+
+      - name: Detailed hooked phase profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./build/tilesector_profile_runner \
+            build/perf/live-profiled.gg build/perf/live-profiled.sym \
+            120 8 demo build/perf/live-detailed-map.bin build/perf/live-detailed-state.bin \
+            | tee build/perf/live-detailed.txt
+
+          ./build/tilesector_profile_runner \
+            build/perf/patch-profiled.gg build/perf/patch-profiled.sym \
+            120 8 demo build/perf/patch-detailed-map.bin build/perf/patch-detailed-state.bin \
+            | tee build/perf/patch-detailed.txt
+
+      - name: Summarize profiler sanity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/perf/perf-sanity-summary.txt
+          from pathlib import Path
+          import re
+
+          CPU=3579545.0
+          BUDGET20=CPU/20.0
+
+          def cadence(path):
+              s=Path(path).read_text()
+              vals={}
+              for key in ("mean","sd","p50","p90","p95","p99","max"):
+                  if key=="max":
+                      m=re.search(r"\bmax=([0-9.]+)",s)
+                  else:
+                      m=re.search(rf"\b{key}=\s*([0-9.]+)",s)
+                  if not m:
+                      raise SystemExit(f"missing {key} in {path}")
+                  vals[key]=float(m.group(1))
+              return vals
+
+          def phase(path,label):
+              s=Path(path).read_text()
+              m=re.search(rf"{re.escape(label)}\s+avg=\s*([0-9.]+) T",s)
+              if not m:
+                  raise SystemExit(f"missing phase {label} in {path}")
+              return float(m.group(1))
+
+          lr=cadence("build/perf/live-raw-cadence.txt")
+          lp=cadence("build/perf/live-profiled-cadence.txt")
+          pr=cadence("build/perf/patch-raw-cadence.txt")
+          pp=cadence("build/perf/patch-profiled-cadence.txt")
+
+          live_hook=lp["mean"]-lr["mean"]
+          patch_hook=pp["mean"]-pr["mean"]
+
+          live_input=phase("build/perf/live-detailed.txt","input+motion")
+          live_render=phase("build/perf/live-detailed.txt","render/build")
+          live_upload=phase("build/perf/live-detailed.txt","VRAM-upload")
+          live_tail=phase("build/perf/live-detailed.txt","loop-tail")
+          live_active=live_input+live_render+live_upload+live_tail
+
+          patch_input=phase("build/perf/patch-detailed.txt","input+motion")
+          patch_apply=phase("build/perf/patch-detailed.txt","render/build")
+          patch_vram=phase("build/perf/patch-detailed.txt","VRAM-upload")
+          patch_tail=phase("build/perf/patch-detailed.txt","loop-tail")
+          patch_active=patch_input+patch_apply+patch_vram+patch_tail
+
+          print("POLAR PERFORMANCE SANITY")
+          print(f"20Hz budget={BUDGET20:.1f} T/update")
+          print()
+          print(f"LIVE raw external mean={lr['mean']:.1f} T p95={lr['p95']:.1f} max={lr['max']:.0f} -> {CPU/lr['mean']:.3f} updates/s")
+          print(f"LIVE profiled external mean={lp['mean']:.1f} T hook delta={live_hook:+.1f} T ({100*live_hook/lr['mean']:+.3f}%)")
+          print(f"LIVE hooked active subtotal={live_active:.1f} T [motion={live_input:.1f}, render={live_render:.1f}, VRAM={live_upload:.1f}, tail={live_tail:.1f}]")
+          print()
+          print(f"PATCH raw external mean={pr['mean']:.1f} T p95={pr['p95']:.1f} p99={pr['p99']:.1f} max={pr['max']:.0f} -> {CPU/pr['mean']:.3f} updates/s")
+          print(f"PATCH profiled external mean={pp['mean']:.1f} T hook delta={patch_hook:+.1f} T ({100*patch_hook/pr['mean']:+.3f}%)")
+          print(f"PATCH hooked active subtotal={patch_active:.1f} T [motion={patch_input:.1f}, patch-apply={patch_apply:.1f}, tile+NT VRAM={patch_vram:.1f}, tail={patch_tail:.1f}]")
+          print(f"PATCH headroom vs 20Hz active budget={BUDGET20-patch_active:.1f} T ({100*(BUDGET20-patch_active)/BUDGET20:.1f}% budget free)")
+          print(f"PATCH raw mean headroom vs 20Hz whole-loop budget={BUDGET20-pr['mean']:.1f} T")
+          if pr["mean"] >= BUDGET20:
+              raise SystemExit("FAIL: raw patch-player mean exceeds 20Hz CPU budget")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-performance-sanity
+          path: |
+            build/perf/
+          retention-days: 30
