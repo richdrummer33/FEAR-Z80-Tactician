@@ -16,7 +16,6 @@
 #include "tilesector_polar.h"
 #include "polar_explore_script.h"
 #include "polar_demo_patch_meta.h"
-#include "polar_demo_tiles_meta.h"
 
 #define C_BLACK 0u
 #define C_OUT   1u
@@ -50,7 +49,7 @@ static PolarExploreCursor g_explore;
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
 void tsp_polar_demo_patch_apply(uint16_t patch);
-void tsp_polar_demo_tiles_init(void);
+void tsp_polar_demo_tilepatch_apply(uint16_t patch);
 
 static uint8_t shade_color(uint8_t shade){return shade==0u?C_FAR:(shade==1u?C_MID:C_NEAR);}
 static void clear_tile(void){uint8_t i;for(i=0u;i<32u;++i)g_tile[i]=0u;}
@@ -143,7 +142,7 @@ void main(void){
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);
-    tsp_polar_demo_tiles_init();
+    init_tiles();
 
     tsp_reset(&g_state);
     polar_explore_cursor_reset(&g_explore);
@@ -153,6 +152,7 @@ void main(void){
 
     tsp_polar_nt_init();
     tsp_polar_demo_patch_apply(0u);
+    tsp_polar_demo_tilepatch_apply(0u);
     g_patch_index=1u;
     tsp_polar_nt_upload_dirty();
 
@@ -163,6 +163,7 @@ void main(void){
         uint8_t strafe=strafe_input(pad);
         uint8_t scripted=0u;
         uint8_t input;
+        uint16_t applied=0xffffu;
 
         /* Any directional key is the explicit "give me the wheel" command.
          * It permanently stops scripted motion. */
@@ -187,12 +188,15 @@ void main(void){
             /* Untouched on-rails path: exact same pre-baked patch sequence as
              * the original exploration proof. The scripted patch state remains exact. */
             tsp_step(&g_state,scripted);
-            tsp_polar_demo_patch_apply(g_patch_index);
+            applied=g_patch_index;
+            tsp_polar_demo_patch_apply(applied);
             ++g_patch_index;
         }
 
         vsync();
 
+        if(!g_dynamic_renderer && applied!=0xffffu)
+            tsp_polar_demo_tilepatch_apply(applied);
         tsp_polar_nt_upload_dirty();
     }
 }
