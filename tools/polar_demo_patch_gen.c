@@ -28,6 +28,8 @@
 #define PATCH_COUNT (DEMO_FRAMES+1u)
 #define MAX_BANKS 24u
 #define MAX_BANK_STREAM 10000u
+#define MAX_TILEPATCH_BANKS 24u
+#define MAX_TILEPATCH_BANK_STREAM 14000u
 #define PATCH_SCRATCH_MAX (1u + TSP_ROWS * (3u + TSP_COLS * 2u))
 
 typedef struct Patch {
@@ -36,6 +38,12 @@ typedef struct Patch {
     uint8_t runs;
     uint8_t bytes[PATCH_SCRATCH_MAX];
 } Patch;
+
+typedef struct TilePatch {
+    uint16_t loads;
+    uint16_t len;
+    uint8_t *bytes;
+} TilePatch;
 
 typedef struct Bank {
     uint16_t first;
@@ -67,9 +75,9 @@ static void state_at(TSPState *s,int16_t xq,int16_t yq,uint8_t yaw){
     s->x_q4=xq;s->y_q4=yq;s->yaw=yaw;s->speed_scale=1u;
 }
 static int map_valid(const uint16_t map[TSP_MAP_CELLS]){
-    uint16_t i,count=tsp_host_composite_tile_count();
-    for(i=0u;i<TSP_MAP_CELLS;++i)
-        if((map[i]&TSP_TILE_ID_MASK)>=count)return 0;
+    uint16_t i;
+    const uint16_t legal=(uint16_t)(TSP_TILE_ID_MASK|TSP_ATTR_FLIPX|TSP_ATTR_FLIPY|TSP_ATTR_PALETTE);
+    for(i=0u;i<TSP_MAP_CELLS;++i)if(map[i]&~legal)return 0;
     return 1;
 }
 static void render_fresh(const TSPState *src,uint16_t out[TSP_MAP_CELLS]){
@@ -82,6 +90,21 @@ static void render_fresh(const TSPState *src,uint16_t out[TSP_MAP_CELLS]){
     tsp_polar_render(&s,out,(TSPColumn *)0);
     tsp_host_composite_export(out);
     if(!map_valid(out))die("host compositor emitted invalid name-table word");
+}
+static void capture_tile_patch(TilePatch *tp){
+    uint16_t n=tsp_host_composite_frame_load_count(),i;
+    const TSPHostTileLoad *loads=tsp_host_composite_frame_loads();
+    size_t len=2u+(size_t)n*(2u+TSP_HOST_TILE_BYTES),p=0u;
+    tp->bytes=(uint8_t *)malloc(len?len:1u);
+    if(!tp->bytes)die("out of memory capturing tile patch");
+    tp->loads=n;tp->len=(uint16_t)len;
+    tp->bytes[p++]=(uint8_t)n;tp->bytes[p++]=(uint8_t)(n>>8);
+    for(i=0u;i<n;++i){
+        uint16_t slot=loads[i].slot;
+        tp->bytes[p++]=(uint8_t)slot;tp->bytes[p++]=(uint8_t)(slot>>8);
+        memcpy(tp->bytes+p,loads[i].bytes,TSP_HOST_TILE_BYTES);p+=TSP_HOST_TILE_BYTES;
+    }
+    if(p!=len)die("tile patch length mismatch");
 }
 static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                           uint16_t *changed_out,uint8_t *runs_out){
