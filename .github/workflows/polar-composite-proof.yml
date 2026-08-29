@@ -73,6 +73,12 @@ jobs:
             ./build/libretro_runner "$CORE" "$ROM" 5000 "build/composite-shots/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
           done
 
+      - name: Pixel-compare host oracle and GG output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/compare_polar_composite_ppm.py build
+
       - uses: actions/upload-artifact@v4
         with:
           name: polar-baked-edge-composite-proof
