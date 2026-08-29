@@ -214,12 +214,15 @@ jobs:
             build/lighting-baseline/*.ppm
             build/lighting-baseline/camera_poses.csv
             build/lighting-baseline/generator.txt
+            build/lighting-baseline/tile_schedule.csv
             build/lighting-ao/*.ppm
             build/lighting-ao/camera_poses.csv
             build/lighting-ao/generator.txt
+            build/lighting-ao/tile_schedule.csv
             build/lighting-point/*.ppm
             build/lighting-point/camera_poses.csv
             build/lighting-point/generator.txt
+            build/lighting-point/tile_schedule.csv
             build/lighting-gg-shots/*.ppm
             build/lighting-pixel-deltas.csv
             build/lighting-bake-metrics.csv
@@ -229,4 +232,5 @@ jobs:
             build/GG-Polar-AO-Point-Baked.sym
             build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
             build/generated/polar_demo_patch/polar_demo_reference_maps.bin
+            build/generated/polar_demo_patch/tile_schedule.csv
           retention-days: 30
