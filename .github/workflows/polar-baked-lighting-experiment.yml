@@ -1,0 +1,211 @@
+name: Polar baked lighting experiment
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-lighting
+  workflow_dispatch:
+
+jobs:
+  lighting:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate unchanged host geometry oracle
+        run: make polar-test
+
+      - name: Build host bake generator
+        run: make build/polar_demo_patch_gen
+
+      - name: Bake baseline AO and point-light variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          for STAGE in baseline ao point; do
+            mkdir -p "build/lighting-$STAGE"
+            ./build/polar_demo_patch_gen "build/lighting-$STAGE" "$STAGE" \
+              | tee "build/lighting-$STAGE/generator.txt"
+          done
+
+      - name: Compare visual deltas and bake costs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv, re
+          from pathlib import Path
+
+          stages=["baseline","ao","point"]
+          frames=[0,120,300,520,680,760,1000,1113]
+
+          def ppm(path):
+              b=Path(path).read_bytes()
+              if not b.startswith(b"P6\n"):
+                  raise SystemExit(f"not P6: {path}")
+              p=0
+              toks=[]
+              while len(toks)<4:
+                  while p<len(b) and chr(b[p]).isspace(): p+=1
+                  if b[p:p+1]==b"#":
+                      while p<len(b) and b[p]!=10: p+=1
+                      continue
+                  q=p
+                  while q<len(b) and not chr(b[q]).isspace(): q+=1
+                  toks.append(b[p:q])
+                  p=q
+              while p<len(b) and chr(b[p]).isspace(): p+=1
+              if toks[:4] != [b"P6",b"160",b"144",b"255"]:
+                  raise SystemExit(f"unexpected PPM header {path}: {toks}")
+              return b[p:]
+
+          rows=[]
+          for f in frames:
+              a=ppm(f"build/lighting-baseline/host_composite_frame_{f}.ppm")
+              o=ppm(f"build/lighting-ao/host_composite_frame_{f}.ppm")
+              l=ppm(f"build/lighting-point/host_composite_frame_{f}.ppm")
+              if not (len(a)==len(o)==len(l)==160*144*3):
+                  raise SystemExit("bad PPM payload size")
+              def changed(x,y):
+                  return sum(x[i:i+3]!=y[i:i+3] for i in range(0,len(x),3))
+              rows.append((f,changed(a,o),changed(o,l),changed(a,l)))
+
+          with open("build/lighting-pixel-deltas.csv","w",newline="") as fh:
+              w=csv.writer(fh)
+              w.writerow(["frame","baseline_vs_ao_pixels","ao_vs_point_pixels","baseline_vs_point_pixels"])
+              w.writerows(rows)
+
+          def parse(stage):
+              s=Path(f"build/lighting-{stage}/generator.txt").read_text()
+              def one(pat,cast=float):
+                  m=re.search(pat,s)
+                  if not m: raise SystemExit(f"missing {pat} for {stage}")
+                  return cast(m.group(1))
+              return {
+                  "stage":stage,
+                  "zero_pct":one(r"zero=\d+/\d+ \(([0-9.]+)%\)"),
+                  "mean_changed":one(r"mean_changed=([0-9.]+) words"),
+                  "peak_unique":one(r"peak_unique/frame=(\d+)",int),
+                  "peak_loads":one(r"original_peak_loads=(\d+)",int),
+                  "total_tile_loads":one(r"total_tile_loads=(\d+)",int),
+                  "vblank_budget":one(r"scheduled_vblank_budget=(\d+)",int),
+                  "tilepatch_banks":one(r"tilepatch_banks=(\d+)",int),
+                  "raw_stream":one(r"raw_stream=(\d+) bytes",int),
+              }
+          metrics=[parse(s) for s in stages]
+          with open("build/lighting-bake-metrics.csv","w",newline="") as fh:
+              w=csv.DictWriter(fh,fieldnames=list(metrics[0]))
+              w.writeheader();w.writerows(metrics)
+
+          print("=== LIGHTING PIXEL DELTAS ===")
+          print(Path("build/lighting-pixel-deltas.csv").read_text())
+          print("=== LIGHTING BAKE METRICS ===")
+          print(Path("build/lighting-bake-metrics.csv").read_text())
+          PY
+
+      - name: Generate point-light runtime packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/generated/polar_demo_patch
+          mkdir -p build/generated/polar_demo_patch
+          ./build/polar_demo_patch_gen build/generated/polar_demo_patch point \
+            | tee build/lighting-point-runtime-generator.txt
+          touch build/generated/polar_demo_patch/.stamp
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build zero-lighting-work Game Gear patch player
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+               POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+               gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/GG-Polar-AO-Point-Baked.gg
+          cp build/gg-polar-patch-demo.sym build/GG-Polar-AO-Point-Baked.sym
+          wc -c build/GG-Polar-AO-Point-Baked.gg
+          sha256sum build/GG-Polar-AO-Point-Baked.gg | tee build/lighting-rom-sha256.txt
+
+      - name: Build Gearsystem screenshot runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            -I.toolchain/Gearsystem/platforms/libretro \
+            tools/libretro_runner.cpp -ldl -o build/libretro_runner
+
+      - name: Capture point-light ROM at matched camera states
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/lighting-gg-shots
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/GG-Polar-AO-Point-Baked.gg
+          PATCH_ADDR="$(awk '$2=="_g_patch_index"{split($1,a,":"); print a[2]; exit}' build/GG-Polar-AO-Point-Baked.sym)"
+          test -n "$PATCH_ADDR"
+          echo "g_patch_index CPU address=$PATCH_ADDR"
+          for P in 120 300 520 680 760 1000 1113; do
+            TARGET=$((P + 2))
+            ./build/libretro_runner "$CORE" "$ROM" 5000 \
+              "build/lighting-gg-shots/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
+          done
+
+      - name: Verify matched host and GG point-light pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          frames=[120,300,520,680,760,1000,1113]
+          def payload(path):
+              b=Path(path).read_bytes()
+              marker=b"255\n"
+              p=b.find(marker)
+              if p<0: raise SystemExit(f"bad ppm {path}")
+              return b[p+len(marker):]
+          bad=[]
+          for f in frames:
+              a=payload(f"build/lighting-point/host_composite_frame_{f}.ppm")
+              b=payload(f"build/lighting-gg-shots/patch_{f}.ppm")
+              diff=sum(a[i:i+3]!=b[i:i+3] for i in range(0,min(len(a),len(b)),3))
+              print(f"frame={f} rgb_pixel_diff={diff}")
+              if len(a)!=len(b) or diff: bad.append((f,diff,len(a),len(b)))
+          if bad:
+              raise SystemExit(f"host/GG point-light mismatch: {bad}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-baked-lighting-experiment
+          path: |
+            build/lighting-baseline/*.ppm
+            build/lighting-baseline/camera_poses.csv
+            build/lighting-baseline/generator.txt
+            build/lighting-ao/*.ppm
+            build/lighting-ao/camera_poses.csv
+            build/lighting-ao/generator.txt
+            build/lighting-point/*.ppm
+            build/lighting-point/camera_poses.csv
+            build/lighting-point/generator.txt
+            build/lighting-gg-shots/*.ppm
+            build/lighting-pixel-deltas.csv
+            build/lighting-bake-metrics.csv
+            build/lighting-point-runtime-generator.txt
+            build/lighting-rom-sha256.txt
+            build/GG-Polar-AO-Point-Baked.gg
+            build/GG-Polar-AO-Point-Baked.sym
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin
+          retention-days: 30
