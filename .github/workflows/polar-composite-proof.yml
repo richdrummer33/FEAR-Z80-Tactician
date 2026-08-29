@@ -75,4 +75,5 @@ jobs:
             build/composite-sha256.txt
             build/composite-shots/*.ppm
             build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/host_composite_frame_*.ppm
           retention-days: 30
