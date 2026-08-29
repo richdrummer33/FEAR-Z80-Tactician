@@ -390,6 +390,55 @@ static void run_stress_suite(uint8_t appearance) {
            sizeof(pts)/sizeof(pts[0]),checks,blocked,direct);
 }
 
+
+static void run_demo_trace(uint8_t appearance) {
+    enum { FRAMES=360 };
+    TSPState s;
+    uint16_t a[TSP_MAP_CELLS],b[TSP_MAP_CELLS];
+    uint8_t patch[PATCH_SCRATCH_MAX];
+    uint16_t changed[FRAMES],runsv[FRAMES];
+    uint8_t *uniq=(uint8_t *)xmalloc((size_t)FRAMES*PATCH_SCRATCH_MAX);
+    uint16_t uniq_len[FRAMES],uniq_count=0u;
+    uint32_t zero=0u;
+    uint64_t sum_changed=0u,sum_runs=0u,raw_bytes=0u,uniq_bytes=0u;
+    int frame;
+
+    tsp_reset(&s);
+    render_fresh(s.x_q4,s.y_q4,s.yaw,appearance,a);
+    for(frame=0;frame<FRAMES;++frame){
+        uint16_t ch;uint8_t rn;size_t len;uint16_t u;
+        tsp_step(&s,0u);
+        render_fresh(s.x_q4,s.y_q4,s.yaw,appearance,b);
+        len=build_patch(a,b,patch,&ch,&rn);
+        verify_patch_or_die(a,b,patch,len);
+        changed[frame]=ch;runsv[frame]=rn;
+        sum_changed+=ch;sum_runs+=rn;raw_bytes+=len;
+        if(ch==0u)++zero;
+        for(u=0u;u<uniq_count;++u)
+            if(uniq_len[u]==len &&
+               memcmp(uniq+(size_t)u*PATCH_SCRATCH_MAX,patch,len)==0)break;
+        if(u==uniq_count){
+            memcpy(uniq+(size_t)uniq_count*PATCH_SCRATCH_MAX,patch,len);
+            uniq_len[uniq_count]=(uint16_t)len;
+            uniq_bytes+=len;++uniq_count;
+        }
+        memcpy(a,b,sizeof(a));
+    }
+    qsort(changed,FRAMES,sizeof(changed[0]),cmp_u16);
+    qsort(runsv,FRAMES,sizeof(runsv[0]),cmp_u16);
+    printf("demo-trace/360: zero=%" PRIu32 " (%.2f%%) changed mean=%.2f median=%u p95=%u max=%u; "
+           "runs mean=%.2f p95=%u max=%u\n",
+           zero,100.0*(double)zero/FRAMES,(double)sum_changed/FRAMES,
+           percentile_u16(changed,FRAMES,50u),percentile_u16(changed,FRAMES,95u),
+           percentile_u16(changed,FRAMES,100u),(double)sum_runs/FRAMES,
+           percentile_u16(runsv,FRAMES,95u),percentile_u16(runsv,FRAMES,100u));
+    printf("demo-trace/360 patch bytes: raw_sequence=%" PRIu64
+           " unique_patches=%u unique_stream=%" PRIu64 " reuse=%.2fx final=(%.2f,%.2f) yaw=%u\n",
+           raw_bytes,uniq_count,uniq_bytes,(double)FRAMES/(double)uniq_count,
+           s.x_q4/16.0,s.y_q4/16.0,s.yaw);
+    free(uniq);
+}
+
 static void usage(const char *argv0) {
     fprintf(stderr,
       "usage: %s [--appearance 0|1|2] [--yaw-step N] [--emit PATH]\n"
@@ -558,6 +607,7 @@ int main(int argc,char **argv) {
            patch_count,(double)legal_edges/(double)patch_count,patch_pool_len);
 
     run_stress_suite(opt.appearance);
+    run_demo_trace(opt.appearance);
 
     /* Component estimate equals the explicit PTP1 writer below. */
     estimated_pack=(uint32_t)(
