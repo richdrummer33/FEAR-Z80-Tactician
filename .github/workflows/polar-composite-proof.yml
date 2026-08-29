@@ -1,0 +1,80 @@
+name: Polar baked edge composite proof
+
+on:
+  push:
+    branches:
+      - feature/gg-polar-baked-edge-composite
+  workflow_dispatch:
+
+jobs:
+  proof:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate host Polar renderer
+        run: make polar-test
+
+      - name: Generate baked composite exploration
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-demo-patch-gen | tee build/composite-gen.txt
+          cat build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+          cat build/generated/polar_demo_patch/polar_demo_tiles_meta.h
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build composite patch-player and manual ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=32 gg-polar-patch-demo
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=32 gg-polar-manual-explore
+          cp build/gg-polar-patch-demo.gg build/GG-Polar-Baked-Edge-Composite.gg
+          cp build/gg-polar-manual-explore.gg build/GG-Polar-Baked-Edge-Composite-Manual.gg
+          sha256sum build/GG-Polar-Baked-Edge-Composite*.gg | tee build/composite-sha256.txt
+          wc -c build/GG-Polar-Baked-Edge-Composite*.gg
+
+      - name: Build emulator screenshot runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            -I.toolchain/Gearsystem/platforms/libretro \
+            tools/libretro_runner.cpp -ldl -o build/libretro_runner
+
+      - name: Capture representative native screenshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/composite-shots
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/GG-Polar-Baked-Edge-Composite.gg
+          for N in 120 300 520 760 1000 1113; do
+            ./build/libretro_runner "$CORE" "$ROM" "$N" "build/composite-shots/frame_${N}.ppm"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-baked-edge-composite-proof
+          path: |
+            build/GG-Polar-Baked-Edge-Composite.gg
+            build/GG-Polar-Baked-Edge-Composite-Manual.gg
+            build/composite-gen.txt
+            build/composite-sha256.txt
+            build/composite-shots/*.ppm
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/polar_demo_tiles_meta.h
+          retention-days: 30
