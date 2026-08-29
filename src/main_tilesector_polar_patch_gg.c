@@ -10,7 +10,6 @@
 #include "tilesector_polar.h"
 #include "polar_explore_script.h"
 #include "polar_demo_patch_meta.h"
-#include "polar_demo_tiles_meta.h"
 
 #define C_BLACK 0u
 #define C_OUT   1u
@@ -52,7 +51,7 @@ static PolarExploreCursor g_explore;
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
 void tsp_polar_demo_patch_apply(uint16_t patch);
-void tsp_polar_demo_tiles_init(void);
+void tsp_polar_demo_tilepatch_apply(uint16_t patch);
 
 static uint16_t upload_dirty_map(void){
     tsp_polar_nt_upload_dirty();
@@ -110,7 +109,7 @@ static void init_tiles(void){
 
 void main(void){
     DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);
-    set_bkg_palette(0u,2u,k_palettes);tsp_polar_demo_tiles_init();
+    set_bkg_palette(0u,2u,k_palettes);init_tiles();
 
     tsp_reset(&g_state);
     polar_explore_cursor_reset(&g_explore);
@@ -121,6 +120,7 @@ void main(void){
      * initial host-oracle view. The init routine already marked the whole
      * visible table dirty, so the first upload remains simple and deterministic. */
     tsp_polar_demo_patch_apply(0u);
+    tsp_polar_demo_tilepatch_apply(0u);
     g_patch_index=1u;
     (void)upload_dirty_map();
 
@@ -130,6 +130,7 @@ void main(void){
     DISPLAY_ON;
     for(;;){
         uint8_t input;
+        uint16_t applied=0xffffu;
         PATCH_PHASE(1u);
         input=polar_explore_next(&g_explore);
         if(g_patch_index<POLAR_DEMO_PATCH_COUNT){
@@ -137,12 +138,14 @@ void main(void){
              * the patch executor itself is measured and proven exact. */
             tsp_step(&g_state,input);
             PATCH_PHASE(2u);
-            tsp_polar_demo_patch_apply(g_patch_index);
+            applied=g_patch_index;
+            tsp_polar_demo_patch_apply(applied);
             ++g_patch_index;
         }else PATCH_PHASE(2u);
 
         PATCH_PHASE(3u);vsync();
         PATCH_PHASE(4u);
+        if(applied!=0xffffu)tsp_polar_demo_tilepatch_apply(applied);
 #if TSPF_PROFILE_HOOKS
         g_ts_dirty_words=upload_dirty_map();
 #else
