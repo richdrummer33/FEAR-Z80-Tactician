@@ -134,13 +134,13 @@ jobs:
           # exploration than the historical 120-update opening benchmark.
           ./build/polar_raw_profile_runner \
             build/perf/patch-raw.gg build/perf/patch-raw.sym \
-            600 8 build/perf/patch-raw-cadence.csv build/perf/patch-raw-map.bin \
+            1100 8 build/perf/patch-raw-cadence.csv build/perf/patch-raw-map.bin \
             _g_patch_index 16 \
             | tee build/perf/patch-raw-cadence.txt
 
           ./build/polar_raw_profile_runner \
             build/perf/patch-profiled.gg build/perf/patch-profiled.sym \
-            600 8 build/perf/patch-profiled-cadence.csv build/perf/patch-profiled-map.bin \
+            1100 8 build/perf/patch-profiled-cadence.csv build/perf/patch-profiled-map.bin \
             _g_patch_index 16 \
             | tee build/perf/patch-profiled-cadence.txt
 
@@ -164,7 +164,7 @@ jobs:
 
           ./build/tilesector_profile_runner \
             build/perf/patch-profiled.gg build/perf/patch-profiled.sym \
-            120 8 demo build/perf/patch-detailed-map.bin build/perf/patch-detailed-state.bin \
+            1100 8 demo build/perf/patch-detailed-map.bin build/perf/patch-detailed-state.bin \
             | tee build/perf/patch-detailed.txt
 
       - name: Summarize profiler sanity
@@ -193,10 +193,10 @@ jobs:
 
           def phase(path,label):
               s=Path(path).read_text()
-              m=re.search(rf"{re.escape(label)}\s+avg=\s*([0-9.]+) T",s)
+              m=re.search(rf"{re.escape(label)}\s+avg=\s*([0-9.]+) T\s+min=\s*([0-9]+) max=\s*([0-9]+)",s)
               if not m:
                   raise SystemExit(f"missing phase {label} in {path}")
-              return float(m.group(1))
+              return {"avg":float(m.group(1)),"min":float(m.group(2)),"max":float(m.group(3))}
 
           lr=cadence("build/perf/live-raw-cadence.txt")
           lp=cadence("build/perf/live-profiled-cadence.txt")
@@ -210,24 +210,27 @@ jobs:
           live_render=phase("build/perf/live-detailed.txt","render/build")
           live_upload=phase("build/perf/live-detailed.txt","VRAM-upload")
           live_tail=phase("build/perf/live-detailed.txt","loop-tail")
-          live_active=live_input+live_render+live_upload+live_tail
+          live_active=sum(x["avg"] for x in (live_input,live_render,live_upload,live_tail))
 
           patch_input=phase("build/perf/patch-detailed.txt","input+motion")
           patch_apply=phase("build/perf/patch-detailed.txt","render/build")
           patch_vram=phase("build/perf/patch-detailed.txt","VRAM-upload")
           patch_tail=phase("build/perf/patch-detailed.txt","loop-tail")
-          patch_active=patch_input+patch_apply+patch_vram+patch_tail
+          patch_vsync=phase("build/perf/patch-detailed.txt","vsync-wait")
+          patch_active=sum(x["avg"] for x in (patch_input,patch_apply,patch_vram,patch_tail))
+          patch_active_upper=sum(x["max"] for x in (patch_input,patch_apply,patch_vram,patch_tail))
 
           print("POLAR PERFORMANCE SANITY")
           print(f"20Hz budget={BUDGET20:.1f} T/update")
           print()
           print(f"LIVE raw external mean={lr['mean']:.1f} T p95={lr['p95']:.1f} max={lr['max']:.0f} -> {CPU/lr['mean']:.3f} updates/s")
           print(f"LIVE profiled external mean={lp['mean']:.1f} T hook delta={live_hook:+.1f} T ({100*live_hook/lr['mean']:+.3f}%)")
-          print(f"LIVE hooked active subtotal={live_active:.1f} T [motion={live_input:.1f}, render={live_render:.1f}, VRAM={live_upload:.1f}, tail={live_tail:.1f}]")
+          print(f"LIVE hooked active subtotal={live_active:.1f} T [motion={live_input['avg']:.1f}, render={live_render['avg']:.1f}, VRAM={live_upload['avg']:.1f}, tail={live_tail['avg']:.1f}]")
           print()
           print(f"PATCH raw external mean={pr['mean']:.1f} T p95={pr['p95']:.1f} p99={pr['p99']:.1f} max={pr['max']:.0f} -> {CPU/pr['mean']:.3f} updates/s")
           print(f"PATCH profiled external mean={pp['mean']:.1f} T hook delta={patch_hook:+.1f} T ({100*patch_hook/pr['mean']:+.3f}%)")
-          print(f"PATCH hooked active subtotal={patch_active:.1f} T [motion={patch_input:.1f}, patch-apply={patch_apply:.1f}, tile+NT VRAM={patch_vram:.1f}, tail={patch_tail:.1f}]")
+          print(f"PATCH hooked active subtotal={patch_active:.1f} T [motion={patch_input['avg']:.1f}, patch-apply={patch_apply['avg']:.1f}, tile+NT VRAM={patch_vram['avg']:.1f}, tail={patch_tail['avg']:.1f}]")
+          print(f"PATCH component-max upper bound={patch_active_upper:.1f} T; max VSync wait={patch_vsync['max']:.0f} T")
           print(f"PATCH headroom vs 20Hz active budget={BUDGET20-patch_active:.1f} T ({100*(BUDGET20-patch_active)/BUDGET20:.1f}% budget free)")
           print(f"PATCH raw mean headroom vs 20Hz whole-loop budget={BUDGET20-pr['mean']:.1f} T")
           if pr["mean"] >= BUDGET20:
