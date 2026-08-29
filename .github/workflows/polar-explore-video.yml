@@ -82,13 +82,51 @@ jobs:
             sudo apt-get install -y ffmpeg
           fi
 
+          # FFmpeg 4.x's concat demuxer quantizes still-image durations to its
+          # default 25 Hz timebase.  Instead, materialize the exact 60 Hz VBlank
+          # sequence as symlinks, then SELECT only the first frame of each
+          # identical run.  The select filter preserves each chosen frame's
+          # original 1/60-second PTS, yielding true VFR with no interpolation.
+          python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+
+          root=Path("build/explore-capture")
+          expanded=root/"expanded"
+          expanded.mkdir(exist_ok=True)
+
+          rows=list(csv.DictReader((root/"timing.csv").open()))
+          starts=[]
+          frame_index=0
+          for row in rows:
+              starts.append(frame_index)
+              repeats=int(row["source_vblanks"])
+              src=(root/row["file"]).resolve()
+              for _ in range(repeats):
+                  dst=expanded/f"frame_{frame_index:05d}.ppm"
+                  if dst.exists() or dst.is_symlink():
+                      dst.unlink()
+                  os.symlink(src, dst)
+                  frame_index += 1
+
+          # Add the final source VBlank as an explicit terminal packet so the
+          # preceding frame's final hold duration is represented in the mux.
+          terminal=max(0, frame_index-1)
+          keep=starts + ([terminal] if terminal not in starts else [])
+          expr="+".join(f"eq(n,{n})" for n in keep)
+          (root/"select-filter.txt").write_text(f"select='{expr}'\n")
+          print(f"expanded_vblanks={frame_index} selected_packets={len(keep)} terminal={terminal}")
+          PY
+
           ffmpeg -y -hide_banner -loglevel warning \
-            -f concat -safe 0 -i build/explore-capture/frames.ffconcat \
+            -framerate 60 -i build/explore-capture/expanded/frame_%05d.ppm \
+            -filter_script:v build/explore-capture/select-filter.txt \
             -vsync vfr -c:v ffv1 -level 3 -pix_fmt bgr0 \
             build/polar-explore-native-vfr-lossless.mkv
 
           ffmpeg -y -hide_banner -loglevel warning \
-            -f concat -safe 0 -i build/explore-capture/frames.ffconcat \
+            -framerate 60 -i build/explore-capture/expanded/frame_%05d.ppm \
+            -filter_script:v build/explore-capture/select-filter.txt \
             -vsync vfr -c:v libx264 -preset medium -crf 12 -pix_fmt yuv420p \
             -movflags +faststart \
             build/polar-explore-native-vfr.mp4
