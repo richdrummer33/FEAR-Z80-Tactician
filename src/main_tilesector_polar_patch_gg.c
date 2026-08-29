@@ -2,12 +2,13 @@
  * Game Gear proof ROM for the host-compiled Polar transition architecture.
  *
  * It deliberately does NOT link the Polar projection/visibility/raster path.
- * The scripted camera motion is identical to the Polar demo, but each final
+ * The scripted camera motion is a player-like exploration path, but each final
  * 20x18 name-table change is replayed from a host-baked exact patch.
  */
 #include <stdint.h>
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
+#include "polar_explore_script.h"
 #include "polar_demo_patch_meta.h"
 
 #define C_BLACK 0u
@@ -45,7 +46,7 @@ volatile uint16_t g_ts_dirty_words;
 #endif
 
 static uint8_t g_tile[32u];
-static uint8_t g_prev_pad;
+static PolarExploreCursor g_explore;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -105,28 +106,12 @@ static void init_tiles(void){
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);
 }
 
-static uint8_t read_input(void){
-    uint8_t pad=joypad(),pressed=(uint8_t)(pad&(uint8_t)~g_prev_pad),input=0u;
-    if(pad&J_UP)input|=TSP_INPUT_UP;
-    if(pad&J_DOWN)input|=TSP_INPUT_DOWN;
-    if(pad&J_LEFT)input|=TSP_INPUT_LEFT;
-    if(pad&J_RIGHT)input|=TSP_INPUT_RIGHT;
-    if(pad&J_B)input|=TSP_INPUT_STRAFE_LEFT;
-    if(pad&J_A)input|=TSP_INPUT_STRAFE_RIGHT;
-    if(pressed&J_START){
-        if(pad&J_B)g_tspf_appearance_mode=0u;
-        else if(pad&J_A)g_tspf_appearance_mode=2u;
-        else {++g_tspf_appearance_mode;if(g_tspf_appearance_mode>2u)g_tspf_appearance_mode=0u;}
-    }
-    g_prev_pad=pad;
-    return input;
-}
-
 void main(void){
     DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);init_tiles();
 
     tsp_reset(&g_state);
+    polar_explore_cursor_reset(&g_explore);
     g_tspf_appearance_mode=0u;
     tsp_polar_nt_init();
 
@@ -144,7 +129,7 @@ void main(void){
     for(;;){
         uint8_t input;
         PATCH_PHASE(1u);
-        input=read_input();
+        input=polar_explore_next(&g_explore);
         if(g_patch_index<POLAR_DEMO_PATCH_COUNT){
             /* Scripted proof only: real runtime state/event lookup comes after
              * the patch executor itself is measured and proven exact. */
