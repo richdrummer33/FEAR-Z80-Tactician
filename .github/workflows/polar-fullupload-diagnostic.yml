@@ -1,0 +1,142 @@
+name: Polar full-upload dirty-region killer test
+
+on:
+  push:
+    branches:
+      - feature/gg-polar-fullupload-diagnostic
+  workflow_dispatch:
+
+jobs:
+  dirty-vs-full:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate host Polar oracle
+        run: make polar-test
+
+      - name: Generate exact exploration patch stream
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-demo-patch-gen | tee build/diag-patch-gen.txt
+          cat build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build normal dirty-row control ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o \
+                build/tilesector_polar_patch_ntstate_gg.o \
+                build/tilesector_polar_patch_ntupload_raw_gg.o build/tilesector_polar_patch_ntupload_profiled_gg.o \
+                build/polar_demo_patch_dispatch_gg.o build/polar_demo_patch_bank*_gg.o \
+                build/gg-polar-patch-demo.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=32 gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/dirty-control.gg
+          cp build/gg-polar-patch-demo.sym build/dirty-control.sym
+          wc -c build/dirty-control.gg
+
+      - name: Build forced-full-upload diagnostic ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=32 gg-polar-fullupload-diagnostic
+          cp build/gg-polar-fullupload-diagnostic.gg build/fullupload-diagnostic.gg
+          cp build/gg-polar-fullupload-diagnostic.sym build/fullupload-diagnostic.sym
+          wc -c build/fullupload-diagnostic.gg
+
+      - name: Build Gearsystem libretro core and capture tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            -I.toolchain/Gearsystem/platforms/libretro \
+            tools/gearsystem_vfr_capture.cpp -ldl -o build/gearsystem_vfr_capture
+
+      - name: Capture both at native VBlank cadence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/cap-dirty build/cap-full
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ./build/gearsystem_vfr_capture "$CORE" build/dirty-control.gg build/cap-dirty 30 1.5 \
+            | tee build/cap-dirty/capture.txt
+          ./build/gearsystem_vfr_capture "$CORE" build/fullupload-diagnostic.gg build/cap-full 30 1.5 \
+            | tee build/cap-full/capture.txt
+
+      - name: Compare exact framebuffer hash timelines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/dirty-vs-full-report.txt
+          import csv
+          from pathlib import Path
+
+          def expand(path):
+              out=[]
+              with Path(path).open() as f:
+                  for r in csv.DictReader(f):
+                      out.extend([r["fnv64"]]*int(r["source_vblanks"]))
+              return out
+
+          dirty=expand("build/cap-dirty/timing.csv")
+          full=expand("build/cap-full/timing.csv")
+          n=min(len(dirty),len(full))
+          diffs=[i for i in range(n) if dirty[i]!=full[i]]
+
+          print(f"dirty_vblanks={len(dirty)} full_vblanks={len(full)} compared={n}")
+          print(f"differing_vblanks={len(diffs)}")
+          if diffs:
+              print(f"first_diff={diffs[0]} last_diff={diffs[-1]}")
+              runs=[]
+              s=p=diffs[0]
+              for x in diffs[1:]:
+                  if x==p+1:
+                      p=x
+                  else:
+                      runs.append((s,p));s=p=x
+              runs.append((s,p))
+              print(f"diff_runs={len(runs)} first_runs={runs[:20]}")
+          else:
+              print("FRAMEBUFFER_TIMELINES_IDENTICAL=1")
+
+          if len(dirty)!=len(full):
+              print(f"timeline_length_delta={len(full)-len(dirty):+d}")
+          PY
+
+      - name: Package diagnostic ROM and evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum build/dirty-control.gg build/fullupload-diagnostic.gg > build/diag-sha256.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-fullupload-dirty-region-diagnostic
+          path: |
+            build/fullupload-diagnostic.gg
+            build/fullupload-diagnostic.sym
+            build/dirty-control.gg
+            build/dirty-control.sym
+            build/dirty-vs-full-report.txt
+            build/diag-sha256.txt
+            build/cap-dirty/capture.txt
+            build/cap-dirty/timing.csv
+            build/cap-full/capture.txt
+            build/cap-full/timing.csv
+            build/diag-patch-gen.txt
+          retention-days: 30
