@@ -50,6 +50,15 @@ jobs:
           cp build/gg-polar-patch-demo.sym build/polar-explore.sym
           wc -c build/polar-explore.gg
 
+      - name: Build manual-takeover repaired-edge ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=32 gg-polar-manual-explore
+          cp build/gg-polar-manual-explore.gg build/polar-explore-manual.gg
+          cp build/gg-polar-manual-explore.sym build/polar-explore-manual.sym
+          wc -c build/polar-explore-manual.gg
+
       - name: Build Gearsystem libretro core and VFR capture
         shell: bash
         run: |
@@ -154,6 +163,8 @@ jobs:
           ls -lh build/polar-explore-native-vfr-lossless.mkv \
                  build/polar-explore-native-vfr.mp4 \
                  build/polar-explore.gg
+            build/polar-explore-manual.gg
+            build/polar-explore-manual.sym
 
       - uses: actions/upload-artifact@v4
         with:
