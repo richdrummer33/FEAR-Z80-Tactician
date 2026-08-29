@@ -158,7 +158,7 @@ static void init_tiles(void){
 }
 
 void main(void){
-    DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);
+    DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);init_tiles();
 
     tsp_reset(&g_state);
