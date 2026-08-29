@@ -14,16 +14,16 @@ jobs:
       - name: Validate generated Polar arrays
         run: |
           python3 tools/validate_polar_generated_arrays.py
-      - name: Endpoint depth field analysis
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 experiments/adaptive_polar_field/endpoint_depth_field_poc.py | tee endpoint-depth-poc.txt
       - name: Wall inverse-depth field analysis
         shell: bash
         run: |
           set -euo pipefail
           python3 experiments/adaptive_polar_field/wall_depth_field_poc.py | tee wall-depth-poc.txt
+      - name: Endpoint depth field analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 experiments/adaptive_polar_field/endpoint_depth_field_poc.py | tee endpoint-depth-poc.txt
       - uses: actions/upload-artifact@v4
         with:
           name: polar-endpoint-depth-poc
