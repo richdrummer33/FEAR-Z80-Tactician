@@ -32,11 +32,31 @@ TSPState g_state;
 uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_patch_index;
 
+#if TSPF_PROFILE_HOOKS
+volatile uint8_t g_ts_prof_phase;
+volatile uint16_t g_ts_loop_count;
+volatile uint16_t g_ts_dirty_words;
+#define PATCH_PHASE(v) (g_ts_prof_phase=(v))
+#define PATCH_LOOP_INC() (++g_ts_loop_count)
+#else
+#define PATCH_PHASE(v) ((void)0)
+#define PATCH_LOOP_INC() ((void)0)
+#endif
+
 static uint8_t g_tile[32u];
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
 void tsp_polar_demo_patch_apply(uint16_t patch);
+
+static uint16_t upload_dirty_map(void){
+    tsp_polar_nt_upload_dirty();
+#if TSPF_PROFILE_HOOKS
+    return g_ts_dirty_words;
+#else
+    return 0u;
+#endif
+}
 
 static uint8_t shade_color(uint8_t shade){return shade==0u?C_FAR:(shade==1u?C_MID:C_NEAR);}
 static void clear_tile(void){uint8_t i;for(i=0;i<32u;++i)g_tile[i]=0u;}
@@ -95,18 +115,30 @@ void main(void){
      * visible table dirty, so the first upload remains simple and deterministic. */
     tsp_polar_demo_patch_apply(0u);
     g_patch_index=1u;
-    tsp_polar_nt_upload_dirty();
+    (void)upload_dirty_map();
 
+#if TSPF_PROFILE_HOOKS
+    g_ts_prof_phase=0u;g_ts_loop_count=0u;g_ts_dirty_words=0u;
+#endif
     DISPLAY_ON;
     for(;;){
+        PATCH_PHASE(1u);
         if(g_patch_index<POLAR_DEMO_PATCH_COUNT){
             /* Scripted proof only: real runtime state/event lookup comes after
              * the patch executor itself is measured and proven exact. */
             tsp_step(&g_state,0u);
+            PATCH_PHASE(2u);
             tsp_polar_demo_patch_apply(g_patch_index);
             ++g_patch_index;
-        }
-        vsync();
-        tsp_polar_nt_upload_dirty();
+        }else PATCH_PHASE(2u);
+
+        PATCH_PHASE(3u);vsync();
+        PATCH_PHASE(4u);
+#if TSPF_PROFILE_HOOKS
+        g_ts_dirty_words=upload_dirty_map();
+#else
+        (void)upload_dirty_map();
+#endif
+        PATCH_PHASE(5u);PATCH_LOOP_INC();
     }
 }
