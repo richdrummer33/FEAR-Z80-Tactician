@@ -106,6 +106,12 @@ static void init_tiles(void){
                 emit_edge(s,o,m);
 }
 
+static void init_baked_base_tiles(void){
+    emit_solid(TSP_TILE_CEILING,C_OUT);
+    emit_solid(TSP_TILE_FLOOR,C_FLOOR);
+    emit_horizon();
+}
+
 static uint8_t strafe_input(uint8_t pad){
     uint8_t input=0u;
     if(pad&J_B)input|=TSP_INPUT_STRAFE_LEFT;
@@ -142,7 +148,7 @@ void main(void){
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);
-    init_tiles();
+    init_baked_base_tiles();
 
     tsp_reset(&g_state);
     polar_explore_cursor_reset(&g_explore);
