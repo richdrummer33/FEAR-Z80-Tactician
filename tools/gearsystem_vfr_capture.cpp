@@ -226,6 +226,7 @@ int main(int argc,char **argv) {
         const Entry& e=entries[i];
         double dur=e.repeats/fps;
         concat<<"file '"<<e.file<<"'\n";
+        concat<<std::setprecision(12)<<"option framerate "<<fps<<"\n";
         concat<<std::setprecision(12)<<"duration "<<dur<<"\n";
         csv<<i<<","<<e.repeats<<","<<std::fixed<<std::setprecision(9)<<t<<","<<dur
            <<","<<e.file<<","<<std::hex<<std::uppercase<<e.hash<<std::dec<<"\n";
@@ -233,6 +234,7 @@ int main(int argc,char **argv) {
     }
     /* concat demuxer needs the final image repeated so its duration is honored. */
     concat<<"file '"<<entries.back().file<<"'\n";
+    concat<<std::setprecision(12)<<"option framerate "<<fps<<"\n";
 
     std::cout<<std::fixed<<std::setprecision(6)
         <<"capture vblank_fps="<<fps
