@@ -9,7 +9,7 @@ on:
 jobs:
   exact-transition-bake:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +27,112 @@ jobs:
           sha256sum build/polar-transitions-v1.ptp | tee build/polar-transition-sha256.txt
           ls -lh build/polar-transitions-v1.ptp
 
+      - name: Generate exact scripted-demo patch banks
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-demo-patch-gen | tee build/polar-demo-patch-gen.txt
+          cat build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+          wc -c build/generated/polar_demo_patch/polar_demo_reference_maps.bin
+          ls -lh build/generated/polar_demo_patch/polar_demo_patch_bank*.c
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build exact Polar control ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/transition-proof
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o                 build/tilesector_polar_renderer_gg.o build/tilesector_polar_materialize_gg.o                 build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o                 build/tilesector_polar_depthplane_gg.o                 build/tilesector_polar_ntstate_gg.o                 build/tilesector_polar_ntupload_raw_gg.o build/tilesector_polar_ntupload_profiled_gg.o                 build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk"             POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 POLAR_ROM_BANKS=8             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u"             gg-tilesector-polar
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-tilesector-polar.$ext" ] || cp "build/gg-tilesector-polar.$ext" "build/transition-proof/polar-exact-control.$ext"
+          done
+          wc -c build/transition-proof/polar-exact-control.gg
+
+      - name: Build profiled patch-player proof ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o                 build/tilesector_polar_patch_ntstate_gg.o                 build/tilesector_polar_patch_ntupload_raw_gg.o build/tilesector_polar_patch_ntupload_profiled_gg.o                 build/polar_demo_patch_dispatch_gg.o build/polar_demo_patch_bank*_gg.o                 build/gg-polar-patch-demo.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=1 gg-polar-patch-demo
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/transition-proof/patch-profiled.$ext"
+          done
+          wc -c build/transition-proof/patch-profiled.gg
+
+      - name: Build raw patch-player proof ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o                 build/tilesector_polar_patch_ntstate_gg.o                 build/tilesector_polar_patch_ntupload_raw_gg.o build/tilesector_polar_patch_ntupload_profiled_gg.o                 build/polar_demo_patch_dispatch_gg.o build/polar_demo_patch_bank*_gg.o                 build/gg-polar-patch-demo.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 gg-polar-patch-demo
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/transition-proof/patch-raw.$ext"
+          done
+          wc -c build/transition-proof/patch-raw.gg
+
+      - name: Build Gearsystem profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Profile actual Z80 patch executor
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/tilesector_profile_runner             build/transition-proof/patch-profiled.gg             build/transition-proof/patch-profiled.sym             120 8 demo             build/transition-proof/patch-profiled-map.bin             build/transition-proof/patch-profiled-state.bin             | tee build/transition-proof/patch-profiled-detail.txt
+
+      - name: Exact runtime A/B against full renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/polar_raw_profile_runner             build/transition-proof/polar-exact-control.gg             build/transition-proof/polar-exact-control.sym             120 8 build/transition-proof/control-cadence.csv             build/transition-proof/control-map.bin             | tee build/transition-proof/control-cadence.txt
+
+          ./build/polar_raw_profile_runner             build/transition-proof/patch-raw.gg             build/transition-proof/patch-raw.sym             120 8 build/transition-proof/patch-cadence.csv             build/transition-proof/patch-map.bin             | tee build/transition-proof/patch-cadence.txt
+
+          python3 tools/measure_map_divergence.py             build/transition-proof/control-map.bin             build/transition-proof/patch-map.bin             --csv build/transition-proof/control-vs-patch-divergence.csv             | tee build/transition-proof/control-vs-patch-divergence.txt
+
+          python3 - <<'PY' | tee build/transition-proof/perf-summary.txt
+          from pathlib import Path
+          import re
+
+          def mean_t(path):
+              t=Path(path).read_text()
+              m=re.search(r"update T\s+mean=\s*([0-9.]+)",t)
+              if not m: raise SystemExit(f"no update mean in {path}")
+              return float(m.group(1))
+
+          def phase_t(path,name):
+              t=Path(path).read_text()
+              m=re.search(rf"{re.escape(name)}\s+avg=\s*([0-9.]+) T",t)
+              if not m: raise SystemExit(f"no {name} in {path}")
+              return float(m.group(1))
+
+          ctl=mean_t("build/transition-proof/control-cadence.txt")
+          raw=mean_t("build/transition-proof/patch-cadence.txt")
+          patch=phase_t("build/transition-proof/patch-profiled-detail.txt","render/build")
+          upload=phase_t("build/transition-proof/patch-profiled-detail.txt","VRAM-upload")
+          motion=phase_t("build/transition-proof/patch-profiled-detail.txt","input+motion")
+          print(f"PATCH_PROOF raw whole-loop control={ctl:.1f} T patch={raw:.1f} T delta={raw-ctl:+.1f} T ({(raw/ctl-1)*100:+.2f}%)")
+          print(f"PATCH_PROOF profiled phase patch-apply={patch:.1f} T input+motion={motion:.1f} T upload={upload:.1f} T")
+          print(f"PATCH_PROOF profiled non-vsync subtotal={patch+motion+upload:.1f} T")
+          PY
+
+          if ! grep -Eq 'total differing words[^0-9]*0|total_diff_words[^0-9]*0|differing[^0-9]*0'               build/transition-proof/control-vs-patch-divergence.txt; then
+            echo "Divergence tool output did not prove zero; inspecting exact byte equality instead."
+          fi
+          cmp build/transition-proof/control-map.bin build/transition-proof/patch-map.bin
+
       - uses: actions/upload-artifact@v4
         with:
           name: polar-exact-transition-bake
@@ -34,4 +140,8 @@ jobs:
             build/polar-transition-report.txt
             build/polar-transition-sha256.txt
             build/polar-transitions-v1.ptp
+            build/polar-demo-patch-gen.txt
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin
+            build/transition-proof/
           retention-days: 30
