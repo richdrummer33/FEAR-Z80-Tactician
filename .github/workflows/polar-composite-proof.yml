@@ -39,8 +39,10 @@ jobs:
           set -euo pipefail
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 gg-polar-patch-demo
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=64 gg-polar-manual-explore
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=0 POLAR_ROM_BANKS=32 gg-tilesector-polar
           cp build/gg-polar-patch-demo.gg build/GG-Polar-Baked-Edge-Composite.gg
           cp build/gg-polar-manual-explore.gg build/GG-Polar-Baked-Edge-Composite-Manual.gg
+          cp build/gg-tilesector-polar.gg build/GG-Polar-Live-3800.gg
           sha256sum build/GG-Polar-Baked-Edge-Composite*.gg | tee build/composite-sha256.txt
           wc -c build/GG-Polar-Baked-Edge-Composite*.gg
 
@@ -74,6 +76,8 @@ jobs:
           done
           echo "=== manual takeover: hold RIGHT from boot ==="
           LIBRETRO_JOYPAD_MASK=0x80 ./build/libretro_runner "$CORE" build/GG-Polar-Baked-Edge-Composite-Manual.gg 180 build/composite-shots/manual_right_180.ppm
+          echo "=== production live Polar 0x3800 smoke ==="
+          ./build/libretro_runner "$CORE" build/GG-Polar-Live-3800.gg 180 build/composite-shots/live_3800_180.ppm
 
       - name: Pixel-compare host oracle and GG output
         shell: bash
@@ -87,6 +91,7 @@ jobs:
           path: |
             build/GG-Polar-Baked-Edge-Composite.gg
             build/GG-Polar-Baked-Edge-Composite-Manual.gg
+            build/GG-Polar-Live-3800.gg
             build/composite-gen.txt
             build/composite-sha256.txt
             build/composite-shots/*.ppm
