@@ -29,6 +29,7 @@ POLAR_TEST_BIN := build/test_tilesector_polar
 POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
 POLAR_LOCAL_PROJECTION ?= 1
+POLAR_SCREEN_DEPTH_PLANE ?= 1
 POLAR_PROJ_THRESHOLD ?= 4
 POLAR_PROJ_ROWS_PER_BANK ?= 4
 POLAR_PROJ_BANK_COUNT ?= 6
@@ -36,13 +37,15 @@ POLAR_ROM_BANKS ?= 8
 POLAR_PROJ_GEN_DIR := build/generated/polar_projection
 POLAR_PROJ_STAMP := $(POLAR_PROJ_GEN_DIR)/.stamp
 POLAR_PROJ_META := $(POLAR_PROJ_GEN_DIR)/tilesector_polar_projection_meta.h
+POLAR_DEPTHPLANE_GEN_DIR := build/generated/polar_depthplane
+POLAR_DEPTHPLANE_HDR := $(POLAR_DEPTHPLANE_GEN_DIR)/tilesector_polar_depthplane_lut.h
 POLAR_PROJ_BANKS_6 := 0 1 2 3 4 5
 POLAR_PROJ_BANKS_24 := 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
 POLAR_PROJ_BANKS := $(POLAR_PROJ_BANKS_$(POLAR_PROJ_BANK_COUNT))
 POLAR_PROJ_SRCS := $(addprefix $(POLAR_PROJ_GEN_DIR)/tilesector_polar_proj_bank,$(addsuffix .c,$(POLAR_PROJ_BANKS)))
 POLAR_PROJ_OBJS := $(addprefix build/tilesector_polar_proj_bank,$(addsuffix .o,$(POLAR_PROJ_BANKS)))
-POLAR_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo$(POLAR_ROM_BANKS) -I$(POLAR_PROJ_GEN_DIR)
-POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS) -DTSPF_LOCAL_PROJECTION=$(POLAR_LOCAL_PROJECTION)
+POLAR_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo$(POLAR_ROM_BANKS) -I$(POLAR_PROJ_GEN_DIR) -I$(POLAR_DEPTHPLANE_GEN_DIR)
+POLAR_CFLAGS = $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=$(POLAR_PROFILE_HOOKS) -DTSPF_LOCAL_PROJECTION=$(POLAR_LOCAL_PROJECTION) -DTSPF_SCREEN_DEPTH_PLANE=$(POLAR_SCREEN_DEPTH_PLANE)
 ifeq ($(POLAR_PROFILE_HOOKS),0)
 POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_raw_gg.o
 else
@@ -141,6 +144,10 @@ $(POLAR_PROJ_STAMP): experiments/adaptive_polar_field/local_projection_field_poc
 $(POLAR_PROJ_META) $(POLAR_PROJ_SRCS): $(POLAR_PROJ_STAMP)
 	@:
 
+$(POLAR_DEPTHPLANE_HDR): experiments/adaptive_polar_field/screen_depth_plane_lut.py src/generated/tilesector_polar_data_part00.inc src/generated/tilesector_polar_data_part01.inc src/generated/tilesector_polar_data_part02.inc src/generated/tilesector_polar_data_part03.inc src/generated/tilesector_polar_data_part04.inc | build
+	mkdir -p $(POLAR_DEPTHPLANE_GEN_DIR)
+	python3 experiments/adaptive_polar_field/screen_depth_plane_lut.py --emit $@
+
 build/tilesector_polar_proj_bank%.o: $(POLAR_PROJ_GEN_DIR)/tilesector_polar_proj_bank%.c $(POLAR_PROJ_META) | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
@@ -150,7 +157,7 @@ build/main_tilesector_polar_gg.o: src/main_tilesector_polar_gg.c | build
 build/tilesector_polar_motion_gg.o: src/tilesector_polar_motion.c | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
-build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c $(POLAR_PROJ_META) | build
+build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c $(POLAR_PROJ_META) $(POLAR_DEPTHPLANE_HDR) | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
