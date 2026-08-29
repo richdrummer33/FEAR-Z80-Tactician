@@ -1,0 +1,37 @@
+name: Polar exact transition patch bake
+
+on:
+  push:
+    branches:
+      - feature/gg-polar-transition-patches
+  workflow_dispatch:
+
+jobs:
+  exact-transition-bake:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Existing Polar host oracle
+        run: make polar-test
+
+      - name: Build transition baker
+        run: make polar-transition-bake
+
+      - name: Exhaustive yaw / 4-unit spatial transition bake
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/polar_transition_bake --appearance 0 --yaw-step 1 --emit build/polar-transitions-v1.ptp | tee build/polar-transition-report.txt
+          sha256sum build/polar-transitions-v1.ptp | tee build/polar-transition-sha256.txt
+          ls -lh build/polar-transitions-v1.ptp
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-exact-transition-bake
+          path: |
+            build/polar-transition-report.txt
+            build/polar-transition-sha256.txt
+            build/polar-transitions-v1.ptp
+          retention-days: 30
