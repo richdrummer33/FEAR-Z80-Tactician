@@ -63,6 +63,11 @@ Important consequences and rules:
 
 Keep a separate back-pocket presentation idea: when true static geometry quantizes to the same name-table result across small movement, cheap visual activity may still communicate motion without waking the full 3D renderer. Candidates include tiny hardware-scroll adjustments, velocity-dependent floor/edge tile cycling, palette/light shimmer, or other deliberately non-geometric temporal cues. These are **presentation experiments after the raw transition renderer is validated** and must not contaminate geometry-performance benchmarks.
 
+### VDP / VBlank-aware patch scheduling — deliberately later
+
+Once the exact patch representation is stable and its cost can be cheaply predicted from baked metadata such as changed-word count and dirty row spans, investigate scheduling work around the Game Gear's display cadence. Possible experiments include front-loading patch preparation when a cheap update leaves CPU time available, deferring non-urgent work until a safe later display interval, and choosing when to perform the actual row bursts so the Z80/VDP pipeline wastes as little time as practical. Keep this as a **late optimization only**: respect proven VDP access/VBlank constraints, do not treat hidden/off-screen rows as free bandwidth, and do not complicate the transition architecture until its raw CPU/ROM behaviour is measured.
+
+
 ## Doom-style Game Gear 2.5D renderer — level-design/world-generation pillar
 
 **IMPORTANT REMINDER RULE:** Whenever discussing level layout, room purpose, atmosphere, traversal, encounter-space design, or other actual game/level design for the Game Gear Doom-style 2.5D/3D renderer, surface this concept near the top of the response before getting lost in ordinary room-by-room design: we have explicitly discussed making the world *effectively infinite and traversable* by assembling deterministic procedural geometry blocks. This is not merely a rendering/storage optimization; it is a core creative level-design possibility worth actively considering.
