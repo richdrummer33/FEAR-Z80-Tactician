@@ -32,12 +32,13 @@ POLAR_PATCH_ROM := build/gg-polar-patch-demo.gg
 POLAR_PATCH_GEN_DIR := build/generated/polar_demo_patch
 POLAR_PATCH_STAMP := $(POLAR_PATCH_GEN_DIR)/.stamp
 POLAR_PATCH_META := $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_meta.h
-POLAR_PATCH_BANKS := 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+POLAR_PATCH_BANKS := 0 1 2 3 4 5 6 7
 POLAR_PATCH_SRCS := $(addprefix $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_bank,$(addsuffix .c,$(POLAR_PATCH_BANKS)))
 POLAR_PATCH_OBJS := $(addprefix build/polar_demo_patch_bank,$(addsuffix _gg.o,$(POLAR_PATCH_BANKS)))
 POLAR_PATCH_DISPATCH_SRC := $(POLAR_PATCH_GEN_DIR)/polar_demo_patch_dispatch.c
 POLAR_PATCH_DISPATCH_OBJ := build/polar_demo_patch_dispatch_gg.o
-POLAR_PATCH_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo32 -I$(POLAR_PATCH_GEN_DIR)
+POLAR_PATCH_ROM_BANKS ?= 8
+POLAR_PATCH_GGFLAGS = $(filter-out -Wm-yo4,$(GGFLAGS)) -Wm-yo$(POLAR_PATCH_ROM_BANKS) -I$(POLAR_PATCH_GEN_DIR)
 POLAR_PATCH_PROFILE_HOOKS ?= 0
 ifeq ($(POLAR_PATCH_PROFILE_HOOKS),0)
 POLAR_PATCH_NTUPLOAD_OBJ := build/tilesector_polar_patch_ntupload_raw_gg.o
