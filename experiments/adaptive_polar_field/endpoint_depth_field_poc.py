@@ -86,15 +86,19 @@ def endpoint_range_q4(d,v,xq,yq):
 
 
 def inv_range_target(d,e,v,xq,yq):
-    # Same reciprocal scale as k_tspf_invz, but radial rather than wall-plane.
-    return inv_for_dq4(e,int(round(endpoint_range_q4(d,v,xq,yq))))
+    # Same 2560/world-distance reciprocal scale, but radial distance must NOT
+    # inherit inv_for_dq4()'s far clamp. The production path clamps the
+    # perpendicular wall distance before multiplying by ray/normal alignment;
+    # clamping radial distance first is a different operation off-axis.
+    r=endpoint_range_q4(d,v,xq,yq)
+    if r<=0.0:return 255
+    return max(0,min(255,int(round(40960.0/r))))
 
 
 def range_continuous(d,v,xq,yq):
     r=endpoint_range_q4(d,v,xq,yq)
-    if r<=NEAR_Q4:return 255.0
-    if r>=FAR_Q4:return 20.0
-    return 40960.0/r  # 2560/world-distance, same scale as invz table.
+    if r<=0.0:return 255.0
+    return min(255.0,40960.0/r)  # 2560/world-distance, no radial far clamp.
 
 
 def fit_range_record(d,e,v,gx,gy,x0,x1,y0,y1):
