@@ -25,6 +25,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_EDGE_CHEMTRAIL_FIX
 #define TSPF_EDGE_CHEMTRAIL_FIX 0
 #endif
+#ifndef TSPF_FORCE_C_MATERIALIZER
+#define TSPF_FORCE_C_MATERIALIZER 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -498,7 +501,7 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
     else
 #endif
     {iq=(int16_t)r->inv0<<6;step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);step=shr_signed(step,2);}
-#ifdef __SDCC
+#if defined(__SDCC) && !TSPF_FORCE_C_MATERIALIZER
     /* The assembly column materializer now branches on profile for FULL
      * symmetry. Keep the run profile live for BOTH geometry-only and shaded
      * fast paths; previously only mode 0 initialized it because nothing else
@@ -530,7 +533,7 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
         }else if(profile==TSP_PROFILE_RISER){
             tl=(int16_t)(TSPF_HORIZON+hl-(hl>>2));tr=(int16_t)(TSPF_HORIZON+hr-(hr>>2));
         }
-#ifdef __SDCC
+#if defined(__SDCC) && !TSPF_FORCE_C_MATERIALIZER
         if(g_tspf_appearance_mode<2u){
             /* Fast-path geometry/shade materialization. The baked polar
              * renderer supplies final projected endpoints; this kernel only
@@ -559,7 +562,7 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
 
 static void insert_run(uint8_t idx,uint8_t *count){
     uint8_t i=*count;if(i>=TSPF_MAX_ACTIVE)return;
-#ifdef __SDCC
+#if defined(__SDCC) && !TSPF_FORCE_C_MATERIALIZER
     /* Geometry/shade fast path writes complete name-table cells. Traverse
      * near->far so the first owner of a cell is already the final answer;
      * the assembly coverage mask then rejects hidden farther writes.
