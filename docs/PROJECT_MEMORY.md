@@ -1,5 +1,13 @@
 # Project memory / durable conventions
 
+> # IMPORTANT: PROJECT MEMORY IS NOT THE SCRATCHPAD
+>
+> Use the project's transient scratchpad / working notes for on-the-fly measurements, hypotheses, partial experiments, profiler dumps, and things that may be wrong tomorrow.
+>
+> **This file is the promotion layer.** Put ideas here once they have become durable decisions, validated lessons, explicitly approved next directions, or high-value concepts that future work must not forget. Consolidate rather than dumping every intermediate measurement here.
+>
+> The exact scratchpad filename/path is intentionally not hard-coded here unless independently confirmed; do not invent one.
+
 Current checkpoint: **v0.5.0 — Stage 5, banked persistent individual GOAP**.
 
 Durable decisions for future work:
@@ -14,6 +22,46 @@ Durable decisions for future work:
 8. Versioning follows `vMAJOR.MINOR.PATCH`; pre-1.0 capability stages map to the minor number. Current Stage 5 is `v0.5.0`; patch releases are bug/perf/build-only changes.
 9. Deterministic reference seeds: seed 2 exercises max 4v7 / eleven actors; seed 42 is the secondary cross-check.
 10. Current next direction: enrich autonomous individual combat/GOAP semantics while retaining the compact room-graph foundation; task bindings and shallow squad HTN come afterward.
+
+
+## Doom-style Game Gear 2.5D renderer — next major architecture
+
+### Compiled state-transition / name-table patch renderer
+
+**NEXT BIG STEP — APPROVED DIRECTION:** Move the static-world renderer toward a host-compiled transition system. The Z80 should increasingly stop answering "what changed?" and instead be told the already-computed answer by ROM.
+
+Core model:
+
+```text
+HOST / PC BAKE:
+camera/view state A -> exact final GG name table A
+camera/view state B -> exact final GG name table B
+A vs B -> locate changed words -> compress/deduplicate patch
+
+ROM:
+state A + crossed transition -> state B + patch ID
+no visible change -> zero/empty patch
+
+Z80:
+update/identify state -> fetch transition -> if patch non-empty, apply exact name-table patch -> upload known dirty row bursts
+```
+
+Important consequences and rules:
+
+- This is **not corner-specific**. Convex/reflex occluding corners, portal edges, depth changes, camera translation, rotation, and screen quantization can all *cause* transitions, but the runtime representation should be the general state/transition graph and its output deltas.
+- Bake three layers conceptually: **(1) world visibility events**, **(2) quantized display events**, **(3) exact transition output patches**.
+- The host should do the expensive comparison. If two adjacent/reachable baked states produce the same final 20x18 name table, runtime should not XOR/scan/re-render to rediscover that fact. Store an empty transition or equivalent "same answer" result.
+- If a transition changes output, precompute the exact affected name-table words and, where useful, row spans/min-max extents. The runtime should preferably replay the patch rather than project, sort, resolve ownership, walk spans, rasterize, materialize, then discover dirty cells.
+- Preserve the exact host renderer as the oracle. A compiled patch transition is accepted only if replay reproduces the exact expected name table for the tested state transition.
+- Measure state entropy before committing to a final ROM representation: number of unique display states, outgoing transitions/state, mean and 95th-percentile changed words, zero-patch rate, patch-dictionary reuse, and total packed ROM size.
+- Near geometry may create more frequent transitions, but that should mean **more frequent cheap patches**, not a return to the full general renderer.
+- Dynamic actors/projectiles/effects can remain a separate sprite/overlay/exception layer rather than multiplying the static-world state graph.
+- After this architecture is measured and stable, the surviving tiny transition/patch executor is a strong candidate for hand-written/generated Z80 assembly. Do not first rewrite the present general renderer wholesale in assembly.
+- Keep mapper changes coarse: organize transition/state data into phase/cell/region packets where practical rather than bank-switching per primitive.
+
+### Perceptual motion cheats — deliberately later
+
+Keep a separate back-pocket presentation idea: when true static geometry quantizes to the same name-table result across small movement, cheap visual activity may still communicate motion without waking the full 3D renderer. Candidates include tiny hardware-scroll adjustments, velocity-dependent floor/edge tile cycling, palette/light shimmer, or other deliberately non-geometric temporal cues. These are **presentation experiments after the raw transition renderer is validated** and must not contaminate geometry-performance benchmarks.
 
 ## Doom-style Game Gear 2.5D renderer — level-design/world-generation pillar
 
