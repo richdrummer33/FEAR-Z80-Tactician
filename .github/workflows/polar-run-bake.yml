@@ -7,18 +7,29 @@ on:
   workflow_dispatch:
 
 jobs:
-  poc:
+  wall-depth:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: Validate generated Polar arrays
-        run: |
-          python3 tools/validate_polar_generated_arrays.py
+        run: python3 tools/validate_polar_generated_arrays.py
       - name: Wall inverse-depth field analysis
         shell: bash
         run: |
           set -euo pipefail
           python3 experiments/adaptive_polar_field/wall_depth_field_poc.py | tee wall-depth-poc.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-wall-depth-poc
+          path: wall-depth-poc.txt
+          retention-days: 30
+
+  endpoint-depth:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate generated Polar arrays
+        run: python3 tools/validate_polar_generated_arrays.py
       - name: Endpoint depth field analysis
         shell: bash
         run: |
