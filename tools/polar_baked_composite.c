@@ -118,13 +118,9 @@ static uint8_t ao_pixel(uint8_t color,uint8_t strength,uint8_t sx,uint8_t sy){
     return color;
 }
 
-static uint8_t sem_at(const uint8_t src[TSP_MAP_CELLS][PIXELS],int x,int y){
+static uint8_t sem_at(uint8_t src[TSP_MAP_CELLS][PIXELS],int x,int y){
     uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
     return src[cell][(uint16_t)(y&7)*8u+(uint16_t)(x&7)];
-}
-static void sem_set(int x,int y,uint8_t v){
-    uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
-    g_cells[cell][(uint16_t)(y&7)*8u+(uint16_t)(x&7)]=v;
 }
 static int shadow_blocked(int lx,int ly,int x,int y){
     int dx=x-lx,dy=y-ly,steps=abs(dx)>abs(dy)?abs(dx):abs(dy),i;
