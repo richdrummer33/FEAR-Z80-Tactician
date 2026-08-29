@@ -6,11 +6,13 @@
  * explicit 32-byte tile loads for the bake generator to schedule in VBlank.
  */
 #include <stdint.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "polar_baked_composite.h"
+#include "polar_baked_lighting_data.h"
 
 /* Polar explicitly moves the GG pattern name table to 0x3800.
  * That restores Sega's standard maximum background-pattern region:
@@ -46,6 +48,11 @@ static const int8_t k_edge_lut[8][8] = {
 };
 
 static uint8_t g_cells[TSP_MAP_CELLS][PIXELS];
+static uint8_t g_light_src[TSP_MAP_CELLS][PIXELS];
+static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
+static int16_t g_camera_x_q4;
+static int16_t g_camera_y_q4;
+static uint8_t g_camera_yaw;
 
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
 static uint64_t g_cache_hash[HW_TILES];
@@ -93,6 +100,91 @@ static void ensure_init(void){
 }
 
 static uint8_t shade_sem(uint8_t shade){return (uint8_t)(SEM_FAR+(shade>2u?2u:shade));}
+
+void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
+    g_lighting_stage=stage>TSP_HOST_LIGHT_POINT?TSP_HOST_LIGHT_POINT:stage;
+    if(camera){
+        g_camera_x_q4=camera->x_q4;
+        g_camera_y_q4=camera->y_q4;
+        g_camera_yaw=camera->yaw;
+    }
+}
+
+static uint8_t ao_pixel(uint8_t color,uint8_t strength,uint8_t sx,uint8_t sy){
+    if(!strength||color<=SEM_FAR)return color;
+    /* Stable ordered coverage rather than a temporal shimmer.  Stronger
+     * authored corners darken more of the sub-tile footprint. */
+    if(strength>=2u||(((uint8_t)(sx+sy)&1u)==0u))return (uint8_t)(color-1u);
+    return color;
+}
+
+static uint8_t sem_at(const uint8_t src[TSP_MAP_CELLS][PIXELS],int x,int y){
+    uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
+    return src[cell][(uint16_t)(y&7)*8u+(uint16_t)(x&7)];
+}
+static void sem_set(int x,int y,uint8_t v){
+    uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
+    g_cells[cell][(uint16_t)(y&7)*8u+(uint16_t)(x&7)]=v;
+}
+static int shadow_blocked(int lx,int ly,int x,int y){
+    int dx=x-lx,dy=y-ly,steps=abs(dx)>abs(dy)?abs(dx):abs(dy),i;
+    if(steps<7)return 0;
+    for(i=4;i<steps-2;++i){
+        int sx=lx+(dx*i)/steps,sy=ly+(dy*i)/steps;
+        uint8_t v;
+        if(sx<0||sx>=160||sy<0||sy>=144)continue;
+        v=sem_at(g_light_src,sx,sy);
+        /* The horizon rule is a presentation separator, not physical cover. */
+        if(v==SEM_BLACK&&sy!=72)return 1;
+    }
+    return 0;
+}
+static int clamp_i(int v,int lo,int hi){return v<lo?lo:(v>hi?hi:v);}
+static void apply_point_light(void){
+    const TSPHostStaticLight *light=&k_tsp_host_static_lights[0];
+    const double pi=3.14159265358979323846;
+    double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
+    double lxw=(double)light->x_q4/16.0,lyw=(double)light->y_q4/16.0;
+    double dxw=lxw-cx,dyw=lyw-cy,dist=sqrt(dxw*dxw+dyw*dyw);
+    double bearing=atan2(dyw,dxw),yaw=(double)g_camera_yaw*(2.0*pi/256.0);
+    double rel=bearing-yaw;
+    int lx,ly,radius,r2,y,x;
+
+    while(rel>pi)rel-=2.0*pi;
+    while(rel<-pi)rel+=2.0*pi;
+    if(rel<-1.10||rel>1.10||dist<1.0)return;
+
+    lx=(int)(80.0+tan(rel)*80.0);
+    lx=clamp_i(lx,0,159);
+    ly=72-(int)(((double)light->height_q4/16.0)*80.0/dist);
+    ly=clamp_i(ly,46,69);
+    radius=clamp_i((int)light->radius_world-(int)(dist/3.0),38,92);
+    r2=radius*radius;
+
+    memcpy(g_light_src,g_cells,sizeof(g_cells));
+    for(y=0;y<144;++y)for(x=0;x<160;++x){
+        int sdx=x-lx,sdy=y-ly,d2=sdx*sdx+sdy*sdy;
+        uint8_t v,blocked;
+        int strength;
+        if(d2>r2)continue;
+        v=sem_at(g_light_src,x,y);
+        if(v==SEM_BLACK||v==SEM_CEILING)continue;
+        strength=((r2-d2)*255)/r2;
+        blocked=(uint8_t)shadow_blocked(lx,ly,x,y);
+
+        if(blocked){
+            if(v>=SEM_MID){
+                if(strength>96||(((x+y)&1)==0))sem_set(x,y,SEM_FAR);
+            }
+            /* Floor is already the darkest material; leaving it untouched
+             * makes the surrounding lit floor act as the visible shadow. */
+        }else if(v==SEM_FLOOR){
+            if(strength>176||(strength>88&&(((x^y)&1)==0)))sem_set(x,y,SEM_FAR);
+        }else if(v>=SEM_FAR&&v<SEM_NEAR){
+            if(strength>72)sem_set(x,y,(uint8_t)(v+1u));
+        }
+    }
+}
 
 static void generic_unflipped_indices(uint16_t id,uint8_t out[PIXELS]){
     uint8_t x,y;
@@ -178,7 +270,8 @@ static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x){
 
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 int16_t tl,int16_t tr,int16_t bl,int16_t br,
-                                uint8_t shade,uint8_t border){
+                                uint8_t shade,uint8_t border,
+                                uint8_t ao_left,uint8_t ao_right){
     uint8_t sx,color=shade_sem(shade);
     uint16_t coarse_x=(uint16_t)col*8u;
     if(col>=TSP_COLS||clip_x0>clip_x1||clip_x1>159u)die("surface raster bounds invalid");
@@ -197,10 +290,22 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t py=(uint8_t)((uint16_t)y&7u);
             uint8_t px=(uint8_t)((uint16_t)sx&7u);
             uint8_t *dst=g_cells[(uint16_t)row*TSP_COLS+col];
-            uint8_t black=(uint8_t)(y==top||y==bot);
+            uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
-            dst[(uint16_t)py*8u+px]=black?SEM_BLACK:color;
+            if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
+                uint8_t strength=0u;
+                if(ao_left){
+                    uint8_t d=(uint8_t)(sx-clip_x0);
+                    if(d<=ao_left){uint8_t q=(uint8_t)(ao_left+1u-d);if(q>strength)strength=q;}
+                }
+                if(ao_right){
+                    uint8_t d=(uint8_t)(clip_x1-sx);
+                    if(d<=ao_right){uint8_t q=(uint8_t)(ao_right+1u-d);if(q>strength)strength=q;}
+                }
+                pixel=ao_pixel(pixel,strength,sx,(uint8_t)y);
+            }
+            dst[(uint16_t)py*8u+px]=black?SEM_BLACK:pixel;
         }
     }
 }
@@ -247,6 +352,8 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     uint8_t needed[HW_TILES];
     uint16_t req_count=0u,i;
     ensure_init();
+    if(g_lighting_stage>=TSP_HOST_LIGHT_POINT&&TSP_HOST_STATIC_LIGHT_COUNT)
+        apply_point_light();
     ++g_frame_no;
     memset(htab,0xff,sizeof(htab));
     memset(needed,0,sizeof(needed));
