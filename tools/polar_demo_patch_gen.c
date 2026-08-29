@@ -45,6 +45,14 @@ typedef struct TilePatch {
     uint8_t *bytes;
 } TilePatch;
 
+typedef struct TileJob {
+    uint16_t release;
+    uint16_t deadline;
+    uint16_t slot;
+    uint16_t assigned;
+    uint8_t bytes[TSP_HOST_TILE_BYTES];
+} TileJob;
+
 typedef struct Bank {
     uint16_t first;
     uint16_t count;
@@ -105,6 +113,90 @@ static void capture_tile_patch(TilePatch *tp){
         memcpy(tp->bytes+p,loads[i].bytes,TSP_HOST_TILE_BYTES);p+=TSP_HOST_TILE_BYTES;
     }
     if(p!=len)die("tile patch length mismatch");
+}
+
+static uint16_t tilepatch_loads(const TilePatch *tp){
+    return tp->bytes?(uint16_t)tp->bytes[0]|((uint16_t)tp->bytes[1]<<8):0u;
+}
+
+static uint32_t count_tile_jobs(const TilePatch *tp){
+    uint16_t i;uint32_t n=0u;
+    for(i=0u;i<PATCH_COUNT;++i)n+=tilepatch_loads(&tp[i]);
+    return n;
+}
+
+/* Move tile-pattern uploads into earlier VBlanks whenever their hardware slot
+ * is not referenced by the visible name table. This is the important second
+ * half of baked compositing: the PC resolves both WHAT a cell looks like and
+ * WHEN the 32-byte pattern can safely enter VRAM. */
+static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps){
+    uint32_t job_count=count_tile_jobs(tp),j=0u;
+    TileJob *jobs=(TileJob *)malloc((size_t)job_count*sizeof(TileJob));
+    int16_t last_use[512];
+    uint16_t t,i;
+    unsigned budget,chosen_budget=0u;
+    if(!jobs)die("out of memory scheduling tile patterns");
+    for(i=0u;i<512u;++i)last_use[i]=-1;
+
+    for(t=0u;t<PATCH_COUNT;++t){
+        const uint8_t *p=tp[t].bytes+2u;
+        uint16_t n=tilepatch_loads(&tp[t]),q;
+        for(q=0u;q<n;++q){
+            uint16_t slot=(uint16_t)p[0]|((uint16_t)p[1]<<8);p+=2u;
+            jobs[j].release=(uint16_t)(last_use[slot]+1);
+            jobs[j].deadline=t;jobs[j].slot=slot;jobs[j].assigned=0xffffu;
+            memcpy(jobs[j].bytes,p,TSP_HOST_TILE_BYTES);p+=TSP_HOST_TILE_BYTES;++j;
+        }
+        for(i=0u;i<TSP_MAP_CELLS;++i){
+            uint16_t slot=maps[(size_t)t*TSP_MAP_CELLS+i]&TSP_TILE_ID_MASK;
+            last_use[slot]=(int16_t)t;
+        }
+    }
+    if(j!=job_count)die("tile job count mismatch");
+
+    /* Find the smallest steady-state uploads/VBlank that satisfies every
+     * release/deadline interval. Frame zero runs while DISPLAY_OFF and may
+     * preload any currently-free hardware slots. */
+    for(budget=1u;budget<=48u&&!chosen_budget;++budget){
+        uint32_t done=0u;
+        for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
+        for(t=0u;t<PATCH_COUNT;++t){
+            unsigned cap=(t==0u)?509u:budget,k;
+            for(k=0u;k<cap;++k){
+                uint32_t best=UINT32_MAX,x;
+                uint16_t best_deadline=0xffffu;
+                for(x=0u;x<job_count;++x)if(jobs[x].assigned==0xffffu &&
+                    jobs[x].release<=t && jobs[x].deadline<best_deadline){
+                    best=x;best_deadline=jobs[x].deadline;
+                }
+                if(best==UINT32_MAX)break;
+                jobs[best].assigned=t;++done;
+            }
+            for(j=0u;j<job_count;++j)if(jobs[j].assigned==0xffffu&&jobs[j].deadline==t)
+                break;
+            if(j<job_count)break;
+        }
+        if(done==job_count)chosen_budget=budget;
+    }
+    if(!chosen_budget)die("could not schedule tile uploads within 48 tiles/VBlank");
+
+    for(t=0u;t<PATCH_COUNT;++t){free(tp[t].bytes);tp[t].bytes=0;tp[t].len=0;tp[t].loads=0;}
+    for(j=0u;j<job_count;++j)++tp[jobs[j].assigned].loads;
+    for(t=0u;t<PATCH_COUNT;++t){
+        size_t len=2u+(size_t)tp[t].loads*(2u+TSP_HOST_TILE_BYTES),p=2u;
+        uint16_t n=tp[t].loads;
+        tp[t].bytes=(uint8_t *)malloc(len?len:1u);
+        if(!tp[t].bytes)die("out of memory rebuilding scheduled tilepatch");
+        tp[t].len=(uint16_t)len;tp[t].bytes[0]=(uint8_t)n;tp[t].bytes[1]=(uint8_t)(n>>8);
+        for(j=0u;j<job_count;++j)if(jobs[j].assigned==t){
+            tp[t].bytes[p++]=(uint8_t)jobs[j].slot;
+            tp[t].bytes[p++]=(uint8_t)(jobs[j].slot>>8);
+            memcpy(tp[t].bytes+p,jobs[j].bytes,TSP_HOST_TILE_BYTES);p+=TSP_HOST_TILE_BYTES;
+        }
+        if(p!=len)die("scheduled tilepatch rebuild mismatch");
+    }
+    free(jobs);
+    return chosen_budget;
 }
 static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                           uint16_t *changed_out,uint8_t *runs_out){
@@ -336,16 +428,17 @@ int main(int argc,char **argv){
     Bank banks[MAX_BANKS],tilebanks[MAX_TILEPATCH_BANKS];
     TSPState s;
     uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],base[TSP_MAP_CELLS];
+    uint16_t *all_maps=(uint16_t *)malloc((size_t)PATCH_COUNT*TSP_MAP_CELLS*sizeof(uint16_t));
     FILE *refs;
     char refpath[512];
     uint64_t seq_hash=UINT64_C(1469598103934665603),total=0u;
     uint32_t zero=0u,changed_total=0u;
     uint16_t i;
-    unsigned bank_count=0u,tilebank_count=0u;
+    unsigned bank_count=0u,tilebank_count=0u,tile_vblank_budget=0u;
     PolarExploreCursor explore;
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
-    if(!tilepatches)die("out of memory allocating tilepatch table");
+    if(!tilepatches||!all_maps)die("out of memory allocating bake tables");
     dir=argv[1];
 
     tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
@@ -353,6 +446,7 @@ int main(int argc,char **argv){
     patches[0].len=(uint16_t)build_patch(base,cur,patches[0].bytes,
                                          &patches[0].changed,&patches[0].runs);
     verify(base,cur,&patches[0]);
+    memcpy(all_maps,cur,sizeof(cur));
     memcpy(prev,cur,sizeof(prev));
 
     path_join(refpath,sizeof(refpath),dir,"polar_demo_reference_maps.bin");
@@ -380,9 +474,12 @@ int main(int argc,char **argv){
             uint64_t h=fnv64(cur,sizeof(cur));
             seq_hash^=h;seq_hash*=UINT64_C(1099511628211);
         }
+        memcpy(all_maps+(size_t)i*TSP_MAP_CELLS,cur,sizeof(cur));
         memcpy(prev,cur,sizeof(prev));
     }
     fclose(refs);
+
+    tile_vblank_budget=schedule_tilepatches(tilepatches,all_maps);
 
     memset(banks,0,sizeof(banks));
     for(i=0u;i<PATCH_COUNT;){
@@ -435,12 +532,12 @@ int main(int argc,char **argv){
         printf("  bank%u first=%u count=%u stream=%" PRIu32 " bytes\n",
                i,banks[i].first,banks[i].count,banks[i].bytes);
     printf("generated runtime sources + exact %u-map exploration reference sequence; replay=PASS\n", PATCH_COUNT);
-    printf("baked composite cache: peak_unique/frame=%u peak_tile_loads/frame=%u total_tile_loads=%" PRIu32 " tilepatch_banks=%u\n",
+    printf("baked composite cache: peak_unique/frame=%u original_peak_loads=%u total_tile_loads=%" PRIu32 " scheduled_vblank_budget=%u tilepatch_banks=%u\n",
            (unsigned)tsp_host_composite_peak_unique_count(),
            (unsigned)tsp_host_composite_peak_load_count(),
-           tsp_host_composite_total_load_count(),tilebank_count);
+           tsp_host_composite_total_load_count(),tile_vblank_budget,tilebank_count);
     printf("final state=(%.2f,%.2f) yaw=%u\n",s.x_q4/16.0,s.y_q4/16.0,s.yaw);
     for(i=0u;i<PATCH_COUNT;++i)free(tilepatches[i].bytes);
-    free(tilepatches);
+    free(tilepatches);free(all_maps);
     return 0;
 }
