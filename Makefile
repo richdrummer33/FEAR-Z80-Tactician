@@ -49,7 +49,7 @@ else
 POLAR_PATCH_NTUPLOAD_OBJ := build/tilesector_polar_patch_ntupload_profiled_gg.o
 endif
 POLAR_PATCH_GG_OBJS := build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o build/tilesector_polar_patch_ntstate_gg.o $(POLAR_PATCH_NTUPLOAD_OBJ) $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
-POLAR_FULLUPLOAD_CFLAGS := $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=0 -DTSPF_LOCAL_PROJECTION=0 -DTSPF_SCREEN_DEPTH_PLANE=0
+POLAR_FULLUPLOAD_CFLAGS := $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=0 -DTSPF_LOCAL_PROJECTION=0 -DTSPF_SCREEN_DEPTH_PLANE=0 -DTSPF_EDGE_CHEMTRAIL_FIX=1
 POLAR_FULLUPLOAD_OBJS := build/main_tilesector_polar_fullupload_diag_gg.o build/tilesector_polar_fullupload_motion_gg.o build/tilesector_polar_fullupload_renderer_gg.o build/tilesector_polar_fullupload_ntstate_gg.o build/tilesector_polar_fullupload_materialize_gg.o build/tilesector_polar_ntupload_full_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
 POLAR_ORACLE_OBJS := build/main_tilesector_polar_oracle_diag_gg.o build/tilesector_polar_oracle_motion_gg.o build/tilesector_polar_oracle_renderer_gg.o build/tilesector_polar_oracle_ntstate_gg.o build/tilesector_polar_oracle_materialize_gg.o build/tilesector_polar_oracle_upload_gg.o build/tilesector_polar_oracle_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
 POLAR_DIRTY_AUDIT_OBJS := build/main_tilesector_polar_dirty_audit_gg.o build/tilesector_polar_dirty_audit_motion_gg.o build/tilesector_polar_dirty_audit_ntstate_gg.o build/tilesector_polar_dirty_audit_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
@@ -154,12 +154,12 @@ polar-test: build
 	./$(POLAR_TEST_BIN)
 
 $(POLAR_TRANSITION_BAKE_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_transition_bake.c | build
-	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_transition_bake.c -o $@
+	$(CC) $(CFLAGS) -DTSPF_EDGE_CHEMTRAIL_FIX=1 -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_transition_bake.c -o $@
 
 polar-transition-bake: $(POLAR_TRANSITION_BAKE_BIN)
 
 $(POLAR_DEMO_PATCH_GEN_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_demo_patch_gen.c | build
-	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_demo_patch_gen.c -o $@
+	$(CC) $(CFLAGS) -DTSPF_EDGE_CHEMTRAIL_FIX=1 -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_demo_patch_gen.c -o $@
 
 $(POLAR_PATCH_STAMP): $(POLAR_DEMO_PATCH_GEN_BIN) | build
 	mkdir -p $(POLAR_PATCH_GEN_DIR)
