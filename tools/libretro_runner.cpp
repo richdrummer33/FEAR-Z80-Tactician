@@ -93,7 +93,7 @@ template<typename T> static T sym(void *h, const char *name) {
 }
 
 int main(int argc,char **argv){
-    if(argc<4){fprintf(stderr,"usage: %s <core.so> <rom.gg> <frames> [frame.ppm] [ram_addr_hex] [ram_len]\n",argv[0]);return 2;}
+    if(argc<4){fprintf(stderr,"usage: %s <core.so> <rom.gg> <frames|max_frames> [frame.ppm] [ram_addr_hex] [ram_len] [wait_ram16_target]\n",argv[0]);return 2;}
     const char *core_path=argv[1], *rom_path=argv[2]; unsigned frames=(unsigned)strtoul(argv[3],nullptr,10);
     const char *ppm=(argc>=5)?argv[4]:nullptr;
     std::ifstream f(rom_path,std::ios::binary); if(!f){perror("rom");return 2;}
@@ -116,19 +116,29 @@ int main(int argc,char **argv){
     retro_game_info gi{}; gi.path=rom_path; gi.data=rom.data(); gi.size=rom.size();
     if(!retro_load_game(&gi)){fprintf(stderr,"retro_load_game failed\n");retro_deinit();return 4;}
     retro_system_av_info av{}; retro_get_system_av_info(&av);
-    for(unsigned i=0;i<frames;i++) retro_run();
-    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",frames,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
+    uint8_t *ram=(uint8_t*)retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+    size_t ram_size=retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+    unsigned ram_addr=(argc>=6)?(unsigned)strtoul(argv[5],nullptr,16):0u;
+    size_t ram_off=(ram&&ram_size)?((ram_addr>=0xC000u)?((size_t)(ram_addr-0xC000u)%ram_size):((size_t)ram_addr%ram_size)):0u;
+    bool wait_marker=(argc>=8);
+    unsigned wait_target=wait_marker?(unsigned)strtoul(argv[7],nullptr,0):0u;
+    unsigned ran=0u;
+    for(;ran<frames;++ran){
+        retro_run();
+        if(wait_marker){
+            if(!ram||ram_size<2u){fprintf(stderr,"system RAM unavailable\n");return 6;}
+            uint16_t v=(uint16_t)ram[ram_off]|((uint16_t)ram[(ram_off+1u)%ram_size]<<8);
+            if(v>=wait_target){++ran;break;}
+        }
+    }
+    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
     if(ppm){ if(!save_ppm(ppm)){fprintf(stderr,"failed to save ppm\n");return 5;} printf("saved=%s\n",ppm); }
     if(argc>=6){
-        unsigned addr=(unsigned)strtoul(argv[5],nullptr,16);
         unsigned len=(argc>=7)?(unsigned)strtoul(argv[6],nullptr,0):2u;
-        uint8_t *ram=(uint8_t*)retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
-        size_t ram_size=retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
         if(!ram||!ram_size){fprintf(stderr,"system RAM unavailable\n");return 6;}
-        size_t off=(addr>=0xC000u)?((size_t)(addr-0xC000u)%ram_size):((size_t)addr%ram_size);
         if(len>64u)len=64u;
-        printf("RAM addr=%04X off=%zu size=%zu data=",addr&0xffffu,off,ram_size);
-        for(unsigned i=0;i<len;++i)printf("%02X",ram[(off+i)%ram_size]);
+        printf("RAM addr=%04X off=%zu size=%zu data=",ram_addr&0xffffu,ram_off,ram_size);
+        for(unsigned i=0;i<len;++i)printf("%02X",ram[(ram_off+i)%ram_size]);
         printf("\n");
     }
     retro_unload_game(); retro_deinit(); dlclose(h); return 0;
