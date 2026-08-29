@@ -162,9 +162,8 @@ jobs:
 
           ls -lh build/polar-explore-native-vfr-lossless.mkv \
                  build/polar-explore-native-vfr.mp4 \
-                 build/polar-explore.gg
-            build/polar-explore-manual.gg
-            build/polar-explore-manual.sym
+                 build/polar-explore.gg \
+                 build/polar-explore-manual.gg
 
       - uses: actions/upload-artifact@v4
         with:
@@ -173,6 +172,8 @@ jobs:
             build/polar-explore-native-vfr-lossless.mkv
             build/polar-explore-native-vfr.mp4
             build/polar-explore.gg
+            build/polar-explore-manual.gg
+            build/polar-explore-manual.sym
             build/explore-patch-gen.txt
             build/explore-video-info.txt
             build/explore-sha256.txt
