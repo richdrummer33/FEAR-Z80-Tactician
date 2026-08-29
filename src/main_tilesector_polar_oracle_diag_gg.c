@@ -135,6 +135,7 @@ static void switch_to_dynamic_renderer(void){
 
 void main(void){
     DISPLAY_OFF;
+    __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);
