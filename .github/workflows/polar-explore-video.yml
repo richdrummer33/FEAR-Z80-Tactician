@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/gg-polar-explore-video
+      - feature/gg-polar-edge-chemtrail-fix
   workflow_dispatch:
 
 jobs:
