@@ -127,7 +127,7 @@ jobs:
           ffmpeg -y -hide_banner -loglevel warning \
             -framerate 60 -i build/explore-capture/expanded/frame_%05d.ppm \
             -filter_script:v build/explore-capture/select-filter.txt \
-            -vsync vfr -c:v libx264 -preset medium -crf 12 -pix_fmt yuv420p \
+            -vsync vfr -c:v libx264 -preset medium -crf 12 -pix_fmt yuv420p -bf 0 \
             -movflags +faststart \
             build/polar-explore-native-vfr.mp4
 
