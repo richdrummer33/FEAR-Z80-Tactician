@@ -37,8 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=32 gg-polar-patch-demo
-          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=32 gg-polar-manual-explore
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 gg-polar-patch-demo
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_ROM_BANKS=64 gg-polar-manual-explore
           cp build/gg-polar-patch-demo.gg build/GG-Polar-Baked-Edge-Composite.gg
           cp build/gg-polar-manual-explore.gg build/GG-Polar-Baked-Edge-Composite-Manual.gg
           sha256sum build/GG-Polar-Baked-Edge-Composite*.gg | tee build/composite-sha256.txt
