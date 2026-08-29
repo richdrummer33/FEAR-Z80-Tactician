@@ -9,15 +9,15 @@ ROOT="$(cd "$GEAR" && pwd)"
 PORT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$PORT/build/coredbg"
 
-echo "[1/8] Building Gearsystem libretro core (no SDL required)..."
+echo "[1/9] Building Gearsystem libretro core (no SDL required)..."
 make -C "$ROOT/platforms/libretro" -j"$(nproc)"
 
-echo "[2/8] Building tiny libretro frame runner..."
+echo "[2/9] Building tiny libretro frame runner..."
 g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
   -I"$ROOT/platforms/libretro" \
   "$PORT/tools/libretro_runner.cpp" -ldl -o "$PORT/build/libretro_runner"
 
-echo "[3/8] Building native Gearsystem core debugger runner..."
+echo "[3/9] Building native Gearsystem core debugger runner..."
 INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
 gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/src/audio/emu2413/emu2413.c" -o "$PORT/build/coredbg/emu2413.o"
 gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/platforms/shared/dependencies/miniz/miniz.c" -o "$PORT/build/coredbg/miniz.o"
@@ -38,30 +38,35 @@ g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
   "$PORT/tools/gearsystem_core_runner_native.cpp" "${COMMON[@]}" \
   -o "$PORT/build/gearsystem_core_runner"
 
-echo "[4/8] Building TileSector instruction profiler..."
+echo "[4/9] Building TileSector instruction profiler..."
 g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
   "$PORT/tools/tilesector_profile_runner.cpp" "${COMMON[@]}" \
   -o "$PORT/build/tilesector_profile_runner"
 
-echo "[5/8] Building TileSector first-write tracer..."
+echo "[5/9] Building TileSector first-write tracer..."
 g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
   "$PORT/tools/tilesector_write_trace.cpp" "${COMMON[@]}" \
   -o "$PORT/build/tilesector_write_trace"
 
-echo "[6/8] Building external zero-hook polar cadence profiler..."
+echo "[6/9] Building external zero-hook polar cadence profiler..."
 g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
   "$PORT/tools/polar_raw_profile_runner.cpp" "${COMMON[@]}" \
   -o "$PORT/build/polar_raw_profile_runner"
 
-echo "[7/8] Building bottom-up polar function profiler..."
+echo "[7/9] Building bottom-up polar function profiler..."
 g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
   "$PORT/tools/polar_function_profile_runner.cpp" "${COMMON[@]}" \
   -o "$PORT/build/polar_function_profile_runner"
 
-echo "[8/8] Building framebuffer/state capture tool..."
+echo "[8/9] Building framebuffer/state capture tool..."
 g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
   "$PORT/tools/tilesector_state_capture.cpp" "${COMMON[@]}" \
   -o "$PORT/build/tilesector_state_capture"
+
+echo "[9/9] Building dirty-hint audit reader..."
+g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
+  "$PORT/tools/dirty_audit_runner.cpp" "${COMMON[@]}" \
+  -o "$PORT/build/dirty_audit_runner"
 
 echo "Built:"
 echo "  $ROOT/platforms/libretro/gearsystem_libretro.so"
@@ -72,3 +77,4 @@ echo "  $PORT/build/tilesector_write_trace"
 echo "  $PORT/build/polar_raw_profile_runner"
 echo "  $PORT/build/tilesector_state_capture"
 echo "  $PORT/build/polar_function_profile_runner"
+echo "  $PORT/build/dirty_audit_runner"
