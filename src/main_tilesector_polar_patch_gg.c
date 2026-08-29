@@ -31,6 +31,7 @@ static const int8_t k_edge_lut[8][8] = {
 TSPState g_state;
 uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_patch_index;
+volatile uint8_t g_tspf_appearance_mode;
 
 #if TSPF_PROFILE_HOOKS
 volatile uint8_t g_ts_prof_phase;
@@ -44,6 +45,7 @@ volatile uint16_t g_ts_dirty_words;
 #endif
 
 static uint8_t g_tile[32u];
+static uint8_t g_prev_pad;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -103,11 +105,29 @@ static void init_tiles(void){
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);
 }
 
+static uint8_t read_input(void){
+    uint8_t pad=joypad(),pressed=(uint8_t)(pad&(uint8_t)~g_prev_pad),input=0u;
+    if(pad&J_UP)input|=TSP_INPUT_UP;
+    if(pad&J_DOWN)input|=TSP_INPUT_DOWN;
+    if(pad&J_LEFT)input|=TSP_INPUT_LEFT;
+    if(pad&J_RIGHT)input|=TSP_INPUT_RIGHT;
+    if(pad&J_B)input|=TSP_INPUT_STRAFE_LEFT;
+    if(pad&J_A)input|=TSP_INPUT_STRAFE_RIGHT;
+    if(pressed&J_START){
+        if(pad&J_B)g_tspf_appearance_mode=0u;
+        else if(pad&J_A)g_tspf_appearance_mode=2u;
+        else {++g_tspf_appearance_mode;if(g_tspf_appearance_mode>2u)g_tspf_appearance_mode=0u;}
+    }
+    g_prev_pad=pad;
+    return input;
+}
+
 void main(void){
     DISPLAY_OFF;HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);init_tiles();
 
     tsp_reset(&g_state);
+    g_tspf_appearance_mode=0u;
     tsp_polar_nt_init();
 
     /* Patch zero converts the static ceiling/horizon/floor base to the exact
@@ -122,11 +142,13 @@ void main(void){
 #endif
     DISPLAY_ON;
     for(;;){
+        uint8_t input;
         PATCH_PHASE(1u);
+        input=read_input();
         if(g_patch_index<POLAR_DEMO_PATCH_COUNT){
             /* Scripted proof only: real runtime state/event lookup comes after
              * the patch executor itself is measured and proven exact. */
-            tsp_step(&g_state,0u);
+            tsp_step(&g_state,input);
             PATCH_PHASE(2u);
             tsp_polar_demo_patch_apply(g_patch_index);
             ++g_patch_index;
