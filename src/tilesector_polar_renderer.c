@@ -28,6 +28,12 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_FORCE_C_MATERIALIZER
 #define TSPF_FORCE_C_MATERIALIZER 0
 #endif
+#ifndef TSPF_HOST_PIXEL_COMPOSITE
+#define TSPF_HOST_PIXEL_COMPOSITE 0
+#endif
+#if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
+void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -191,6 +197,9 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 #else
     uint16_t idx=k_row_base[row]+col;uint8_t *b=&g_touched_bits[idx>>3];uint8_t m=(uint8_t)(1u<<(idx&7u));
     if(!(*b&m)){*b|=m;g_touched_list[g_touched_count++]=(uint16_t)(((uint16_t)row<<8)|col);}
+#if TSPF_HOST_PIXEL_COMPOSITE
+    tsp_host_composite_write(row,col,word);
+#endif
     out[idx]=word;
 #endif
 }
