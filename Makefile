@@ -28,6 +28,7 @@ TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o buil
 POLAR_TEST_BIN := build/test_tilesector_polar
 POLAR_TRANSITION_BAKE_BIN := build/polar_transition_bake
 POLAR_DEMO_PATCH_GEN_BIN := build/polar_demo_patch_gen
+POLAR_LIGHTING_STAGE ?= baseline
 POLAR_PATCH_ROM := build/gg-polar-patch-demo.gg
 POLAR_FULLUPLOAD_ROM := build/gg-polar-fullupload-diagnostic.gg
 POLAR_ORACLE_ROM := build/gg-polar-dirty-oracle-diagnostic.gg
@@ -166,12 +167,12 @@ $(POLAR_TRANSITION_BAKE_BIN): src/tilesector_polar_motion.c src/tilesector_polar
 
 polar-transition-bake: $(POLAR_TRANSITION_BAKE_BIN)
 
-$(POLAR_DEMO_PATCH_GEN_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_demo_patch_gen.c tools/polar_baked_composite.c tools/polar_baked_composite.h | build
-	$(CC) $(CFLAGS) -DTSPF_HOST_PIXEL_COMPOSITE=1 -Isrc -Itools src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_baked_composite.c tools/polar_demo_patch_gen.c -o $@
+$(POLAR_DEMO_PATCH_GEN_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_demo_patch_gen.c tools/polar_baked_composite.c tools/polar_baked_composite.h tools/polar_baked_lighting_data.h | build
+	$(CC) $(CFLAGS) -DTSPF_HOST_PIXEL_COMPOSITE=1 -Isrc -Itools src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_baked_composite.c tools/polar_demo_patch_gen.c -lm -o $@
 
 $(POLAR_PATCH_STAMP): $(POLAR_DEMO_PATCH_GEN_BIN) | build
 	mkdir -p $(POLAR_PATCH_GEN_DIR)
-	$(POLAR_DEMO_PATCH_GEN_BIN) $(POLAR_PATCH_GEN_DIR)
+	$(POLAR_DEMO_PATCH_GEN_BIN) $(POLAR_PATCH_GEN_DIR) $(POLAR_LIGHTING_STAGE)
 	touch $@
 
 $(POLAR_PATCH_META) $(POLAR_PATCH_SRCS) $(POLAR_PATCH_DISPATCH_SRC) $(POLAR_TILEPATCH_SRCS) $(POLAR_TILEPATCH_DISPATCH_SRC): $(POLAR_PATCH_STAMP)
