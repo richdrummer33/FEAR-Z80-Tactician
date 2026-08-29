@@ -60,7 +60,7 @@ POLAR_FULLUPLOAD_OBJS := build/main_tilesector_polar_fullupload_diag_gg.o build/
 POLAR_ORACLE_OBJS := build/main_tilesector_polar_oracle_diag_gg.o build/tilesector_polar_oracle_motion_gg.o build/tilesector_polar_oracle_renderer_gg.o build/tilesector_polar_oracle_ntstate_gg.o build/tilesector_polar_oracle_materialize_gg.o build/tilesector_polar_oracle_upload_gg.o build/tilesector_polar_oracle_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
 POLAR_DIRTY_AUDIT_OBJS := build/main_tilesector_polar_dirty_audit_gg.o build/tilesector_polar_dirty_audit_motion_gg.o build/tilesector_polar_dirty_audit_ntstate_gg.o build/tilesector_polar_dirty_audit_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS)
 POLAR_MANUAL_CFLAGS := $(TILESECTOR_FASTFLAGS) -DTSPF_PROFILE_HOOKS=0 -DTSPF_LOCAL_PROJECTION=0 -DTSPF_SCREEN_DEPTH_PLANE=0 -DTSPF_EDGE_CHEMTRAIL_FIX=1 -DTSPF_FORCE_C_MATERIALIZER=1
-POLAR_MANUAL_OBJS := build/main_tilesector_polar_manual_gg.o build/tilesector_polar_manual_motion_gg.o build/tilesector_polar_manual_renderer_gg.o build/tilesector_polar_manual_ntstate_gg.o build/tilesector_polar_manual_materialize_gg.o build/tilesector_polar_manual_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS) $(POLAR_TILE_DISPATCH_OBJ) $(POLAR_TILE_OBJS)
+POLAR_MANUAL_OBJS := build/main_tilesector_polar_manual_gg.o build/tilesector_polar_manual_motion_gg.o build/tilesector_polar_manual_renderer_gg.o build/tilesector_polar_manual_ntstate_gg.o build/tilesector_polar_manual_materialize_gg.o build/tilesector_polar_manual_rowupload_gg.o $(POLAR_PATCH_DISPATCH_OBJ) $(POLAR_PATCH_OBJS) $(POLAR_TILEPATCH_DISPATCH_OBJ) $(POLAR_TILEPATCH_OBJS)
 POLAR_ROM := build/gg-tilesector-polar.gg
 POLAR_PROFILE_HOOKS ?= 1
 POLAR_LOCAL_PROJECTION ?= 1
