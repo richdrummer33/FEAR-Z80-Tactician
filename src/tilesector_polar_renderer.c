@@ -19,8 +19,14 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_LOCAL_PROJECTION
 #define TSPF_LOCAL_PROJECTION 0
 #endif
+#ifndef TSPF_SCREEN_DEPTH_PLANE
+#define TSPF_SCREEN_DEPTH_PLANE 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
+#endif
+#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+#include "tilesector_polar_depthplane_lut.h"
 #endif
 
 #define TSPF_MAX_ACTIVE 20u
@@ -97,6 +103,11 @@ typedef struct PolarRun {
     uint8_t inv_mid;
     uint8_t left_real;
     uint8_t right_real;
+    uint8_t c0;
+    uint8_t c1;
+    uint8_t depth_plane;
+    int16_t iq;
+    int16_t step;
 } PolarRun;
 
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
@@ -365,6 +376,35 @@ static uint8_t inv_at_invd(uint8_t sid,uint8_t invd,uint16_t world_bearing,int16
 }
 static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else if(inv>=46u)s=1;else s=0;s=(int8_t)(s+bias);if(s<0)s=0;if(s>2)s=2;return (uint8_t)s;}
 
+#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+/* Straight-wall inverse camera depth is linear in screen x.  Use a compact
+ * normal-class/yaw table to hand the run walker its final Q6 start+step,
+ * instead of evaluating two endpoint ray/normal/secant expressions and then
+ * reconstructing a step from them.  If the signed wall plane crosses zero
+ * inside the visible run, keep the old endpoint path as the exact fallback. */
+static uint8_t screen_depth_plane(uint8_t sid,uint8_t yaw,uint8_t invd,uint8_t c0,uint8_t c1,PolarRun *r){
+    uint16_t oi=((uint16_t)k_tspf_depth_normal_class[sid]<<8)|yaw;
+    int8_t nf=k_tspf_depth_nf_q7[oi],sf=k_tspf_depth_stepfac_q4[oi];
+    int16_t iq=shr_signed((int16_t)((int16_t)invd*(int16_t)nf),1);
+    int16_t step=shr_signed((int16_t)((int16_t)invd*(int16_t)sf),4);
+    int16_t endq=iq,midq;
+    uint8_t i,n=(uint8_t)(c1-c0+1u);
+
+    if(c0<10u){for(i=c0;i<10u;++i)iq=(int16_t)(iq-step);}
+    else {for(i=10u;i<c0;++i)iq=(int16_t)(iq+step);}
+
+    endq=iq;
+    for(i=0u;i<n;++i)endq=(int16_t)(endq+step);
+    if((iq<0&&endq>0)||(iq>0&&endq<0))return 0u;
+    if(iq<0||endq<0){iq=(int16_t)-iq;endq=(int16_t)-endq;step=(int16_t)-step;}
+
+    midq=(int16_t)((iq+endq)>>1);
+    r->c0=c0;r->c1=c1;r->iq=iq;r->step=step;r->depth_plane=1u;
+    r->inv_mid=clamp_u8i((int16_t)((midq+32)>>6),255u);
+    return 1u;
+}
+#endif
+
 static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     uint16_t w=k_tspf_keys[keyid];uint8_t sid=(uint8_t)(w&31u),v0=(uint8_t)((w>>5)&15u),v1=(uint8_t)((w>>9)&15u);uint16_t a0,a1,len,yawq;int16_t st,en,lo,hi;uint8_t x0,x1,invd;
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
@@ -378,7 +418,15 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     while(en<-512){st=(int16_t)(st+4096);en=(int16_t)(en+4096);}while(st>512){st=(int16_t)(st-4096);en=(int16_t)(en-4096);}
     lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo)return 0u;x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
     r->sid=sid;r->v0=v0;r->v1=v1;r->x0=x0;r->x1=x1;r->left_real=(uint8_t)(lo==st);r->right_real=(uint8_t)(hi==en);
+    r->depth_plane=0u;
     invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
+#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+    if(g_tspf_appearance_mode<2u){
+        uint8_t c0=(uint8_t)(x0>>3),c1=(uint8_t)(x1>>3);
+        if(c0>=TSP_COLS)c0=TSP_COLS-1u;if(c1>=TSP_COLS)c1=TSP_COLS-1u;
+        if(c1>=c0&&screen_depth_plane(sid,s->yaw,invd,c0,c1,r))return 1u;
+    }
+#endif
     r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+lo)&4095u,lo);
     r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+hi)&4095u,hi);
     r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);return 1u;
@@ -396,7 +444,12 @@ static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t
     int8_t r;if(first<0)first=0;if(last>=(int8_t)TSP_ROWS)last=(int8_t)(TSP_ROWS-1u);if(first>last)return;for(r=first;r<=last;++r)put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,border));
 }
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
-    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c,profile=k_tspf_profile[r->sid];int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);iq=(int16_t)r->inv0<<6;step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);step=shr_signed(step,2);
+    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c,profile=k_tspf_profile[r->sid];int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);
+#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+    if(g_tspf_appearance_mode<2u&&r->depth_plane){c0=r->c0;c1=r->c1;n=(uint8_t)(c1-c0+1u);iq=r->iq;step=r->step;}
+    else
+#endif
+    {iq=(int16_t)r->inv0<<6;step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);step=shr_signed(step,2);}
 #ifdef __SDCC
     /* The assembly column materializer now branches on profile for FULL
      * symmetry. Keep the run profile live for BOTH geometry-only and shaded
