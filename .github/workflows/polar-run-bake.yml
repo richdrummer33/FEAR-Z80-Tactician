@@ -1,0 +1,21 @@
+name: Polar run-bake POC
+
+on:
+  push:
+    branches:
+      - feature/gg-polar-run-bake
+  workflow_dispatch:
+
+jobs:
+  poc:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Endpoint depth field analysis
+        run: |
+          python3 experiments/adaptive_polar_field/endpoint_depth_field_poc.py | tee endpoint-depth-poc.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-endpoint-depth-poc
+          path: endpoint-depth-poc.txt
+          retention-days: 30
