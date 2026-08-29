@@ -33,5 +33,6 @@ uint16_t tsp_host_composite_frame_unique_count(void);
 uint16_t tsp_host_composite_peak_unique_count(void);
 uint16_t tsp_host_composite_peak_load_count(void);
 uint32_t tsp_host_composite_total_load_count(void);
+int tsp_host_composite_write_ppm(const char *path);
 
 #endif
