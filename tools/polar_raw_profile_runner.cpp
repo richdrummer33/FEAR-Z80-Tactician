@@ -41,7 +41,7 @@ static double percentile(std::vector<uint64_t> v,double q) {
 
 int main(int argc,char**argv) {
     if(argc<3) {
-        std::fprintf(stderr,"usage: %s rom.gg rom.sym [samples=120] [warmup=8] [csv] [mapdump]\n",argv[0]);
+        std::fprintf(stderr,"usage: %s rom.gg rom.sym [samples=120] [warmup=8] [csv] [mapdump] [marker_symbol] [marker_width=8]\n",argv[0]);
         return 2;
     }
     const char* rom=argv[1];
@@ -87,11 +87,31 @@ int main(int argc,char**argv) {
                ((uint16_t)mem->DebugRetrieve((u16)(a+1u))<<8);
     };
 
-    // TSPState.demo_ticks low byte is at packed offset 14. During the opening
-    // forward scenario it changes exactly once per game update and requires no
-    // profiler variable/store in the ROM. We stop before the first phase reset.
-    const u16 marker_addr=(u16)(state_addr+14u);
-    uint8_t marker=mem->DebugRetrieve(marker_addr);
+    // Default zero-hook marker: TSPState.demo_ticks low byte at packed offset
+    // 14. For host-compiled patch-player ROMs we can instead watch an existing
+    // runtime variable such as _g_patch_index. This remains zero-hook: the
+    // profiler only observes normal program state and adds no ROM stores.
+    u16 marker_addr=(u16)(state_addr+14u);
+    const char* marker_name="g_state.demo_ticks";
+    unsigned marker_width=8u;
+    if(argc>7 && std::strcmp(argv[7],"-")!=0) {
+        marker_name=argv[7];
+        if(!find_symbol(sym,marker_name,marker_addr)) {
+            std::fprintf(stderr,"marker symbol %s not found in %s\n",marker_name,sym);
+            return 3;
+        }
+        marker_width=(argc>8)?(unsigned)std::strtoul(argv[8],nullptr,0):16u;
+        if(marker_width!=8u && marker_width!=16u) {
+            std::fprintf(stderr,"marker_width must be 8 or 16\n");
+            return 2;
+        }
+    }
+    auto read_marker=[&]()->uint16_t {
+        if(marker_width==8u) return mem->DebugRetrieve(marker_addr);
+        return (uint16_t)mem->DebugRetrieve(marker_addr) |
+               ((uint16_t)mem->DebugRetrieve((u16)(marker_addr+1u))<<8);
+    };
+    uint16_t marker=read_marker();
     uint64_t last_cycle=0;
     bool have_last=false;
     unsigned events=0;
@@ -106,7 +126,7 @@ int main(int argc,char**argv) {
         samples=0;
         core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false);
         ++instructions;
-        const uint8_t m=mem->DebugRetrieve(marker_addr);
+        const uint16_t m=read_marker();
         if(m!=marker) {
             const uint64_t now=core.GetMasterClockCycles();
             marker=m;
@@ -132,8 +152,8 @@ int main(int argc,char**argv) {
     }
 
     if(dt.size()!=target) {
-        std::fprintf(stderr,"only %zu/%u update intervals captured; marker=%u instructions=%llu\n",
-                     dt.size(),target,marker,(unsigned long long)instructions);
+        std::fprintf(stderr,"only %zu/%u update intervals captured; marker=%s@%04X value=%u instructions=%llu\n",
+                     dt.size(),target,marker_name,marker_addr,(unsigned)marker,(unsigned long long)instructions);
         return 5;
     }
 
@@ -157,8 +177,8 @@ int main(int argc,char**argv) {
     const double p50=percentile(dt,0.50),p90=percentile(dt,0.90);
     const double p95=percentile(dt,0.95),p99=percentile(dt,0.99);
 
-    std::printf("Polar external zero-hook cadence profile: samples=%zu warmup=%u instructions=%llu state_addr=%04X marker_addr=%04X\n",
-                dt.size(),warmup,(unsigned long long)instructions,state_addr,marker_addr);
+    std::printf("Polar external zero-hook cadence profile: samples=%zu warmup=%u instructions=%llu state_addr=%04X marker=%s@%04X/%ubit\n",
+                dt.size(),warmup,(unsigned long long)instructions,state_addr,marker_name,marker_addr,marker_width);
     std::printf("  update T     mean=%10.1f sd=%9.1f min=%llu p50=%.1f p90=%.1f p95=%.1f p99=%.1f max=%llu skew=%+.3f\n",
                 mean,sd,(unsigned long long)minv,p50,p90,p95,p99,(unsigned long long)maxv,skew);
     std::printf("  update time  mean=%8.3f ms sd=%7.3f ms -> %.3f effective rendered FPS/updates-s\n",
