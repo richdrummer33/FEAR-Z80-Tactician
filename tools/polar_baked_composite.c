@@ -147,90 +147,25 @@ static uint8_t texture_semantic_exact(uint8_t cls,int vi){
     if(cls>=3u)return SEM_NEAR;
     return SEM_MID;
 }
-static double unwrap_period64(double from,double to){
-    double d=to-from;
-    while(d>32.0)d-=64.0;
-    while(d<-32.0)d+=64.0;
-    return d;
-}
-static int quant_span(double v,uint8_t coarse){
-    static const uint8_t k_fine[]={
-        2u,4u,8u,12u,16u,24u,32u,48u,64u,96u,128u
-    };
-    static const uint8_t k_edge[]={
-        4u,8u,16u,32u,64u,96u,128u
-    };
-    const uint8_t *k=coarse?k_edge:k_fine;
-    unsigned n=coarse?sizeof(k_edge):sizeof(k_fine);
-    unsigned i,best=0u;
-    double e,beste=1e30;
-    if(v<0.0)v=-v;
-    for(i=0u;i<n;++i){
-        e=fabs(v-(double)k[i]);
-        if(e<beste){beste=e;best=i;}
-    }
-    return (int)k[best];
-}
-static int quant_vspan(double v,uint8_t edge){
-    static const uint8_t k_full[]={8u,12u,16u,24u,32u,48u,64u,96u,128u};
-    static const uint8_t k_edge[]={8u,16u,24u,32u,48u,64u,96u,128u};
-    const uint8_t *k=edge?k_edge:k_full;
-    unsigned n=edge?sizeof(k_edge):sizeof(k_full),i,best=0u;
-    double e,beste=1e30;
-    if(v<0.0)v=-v;
-    for(i=0u;i<n;++i){
-        e=fabs(v-(double)k[i]);
-        if(e<beste){beste=e;best=i;}
-    }
-    return (int)k[best];
-}
 static int mirror_repeat8(int u){
     int q=u%16;
     if(q<0)q+=16;
     return q<8?q:15-q;
 }
-static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
-                                             uint8_t sx,int16_t y,
-                                             int16_t tl,int16_t tr,
-                                             int16_t bl,int16_t br,
-                                             uint8_t v0,uint8_t v1){
-    int sx0=(int)col*8,sx1=sx0+7,sxc=sx0+4;
-    int ybase=(int)row*8;
-    int16_t topc=lerp_edge7(tl,tr,4u),botc=lerp_edge7(bl,br,4u);
-    int h=(int)(botc-topc+1);
-    double ul,ur,uc,du,vspan,vcenter,uf,vf;
-    int quspan,qvspan,ucenter_q,vcenter_q,ui,vi;
-    int16_t yt=(int16_t)ybase,yb=(int16_t)(ybase+7);
-    uint8_t edge_cell=(uint8_t)(tl>yt||tr>yt||bl<yb||br<yb);
-    int phase_snap=edge_cell?16:8;
-    int vphase_snap=edge_cell?32:16;
-    if(h<2)return SEM_FAR;
-    if(!wall_texture_phase((uint8_t)sx0,v0,v1,&ul)||
-       !wall_texture_phase((uint8_t)sx1,v0,v1,&ur)||
-       !wall_texture_phase((uint8_t)sxc,v0,v1,&uc))return SEM_FAR;
+static uint8_t sample_wall_texture_projected(double phase,
+                                             int16_t y,int16_t top,int16_t bot){
+    int ui,vi,h=(int)(bot-top);
+    if(h<=0)return SEM_FAR;
 
-    du=unwrap_period64(ul,ur);
-    quspan=quant_span(du,edge_cell);
-    if(du<0.0)quspan=-quspan;
-
-    /* IMPORTANT: quantize only the texture transform, NEVER wall ownership.
-     * The renderer still walks every real projected wall pixel and clips to
-     * its arbitrary top/bottom slopes. These buckets merely make nearby
-     * camera poses reuse the same source-texture transform inside an 8x8
-     * hardware pattern. */
-    ucenter_q=(int)floor((uc+(double)phase_snap*0.5)/(double)phase_snap)*phase_snap;
-    vspan=1024.0/(double)h; /* source texels covered by one 8px screen row */
-    qvspan=quant_vspan(vspan,edge_cell);
-    vcenter=(((double)(ybase+4-topc))*128.0)/(double)h;
-    vcenter_q=(int)floor((vcenter+(double)vphase_snap*0.5)/(double)vphase_snap)*vphase_snap;
-
-    uf=(double)ucenter_q+
-       ((double)((int)sx-sx0)-3.5)*(double)quspan/7.0;
-    vf=(double)vcenter_q+
-       ((double)(y-ybase)-3.5)*(double)qvspan/7.0;
-    ui=mirror_repeat8((int)floor(uf+0.5));
-    vi=(int)floor(vf+0.5);
+    /* This is the invariant we accidentally violated in the optimization
+     * passes: V MUST be derived from the ACTUAL projected top/bottom at this
+     * screen X. That makes authored horizontal texture features inherit the
+     * wall's arbitrary perspective slope rather than becoming 8x8-cell-local
+     * horizontal bands which are merely clipped by the wall silhouette. */
+    ui=mirror_repeat8((int)floor(phase+0.5));
+    vi=(int)(((int32_t)(y-top)*127 + h/2)/h);
     if(vi<0)vi=0;else if(vi>127)vi=127;
+
     return texture_semantic_exact(g_wall_tex[vi][ui],vi);
 }
 
@@ -460,8 +395,10 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
         int16_t y0=top<0?0:top;
         int16_t y1=bot>143?143:bot;
         int16_t y;
+        double texture_phase=0.0;
         uint8_t texture_ok=(uint8_t)(g_lighting_stage==TSP_HOST_LIGHT_TEXTURE&&
-                                     profile==TSP_PROFILE_FULL);
+                                     profile==TSP_PROFILE_FULL&&
+                                     wall_texture_phase(sx,v0,v1,&texture_phase));
 
         if(y0>y1)continue;
         for(y=y0;y<=y1;++y){
@@ -473,9 +410,10 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
             if(!black&&texture_ok){
-                /* Wall ownership remains exact and per-pixel. Only the
-                 * texture transform is quantized for hardware pattern reuse. */
-                pixel=sample_wall_texture_quantized(col,row,sx,y,tl,tr,bl,br,v0,v1);
+                /* Both ownership AND the texture coordinate field are
+                 * perspective-projected. 8x8 tiling happens only after these
+                 * final pixels exist. */
+                pixel=sample_wall_texture_projected(texture_phase,y,top,bot);
             }else if(!black&&(g_lighting_stage==TSP_HOST_LIGHT_AO||
                               g_lighting_stage==TSP_HOST_LIGHT_POINT)){
                 uint8_t strength=0u;
