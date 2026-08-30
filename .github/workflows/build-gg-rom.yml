@@ -1,6 +1,9 @@
 name: Build GG ROM (manual)
 
 on:
+  push:
+    branches:
+      - experiment/gg-polar-portal-penumbra
   workflow_dispatch:
 
 permissions:
