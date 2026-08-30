@@ -258,10 +258,13 @@ static uint8_t low_byte_only(uint16_t a,uint16_t b){
 
 /*
  * Exact minimum-cost partition of each contiguous changed row span.
- * TSP_COLS is only 20, so an O(n^3) host-side DP is tiny and guarantees the
- * low-byte opcode never loses to extra run headers.
+ * TSP_COLS is only 20, so an O(n^3) host-side DP is tiny.
  *
- * mode: 0 literal word, 1 low byte, 2 palette toggle.
+ * mode:
+ *   0 literal word   cost 3 + 2N
+ *   1 low byte       cost 3 + N
+ *   2 palette toggle cost 3
+ *   3 repeated word  cost 5
  */
 static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                           uint16_t *changed_out,uint16_t *runs_out){
@@ -284,12 +287,14 @@ static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                 uint8_t pos=(uint8_t)(--i),j;
                 uint16_t best=0xffffu;
                 uint8_t bm=0u,bl=1u;
-                uint8_t pal_ok=1u,low_ok=1u;
+                uint8_t pal_ok=1u,low_ok=1u,fill_ok=1u;
+                uint16_t fill_word=b[base+pos];
                 for(j=pos;j<end;++j){
                     uint8_t n=(uint8_t)(j-pos+1u);
                     uint16_t q;
                     pal_ok=(uint8_t)(pal_ok&&palette_toggle_only(a[base+j],b[base+j]));
                     low_ok=(uint8_t)(low_ok&&low_byte_only(a[base+j],b[base+j]));
+                    fill_ok=(uint8_t)(fill_ok&&b[base+j]==fill_word);
 
                     q=(uint16_t)(3u+(uint16_t)n*2u+cost[j+1u]);
                     if(q<best){best=q;bm=0u;bl=n;}
@@ -301,6 +306,10 @@ static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                         q=(uint16_t)(3u+cost[j+1u]);
                         if(q<best){best=q;bm=2u;bl=n;}
                     }
+                    if(fill_ok){
+                        q=(uint16_t)(5u+cost[j+1u]);
+                        if(q<best){best=q;bm=3u;bl=n;}
+                    }
                 }
                 cost[pos]=best;best_mode[pos]=bm;best_len[pos]=bl;
             }
@@ -308,15 +317,18 @@ static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
             i=start;
             while(i<end){
                 uint8_t mode=best_mode[i],count=best_len[i],c;
-                size_t payload=mode==2u?0u:(mode==1u?(size_t)count:(size_t)count*2u);
+                size_t payload=mode==2u?0u:(mode==1u?(size_t)count:(mode==3u?2u:(size_t)count*2u));
                 if(p+3u+payload>PATCH_SCRATCH_MAX)die("patch scratch overflow");
                 dst[p++]=row;dst[p++]=i;
-                dst[p++]=(uint8_t)(count|(mode==2u?0x80u:(mode==1u?0x40u:0u)));
+                dst[p++]=(uint8_t)(count|(mode==2u?0x80u:(mode==1u?0x40u:(mode==3u?0xc0u:0u))));
                 if(mode==1u){
                     for(c=0u;c<count;++c){
                         uint16_t w=b[base+(uint16_t)i+c];
                         dst[p++]=(uint8_t)w;
                     }
+                }else if(mode==3u){
+                    uint16_t w=b[base+i];
+                    dst[p++]=(uint8_t)w;dst[p++]=(uint8_t)(w>>8);
                 }else if(mode==0u){
                     for(c=0u;c<count;++c){
                         uint16_t w=b[base+(uint16_t)i+c];
@@ -341,7 +353,6 @@ static int apply_patch(uint16_t *map,const uint8_t *src,size_t len){
         if(p+3u>len)return 0;
         row=src[p++];x=src[p++];raw=src[p++];
         mode=(uint8_t)(raw&0xc0u);count=(uint8_t)(raw&0x3fu);
-        if(mode==0xc0u)return 0;
         if(row>=TSP_ROWS||x>=TSP_COLS||!count||(uint16_t)x+count>TSP_COLS)return 0;
         base=(uint16_t)row*TSP_COLS;
         if(mode==0x80u){
@@ -352,6 +363,11 @@ static int apply_patch(uint16_t *map,const uint8_t *src,size_t len){
                 uint16_t idx=(uint16_t)(base+(uint16_t)x+c);
                 map[idx]=(uint16_t)((map[idx]&0xff00u)|src[p++]);
             }
+        }else if(mode==0xc0u){
+            uint16_t w;
+            if(p+2u>len)return 0;
+            w=(uint16_t)src[p]|((uint16_t)src[p+1u]<<8);p+=2u;
+            for(c=0u;c<count;++c)map[base+(uint16_t)x+c]=w;
         }else{
             if(p+(size_t)count*2u>len)return 0;
             for(c=0u;c<count;++c){
@@ -438,6 +454,9 @@ static void emit_bank(const char *dir,unsigned bank,const Patch *patches,const B
       "            for(c=0u;c<count;++c)g_map[idx++]^=TSP_ATTR_PALETTE;\n"
       "        }else if(mode==0x40u){\n"
       "            for(c=0u;c<count;++c){g_map[idx]=(uint16_t)((g_map[idx]&0xff00u)|*p++);++idx;}\n"
+      "        }else if(mode==0xc0u){\n"
+      "            uint16_t w=(uint16_t)*p++; w|=(uint16_t)*p++<<8;\n"
+      "            for(c=0u;c<count;++c)g_map[idx++]=w;\n"
       "        }else for(c=0u;c<count;++c){\n"
       "            uint16_t w=(uint16_t)*p++; w|=(uint16_t)*p++<<8; g_map[idx++]=w;\n"
       "        }\n"
