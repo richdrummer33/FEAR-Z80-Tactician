@@ -632,7 +632,8 @@ int main(int argc,char **argv){
     /* Portal semantics probes are deliberately rendered AFTER all generated
      * runtime sources and traversal metrics are finalized, so these diagnostic
      * views cannot change the cartridge packet or its measured economics. */
-    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD){
+    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD &&
+       getenv("POLAR_SKIP_PORTAL_PROBES")==NULL){
         TSPState probe;
         char ppath[512];
         uint16_t lintel_owner,lintel_lit,riser_owner,riser_lit;
