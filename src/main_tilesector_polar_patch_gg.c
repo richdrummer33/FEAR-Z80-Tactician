@@ -57,6 +57,11 @@ volatile uint16_t g_ts_dirty_words;
 
 static uint8_t g_tile[32u];
 static PolarExploreCursor g_explore;
+/* Inspection hook: any D-pad press permanently stops automated playback.
+ * We intentionally freeze on the current BAKED state rather than switching to
+ * the live renderer, because arbitrary free-roam states do not have this
+ * precomputed point-light packet. */
+volatile uint8_t g_rail_active;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -131,6 +136,7 @@ void main(void){
     polar_explore_cursor_reset(&g_explore);
     g_tspf_appearance_mode=0u;
     tsp_polar_nt_init();
+    g_rail_active=1u;
 
     /* Patch zero converts the static ceiling/horizon/floor base to the exact
      * initial host-oracle view. The init routine already marked the whole
@@ -145,19 +151,27 @@ void main(void){
 #endif
     DISPLAY_ON;
     for(;;){
-        uint8_t input;
+        uint8_t input=0u;
+        uint8_t pad;
         uint16_t applied=0xffffu;
         PATCH_PHASE(1u);
-        input=polar_explore_next(&g_explore);
-        if(g_patch_index<POLAR_DEMO_PATCH_COUNT){
-            /* Scripted proof only: real runtime state/event lookup comes after
-             * the patch executor itself is measured and proven exact. */
-            tsp_step(&g_state,input);
+        pad=joypad();
+        if(pad&(J_UP|J_DOWN|J_LEFT|J_RIGHT))g_rail_active=0u;
+
+        if(g_rail_active){
+            input=polar_explore_next(&g_explore);
+            if(g_patch_index<POLAR_DEMO_PATCH_COUNT){
+                tsp_step(&g_state,input);
+                PATCH_PHASE(2u);
+                applied=g_patch_index;
+                tsp_polar_demo_patch_apply(applied);
+                ++g_patch_index;
+            }else PATCH_PHASE(2u);
+        }else{
+            /* Frozen inspection mode: state, patch index, tile cache and map
+             * stay coherent forever. VBlank/upload loop continues normally. */
             PATCH_PHASE(2u);
-            applied=g_patch_index;
-            tsp_polar_demo_patch_apply(applied);
-            ++g_patch_index;
-        }else PATCH_PHASE(2u);
+        }
 
         PATCH_PHASE(3u);vsync();
         PATCH_PHASE(4u);
