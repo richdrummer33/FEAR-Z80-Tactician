@@ -138,29 +138,85 @@ static int wall_texture_phase(uint8_t sx,uint8_t v0,uint8_t v1,double *phase){
     *phase=p;
     return 1;
 }
-static uint8_t textured_wall_pixel(uint8_t sx,int16_t y,int16_t top,int16_t bot,
-                                   uint8_t shade,uint8_t v0,uint8_t v1){
-    double phase,vf;
-    int h,snap,ui,vi;
-    uint8_t cls,sem,loss;
-    init_screen_rel();load_wall_texture();
-    if(bot<=top||!wall_texture_phase(sx,v0,v1,&phase))return shade_sem(shade);
-    h=(int)(bot-top+1);
-    /* Distance-adaptive quantization is the deliberate tile-vocabulary
-     * guardrail: near walls retain finer texture phase, while distant walls
-     * snap to larger source texel blocks. Perspective still comes from the
-     * exact wall/ray intersection and projected top/bottom geometry. */
-    snap=h>=112?1:(h>=72?2:(h>=40?4:8));
-    vf=((double)(y-top)+0.5)*128.0/(double)h;
-    ui=((int)floor(phase/(double)snap)*snap)&63;
-    vi=(int)floor(vf/(double)snap)*snap;
-    if(vi<0)vi=0;else if(vi>127)vi=127;
-    cls=g_wall_tex[vi][ui];
+static uint8_t texture_semantic(uint8_t cls,uint8_t shade){
+    uint8_t sem,loss;
     if(!cls)return SEM_BLACK;
     sem=(uint8_t)(SEM_FAR+(cls-1u));
     loss=(uint8_t)(2u-(shade>2u?2u:shade));
     while(loss&&sem>SEM_FAR){--sem;--loss;}
     return sem;
+}
+static double unwrap_period64(double from,double to){
+    double d=to-from;
+    while(d>32.0)d-=64.0;
+    while(d<-32.0)d+=64.0;
+    return d;
+}
+static int quant_span(double v){
+    static const uint8_t k[] = {1u,2u,4u,6u,8u,12u,16u,24u,32u,48u,64u};
+    unsigned i,best=0u;
+    double e,beste=1e30;
+    if(v<0.0)v=-v;
+    for(i=0u;i<sizeof(k);++i){
+        e=fabs(v-(double)k[i]);
+        if(e<beste){beste=e;best=i;}
+    }
+    return (int)k[best];
+}
+static int repeat_mirror_8(int u){
+    int q=u%16;
+    if(q<0)q+=16;
+    return q<8?q:15-q;
+}
+static void texture_full_cell(uint8_t col,uint8_t row,
+                              int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                              uint8_t shade,uint8_t v0,uint8_t v1){
+    int sx0=(int)col*8,sx1=sx0+7,sxc=sx0+4;
+    int ybase=(int)row*8,x,y;
+    int16_t topc=lerp_edge7(tl,tr,4u),botc=lerp_edge7(bl,br,4u);
+    int h=(int)(botc-topc+1);
+    double ul,ur,uc,du,uspan,vcenter,vspan;
+    int quspan,qvspan,ucenter_q,vcenter_q;
+    uint8_t *dst=g_cells[(uint16_t)row*TSP_COLS+col];
+
+    if(h<4)return;
+    if(!wall_texture_phase((uint8_t)sx0,v0,v1,&ul)||
+       !wall_texture_phase((uint8_t)sx1,v0,v1,&ur)||
+       !wall_texture_phase((uint8_t)sxc,v0,v1,&uc))return;
+
+    du=unwrap_period64(ul,ur);
+    uspan=fabs(du);
+    quspan=quant_span(uspan);
+    if(du<0.0)quspan=-quspan;
+
+    /* The full source image is wall-height (128 px).  One 8-pixel display
+     * cell therefore covers 1024/h source texels vertically.  Snap both span
+     * and phase to a deliberately finite vocabulary.  This is the "coarse /
+     * fine tile" approximation: exact wall projection decides which bucket
+     * we use, but nearby poses reuse the same baked 8x8 pattern. */
+    vspan=1024.0/(double)h;
+    qvspan=quant_span(vspan);
+    vcenter=(((double)(ybase+4-topc))*128.0)/(double)h;
+    ucenter_q=(int)floor((uc+2.0)/4.0)*4;
+    vcenter_q=(int)floor((vcenter+2.0)/4.0)*4;
+
+    for(y=0;y<8;++y)for(x=0;x<8;++x){
+        double uf=(double)ucenter_q+
+                  ((double)x-3.5)*(double)quspan/7.0;
+        double vf=(double)vcenter_q+
+                  ((double)y-3.5)*(double)qvspan/7.0;
+        int ui=repeat_mirror_8((int)floor(uf+0.5));
+        int vi=(int)floor(vf+0.5);
+        uint8_t cls;
+        if(vi<0)vi=0;else if(vi>127)vi=127;
+        /* One representative 8-pixel strip, mirrored every other repeat.
+         * This is intentionally a texture MATERIAL vocabulary rather than
+         * arbitrary 64-pixel noise. It keeps seams coherent and pattern
+         * diversity bounded while retaining the source's full 128-pixel
+         * vertical structure. */
+        cls=g_wall_tex[vi][24+ui];
+        dst[(uint16_t)y*8u+(uint16_t)x]=texture_semantic(cls,shade);
+    }
 }
 
 static uint64_t fnv64(const uint8_t *p){
@@ -394,9 +450,7 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
-            if(!black&&g_lighting_stage==TSP_HOST_LIGHT_TEXTURE&&profile==TSP_PROFILE_FULL){
-                pixel=textured_wall_pixel(sx,y,top,bot,shade,v0,v1);
-            }else if(!black&&(g_lighting_stage==TSP_HOST_LIGHT_AO||
+            if(!black&&(g_lighting_stage==TSP_HOST_LIGHT_AO||
                               g_lighting_stage==TSP_HOST_LIGHT_POINT)){
                 uint8_t strength=0u;
                 if(ao_left){
@@ -410,6 +464,25 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                 pixel=ao_pixel(pixel,strength,sx,(uint8_t)y);
             }
             dst[(uint16_t)py*8u+px]=black?SEM_BLACK:pixel;
+        }
+    }
+
+    /* Texture only cells whose entire 8x8 footprint is owned by this FULL
+     * wall. Geometry edges/portal clips keep the proven flat semantic raster,
+     * so perspective texturing cannot manufacture a new combinatorial family
+     * of edge-mask x texture patterns. */
+    if(g_lighting_stage==TSP_HOST_LIGHT_TEXTURE&&profile==TSP_PROFILE_FULL&&
+       clip_x0==coarse_x&&clip_x1==(uint8_t)(coarse_x+7u)&&border==0u){
+        int16_t topmax=tl>tr?tl:tr,botmin=bl<br?bl:br;
+        int8_t r0=(int8_t)((topmax+7)>=0?((topmax+7)>>3):-((-(topmax+7)+7)>>3));
+        int8_t r1=(int8_t)((botmin-7)>=0?((botmin-7)>>3):-((-(botmin-7)+7)>>3));
+        int8_t r;
+        if(r0<0)r0=0;
+        if(r1>=(int8_t)TSP_ROWS)r1=(int8_t)(TSP_ROWS-1u);
+        for(r=r0;r<=r1;++r){
+            int16_t yt=(int16_t)r*8,yb=(int16_t)(yt+7);
+            if(tl<=yt&&tr<=yt&&bl>=yb&&br>=yb)
+                texture_full_cell(col,(uint8_t)r,tl,tr,bl,br,shade,v0,v1);
         }
     }
 }
