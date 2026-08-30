@@ -46,6 +46,7 @@ extern volatile uint8_t g_tspf_appearance_mode;
 static uint8_t g_tile[32u];
 volatile uint8_t g_rail_active;
 volatile uint8_t g_dynamic_renderer;
+volatile uint8_t g_takeover_stage;
 static PolarExploreCursor g_explore;
 
 void tsp_polar_nt_init(void);
@@ -132,17 +133,34 @@ static uint8_t dpad_input(uint8_t pad){
 static void switch_to_dynamic_renderer(void){
     if(g_dynamic_renderer)return;
 
-    /* Patch playback does not maintain the conventional renderer's coverage
-     * history. Reinitialize the authoritative map/lifetime state once, then
-     * render the CURRENT camera position so manual takeover starts cleanly. */
-    /* Baked rails use their compact composite dictionary.  Manual takeover
-     * returns to the live renderer, so restore its generic 423-tile vocabulary
-     * before materializing the current camera state. */
+    /*
+     * Baked rails and the live renderer use different VRAM tile vocabularies.
+     * Do the one-time handoff atomically with display disabled; otherwise a
+     * 423-tile rewrite competes with active display and can strand execution
+     * midway through takeover on real/emulated GG timing.
+     */
+    g_takeover_stage=1u;
+    DISPLAY_OFF;
+
+    g_takeover_stage=2u;
     init_tiles();
+
+    g_takeover_stage=3u;
     tsp_polar_nt_init();
+
+    g_takeover_stage=4u;
     tsp_polar_renderer_reset();
+
+    g_takeover_stage=5u;
     tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
+
+    /* Publish one complete live frame before display comes back. */
+    g_takeover_stage=6u;
+    tsp_polar_nt_upload_dirty();
+
     g_dynamic_renderer=1u;
+    g_takeover_stage=7u;
+    DISPLAY_ON;
 }
 
 void main(void){
@@ -158,6 +176,7 @@ void main(void){
     g_tspf_appearance_mode=0u;
     g_rail_active=1u;
     g_dynamic_renderer=0u;
+    g_takeover_stage=0u;
 
     tsp_polar_nt_init();
     tsp_polar_demo_patch_apply(0u);
