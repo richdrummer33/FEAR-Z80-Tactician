@@ -139,11 +139,12 @@ static int wall_texture_phase(uint8_t sx,uint8_t v0,uint8_t v1,double *phase){
     *phase=p;
     return 1;
 }
-static uint8_t texture_semantic(uint8_t cls,uint8_t shade){
+static uint8_t texture_semantic(uint8_t cls,uint8_t shade,int vi){
     uint8_t sem,loss;
-    /* Do not turn source-image black into a literal hole in the wall.
-     * Silhouette/border black is still owned by the proven geometry raster;
-     * texture class zero is simply the darkest wall material tone. */
+    /* Preserve black only in the authored lower grille/vent zone. Elsewhere
+     * source black is treated as the darkest wall tone so ordinary panels do
+     * not become apparent holes. */
+    if(!cls&&vi>=92)return SEM_BLACK;
     sem=cls?((uint8_t)(SEM_FAR+(cls-1u))):SEM_FAR;
     loss=(uint8_t)(2u-(shade>2u?2u:shade));
     while(loss&&sem>SEM_FAR){--sem;--loss;}
@@ -166,10 +167,10 @@ static int quant_span(double v){
     }
     return (int)k[best];
 }
-static int repeat_mirror_8(int u){
-    int q=u%16;
-    if(q<0)q+=16;
-    return q<8?q:15-q;
+static int wrap64(int u){
+    int q=u%64;
+    if(q<0)q+=64;
+    return q;
 }
 static void texture_full_cell(uint8_t col,uint8_t row,
                               int16_t tl,int16_t tr,int16_t bl,int16_t br,
@@ -208,17 +209,16 @@ static void texture_full_cell(uint8_t col,uint8_t row,
                   ((double)x-3.5)*(double)quspan/7.0;
         double vf=(double)vcenter_q+
                   ((double)y-3.5)*(double)qvspan/7.0;
-        int ui=repeat_mirror_8((int)floor(uf+0.5));
+        int ui=wrap64((int)floor(uf+0.5));
         int vi=(int)floor(vf+0.5);
         uint8_t cls;
         if(vi<0)vi=0;else if(vi>127)vi=127;
-        /* One representative 8-pixel strip, mirrored every other repeat.
-         * This is intentionally a texture MATERIAL vocabulary rather than
-         * arbitrary 64-pixel noise. It keeps seams coherent and pattern
-         * diversity bounded while retaining the source's full 128-pixel
-         * vertical structure. */
-        cls=g_wall_tex[vi][24+ui];
-        dst[(uint16_t)y*8u+(uint16_t)x]=texture_semantic(cls,shade);
+        /* Use the complete 64-pixel source period now that texture is limited
+         * to fully-owned wall cells. Perspective phase/span are still bucketed
+         * above, so this restores recognizable source detail without reviving
+         * the arbitrary edge-mask x texture pattern explosion. */
+        cls=g_wall_tex[vi][ui];
+        dst[(uint16_t)y*8u+(uint16_t)x]=texture_semantic(cls,shade,vi);
     }
 }
 
