@@ -39,15 +39,43 @@ jobs:
           tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
       - name: Build 64-bank Game Gear ROM
+        id: build64
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 gg-polar-patch-demo
+
+      - name: Package 64-bank ROM
+        if: steps.build64.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
           mkdir -p build/manual-artifact
           cp build/gg-polar-patch-demo.gg build/manual-artifact/GG-Polar-Latest.gg
           cp build/gg-polar-patch-demo.sym build/manual-artifact/GG-Polar-Latest.sym
-          sha256sum build/manual-artifact/GG-Polar-Latest.gg | tee build/manual-artifact/SHA256.txt
-          wc -c build/manual-artifact/GG-Polar-Latest.gg | tee build/manual-artifact/ROM-size.txt
+          printf '64-bank / 1 MiB spec build\n' > build/manual-artifact/BUILD-NOTE.txt
+
+      - name: Build oversize 128-bank diagnostic fallback
+        if: steps.build64.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/gg-polar-patch-demo.gg build/gg-polar-patch-demo.sym
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=128 gg-polar-patch-demo
+          mkdir -p build/manual-artifact
+          cp build/gg-polar-patch-demo.gg build/manual-artifact/GG-Polar-Latest-OVERSIZE-128bank.gg
+          cp build/gg-polar-patch-demo.sym build/manual-artifact/GG-Polar-Latest-OVERSIZE-128bank.sym
+          printf 'WARNING: 64-bank / 1 MiB spec build overflowed. This is a 128-bank / 2 MiB diagnostic ROM.\n' > build/manual-artifact/BUILD-NOTE.txt
+
+      - name: Add build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM="$(find build/manual-artifact -maxdepth 1 -name '*.gg' -print -quit)"
+          test -n "$ROM"
+          sha256sum "$ROM" | tee build/manual-artifact/SHA256.txt
+          wc -c "$ROM" | tee build/manual-artifact/ROM-size.txt
           git rev-parse HEAD | tee build/manual-artifact/COMMIT.txt
           cp build/manual-rom-bake.txt build/manual-artifact/bake-metrics.txt
 
