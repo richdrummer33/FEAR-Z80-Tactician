@@ -666,17 +666,11 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
             if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE){
-                /*
-                 * GG-native texture LOD 0: sample one world-space material
-                 * value per 8x8 screen cell/surface. Geometry silhouettes and
-                 * light boundaries remain pixel-precise; only material detail
-                 * is quantized. This bounds tile-pattern entropy while keeping
-                 * the selected color anchored to world-space UVs.
-                 */
-                int msx=(int)(((uint16_t)sx&~7u)+4u);
-                int msy=(int)(((uint16_t)y&~7u)+4u);
-                if(msx>159)msx=159;if(msy>143)msy=143;
-                pixel=wall_material_sample(sid,msx,msy,color);
+                /* All textured wall geometry first receives one common base
+                 * material. A post-pass promotes only completely interior wall
+                 * cells to sampled material colors, so clipping/cap/portal
+                 * shapes do not multiply across four texture variants. */
+                pixel=SEM_MID;
             }else if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
                 uint8_t strength=0u;
                 if(ao_left){
@@ -692,6 +686,34 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             dst[pi]=black?SEM_BLACK:pixel;
             own[pi]=sid;
         }
+    }
+}
+
+/*
+ * Apply multi-color material only to cells that are 100% interior to one wall
+ * receiver and contain no geometry-outline black pixels. Those cells collapse
+ * to one of four solid material patterns. Every partial/edge/cap cell remains
+ * the same base oxide color, preserving the original compact geometry-shape
+ * vocabulary instead of multiplying it by material color.
+ */
+static void apply_world_material_texture(void){
+    uint16_t cell;
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell){
+        uint8_t sid=g_owner[cell][0],i,full=(uint8_t)(sid!=0xffu);
+        uint8_t mat;
+        int sx,sy;
+        if(!full)continue;
+        for(i=0u;i<PIXELS;++i){
+            if(g_owner[cell][i]!=sid||g_cells[cell][i]==SEM_BLACK){
+                full=0u;break;
+            }
+        }
+        if(!full)continue;
+        sx=(int)((cell%TSP_COLS)*8u+4u);
+        sy=(int)((cell/TSP_COLS)*8u+4u);
+        if(sx>159)sx=159;if(sy>143)sy=143;
+        mat=wall_material_sample(sid,sx,sy,SEM_MID);
+        for(i=0u;i<PIXELS;++i)g_cells[cell][i]=mat;
     }
 }
 
@@ -766,6 +788,8 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     uint8_t needed[HW_TILES];
     uint16_t req_count=0u,i;
     ensure_init();
+    if(g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE)
+        apply_world_material_texture();
     if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&TSP_HOST_STATIC_LIGHT_COUNT)
         apply_point_light();
     ++g_frame_no;
