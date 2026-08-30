@@ -27,7 +27,7 @@
 #define DEMO_FRAMES POLAR_EXPLORE_FRAMES
 #define PATCH_COUNT (DEMO_FRAMES+1u)
 #define MAX_BANKS 24u
-#define MAX_BANK_STREAM 10000u
+#define MAX_BANK_STREAM 14000u
 #define MAX_TILEPATCH_BANKS 24u
 #define MAX_TILEPATCH_BANK_STREAM 14000u
 /* Textured name-table deltas can fragment into several runs per row. */
