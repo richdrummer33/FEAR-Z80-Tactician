@@ -10,6 +10,7 @@
  * preserved after manual takeover.
  */
 #include <stdint.h>
+#include <string.h>
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
 #include "polar_explore_script.h"
@@ -26,11 +27,20 @@
  * Match the current baked point/penumbra packet exactly while rails are active.
  * After manual takeover the live generic renderer uses palette 0 only.
  */
-static const palette_color_t k_palettes[32] = {
+static const palette_color_t k_baked_palettes[32] = {
     RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
     RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
     RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
     RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
+};
+
+/* Generic live-renderer palettes. Palette 1 keeps floor/outside substitution
+ * for bottom edges but does NOT brighten wall shades. */
+static const palette_color_t k_live_palettes[32] = {
+    RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
+    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
+    RGB(0,0,0),RGB(2,2,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
+    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
 };
 static const int8_t k_edge_lut[8][8] = {
     {0,0,0,0,0,0,0,0},{0,0,0,0,1,1,1,1},{0,0,1,1,1,1,2,2},{0,0,1,1,2,2,3,3},
@@ -114,6 +124,47 @@ static void init_baked_base_tiles(void){
     emit_solid(TSP_TILE_FLOOR,C_FLOOR);
     emit_horizon();
 }
+static void emit_live_tile_id(uint16_t id){
+    if(id==TSP_TILE_CEILING){emit_solid(id,C_OUT);return;}
+    if(id==TSP_TILE_FLOOR){emit_solid(id,C_FLOOR);return;}
+    if(id==TSP_TILE_HORIZON){emit_horizon();return;}
+
+    if(id>=TSP_TILE_FULL_BASE && id<TSP_TILE_EDGE_BASE){
+        uint16_t rel=(uint16_t)(id-TSP_TILE_FULL_BASE);
+        uint8_t border=(uint8_t)(rel%TSP_BORDER_COUNT);
+        uint8_t q=(uint8_t)(rel/TSP_BORDER_COUNT);
+        uint8_t cap=(uint8_t)(q%TSP_CAP_COUNT);
+        uint8_t shade=(uint8_t)(q/TSP_CAP_COUNT);
+        emit_full(shade,cap,border);
+        return;
+    }
+
+    if(id>=TSP_TILE_EDGE_BASE && id<TSP_GENERATED_TILE_COUNT){
+        uint16_t rel=(uint16_t)(id-TSP_TILE_EDGE_BASE);
+        uint8_t si=(uint8_t)(rel%TSP_EDGE_SLOPE_COUNT);
+        uint8_t q=(uint8_t)(rel/TSP_EDGE_SLOPE_COUNT);
+        uint8_t oi=(uint8_t)(q%TSP_EDGE_OFF_COUNT);
+        uint8_t shade=(uint8_t)(q/TSP_EDGE_OFF_COUNT);
+        emit_edge(shade,oi,si);
+    }
+}
+
+static void ensure_live_tiles_for_map(void){
+    uint16_t i;
+    for(i=0u;i<TSP_MAP_CELLS;++i){
+        uint16_t id=(uint16_t)(g_map[i]&TSP_TILE_ID_MASK);
+        uint8_t *b;
+        uint8_t m;
+        if(id>=TSP_GENERATED_TILE_COUNT)continue;
+        b=&g_live_tile_loaded[id>>3];
+        m=(uint8_t)(1u<<(id&7u));
+        if(!(*b&m)){
+            emit_live_tile_id(id);
+            *b|=m;
+        }
+    }
+}
+
 
 static uint8_t strafe_input(uint8_t pad){
     uint8_t input=0u;
@@ -133,19 +184,16 @@ static uint8_t dpad_input(uint8_t pad){
 static void switch_to_dynamic_renderer(void){
     if(g_dynamic_renderer)return;
 
-    /*
-     * Baked rails and the live renderer use different VRAM tile vocabularies.
-     * Do the one-time handoff atomically with display disabled; otherwise a
-     * 423-tile rewrite competes with active display and can strand execution
-     * midway through takeover on real/emulated GG timing.
-     */
     g_takeover_stage=1u;
     DISPLAY_OFF;
 
+    /* Baked point-light palette semantics are no longer needed once arbitrary
+     * camera motion begins. Restore the generic renderer palettes. */
     g_takeover_stage=2u;
-    init_tiles();
+    set_bkg_palette(0u,2u,k_live_palettes);
 
     g_takeover_stage=3u;
+    memset(g_live_tile_loaded,0,sizeof(g_live_tile_loaded));
     tsp_polar_nt_init();
 
     g_takeover_stage=4u;
@@ -154,12 +202,16 @@ static void switch_to_dynamic_renderer(void){
     g_takeover_stage=5u;
     tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
 
-    /* Publish one complete live frame before display comes back. */
+    /* Upload only the generic tile IDs referenced by THIS live frame instead
+     * of brute-forcing all 423 possible patterns. */
     g_takeover_stage=6u;
+    ensure_live_tiles_for_map();
+
+    g_takeover_stage=7u;
     tsp_polar_nt_upload_dirty();
 
     g_dynamic_renderer=1u;
-    g_takeover_stage=7u;
+    g_takeover_stage=8u;
     DISPLAY_ON;
 }
 
@@ -168,7 +220,7 @@ void main(void){
     __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
-    set_bkg_palette(0u,2u,k_palettes);
+    set_bkg_palette(0u,2u,k_baked_palettes);
     init_baked_base_tiles();
 
     tsp_reset(&g_state);
@@ -219,6 +271,7 @@ void main(void){
 
         if(!g_dynamic_renderer && applied!=0xffffu)
             tsp_polar_demo_tilepatch_apply(applied);
+        if(g_dynamic_renderer)ensure_live_tiles_for_map();
         tsp_polar_nt_upload_dirty();
     }
 }
