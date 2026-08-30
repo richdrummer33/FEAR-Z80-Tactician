@@ -29,7 +29,8 @@
 #define MAX_BANKS 24u
 #define MAX_BANK_STREAM 14000u
 #define MAX_TILEPATCH_BANKS 24u
-#define MAX_TILEPATCH_BANK_STREAM 14000u
+/* 14.5 KiB leaves room in a 16 KiB ROM bank for the offset table/code. */
+#define MAX_TILEPATCH_BANK_STREAM 14500u
 /* Textured name-table deltas can fragment into several runs per row. */
 #define PATCH_SCRATCH_MAX 2048u
 
