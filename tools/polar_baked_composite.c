@@ -443,7 +443,7 @@ static void apply_one_sided_penumbra(void){
         int x,y,k;
         for(i=0u;i<PIXELS;++i){
             uint8_t v=g_cells[cell][i];
-            if(g_lightable[cell][i]&&v>SEM_BLACK&&v<SEM_NEAR){
+            if(v>SEM_BLACK&&v<SEM_NEAR){
                 ++eligible;
                 if(hard[cell][i])++lit;
             }
@@ -453,7 +453,7 @@ static void apply_one_sided_penumbra(void){
         for(y=0;y<8;++y)for(x=0;x<8;++x){
             uint16_t pi=(uint16_t)y*8u+(uint16_t)x;
             uint8_t v=g_cells[cell][pi],touch=0u;
-            if(!g_lightable[cell][pi]||hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
+            if(hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
 
             for(k=0;k<8;++k){
                 static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
@@ -498,8 +498,8 @@ static void apply_point_light(void){
         }
     }
     quantize_point_light_edges();
-    enforce_lightable_mask();
     if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)apply_one_sided_penumbra();
+    enforce_lightable_mask();
 }
 
 static void generic_unflipped_indices(uint16_t id,uint8_t out[PIXELS]){
