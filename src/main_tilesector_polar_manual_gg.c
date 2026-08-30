@@ -2,10 +2,8 @@
  * Player-like exploration with manual takeover.
  *
  * Starts on the same host-baked exploration rails as the video proof.
- * Any D-pad input permanently cancels rails and hands control to the live
- * Polar renderer. A/B retain strafe input and do NOT cancel rails; if used
- * during the rail sequence we switch to live rendering while continuing the
- * scripted movement plus the user's strafe.
+ * Any movement input permanently cancels rails and hands control to the live
+ * Polar renderer. D-pad controls forward/reverse + rotation; A/B strafe.
  *
  * This build uses the normal mature dirty-row uploader. The live renderer is
  * compiled through the repaired C edge materializer so the chemtrail fix is
@@ -176,23 +174,17 @@ void main(void){
         uint8_t input;
         uint16_t applied=0xffffu;
 
-        /* Any directional key is the explicit "give me the wheel" command.
-         * It permanently stops scripted motion. */
-        if(dpad){
+        /* Any actual movement control is "give me the wheel".
+         * Takeover is permanent until reset. */
+        if((uint8_t)(dpad|strafe)){
             g_rail_active=0u;
             switch_to_dynamic_renderer();
         }
 
         if(g_rail_active)scripted=polar_explore_next(&g_explore);
 
-        /* A/B do not interrupt the rails. They can still strafe. Because that
-         * leaves the pre-baked trajectory, switch to the real renderer while
-         * continuing to feed it the scripted control sequence. */
-        if(strafe) switch_to_dynamic_renderer();
-
         if(g_dynamic_renderer){
-            input=(uint8_t)(scripted|strafe);
-            if(!g_rail_active)input=(uint8_t)(input|dpad);
+            input=(uint8_t)(dpad|strafe);
             tsp_step(&g_state,input);
             tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
         }else if(g_patch_index<POLAR_DEMO_PATCH_COUNT){
