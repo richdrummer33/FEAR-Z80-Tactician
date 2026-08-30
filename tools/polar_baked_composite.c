@@ -167,6 +167,19 @@ static int quant_span(double v,uint8_t coarse){
     }
     return (int)k[best];
 }
+static int quant_vspan(double v,uint8_t edge){
+    static const uint8_t k_full[]={8u,12u,16u,24u,32u,48u,64u,96u,128u};
+    static const uint8_t k_edge[]={8u,16u,24u,32u,48u,64u,96u,128u};
+    const uint8_t *k=edge?k_edge:k_full;
+    unsigned n=edge?sizeof(k_edge):sizeof(k_full),i,best=0u;
+    double e,beste=1e30;
+    if(v<0.0)v=-v;
+    for(i=0u;i<n;++i){
+        e=fabs(v-(double)k[i]);
+        if(e<beste){beste=e;best=i;}
+    }
+    return (int)k[best];
+}
 static int mirror_repeat8(int u){
     int q=u%16;
     if(q<0)q+=16;
@@ -186,7 +199,7 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
     int16_t yt=(int16_t)ybase,yb=(int16_t)(ybase+7);
     uint8_t edge_cell=(uint8_t)(tl>yt||tr>yt||bl<yb||br<yb);
     int phase_snap=edge_cell?16:8;
-    int vphase_snap=edge_cell?16:8;
+    int vphase_snap=edge_cell?32:16;
     if(h<2)return SEM_FAR;
     if(!wall_texture_phase((uint8_t)sx0,v0,v1,&ul)||
        !wall_texture_phase((uint8_t)sx1,v0,v1,&ur)||
@@ -203,7 +216,7 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
      * hardware pattern. */
     ucenter_q=(int)floor((uc+(double)phase_snap*0.5)/(double)phase_snap)*phase_snap;
     vspan=1024.0/(double)h; /* source texels covered by one 8px screen row */
-    qvspan=quant_span(vspan,edge_cell);
+    qvspan=quant_vspan(vspan,edge_cell);
     vcenter=(((double)(ybase+4-topc))*128.0)/(double)h;
     vcenter_q=(int)floor((vcenter+(double)vphase_snap*0.5)/(double)vphase_snap)*vphase_snap;
 
