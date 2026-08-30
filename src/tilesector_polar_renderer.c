@@ -164,6 +164,14 @@ static uint8_t g_map_ready;
 static int8_t clamp_s8(int16_t v,int8_t lo,int8_t hi){if(v<lo)return lo;if(v>hi)return hi;return (int8_t)v;}
 static uint8_t clamp_u8i(int16_t v,uint8_t hi){if(v<0)return 0;if(v>hi)return hi;return (uint8_t)v;}
 static int16_t shr_signed(int16_t v,uint8_t n){return v>=0?(int16_t)(v>>n):(int16_t)-(((-v)>>n));}
+/* Perspective vertical translation for a camera whose nominal eye is z=16.
+ * Current projection maps a 32-unit wall to invz screen pixels, so moving the
+ * eye by dz world units moves a surface by dz*invz/32 pixels. Stair heights
+ * are integral world units; keeping dz small avoids any 32-bit helper on Z80. */
+static int16_t camera_z_shift(uint8_t inv,const TSPState *s){
+    int16_t dz=(int16_t)((s->z_q4-TSP_EYE_HEIGHT_Q4)>>4);
+    return shr_signed((int16_t)(dz*(int16_t)inv),5u);
+}
 static int16_t signed_q12(uint16_t v){v&=4095u;return v>=2048u?(int16_t)v-4096:(int16_t)v;}
 
 #ifndef __SDCC
@@ -542,6 +550,14 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
             bl=(int16_t)(TSPF_HORIZON+hl-(hl>>2));br=(int16_t)(TSPF_HORIZON+hr-(hr>>2));
         }else if(profile==TSP_PROFILE_RISER){
             tl=(int16_t)(TSPF_HORIZON+hl-(hl>>2));tr=(int16_t)(TSPF_HORIZON+hr-(hr>>2));
+        }
+        /* Camera elevation translates BOTH projected endpoints. Do this after
+         * profile shaping: FULL/LINTEL/RAISED/RISER are absolute world-height
+         * bands, and a raised eye moves every one of those bands consistently. */
+        {
+            int16_t zl=camera_z_shift(invl,s),zr=camera_z_shift(invr,s);
+            tl=(int16_t)(tl+zl);bl=(int16_t)(bl+zl);
+            tr=(int16_t)(tr+zr);br=(int16_t)(br+zr);
         }
 #if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
         {
