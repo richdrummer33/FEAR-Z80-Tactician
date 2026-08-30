@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/gg-polar-transition-patches
+      - feature/gg-polar-vertical-stairwell
   workflow_dispatch:
 
 jobs:
