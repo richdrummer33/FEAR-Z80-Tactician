@@ -13,6 +13,7 @@
 
 #include "polar_baked_composite.h"
 #include "polar_baked_lighting_data.h"
+#include "generated/tilesector_polar_data.inc"
 
 /* Polar explicitly moves the GG pattern name table to 0x3800.
  * That restores Sega's standard maximum background-pattern region:
@@ -54,6 +55,14 @@ static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
 static uint8_t g_camera_yaw;
 
+/* Host-only source texture and inverse screen-angle table. The texture is
+ * deliberately not present in the Game Gear runtime: the bake converts it
+ * into final 8x8 patterns and name-table words. */
+static uint8_t g_wall_tex[128][64];
+static int16_t g_screen_rel_q12[160];
+static uint8_t g_texture_ready;
+static uint8_t g_screen_rel_ready;
+
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
 static uint64_t g_cache_hash[HW_TILES];
 static uint32_t g_cache_last[HW_TILES];
@@ -69,6 +78,89 @@ static uint16_t g_peak_loads;
 static uint32_t g_total_loads;
 
 static void die(const char *msg){fprintf(stderr,"fatal: %s\n",msg);exit(2);}
+
+static int host_angle_x(int16_t rel){
+    uint16_t a=(uint16_t)(rel<0?-rel:rel);
+    int x;
+    if(a>512u)a=512u;
+    x=rel<0?(int)(160u-k_tspf_angle_x_pos[a]):(int)k_tspf_angle_x_pos[a];
+    return x>159?159:(x<0?0:x);
+}
+static void init_screen_rel(void){
+    int x,rel;
+    if(g_screen_rel_ready)return;
+    for(x=0;x<160;++x){
+        int best=0,best_err=999;
+        for(rel=-512;rel<=512;++rel){
+            int q=host_angle_x((int16_t)rel),e=q>x?q-x:x-q;
+            if(e<best_err){best_err=e;best=rel;if(!e)break;}
+        }
+        g_screen_rel_q12[x]=(int16_t)best;
+    }
+    g_screen_rel_ready=1u;
+}
+static void load_wall_texture(void){
+    FILE *f;
+    int ch,count=0;
+    if(g_texture_ready)return;
+    f=fopen("experiments/polar_texture/TWBARLT1_2bpp.txt","rb");
+    if(!f)die("cannot open experiments/polar_texture/TWBARLT1_2bpp.txt");
+    while((ch=fgetc(f))!=EOF){
+        if(ch=='#'){while((ch=fgetc(f))!=EOF&&ch!='\n'){}continue;}
+        if(ch>='0'&&ch<='3'){
+            if(count>=64*128)die("wall texture has too many pixels");
+            g_wall_tex[count/64][count%64]=(uint8_t)(ch-'0');
+            ++count;
+        }
+    }
+    fclose(f);
+    if(count!=64*128)die("wall texture must contain exactly 64x128 class pixels");
+    g_texture_ready=1u;
+}
+static int wall_texture_phase(uint8_t sx,uint8_t v0,uint8_t v1,double *phase){
+    const double pi=3.14159265358979323846;
+    double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
+    double ax=(double)k_tspf_vx[v0],ay=(double)k_tspf_vy[v0];
+    double bx=(double)k_tspf_vx[v1],by=(double)k_tspf_vy[v1];
+    double vx=bx-ax,vy=by-ay,len=sqrt(vx*vx+vy*vy);
+    double ang=((double)((int)g_camera_yaw*16+(int)g_screen_rel_q12[sx]))*(2.0*pi/4096.0);
+    double rx=cos(ang),ry=sin(ang);
+    double qx=ax-cx,qy=ay-cy;
+    double den=rx*vy-ry*vx,u,px,py,tx,ty,p;
+    if(len<1e-9||fabs(den)<1e-9)return 0;
+    u=(qx*ry-qy*rx)/den;
+    if(u<0.0)u=0.0;else if(u>1.0)u=1.0;
+    px=ax+u*vx;py=ay+u*vy;tx=vx/len;ty=vy/len;
+    if(tx<0.0||(fabs(tx)<1e-9&&ty<0.0)){tx=-tx;ty=-ty;}
+    p=fmod(px*tx+py*ty,64.0);
+    if(p<0.0)p+=64.0;
+    *phase=p;
+    return 1;
+}
+static uint8_t textured_wall_pixel(uint8_t sx,int16_t y,int16_t top,int16_t bot,
+                                   uint8_t shade,uint8_t v0,uint8_t v1){
+    double phase,vf;
+    int h,snap,ui,vi;
+    uint8_t cls,sem,loss;
+    init_screen_rel();load_wall_texture();
+    if(bot<=top||!wall_texture_phase(sx,v0,v1,&phase))return shade_sem(shade);
+    h=(int)(bot-top+1);
+    /* Distance-adaptive quantization is the deliberate tile-vocabulary
+     * guardrail: near walls retain finer texture phase, while distant walls
+     * snap to larger source texel blocks. Perspective still comes from the
+     * exact wall/ray intersection and projected top/bottom geometry. */
+    snap=h>=112?1:(h>=72?2:(h>=40?4:8));
+    vf=((double)(y-top)+0.5)*128.0/(double)h;
+    ui=((int)floor(phase/(double)snap)*snap)&63;
+    vi=(int)floor(vf/(double)snap)*snap;
+    if(vi<0)vi=0;else if(vi>127)vi=127;
+    cls=g_wall_tex[vi][ui];
+    if(!cls)return SEM_BLACK;
+    sem=(uint8_t)(SEM_FAR+(cls-1u));
+    loss=(uint8_t)(2u-(shade>2u?2u:shade));
+    while(loss&&sem>SEM_FAR){--sem;--loss;}
+    return sem;
+}
 
 static uint64_t fnv64(const uint8_t *p){
     uint64_t h=UINT64_C(1469598103934665603);
@@ -102,7 +194,7 @@ static void ensure_init(void){
 static uint8_t shade_sem(uint8_t shade){return (uint8_t)(SEM_FAR+(shade>2u?2u:shade));}
 
 void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
-    g_lighting_stage=stage>TSP_HOST_LIGHT_POINT?TSP_HOST_LIGHT_POINT:stage;
+    g_lighting_stage=stage>TSP_HOST_LIGHT_TEXTURE?TSP_HOST_LIGHT_TEXTURE:stage;
     if(camera){
         g_camera_x_q4=camera->x_q4;
         g_camera_y_q4=camera->y_q4;
@@ -278,7 +370,8 @@ static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x){
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 int16_t tl,int16_t tr,int16_t bl,int16_t br,
                                 uint8_t shade,uint8_t border,
-                                uint8_t ao_left,uint8_t ao_right){
+                                uint8_t ao_left,uint8_t ao_right,
+                                uint8_t profile,uint8_t v0,uint8_t v1){
     uint8_t sx,color=shade_sem(shade);
     uint16_t coarse_x=(uint16_t)col*8u;
     if(col>=TSP_COLS||clip_x0>clip_x1||clip_x1>159u)die("surface raster bounds invalid");
@@ -300,7 +393,10 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
-            if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
+            if(!black&&g_lighting_stage==TSP_HOST_LIGHT_TEXTURE&&profile==TSP_PROFILE_FULL){
+                pixel=textured_wall_pixel(sx,y,top,bot,shade,v0,v1);
+            }else if(!black&&(g_lighting_stage==TSP_HOST_LIGHT_AO||
+                              g_lighting_stage==TSP_HOST_LIGHT_POINT)){
                 uint8_t strength=0u;
                 if(ao_left){
                     uint8_t d=(uint8_t)(sx-clip_x0);
@@ -359,7 +455,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     uint8_t needed[HW_TILES];
     uint16_t req_count=0u,i;
     ensure_init();
-    if(g_lighting_stage>=TSP_HOST_LIGHT_POINT&&TSP_HOST_STATIC_LIGHT_COUNT)
+    if(g_lighting_stage==TSP_HOST_LIGHT_POINT&&TSP_HOST_STATIC_LIGHT_COUNT)
         apply_point_light();
     ++g_frame_no;
     memset(htab,0xff,sizeof(htab));
