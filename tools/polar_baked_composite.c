@@ -167,10 +167,10 @@ static int quant_span(double v,uint8_t coarse){
     }
     return (int)k[best];
 }
-static int mirror_repeat16(int u){
-    int q=u%32;
-    if(q<0)q+=32;
-    return q<16?q:31-q;
+static int mirror_repeat8(int u){
+    int q=u%16;
+    if(q<0)q+=16;
+    return q<8?q:15-q;
 }
 static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
                                              uint8_t sx,int16_t y,
@@ -211,7 +211,7 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
        ((double)((int)sx-sx0)-3.5)*(double)quspan/7.0;
     vf=(double)vcenter_q+
        ((double)(y-ybase)-3.5)*(double)qvspan/7.0;
-    ui=mirror_repeat16((int)floor(uf+0.5));
+    ui=mirror_repeat8((int)floor(uf+0.5));
     vi=(int)floor(vf+0.5);
     if(vi<0)vi=0;else if(vi>127)vi=127;
     return texture_semantic_exact(g_wall_tex[vi][ui]);
