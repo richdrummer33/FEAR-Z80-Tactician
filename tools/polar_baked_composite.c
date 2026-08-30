@@ -424,28 +424,50 @@ static int same_penumbra_receiver(int x0,int y0,int x1,int y1){
 
 static void apply_one_sided_penumbra(void){
     uint8_t hard[TSP_MAP_CELLS][PIXELS];
-    int x,y,k;
-    static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
-    static const int8_t ny[8]={-1,-1,-1,0,0,1,1,1};
+    uint16_t cell;
     memcpy(hard,g_lit,sizeof(hard));
 
-    for(y=0;y<144;++y)for(x=0;x<160;++x){
-        uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
-        uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
-        uint8_t v=g_cells[cell][pi],touch=0u;
-        if(hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
-        for(k=0;k<8;++k){
-            int xx=x+nx[k],yy=y+ny[k];
-            uint16_t nc,np;
-            if(xx<0||xx>=160||yy<0||yy>=144)continue;
-            if(!same_penumbra_receiver(x,y,xx,yy))continue;
-            nc=(uint16_t)((yy>>3)*TSP_COLS+(xx>>3));
-            np=(uint16_t)(yy&7)*8u+(uint16_t)(xx&7);
-            if(hard[nc][np]){touch=1u;break;}
+    /*
+     * Cartridge-aware soft edge: only feather cells that were ALREADY mixed
+     * by the quantized hard boundary. This prevents the 1px penumbra from
+     * turning an adjacent all-shadow tile into a brand-new dynamic pattern.
+     * The hard boundary remains authoritative; softness is one-sided outward
+     * into shadow and uses stable ordered 50% coverage.
+     */
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell){
+        uint8_t eligible=0u,lit=0u,i;
+        int x,y,k;
+        for(i=0u;i<PIXELS;++i){
+            uint8_t v=g_cells[cell][i];
+            if(v>SEM_BLACK&&v<SEM_NEAR){
+                ++eligible;
+                if(hard[cell][i])++lit;
+            }
         }
-        /* AO-style stable half coverage, but only OUTWARD into the shadow.
-         * The hard-lit side is never dimmed. */
-        if(touch&&(((x+y)&1)==0))g_lit[cell][pi]=1u;
+        if(!eligible||!lit||lit==eligible)continue;
+
+        for(y=0;y<8;++y)for(x=0;x<8;++x){
+            uint16_t pi=(uint16_t)y*8u+(uint16_t)x;
+            uint8_t v=g_cells[cell][pi],touch=0u;
+            if(hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
+
+            for(k=0;k<8;++k){
+                static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
+                static const int8_t ny[8]={-1,-1,-1,0,0,1,1,1};
+                int xx=x+nx[k],yy=y+ny[k];
+                uint16_t np;
+                if(xx<0||xx>=8||yy<0||yy>=8)continue;
+                np=(uint16_t)yy*8u+(uint16_t)xx;
+                /* Owner must match so softness never leaks across a surface
+                 * silhouette within a tile. Background owner 0xff naturally
+                 * remains background-only. */
+                if(g_owner[cell][np]!=g_owner[cell][pi])continue;
+                if(hard[cell][np]){touch=1u;break;}
+            }
+            if(touch&&((((cell%TSP_COLS)*8u+x)+
+                         ((cell/TSP_COLS)*8u+y))&1u)==0u)
+                g_lit[cell][pi]=1u;
+        }
     }
 }
 
