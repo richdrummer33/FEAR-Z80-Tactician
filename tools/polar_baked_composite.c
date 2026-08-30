@@ -771,6 +771,19 @@ uint16_t tsp_host_composite_peak_unique_count(void){return g_peak_unique;}
 uint16_t tsp_host_composite_peak_load_count(void){return g_peak_loads;}
 uint32_t tsp_host_composite_total_load_count(void){return g_total_loads;}
 
+uint16_t tsp_host_composite_owner_pixel_count(uint8_t sid){
+    uint16_t cell,n=0u;uint8_t i;
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell)
+        for(i=0u;i<PIXELS;++i)if(g_owner[cell][i]==sid)++n;
+    return n;
+}
+uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid){
+    uint16_t cell,n=0u;uint8_t i;
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell)
+        for(i=0u;i<PIXELS;++i)if(g_owner[cell][i]==sid&&g_lit[cell][i])++n;
+    return n;
+}
+
 int tsp_host_composite_write_ppm(const char *path){
     static const uint8_t rgb[6][3]={
         {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240}
