@@ -512,7 +512,7 @@ static void draw_edge(uint16_t *out,uint8_t col,int16_t yl,int16_t yr,uint8_t sh
 static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t shade,uint8_t border){
     int8_t r;if(first<0)first=0;if(last>=(int8_t)TSP_ROWS)last=(int8_t)(TSP_ROWS-1u);if(first>last)return;for(r=first;r<=last;++r)put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,border));
 }
-static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
+static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPState *s){
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c,profile=k_tspf_profile[r->sid];int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if(g_tspf_appearance_mode<2u&&r->depth_plane){c0=r->c0;c1=r->c1;n=(uint8_t)(c1-c0+1u);iq=r->iq;step=r->step;}
@@ -661,7 +661,7 @@ gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u
     g_tspf_active_runs=count;
 #endif
     TSPF_SET_STAGE(3u); /* one-byte indices are insertion-sorted far -> near */
-    TSPF_SET_STAGE(4u);for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[g_run_order[i]]);
+    TSPF_SET_STAGE(4u);for(i=0;i<count;++i)draw_run(out_map,cols,&g_runs[g_run_order[i]],s);
 done:
 #ifdef __SDCC
     /* Restore only geometry-owned cells that disappeared this frame. */
