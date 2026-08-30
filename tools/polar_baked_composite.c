@@ -48,7 +48,10 @@ static const int8_t k_edge_lut[8][8] = {
 };
 
 static uint8_t g_cells[TSP_MAP_CELLS][PIXELS];
-static uint8_t g_light_src[TSP_MAP_CELLS][PIXELS];
+/* Final visible wall-owner ID for each semantic pixel. Background floor and
+ * ceiling remain 0xff. This exists only in the host bake and lets the lighting
+ * pass recover an exact world receiver point for wall pixels. */
+static uint8_t g_owner[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -118,78 +121,127 @@ static uint8_t ao_pixel(uint8_t color,uint8_t strength,uint8_t sx,uint8_t sy){
     return color;
 }
 
-static uint8_t sem_at(uint8_t src[TSP_MAP_CELLS][PIXELS],int x,int y){
-    uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
-    return src[cell][(uint16_t)(y&7)*8u+(uint16_t)(x&7)];
+static int ray_segment_params(double ox,double oy,double dx,double dy,
+                              double ax,double ay,double bx,double by,
+                              double *t_out,double *u_out){
+    double sx=bx-ax,sy=by-ay;
+    double den=dx*sy-dy*sx;
+    double qx,qy,t,u;
+    if(fabs(den)<1e-10)return 0;
+    qx=ax-ox;qy=ay-oy;
+    t=(qx*sy-qy*sx)/den;
+    u=(qx*dy-qy*dx)/den;
+    if(t_out)*t_out=t;
+    if(u_out)*u_out=u;
+    return 1;
 }
-static int shadow_blocked(int lx,int ly,int x,int y){
-    int dx=x-lx,dy=y-ly,steps=abs(dx)>abs(dy)?abs(dx):abs(dy),i;
-    if(steps<7)return 0;
-    for(i=4;i<steps-2;++i){
-        int sx=lx+(dx*i)/steps,sy=ly+(dy*i)/steps;
-        uint8_t v;
-        if(sx<0||sx>=160||sy<0||sy>=144)continue;
-        v=sem_at(g_light_src,sx,sy);
-        /* The horizon rule is a presentation separator, not physical cover. */
-        if(v==SEM_BLACK&&sy!=72)return 1;
-    }
-    return 0;
-}
-static int clamp_i(int v,int lo,int hi){return v<lo?lo:(v>hi?hi:v);}
-static void apply_point_light(void){
+
+/*
+ * Treat the light as another world-space visibility observer. For a receiver
+ * point P, each opaque segment AB defines a shadow wedge bounded by the rays
+ * L->A and L->B. Testing whether LP crosses AB is exactly the clipped-wedge
+ * membership test, without ever rasterizing a screen-space radial mask.
+ */
+static int world_point_lit(double wx,double wy,int receiver_sid){
     const TSPHostStaticLight *light=&k_tsp_host_static_lights[0];
+    double lx=(double)light->x_q4/16.0,ly=(double)light->y_q4/16.0;
+    double dx=wx-lx,dy=wy-ly;
+    uint8_t sid;
+    if(dx*dx+dy*dy<1e-10)return 1;
+    for(sid=0u;sid<TSP_HOST_WORLD_SEGMENT_COUNT;++sid){
+        const TSPHostWorldSegment *s=&k_tsp_host_world_segments[sid];
+        const TSPHostWorldVertex *a,*b;
+        double t,u;
+        if(!s->blocks_light||(int)sid==receiver_sid)continue;
+        a=&k_tsp_host_world_vertices[s->v0];
+        b=&k_tsp_host_world_vertices[s->v1];
+        if(!ray_segment_params(lx,ly,dx,dy,(double)a->x,(double)a->y,
+                               (double)b->x,(double)b->y,&t,&u))continue;
+        /* Strictly between light and receiver. End-point hits at P are not
+         * blockers, preventing shared wall corners from self-shadowing. */
+        if(t>1e-7&&t<1.0-1e-7&&u>=-1e-7&&u<=1.0+1e-7)return 0;
+    }
+    return 1;
+}
+
+static void camera_basis(double *fx,double *fy,double *rx,double *ry){
     const double pi=3.14159265358979323846;
+    double yaw=(double)g_camera_yaw*(2.0*pi/256.0);
+    *fx=cos(yaw);*fy=sin(yaw);
+    *rx=-*fy;*ry=*fx;
+}
+
+/*
+ * Inverse of the renderer's 80px focal-length floor/ceiling projection.
+ * FULL walls place floor/ceiling 16 world units below/above the camera:
+ *   abs(screen_y-72) = 80*16 / forward_depth = 1280/depth.
+ * Therefore every visible background pixel maps to a unique world XY point.
+ * The resulting light boundary lives on the world plane and only THEN appears
+ * in screen space, so its edge follows perspective rather than the tile grid.
+ */
+static int background_world_point(int sx,int sy,double *wx,double *wy){
+    double px=(double)sx+0.5,py=(double)sy+0.5;
+    double voff=fabs(py-72.0),depth,lateral,fx,fy,rx,ry;
     double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
-    double lxw=(double)light->x_q4/16.0,lyw=(double)light->y_q4/16.0;
-    double dxw=lxw-cx,dyw=lyw-cy,dist=sqrt(dxw*dxw+dyw*dyw);
-    double bearing=atan2(dyw,dxw),yaw=(double)g_camera_yaw*(2.0*pi/256.0);
-    double rel=bearing-yaw;
-    int lx,ly,radius,r2,row,col;
+    if(voff<0.25)return 0;
+    depth=1280.0/voff;
+    lateral=depth*((px-80.0)/80.0);
+    camera_basis(&fx,&fy,&rx,&ry);
+    *wx=cx+fx*depth+rx*lateral;
+    *wy=cy+fy*depth+ry*lateral;
+    return 1;
+}
 
-    while(rel>pi)rel-=2.0*pi;
-    while(rel<-pi)rel+=2.0*pi;
-    if(rel<-1.10||rel>1.10||dist<1.0)return;
+/* Recover the world XY receiver for a visible wall pixel by intersecting the
+ * camera ray through screen X with that pixel's owning source segment. Since
+ * the first pass uses vertically extruded blockers, all Y pixels in a wall
+ * screen column share the same light/shadow classification: wall shadow cuts
+ * are naturally vertical, while floor/ceiling cuts can be arbitrary angles. */
+static int wall_world_point(uint8_t sid,int sx,double *wx,double *wy){
+    const TSPHostWorldSegment *s;
+    const TSPHostWorldVertex *a,*b;
+    double fx,fy,rx,ry,lateral,dx,dy,t,u;
+    double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
+    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return 0;
+    s=&k_tsp_host_world_segments[sid];
+    a=&k_tsp_host_world_vertices[s->v0];
+    b=&k_tsp_host_world_vertices[s->v1];
+    camera_basis(&fx,&fy,&rx,&ry);
+    lateral=(((double)sx+0.5)-80.0)/80.0;
+    dx=fx+rx*lateral;
+    dy=fy+ry*lateral;
+    if(!ray_segment_params(cx,cy,dx,dy,(double)a->x,(double)a->y,
+                           (double)b->x,(double)b->y,&t,&u))return 0;
+    if(t<=1e-7||u<-1e-5||u>1.0+1e-5)return 0;
+    *wx=cx+dx*t;*wy=cy+dy*t;
+    return 1;
+}
 
-    lx=(int)(80.0+tan(rel)*80.0);
-    lx=clamp_i(lx,0,159);
-    ly=72-(int)(((double)light->height_q4/16.0)*80.0/dist);
-    ly=clamp_i(ly,46,69);
-    radius=clamp_i((int)light->radius_world-(int)(dist/3.0),38,92);
-    r2=radius*radius;
+static uint8_t lit_semantic(uint8_t v){
+    /* First geometric test deliberately has only two states: ambient and
+     * one shade brighter. No radius, attenuation band or penumbra yet. */
+    if(v==SEM_BLACK||v>=SEM_NEAR)return v;
+    return (uint8_t)(v+1u);
+}
 
-    memcpy(g_light_src,g_cells,sizeof(g_cells));
-
-    /*
-     * Quantize light/shadow ownership once per 8x8 display cell.  The cell's
-     * existing sub-pixel wall/portal silhouette is retained exactly; only its
-     * semantic shade indices are remapped.  This is the critical compression
-     * guardrail: arbitrary per-pixel radial masks produced thousands of
-     * one-off tile patterns and exceeded 48 tile uploads/VBlank.
-     */
-    for(row=0;row<TSP_ROWS;++row)for(col=0;col<TSP_COLS;++col){
-        int sx=col*8+4,sy=row*8+4;
-        int dx=sx-lx,dy=sy-ly,d2=dx*dx+dy*dy,strength;
-        uint8_t blocked;
-        uint8_t *cell;
-        uint8_t i;
-
-        if(d2>r2)continue;
-        strength=((r2-d2)*255)/r2;
-        if(strength<54)continue;
-        blocked=(uint8_t)shadow_blocked(lx,ly,sx,sy);
-        cell=g_cells[(uint16_t)row*TSP_COLS+col];
-
-        for(i=0u;i<PIXELS;++i){
-            uint8_t v=cell[i];
-            if(v==SEM_BLACK||v==SEM_CEILING)continue;
-            if(blocked){
-                if(v>=SEM_MID)cell[i]=SEM_FAR;
-            }else if(v==SEM_FLOOR){
-                if(strength>112)cell[i]=SEM_FAR;
-            }else if(v>=SEM_FAR&&v<SEM_NEAR){
-                cell[i]=(uint8_t)(v+1u);
-            }
+static void apply_point_light(void){
+    int x,y;
+    if(!TSP_HOST_STATIC_LIGHT_COUNT)return;
+    for(y=0;y<144;++y)for(x=0;x<160;++x){
+        uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
+        uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
+        uint8_t v=g_cells[cell][pi],owner=g_owner[cell][pi];
+        double wx,wy;
+        int ok=0,receiver=-1;
+        if(v==SEM_BLACK)continue;
+        if(owner!=0xffu){
+            receiver=(int)owner;
+            ok=wall_world_point(owner,x,&wx,&wy);
+        }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
+            ok=background_world_point(x,y,&wx,&wy);
         }
+        if(ok&&world_point_lit(wx,wy,receiver))
+            g_cells[cell][pi]=lit_semantic(v);
     }
 }
 
@@ -253,6 +305,7 @@ static void decode_word(uint16_t word,uint8_t sem[PIXELS],uint8_t mask[PIXELS]){
 void tsp_host_composite_begin_frame(void){
     uint8_t row,col;
     ensure_init();
+    memset(g_owner,0xff,sizeof(g_owner));
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
         if(row<9u)tile_fill(p,SEM_CEILING);
@@ -277,7 +330,7 @@ static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x){
 
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 int16_t tl,int16_t tr,int16_t bl,int16_t br,
-                                uint8_t shade,uint8_t border,
+                                uint8_t sid,uint8_t shade,uint8_t border,
                                 uint8_t ao_left,uint8_t ao_right){
     uint8_t sx,color=shade_sem(shade);
     uint16_t coarse_x=(uint16_t)col*8u;
@@ -296,7 +349,10 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t row=(uint8_t)((uint16_t)y>>3);
             uint8_t py=(uint8_t)((uint16_t)y&7u);
             uint8_t px=(uint8_t)((uint16_t)sx&7u);
-            uint8_t *dst=g_cells[(uint16_t)row*TSP_COLS+col];
+            uint16_t cell=(uint16_t)row*TSP_COLS+col;
+            uint16_t pi=(uint16_t)py*8u+px;
+            uint8_t *dst=g_cells[cell];
+            uint8_t *own=g_owner[cell];
             uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
@@ -312,7 +368,8 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                 }
                 pixel=ao_pixel(pixel,strength,sx,(uint8_t)y);
             }
-            dst[(uint16_t)py*8u+px]=black?SEM_BLACK:pixel;
+            dst[pi]=black?SEM_BLACK:pixel;
+            own[pi]=sid;
         }
     }
 }
