@@ -19,20 +19,26 @@
 #define C_NEAR  5u
 
 /*
- * Palette 0 is the ambient semantic palette.
- * Palette 1 is the baked hard-light transform:
- *   indices 1..4 become one semantic shade brighter;
- *   index 5 stays clamped at NEAR;
- *   indices 8..12 duplicate ambient 1..5 for pixels on the shadow side of
- *   a mixed light-boundary tile.
- * Thus wholly-lit tiles reuse their ambient pattern bytes and change only the
- * name-table palette attribute; only mixed boundary tiles need new patterns.
+ * Textured baked palette contract.
+ *
+ * Palette 0 stores ambient ceiling/floor plus four wall-material colors.
+ * Palette 1 stores lit variants at the same indices 1..6. In a mixed
+ * light/shadow tile, shadow pixels are remapped to 8..13, which duplicate the
+ * ambient colors inside palette 1. Thus a wholly-lit textured tile can still
+ * reuse the exact ambient pattern bytes and change only the palette bit.
  */
 static const palette_color_t k_palettes[32] = {
-    RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
-    RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
+    /* palette 0: ambient */
+    RGB(0,0,0), RGB(1,1,3), RGB(3,3,4), RGB(4,2,2),
+    RGB(7,4,3), RGB(10,6,4), RGB(9,8,7), RGB(0,0,0),
+    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
+    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
+
+    /* palette 1: lit colors at 1..6; ambient duplicates at 8..13 */
+    RGB(0,0,0), RGB(2,2,4), RGB(4,4,5), RGB(7,4,3),
+    RGB(10,6,4), RGB(13,8,5), RGB(13,12,10), RGB(0,0,0),
+    RGB(1,1,3), RGB(3,3,4), RGB(4,2,2), RGB(7,4,3),
+    RGB(10,6,4), RGB(9,8,7), RGB(0,0,0), RGB(0,0,0)
 };
 static const int8_t k_edge_lut[8][8] = {
     {0,0,0,0,0,0,0,0},{0,0,0,0,1,1,1,1},{0,0,1,1,1,1,2,2},{0,0,1,1,2,2,3,3},
