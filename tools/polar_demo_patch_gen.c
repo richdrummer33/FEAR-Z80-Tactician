@@ -638,7 +638,7 @@ int main(int argc,char **argv){
         uint16_t lintel_owner,lintel_lit,riser_owner,riser_lit;
 
         /* Hallway side, looking east through the x=112 threshold. */
-        state_at(&probe,100<<4,50<<4,0u);
+        state_at(&probe,88<<4,50<<4,0u);
         render_fresh(&probe,cur);
         path_join(ppath,sizeof(ppath),dir,"portal_probe_hallway.ppm");
         if(!tsp_host_composite_write_ppm(ppath))die("hallway portal probe write failed");
@@ -651,7 +651,7 @@ int main(int argc,char **argv){
         if(!lintel_owner||!riser_owner)die("hallway portal profiles not visible");
 
         /* Room-B side, looking west back through the same x=112 threshold. */
-        state_at(&probe,124<<4,50<<4,128u);
+        state_at(&probe,140<<4,50<<4,128u);
         render_fresh(&probe,cur);
         path_join(ppath,sizeof(ppath),dir,"portal_probe_room2_back.ppm");
         if(!tsp_host_composite_write_ppm(ppath))die("Room2 portal probe write failed");
