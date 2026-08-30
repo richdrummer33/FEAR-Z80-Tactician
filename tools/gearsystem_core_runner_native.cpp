@@ -21,7 +21,7 @@ static void save_ppm(const char* path, const std::vector<u8>& fb, int w, int h) 
 }
 
 int main(int argc,char**argv){
-    if(argc<3){fprintf(stderr,"usage: %s rom.gg frames [out.ppm] [dump_addr_hex] [dump_len]\n",argv[0]);return 2;}
+    if(argc<3){fprintf(stderr,"usage: %s rom.gg frames [out.ppm] [dump_addr_hex|-] [dump_len] [vram_addr_hex] [vram_len]\n",argv[0]);return 2;}
     const char* rom=argv[1]; int frames=atoi(argv[2]);
     GearsystemCore core; core.Init(GS_PIXEL_RGBA8888);
     if(!core.LoadROM(rom)){fprintf(stderr,"LoadROM failed\n");return 3;}
@@ -35,12 +35,21 @@ int main(int argc,char**argv){
         st->PC->GetValue(),st->SP->GetValue(),st->AF->GetValue(),st->BC->GetValue(),st->DE->GetValue(),st->HL->GetValue());
     Memory* mem=core.GetMemory(); for(int i=0;i<8;i++) printf("%02X",mem->DebugRetrieve((u16)(0xC000+i))); printf("\n");
     if(argc>=4 && argv[3][0] != '-') {save_ppm(argv[3],fb,ri.screen_width,ri.screen_height);printf("saved=%s\n",argv[3]);}
-    if(argc>=5) {
+    if(argc>=5 && argv[4][0] != '-') {
         unsigned addr = (unsigned)strtoul(argv[4], nullptr, 16);
         unsigned len = (argc>=6) ? (unsigned)strtoul(argv[5], nullptr, 0) : 32u;
         if(len > 2048u) len = 2048u;
         printf("DUMP[%04X..%04X]=", addr & 0xFFFFu, (addr + (len ? len - 1u : 0u)) & 0xFFFFu);
         for(unsigned i=0;i<len;i++) printf("%02X", mem->DebugRetrieve((u16)(addr+i)));
+        printf("\n");
+    }
+    if(argc>=7 && argv[6][0] != '-') {
+        unsigned addr = (unsigned)strtoul(argv[6], nullptr, 16) & 0x3FFFu;
+        unsigned len = (argc>=8) ? (unsigned)strtoul(argv[7], nullptr, 0) : 32u;
+        if(len > 2048u) len = 2048u;
+        u8 *vram=core.GetVideo()->GetVRAM();
+        printf("VRAM[%04X..%04X]=", addr, (addr + (len ? len - 1u : 0u)) & 0x3FFFu);
+        for(unsigned i=0;i<len;i++) printf("%02X",vram[(addr+i)&0x3FFFu]);
         printf("\n");
     }
     return 0;
