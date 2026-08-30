@@ -71,7 +71,8 @@ static uint8_t parse_lighting_stage(const char *s){
     if(!strcmp(s,"ao"))return TSP_HOST_LIGHT_AO;
     if(!strcmp(s,"hard"))return TSP_HOST_LIGHT_HARD;
     if(!strcmp(s,"point"))return TSP_HOST_LIGHT_POINT;
-    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|hard|point)\n",s);
+    if(!strcmp(s,"texture"))return TSP_HOST_LIGHT_TEXTURE;
+    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|hard|point|texture)\n",s);
     exit(2);
 }
 static int capture_frame(uint16_t frame){
@@ -502,7 +503,7 @@ int main(int argc,char **argv){
     unsigned bank_count=0u,tilebank_count=0u,tile_vblank_budget=0u;
     PolarExploreCursor explore;
 
-    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|hard|point]\n",argv[0]);return 2;}
+    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|hard|point|texture]\n",argv[0]);return 2;}
     if(!tilepatches||!all_maps)die("out of memory allocating bake tables");
     dir=argv[1];
     if(argc==3){g_lighting_name=argv[2];g_lighting_stage=parse_lighting_stage(argv[2]);}
@@ -519,6 +520,8 @@ int main(int argc,char **argv){
     if(g_lighting_stage>=TSP_HOST_LIGHT_HARD)
         fprintf(lighting_info,"static_point_light_world=92.0,50.0 height=8.0; hard=world_xyz_portal_profiles; penumbra=%s\n",
                 g_lighting_stage>=TSP_HOST_LIGHT_POINT?"one_sided_1px_dither":"off");
+    if(g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE)
+        fprintf(lighting_info,"material=oxide_panel_8x8; uv=segment_distance_x_world_z; texel_world=2.0; repeat_world=16.0; wall_colors=4\n");
     fclose(lighting_info);
 
     tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
