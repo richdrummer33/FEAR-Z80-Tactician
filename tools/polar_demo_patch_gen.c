@@ -7,7 +7,8 @@
  *   - player-like exploration transitions: exact previous view -> exact next view
  *   - patch encoding: [u16 run_count] then row,x,len + payload
  *   - len bit 7 marks a pre-baked palette-toggle run with no word payload
- *   - ordinary geometry/name changes still carry literal little-endian words
+ *   - len bit 6 marks a low-byte-only run when the word high byte is unchanged
+ *   - remaining geometry/name changes carry literal little-endian words
  *   - generated banks are capped conservatively and replay exact final state
  *
  * The runtime therefore performs no projection/visibility/raster work for this
@@ -248,8 +249,10 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const ch
     free(jobs);
     return chosen_budget;
 }
-static uint8_t palette_toggle_only(uint16_t a,uint16_t b){
-    return (uint8_t)((a^b)==TSP_ATTR_PALETTE);
+static uint8_t patch_mode(uint16_t a,uint16_t b){
+    if((a^b)==TSP_ATTR_PALETTE)return 2u; /* palette toggle */
+    if((a&0xff00u)==(b&0xff00u))return 1u; /* low byte only */
+    return 0u;                             /* literal word */
 }
 static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                           uint16_t *changed_out,uint16_t *runs_out){
@@ -257,18 +260,25 @@ static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
     for(row=0u;row<TSP_ROWS;++row){
         uint8_t x=0u;uint16_t base=(uint16_t)row*TSP_COLS;
         while(x<TSP_COLS){
-            uint8_t start,count,c,pal_only;
+            uint8_t start,count,c,mode;
             while(x<TSP_COLS&&a[base+x]==b[base+x])++x;
             if(x>=TSP_COLS)break;
-            start=x;pal_only=palette_toggle_only(a[base+x],b[base+x]);
+            start=x;mode=patch_mode(a[base+x],b[base+x]);
             while(x<TSP_COLS&&a[base+x]!=b[base+x]&&
-                  palette_toggle_only(a[base+x],b[base+x])==pal_only)++x;
+                  patch_mode(a[base+x],b[base+x])==mode)++x;
             count=(uint8_t)(x-start);
-            if(p+3u+(pal_only?0u:(size_t)count*2u)>PATCH_SCRATCH_MAX)
-                die("patch scratch overflow");
+            {
+                size_t payload=mode==2u?0u:(mode==1u?(size_t)count:(size_t)count*2u);
+                if(p+3u+payload>PATCH_SCRATCH_MAX)die("patch scratch overflow");
+            }
             dst[p++]=row;dst[p++]=start;
-            dst[p++]=(uint8_t)(count|(pal_only?0x80u:0u));
-            if(!pal_only)for(c=0u;c<count;++c){
+            dst[p++]=(uint8_t)(count|(mode==2u?0x80u:(mode==1u?0x40u:0u)));
+            if(mode==1u){
+                for(c=0u;c<count;++c){
+                    uint16_t w=b[base+(uint16_t)start+c];
+                    dst[p++]=(uint8_t)w;
+                }
+            }else if(mode==0u)for(c=0u;c<count;++c){
                 uint16_t w=b[base+(uint16_t)start+c];
                 dst[p++]=(uint8_t)w;dst[p++]=(uint8_t)(w>>8);
             }
@@ -283,14 +293,21 @@ static int apply_patch(uint16_t *map,const uint8_t *src,size_t len){
     if(len<2u)return 0;
     n=(uint16_t)src[0]|((uint16_t)src[1]<<8);
     for(i=0u;i<n;++i){
-        uint8_t row,x,raw,count,c,pal_toggle;uint16_t base;
+        uint8_t row,x,raw,count,c,mode;uint16_t base;
         if(p+3u>len)return 0;
         row=src[p++];x=src[p++];raw=src[p++];
-        pal_toggle=(uint8_t)(raw&0x80u);count=(uint8_t)(raw&0x7fu);
+        mode=(uint8_t)(raw&0xc0u);count=(uint8_t)(raw&0x3fu);
+        if(mode==0xc0u)return 0;
         if(row>=TSP_ROWS||x>=TSP_COLS||!count||(uint16_t)x+count>TSP_COLS)return 0;
         base=(uint16_t)row*TSP_COLS;
-        if(pal_toggle){
+        if(mode==0x80u){
             for(c=0u;c<count;++c)map[base+(uint16_t)x+c]^=TSP_ATTR_PALETTE;
+        }else if(mode==0x40u){
+            if(p+(size_t)count>len)return 0;
+            for(c=0u;c<count;++c){
+                uint16_t idx=(uint16_t)(base+(uint16_t)x+c);
+                map[idx]=(uint16_t)((map[idx]&0xff00u)|src[p++]);
+            }
         }else{
             if(p+(size_t)count*2u>len)return 0;
             for(c=0u;c<count;++c){
@@ -367,14 +384,16 @@ static void emit_bank(const char *dir,unsigned bank,const Patch *patches,const B
       "    if(local>=PATCHS_IN_BANK)return;\n"
       "    p=&k_data[k_off[local]]; n=(uint16_t)*p++; n|=(uint16_t)*p++<<8;\n"
       "    for(i=0u;i<n;++i){\n"
-      "        uint8_t row=*p++,x=*p++,raw=*p++,count=(uint8_t)(raw&0x7fu),c;\n"
-      "        uint8_t pal_toggle=(uint8_t)(raw&0x80u);\n"
+      "        uint8_t row=*p++,x=*p++,raw=*p++,count=(uint8_t)(raw&0x3fu),c;\n"
+      "        uint8_t mode=(uint8_t)(raw&0xc0u);\n"
       "        uint16_t idx=(uint16_t)row*TSP_COLS+x;\n"
       "        uint8_t last=(uint8_t)(x+count-1u);\n"
       "        if(g_polar_nt_row_min[row]==0xffu||x<g_polar_nt_row_min[row])g_polar_nt_row_min[row]=x;\n"
       "        if(last>g_polar_nt_row_max[row])g_polar_nt_row_max[row]=last;\n"
-      "        if(pal_toggle){\n"
+      "        if(mode==0x80u){\n"
       "            for(c=0u;c<count;++c)g_map[idx++]^=TSP_ATTR_PALETTE;\n"
+      "        }else if(mode==0x40u){\n"
+      "            for(c=0u;c<count;++c){g_map[idx]=(uint16_t)((g_map[idx]&0xff00u)|*p++);++idx;}\n"
       "        }else for(c=0u;c<count;++c){\n"
       "            uint16_t w=(uint16_t)*p++; w|=(uint16_t)*p++<<8; g_map[idx++]=w;\n"
       "        }\n"
