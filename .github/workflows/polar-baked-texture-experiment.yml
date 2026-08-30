@@ -3,7 +3,7 @@ name: Polar baked texture experiment
 on:
   push:
     branches:
-      - experiment/gg-polar-baked-texture
+      - experiment/gg-polar-baked-texture-exact
   workflow_dispatch:
 
 permissions:
