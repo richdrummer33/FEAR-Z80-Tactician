@@ -54,6 +54,7 @@ volatile uint16_t g_patch_index;
 extern volatile uint8_t g_tspf_appearance_mode;
 
 static uint8_t g_tile[32u];
+static uint8_t g_live_tile_loaded[(TSP_GENERATED_TILE_COUNT+7u)/8u];
 volatile uint8_t g_rail_active;
 volatile uint8_t g_dynamic_renderer;
 volatile uint8_t g_takeover_stage;
@@ -104,21 +105,6 @@ static void emit_edge(uint8_t shade,uint8_t oi,uint8_t si){
     }
     set_bkg_4bpp_data(TSP_TILE_EDGE(shade,oi,si),1u,g_tile);
 }
-static void init_tiles(void){
-    uint8_t s,c,b,o,m;
-    emit_solid(TSP_TILE_CEILING,C_OUT);
-    emit_solid(TSP_TILE_FLOOR,C_FLOOR);
-    emit_horizon();
-    for(s=0u;s<TSP_SHADE_COUNT;++s)
-        for(c=0u;c<TSP_CAP_COUNT;++c)
-            for(b=0u;b<TSP_BORDER_COUNT;++b)
-                emit_full(s,c,b);
-    for(s=0u;s<TSP_SHADE_COUNT;++s)
-        for(o=0u;o<TSP_EDGE_OFF_COUNT;++o)
-            for(m=0u;m<TSP_EDGE_SLOPE_COUNT;++m)
-                emit_edge(s,o,m);
-}
-
 static void init_baked_base_tiles(void){
     emit_solid(TSP_TILE_CEILING,C_OUT);
     emit_solid(TSP_TILE_FLOOR,C_FLOOR);
