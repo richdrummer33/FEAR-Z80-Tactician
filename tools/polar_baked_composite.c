@@ -139,9 +139,13 @@ static int wall_texture_phase(uint8_t sx,uint8_t v0,uint8_t v1,double *phase){
     *phase=p;
     return 1;
 }
-static uint8_t texture_semantic_exact(uint8_t cls){
-    if(!cls)return SEM_BLACK;
-    return (uint8_t)(SEM_FAR+(cls-1u));
+static uint8_t texture_semantic_exact(uint8_t cls,int vi){
+    /* Keep the distinctive authored extremes, collapse the two very similar
+     * steel body tones. This removes a pile of low-value pattern churn while
+     * retaining the bright rail, dark recesses and lower grille read. */
+    if(!cls)return vi>=92?SEM_BLACK:SEM_FAR;
+    if(cls>=3u)return SEM_NEAR;
+    return SEM_MID;
 }
 static double unwrap_period64(double from,double to){
     double d=to-from;
@@ -227,7 +231,7 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
     ui=mirror_repeat8((int)floor(uf+0.5));
     vi=(int)floor(vf+0.5);
     if(vi<0)vi=0;else if(vi>127)vi=127;
-    return texture_semantic_exact(g_wall_tex[vi][ui]);
+    return texture_semantic_exact(g_wall_tex[vi][ui],vi);
 }
 
 static uint64_t fnv64(const uint8_t *p){
