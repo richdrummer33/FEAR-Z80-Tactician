@@ -213,11 +213,15 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const ch
         path_join(tracepath,sizeof(tracepath),dir,"tile_schedule.csv");
         trace=fopen(tracepath,"w");
         if(!trace)die("cannot write tile schedule trace");
-        fprintf(trace,"job,slot,release,deadline,assigned\n");
-        for(j=0u;j<job_count;++j)
-            fprintf(trace,"%" PRIu32 ",%u,%u,%u,%u\n",j,(unsigned)jobs[j].slot,
+        fprintf(trace,"job,slot,release,deadline,assigned,bytes_hex\n");
+        for(j=0u;j<job_count;++j){
+            uint8_t bi;
+            fprintf(trace,"%" PRIu32 ",%u,%u,%u,%u,",j,(unsigned)jobs[j].slot,
                     (unsigned)jobs[j].release,(unsigned)jobs[j].deadline,
                     (unsigned)jobs[j].assigned);
+            for(bi=0u;bi<TSP_HOST_TILE_BYTES;++bi)fprintf(trace,"%02X",jobs[j].bytes[bi]);
+            fputc('\n',trace);
+        }
         fclose(trace);
     }
 
