@@ -763,7 +763,7 @@ int tsp_host_composite_write_ppm(const char *path){
         uint16_t cell=(uint16_t)row*TSP_COLS+col;
         uint16_t pi=(uint16_t)py*8u+px;
         uint8_t v=g_cells[cell][pi];
-        if(g_lighting_stage>=TSP_HOST_LIGHT_POINT&&g_lit[cell][pi])
+        if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])
             v=lit_semantic(v);
         if(v>5u)v=0u;
         fwrite(rgb[v],1,3,f);
