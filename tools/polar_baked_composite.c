@@ -56,9 +56,9 @@ static uint8_t g_owner[TSP_MAP_CELLS][PIXELS];
  * ambient semantic colour so palette 1 can implement the common +1 shade
  * transform without creating a new 32-byte pattern for every fully-lit tile. */
 static uint8_t g_lit[TSP_MAP_CELLS][PIXELS];
-/* Receiver/material mask independent of visibility. Quantized hard edges and
- * penumbra may approximate only where this specific light is legally allowed
- * to affect the final visible receiver. */
+/* Final material veto mask. Keep it broad/cheap by default and clear only
+ * authored one-sided wall/profile backfaces. Quantization and penumbra retain
+ * their compact reusable vocabulary; this mask is an absolute final clamp. */
 static uint8_t g_lightable[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
@@ -489,13 +489,13 @@ static void apply_point_light(void){
             receiver=(int)owner;
             if(receiver_accepts_light(owner))
                 ok=wall_world_point(owner,x,y,&wx,&wy,&wz);
+            else
+                g_lightable[cell][pi]=0u;
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
             ok=background_world_receiver(x,y,&wx,&wy,&wz);
         }
-        if(ok&&v>SEM_BLACK&&v<SEM_NEAR){
-            g_lightable[cell][pi]=1u;
-            if(world_point_lit(wx,wy,wz,receiver))g_lit[cell][pi]=1u;
-        }
+        if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,wz,receiver))
+            g_lit[cell][pi]=1u;
     }
     quantize_point_light_edges();
     if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)apply_one_sided_penumbra();
@@ -564,7 +564,7 @@ void tsp_host_composite_begin_frame(void){
     ensure_init();
     memset(g_owner,0xff,sizeof(g_owner));
     memset(g_lit,0,sizeof(g_lit));
-    memset(g_lightable,0,sizeof(g_lightable));
+    memset(g_lightable,1,sizeof(g_lightable));
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
         if(row<9u)tile_fill(p,SEM_CEILING);
