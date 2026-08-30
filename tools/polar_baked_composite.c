@@ -63,6 +63,7 @@ static uint8_t g_lightable[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
+static int16_t g_camera_z_q4=TSP_EYE_HEIGHT_Q4;
 static uint8_t g_camera_yaw;
 
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
@@ -117,6 +118,7 @@ void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
     if(camera){
         g_camera_x_q4=camera->x_q4;
         g_camera_y_q4=camera->y_q4;
+        g_camera_z_q4=camera->z_q4;
         g_camera_yaw=camera->yaw;
     }
 }
@@ -129,7 +131,6 @@ static uint8_t ao_pixel(uint8_t color,uint8_t strength,uint8_t sx,uint8_t sy){
     return color;
 }
 
-#define TSP_CAMERA_Z 16.0
 #define TSP_CEILING_Z 32.0
 #define TSP_ROOM_B_FLOOR_Z 4.0
 #define TSP_FOCAL_PX 80.0
@@ -272,6 +273,8 @@ static int point_in_any_horizontal(double x,double y){
 }
 
 /* Intersect the camera ray through one screen pixel with a horizontal plane. */
+static double camera_z_world(void){return (double)g_camera_z_q4/16.0;}
+
 static int screen_plane_world(int sx,int sy,double zplane,
                               double *wx,double *wy,double *depth_out){
     double px=(double)sx+0.5,py=(double)sy+0.5;
@@ -279,7 +282,7 @@ static int screen_plane_world(int sx,int sy,double zplane,
     double depth,lateral,fx,fy,rx,ry;
     double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
     if(fabs(vz)<1e-10)return 0;
-    depth=(zplane-TSP_CAMERA_Z)/vz;
+    depth=(zplane-camera_z_world())/vz;
     if(depth<=1e-6)return 0;
     lateral=depth*((px-80.0)/TSP_FOCAL_PX);
     camera_basis(&fx,&fy,&rx,&ry);
@@ -334,7 +337,7 @@ static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,doub
                            (double)b->x,(double)b->y,&t,&u))return 0;
     if(t<=1e-7||u<-1e-5||u>1.0+1e-5)return 0;
     *wx=cx+dx*t;*wy=cy+dy*t;
-    *wz=TSP_CAMERA_Z-((py-TSP_HORIZON_PX)/TSP_FOCAL_PX)*t;
+    *wz=camera_z_world()-((py-TSP_HORIZON_PX)/TSP_FOCAL_PX)*t;
     /* Raster rounding can land boundary-adjacent pixel centers a fraction
      * outside the analytic profile. Clamp only that rounding residue. */
     profile_z_range(s->profile,&z0,&z1);
