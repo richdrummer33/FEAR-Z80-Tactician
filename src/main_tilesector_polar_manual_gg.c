@@ -28,10 +28,17 @@
  * After manual takeover the live generic renderer uses palette 0 only.
  */
 static const palette_color_t k_baked_palettes[32] = {
-    RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
-    RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
+    /* palette 0: ambient */
+    RGB(0,0,0), RGB(1,1,3), RGB(3,3,4), RGB(4,2,2),
+    RGB(7,4,3), RGB(10,6,4), RGB(9,8,7), RGB(0,0,0),
+    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
+    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
+
+    /* palette 1: lit colors at 1..6; ambient duplicates at 8..13 */
+    RGB(0,0,0), RGB(2,2,4), RGB(4,4,5), RGB(7,4,3),
+    RGB(10,6,4), RGB(13,8,5), RGB(13,12,10), RGB(0,0,0),
+    RGB(1,1,3), RGB(3,3,4), RGB(4,2,2), RGB(7,4,3),
+    RGB(10,6,4), RGB(9,8,7), RGB(0,0,0), RGB(0,0,0)
 };
 
 /* Generic live-renderer palettes. Palette 1 keeps floor/outside substitution
