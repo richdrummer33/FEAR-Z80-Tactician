@@ -228,6 +228,71 @@ static uint8_t lit_semantic(uint8_t v){
     return (uint8_t)(v+1u);
 }
 
+/*
+ * Snap a mixed 8x8 light/shadow classification to the renderer's reusable
+ * straight-edge vocabulary. The exact world visibility solution is sampled
+ * first; this is only the final sub-tile rasterization step.
+ *
+ * k_edge_lut supplies shallow 0..1 slopes. Mirroring the independent axis
+ * gives negative slopes, and transposing X/Y supplies the steep family. We
+ * search both lit sides and enough offsets to slide the line completely
+ * through the tile. Full-lit/full-shadow cells are left exact and therefore
+ * continue to collapse to the ambient tile pattern via palette 1.
+ */
+static void quantize_light_cell(uint16_t cell){
+    uint64_t eligible=0u,target=0u,best=0u;
+    unsigned eligible_count,target_count,best_cost=65u;
+    int orient,si,mirror,side,off,x,y;
+    uint8_t i;
+
+    for(i=0u;i<PIXELS;++i){
+        uint8_t v=g_cells[cell][i];
+        uint64_t bit=UINT64_C(1)<<i;
+        if(v>SEM_BLACK&&v<SEM_NEAR){
+            eligible|=bit;
+            if(g_lit[cell][i])target|=bit;
+        }
+    }
+    eligible_count=(unsigned)__builtin_popcountll(eligible);
+    target_count=(unsigned)__builtin_popcountll(target);
+    if(!eligible_count||!target_count||target_count==eligible_count)return;
+
+    for(orient=0;orient<2;++orient)
+    for(si=0;si<8;++si)
+    for(mirror=0;mirror<2;++mirror)
+    for(side=0;side<2;++side)
+    for(off=-8;off<=15;++off){
+        uint64_t cand=0u;
+        unsigned cand_count,cost;
+        for(y=0;y<8;++y)for(x=0;x<8;++x){
+            int a=orient?y:x;
+            int b=orient?x:y;
+            int sample=mirror?(7-a):a;
+            int line=off+(int)k_edge_lut[si][sample];
+            int lit=side?(b>=line):(b<line);
+            if(lit)cand|=UINT64_C(1)<<((unsigned)y*8u+(unsigned)x);
+        }
+        cand_count=(unsigned)__builtin_popcountll(cand&eligible);
+        /* Preserve the fact that this was a boundary cell; do not erase a
+         * narrow cast edge merely because all-on/all-off is one pixel closer. */
+        if(!cand_count||cand_count==eligible_count)continue;
+        cost=(unsigned)__builtin_popcountll((cand^target)&eligible);
+        if(cost<best_cost){best_cost=cost;best=cand;if(!cost)goto found_exact;}
+    }
+found_exact:
+    if(best_cost>64u)return;
+    for(i=0u;i<PIXELS;++i){
+        uint8_t v=g_cells[cell][i];
+        if(v>SEM_BLACK&&v<SEM_NEAR)
+            g_lit[cell][i]=(uint8_t)((best>>i)&UINT64_C(1));
+    }
+}
+
+static void quantize_point_light_edges(void){
+    uint16_t cell;
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell)quantize_light_cell(cell);
+}
+
 static void apply_point_light(void){
     int x,y;
     if(!TSP_HOST_STATIC_LIGHT_COUNT)return;
@@ -247,6 +312,7 @@ static void apply_point_light(void){
         if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,receiver))
             g_lit[cell][pi]=1u;
     }
+    quantize_point_light_edges();
 }
 
 static void generic_unflipped_indices(uint16_t id,uint8_t out[PIXELS]){
