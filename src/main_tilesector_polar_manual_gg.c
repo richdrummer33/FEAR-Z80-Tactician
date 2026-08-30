@@ -24,11 +24,15 @@
 #define C_MID   4u
 #define C_NEAR  5u
 
+/*
+ * Match the current baked point/penumbra packet exactly while rails are active.
+ * After manual takeover the live generic renderer uses palette 0 only.
+ */
 static const palette_color_t k_palettes[32] = {
     RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
     RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
-    RGB(0,0,0),RGB(2,2,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
+    RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
+    RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
 };
 static const int8_t k_edge_lut[8][8] = {
     {0,0,0,0,0,0,0,0},{0,0,0,0,1,1,1,1},{0,0,1,1,1,1,2,2},{0,0,1,1,2,2,3,3},
@@ -42,8 +46,8 @@ volatile uint16_t g_patch_index;
 extern volatile uint8_t g_tspf_appearance_mode;
 
 static uint8_t g_tile[32u];
-static uint8_t g_rail_active;
-static uint8_t g_dynamic_renderer;
+volatile uint8_t g_rail_active;
+volatile uint8_t g_dynamic_renderer;
 static PolarExploreCursor g_explore;
 
 void tsp_polar_nt_init(void);
