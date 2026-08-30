@@ -149,15 +149,19 @@ static double unwrap_period64(double from,double to){
     while(d<-32.0)d+=64.0;
     return d;
 }
-static int quant_span_fine(double v){
-    static const uint8_t k[]={
-        1u,2u,3u,4u,5u,6u,7u,8u,10u,12u,14u,16u,
-        20u,24u,28u,32u,40u,48u,56u,64u,80u,96u,112u,128u
+static int quant_span(double v,uint8_t coarse){
+    static const uint8_t k_fine[]={
+        1u,2u,4u,6u,8u,12u,16u,24u,32u,48u,64u,96u,128u
     };
+    static const uint8_t k_edge[]={
+        2u,4u,8u,16u,24u,32u,48u,64u,96u,128u
+    };
+    const uint8_t *k=coarse?k_edge:k_fine;
+    unsigned n=coarse?sizeof(k_edge):sizeof(k_fine);
     unsigned i,best=0u;
     double e,beste=1e30;
     if(v<0.0)v=-v;
-    for(i=0u;i<sizeof(k);++i){
+    for(i=0u;i<n;++i){
         e=fabs(v-(double)k[i]);
         if(e<beste){beste=e;best=i;}
     }
@@ -179,13 +183,17 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
     int h=(int)(botc-topc+1);
     double ul,ur,uc,du,vspan,vcenter,uf,vf;
     int quspan,qvspan,ucenter_q,vcenter_q,ui,vi;
+    int16_t yt=(int16_t)ybase,yb=(int16_t)(ybase+7);
+    uint8_t edge_cell=(uint8_t)(tl>yt||tr>yt||bl<yb||br<yb);
+    int phase_snap=edge_cell?8:4;
+    int vphase_snap=edge_cell?8:4;
     if(h<2)return SEM_FAR;
     if(!wall_texture_phase((uint8_t)sx0,v0,v1,&ul)||
        !wall_texture_phase((uint8_t)sx1,v0,v1,&ur)||
        !wall_texture_phase((uint8_t)sxc,v0,v1,&uc))return SEM_FAR;
 
     du=unwrap_period64(ul,ur);
-    quspan=quant_span_fine(du);
+    quspan=quant_span(du,edge_cell);
     if(du<0.0)quspan=-quspan;
 
     /* IMPORTANT: quantize only the texture transform, NEVER wall ownership.
@@ -193,11 +201,11 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
      * its arbitrary top/bottom slopes. These buckets merely make nearby
      * camera poses reuse the same source-texture transform inside an 8x8
      * hardware pattern. */
-    ucenter_q=(int)floor((uc+1.0)/2.0)*2;
+    ucenter_q=(int)floor((uc+(double)phase_snap*0.5)/(double)phase_snap)*phase_snap;
     vspan=1024.0/(double)h; /* source texels covered by one 8px screen row */
-    qvspan=quant_span_fine(vspan);
+    qvspan=quant_span(vspan,edge_cell);
     vcenter=(((double)(ybase+4-topc))*128.0)/(double)h;
-    vcenter_q=(int)floor((vcenter+1.0)/2.0)*2;
+    vcenter_q=(int)floor((vcenter+(double)vphase_snap*0.5)/(double)vphase_snap)*vphase_snap;
 
     uf=(double)ucenter_q+
        ((double)((int)sx-sx0)-3.5)*(double)quspan/7.0;
