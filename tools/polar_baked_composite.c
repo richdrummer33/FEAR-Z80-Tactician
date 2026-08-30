@@ -201,6 +201,43 @@ static int background_world_point(int sx,int sy,double *wx,double *wy){
  * the first pass uses vertically extruded blockers, all Y pixels in a wall
  * screen column share the same light/shadow classification: wall shadow cuts
  * are naturally vertical, while floor/ceiling cuts can be arbitrary angles. */
+/*
+ * Horizontal receivers are finite authored surfaces, not an infinite plane.
+ * These three polygons mirror the actual Room A, connector, and Room B floor
+ * plan from polar_field_demo_v1.py. Ceiling uses the same XY footprint in this
+ * first vertical-extrusion lighting pass.
+ */
+static int point_on_world_edge(double x,double y,
+                               const TSPHostWorldVertex *a,
+                               const TSPHostWorldVertex *b){
+    double dx=(double)b->x-(double)a->x,dy=(double)b->y-(double)a->y;
+    double px=x-(double)a->x,py=y-(double)a->y;
+    double cross=px*dy-py*dx;
+    double dot=px*dx+py*dy,len2=dx*dx+dy*dy;
+    return fabs(cross)<1e-7&&dot>=-1e-7&&dot<=len2+1e-7;
+}
+static int point_in_world_poly(double x,double y,const uint8_t *vid,uint8_t n){
+    uint8_t i,j;int inside=0;
+    for(i=0u,j=(uint8_t)(n-1u);i<n;j=i++){
+        const TSPHostWorldVertex *a=&k_tsp_host_world_vertices[vid[j]];
+        const TSPHostWorldVertex *b=&k_tsp_host_world_vertices[vid[i]];
+        double ay=(double)a->y,by=(double)b->y;
+        if(point_on_world_edge(x,y,a,b))return 1;
+        if(((ay>y)!=(by>y))&&
+           x<((double)(b->x-a->x)*(y-ay)/(by-ay)+(double)a->x))
+            inside=!inside;
+    }
+    return inside;
+}
+static int world_horizontal_receiver(double x,double y){
+    static const uint8_t room_a[]={0u,1u,2u,3u,4u,5u};
+    static const uint8_t connector[]={2u,6u,7u,3u};
+    static const uint8_t room_b[]={8u,10u,11u,12u,13u,9u,7u,6u};
+    return point_in_world_poly(x,y,room_a,(uint8_t)(sizeof(room_a)/sizeof(room_a[0])))||
+           point_in_world_poly(x,y,connector,(uint8_t)(sizeof(connector)/sizeof(connector[0])))||
+           point_in_world_poly(x,y,room_b,(uint8_t)(sizeof(room_b)/sizeof(room_b[0])));
+}
+
 static int wall_world_point(uint8_t sid,int sx,double *wx,double *wy){
     const TSPHostWorldSegment *s;
     const TSPHostWorldVertex *a,*b;
@@ -308,6 +345,7 @@ static void apply_point_light(void){
             ok=wall_world_point(owner,x,&wx,&wy);
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
             ok=background_world_point(x,y,&wx,&wy);
+            if(ok&&!world_horizontal_receiver(wx,wy))ok=0;
         }
         if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,receiver))
             g_lit[cell][pi]=1u;
