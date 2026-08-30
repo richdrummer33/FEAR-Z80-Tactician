@@ -52,6 +52,10 @@ static uint8_t g_cells[TSP_MAP_CELLS][PIXELS];
  * ceiling remain 0xff. This exists only in the host bake and lets the lighting
  * pass recover an exact world receiver point for wall pixels. */
 static uint8_t g_owner[TSP_MAP_CELLS][PIXELS];
+/* Binary world-space point-light coverage. Keep illumination separate from
+ * ambient semantic colour so palette 1 can implement the common +1 shade
+ * transform without creating a new 32-byte pattern for every fully-lit tile. */
+static uint8_t g_lit[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -240,8 +244,8 @@ static void apply_point_light(void){
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
             ok=background_world_point(x,y,&wx,&wy);
         }
-        if(ok&&world_point_lit(wx,wy,receiver))
-            g_cells[cell][pi]=lit_semantic(v);
+        if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,receiver))
+            g_lit[cell][pi]=1u;
     }
 }
 
@@ -306,6 +310,7 @@ void tsp_host_composite_begin_frame(void){
     uint8_t row,col;
     ensure_init();
     memset(g_owner,0xff,sizeof(g_owner));
+    memset(g_lit,0,sizeof(g_lit));
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
         if(row<9u)tile_fill(p,SEM_CEILING);
@@ -409,6 +414,34 @@ static int cache_find(uint64_t h,const uint8_t p[PIXELS]){
     return -1;
 }
 
+/*
+ * Palette 1 is a hardware +1-shade transform for indices 1..4.  A tile that
+ * contains any light uses palette 1. Lit pixels keep their ordinary semantic
+ * index; unlit pixels in the same mixed boundary tile use reserved indices
+ * 8..11, whose palette-1 colours duplicate the original ambient shades.
+ *
+ * Result: a completely-lit tile has byte-for-byte the SAME pattern as its
+ * ambient form and only toggles one name-table palette bit. Only tiles actually
+ * crossed by a hard light/shadow boundary require a distinct mixed pattern.
+ */
+static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
+                                 const uint8_t lit[PIXELS],
+                                 uint8_t encoded[PIXELS]){
+    uint8_t i,any=0u;
+    for(i=0u;i<PIXELS;++i){
+        uint8_t v=ambient[i];
+        if(lit[i]&&v>SEM_BLACK&&v<SEM_NEAR){any=1u;break;}
+    }
+    if(!any){memcpy(encoded,ambient,PIXELS);return 0u;}
+    for(i=0u;i<PIXELS;++i){
+        uint8_t v=ambient[i];
+        if(v==SEM_BLACK||v>=SEM_NEAR)encoded[i]=v;
+        else if(lit[i])encoded[i]=v;
+        else encoded[i]=(uint8_t)(v+7u);
+    }
+    return 1u;
+}
+
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     FramePattern req[TSP_MAP_CELLS];
     int16_t htab[FRAME_HASH];
@@ -424,10 +457,14 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     g_load_count=0u;
 
     for(i=0u;i<TSP_MAP_CELLS;++i){
-        uint8_t canon[PIXELS];
+        uint8_t canon[PIXELS],encoded[PIXELS],use_lit_palette=0u;
         uint16_t attr,pos;
         uint64_t h;
-        canonicalize(g_cells[i],canon,&attr);
+        if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)
+            use_lit_palette=point_tile_encode(g_cells[i],g_lit[i],encoded);
+        else memcpy(encoded,g_cells[i],PIXELS);
+        canonicalize(encoded,canon,&attr);
+        if(use_lit_palette)attr|=TSP_ATTR_PALETTE;
         h=fnv64(canon);pos=(uint16_t)h&(FRAME_HASH-1u);
         for(;;){
             int16_t q=htab[pos];
@@ -498,7 +535,11 @@ int tsp_host_composite_write_ppm(const char *path){
     for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
         uint8_t row=(uint8_t)(y>>3),col=(uint8_t)(x>>3);
         uint8_t py=(uint8_t)(y&7u),px=(uint8_t)(x&7u);
-        uint8_t v=g_cells[(uint16_t)row*TSP_COLS+col][(uint16_t)py*8u+px];
+        uint16_t cell=(uint16_t)row*TSP_COLS+col;
+        uint16_t pi=(uint16_t)py*8u+px;
+        uint8_t v=g_cells[cell][pi];
+        if(g_lighting_stage>=TSP_HOST_LIGHT_POINT&&g_lit[cell][pi])
+            v=lit_semantic(v);
         if(v>5u)v=0u;
         fwrite(rgb[v],1,3,f);
     }
