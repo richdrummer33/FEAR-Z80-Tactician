@@ -159,7 +159,7 @@ tilesector-host: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_core.c host/tilesector_host.c -o $(TILESECTOR_HOST_BIN)
 
 polar-test: build
-	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tests/test_tilesector_polar.c -o $(POLAR_TEST_BIN)
+	$(CC) $(CFLAGS) -Isrc src/tilesector_world_module.c src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tests/test_tilesector_polar.c -o $(POLAR_TEST_BIN)
 	./$(POLAR_TEST_BIN)
 
 $(POLAR_TRANSITION_BAKE_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_transition_bake.c | build
