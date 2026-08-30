@@ -79,6 +79,7 @@ static uint32_t g_total_loads;
 
 static void die(const char *msg){fprintf(stderr,"fatal: %s\n",msg);exit(2);}
 static uint8_t shade_sem(uint8_t shade);
+static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x);
 
 static int host_angle_x(int16_t rel){
     uint16_t a=(uint16_t)(rel<0?-rel:rel);
