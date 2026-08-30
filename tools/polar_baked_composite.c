@@ -140,18 +140,71 @@ static int wall_texture_phase(uint8_t sx,uint8_t v0,uint8_t v1,double *phase){
     return 1;
 }
 static uint8_t texture_semantic_exact(uint8_t cls){
-    /* First correctness pass: preserve the source's four authored intensity
-     * classes exactly. Do not fold them back into distance-shade classes.
-     * Geometry owns the wall boundary; texture only chooses pixels INSIDE it. */
     if(!cls)return SEM_BLACK;
     return (uint8_t)(SEM_FAR+(cls-1u));
 }
-static uint8_t sample_wall_texture_exact(double phase,int16_t y,int16_t top,int16_t bot){
-    int ui,vi,h=(int)(bot-top);
-    if(h<=0)return SEM_FAR;
-    ui=(int)floor(phase+0.5);
-    ui%=64;if(ui<0)ui+=64;
-    vi=(int)(((int32_t)(y-top)*127 + h/2)/h);
+static double unwrap_period64(double from,double to){
+    double d=to-from;
+    while(d>32.0)d-=64.0;
+    while(d<-32.0)d+=64.0;
+    return d;
+}
+static int quant_span_fine(double v){
+    static const uint8_t k[]={
+        1u,2u,3u,4u,5u,6u,7u,8u,10u,12u,14u,16u,
+        20u,24u,28u,32u,40u,48u,56u,64u,80u,96u,112u,128u
+    };
+    unsigned i,best=0u;
+    double e,beste=1e30;
+    if(v<0.0)v=-v;
+    for(i=0u;i<sizeof(k);++i){
+        e=fabs(v-(double)k[i]);
+        if(e<beste){beste=e;best=i;}
+    }
+    return (int)k[best];
+}
+static int wrap64(int u){
+    int q=u%64;
+    if(q<0)q+=64;
+    return q;
+}
+static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
+                                             uint8_t sx,int16_t y,
+                                             int16_t tl,int16_t tr,
+                                             int16_t bl,int16_t br,
+                                             uint8_t v0,uint8_t v1){
+    int sx0=(int)col*8,sx1=sx0+7,sxc=sx0+4;
+    int ybase=(int)row*8;
+    int16_t topc=lerp_edge7(tl,tr,4u),botc=lerp_edge7(bl,br,4u);
+    int h=(int)(botc-topc+1);
+    double ul,ur,uc,du,vspan,vcenter,uf,vf;
+    int quspan,qvspan,ucenter_q,vcenter_q,ui,vi;
+    if(h<2)return SEM_FAR;
+    if(!wall_texture_phase((uint8_t)sx0,v0,v1,&ul)||
+       !wall_texture_phase((uint8_t)sx1,v0,v1,&ur)||
+       !wall_texture_phase((uint8_t)sxc,v0,v1,&uc))return SEM_FAR;
+
+    du=unwrap_period64(ul,ur);
+    quspan=quant_span_fine(du);
+    if(du<0.0)quspan=-quspan;
+
+    /* IMPORTANT: quantize only the texture transform, NEVER wall ownership.
+     * The renderer still walks every real projected wall pixel and clips to
+     * its arbitrary top/bottom slopes. These buckets merely make nearby
+     * camera poses reuse the same source-texture transform inside an 8x8
+     * hardware pattern. */
+    ucenter_q=(int)floor((uc+1.0)/2.0)*2;
+    vspan=1024.0/(double)h; /* source texels covered by one 8px screen row */
+    qvspan=quant_span_fine(vspan);
+    vcenter=(((double)(ybase+4-topc))*128.0)/(double)h;
+    vcenter_q=(int)floor((vcenter+1.0)/2.0)*2;
+
+    uf=(double)ucenter_q+
+       ((double)((int)sx-sx0)-3.5)*(double)quspan/7.0;
+    vf=(double)vcenter_q+
+       ((double)(y-ybase)-3.5)*(double)qvspan/7.0;
+    ui=wrap64((int)floor(uf+0.5));
+    vi=(int)floor(vf+0.5);
     if(vi<0)vi=0;else if(vi>127)vi=127;
     return texture_semantic_exact(g_wall_tex[vi][ui]);
 }
@@ -382,10 +435,8 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
         int16_t y0=top<0?0:top;
         int16_t y1=bot>143?143:bot;
         int16_t y;
-        double texture_phase=0.0;
         uint8_t texture_ok=(uint8_t)(g_lighting_stage==TSP_HOST_LIGHT_TEXTURE&&
-                                     profile==TSP_PROFILE_FULL&&
-                                     wall_texture_phase(sx,v0,v1,&texture_phase));
+                                     profile==TSP_PROFILE_FULL);
 
         if(y0>y1)continue;
         for(y=y0;y<=y1;++y){
@@ -397,12 +448,9 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
             if(!black&&texture_ok){
-                /* Exact host-side texture rasterization: this pixel already
-                 * lies inside the projected wall polygon. U comes from the
-                 * camera ray / wall intersection; V comes from the exact
-                 * projected top/bottom at this screen X. The eventual 8x8
-                 * tile boundary has ZERO influence on wall ownership. */
-                pixel=sample_wall_texture_exact(texture_phase,y,top,bot);
+                /* Wall ownership remains exact and per-pixel. Only the
+                 * texture transform is quantized for hardware pattern reuse. */
+                pixel=sample_wall_texture_quantized(col,row,sx,y,tl,tr,bl,br,v0,v1);
             }else if(!black&&(g_lighting_stage==TSP_HOST_LIGHT_AO||
                               g_lighting_stage==TSP_HOST_LIGHT_POINT)){
                 uint8_t strength=0u;
