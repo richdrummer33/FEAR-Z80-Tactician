@@ -34,7 +34,7 @@ void tsp_host_composite_begin_frame(void);
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 int16_t tl,int16_t tr,int16_t bl,int16_t br,
-                                uint8_t shade,uint8_t border,
+                                uint8_t sid,uint8_t shade,uint8_t border,
                                 uint8_t ao_left,uint8_t ao_right);
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
