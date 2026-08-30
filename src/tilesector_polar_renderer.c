@@ -525,7 +525,10 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r){
      * fast paths; previously only mode 0 initialized it because nothing else
      * consumed this bridge field. */
     if(g_tspf_appearance_mode<2u) g_polar_run_profile=profile;
-    if(g_tspf_appearance_mode==0u){
+    if(g_tspf_appearance_mode==0u && s->z_q4==TSP_EYE_HEIGHT_Q4){
+        /* Preserve the zero-cost mature assembly run kernel on ordinary flat
+         * floor states. Elevated states need asymmetric top/bottom projection,
+         * so they fall through to the endpoint-aware column path below. */
         g_polar_run_c0=c0;g_polar_run_c1=c1;
         g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
         g_polar_run_iq=iq;g_polar_run_step=step;
