@@ -1,0 +1,168 @@
+name: Polar baked texture performance
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-texture-exact
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  performance:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host Polar acceptance
+        run: make polar-test
+
+      - name: Build exact-bounded texture packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build/polar_demo_patch_gen
+          rm -rf build/generated/polar_demo_patch
+          mkdir -p build/generated/polar_demo_patch
+          ./build/polar_demo_patch_gen build/generated/polar_demo_patch texture \
+            | tee build/texture-profile-generator.txt
+          touch build/generated/polar_demo_patch/.stamp
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build raw and profiled texture ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/perf
+          clean_patch() {
+            rm -f build/main_tilesector_polar_patch_gg.o \
+                  build/tilesector_polar_patch_motion_gg.o \
+                  build/tilesector_polar_patch_ntstate_gg.o \
+                  build/tilesector_polar_patch_ntupload_raw_gg.o \
+                  build/tilesector_polar_patch_ntupload_profiled_gg.o \
+                  build/polar_demo_patch_dispatch_gg.o \
+                  build/polar_demo_patch_bank*_gg.o \
+                  build/polar_demo_tilepatch_dispatch_gg.o \
+                  build/polar_demo_tilepatch_bank*_gg.o \
+                  build/gg-polar-patch-demo.*
+          }
+
+          clean_patch
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+            gg-polar-patch-demo
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/perf/texture-raw.$ext"
+          done
+
+          clean_patch
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PATCH_PROFILE_HOOKS=1 POLAR_PATCH_ROM_BANKS=64 \
+            gg-polar-patch-demo
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/perf/texture-profiled.$ext"
+          done
+
+      - name: Build Gearsystem cycle profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: External cadence and exact replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/polar_raw_profile_runner \
+            build/perf/texture-raw.gg build/perf/texture-raw.sym \
+            1100 8 build/perf/texture-raw-cadence.csv build/perf/texture-raw-map.bin \
+            _g_patch_index 16 \
+            | tee build/perf/texture-raw-cadence.txt
+
+          ./build/polar_raw_profile_runner \
+            build/perf/texture-profiled.gg build/perf/texture-profiled.sym \
+            1100 8 build/perf/texture-profiled-cadence.csv build/perf/texture-profiled-map.bin \
+            _g_patch_index 16 \
+            | tee build/perf/texture-profiled-cadence.txt
+
+          cmp build/perf/texture-raw-map.bin build/perf/texture-profiled-map.bin
+
+          python3 tools/compare_patch_reference.py \
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin \
+            build/perf/texture-raw-map.bin \
+            --label texture-raw-perf --require-exact \
+            | tee build/perf/texture-vs-host-reference.txt
+
+      - name: Detailed texture phase profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/tilesector_profile_runner \
+            build/perf/texture-profiled.gg build/perf/texture-profiled.sym \
+            1100 8 demo build/perf/texture-detailed-map.bin build/perf/texture-detailed-state.bin \
+            | tee build/perf/texture-detailed.txt
+
+      - name: Summarize texture runtime cost
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/perf/texture-perf-summary.txt
+          from pathlib import Path
+          import re
+          CPU=3579545.0
+          def cadence(path):
+              s=Path(path).read_text()
+              out={}
+              for key in ("mean","p50","p90","p95","p99","max"):
+                  m=re.search(rf"\b{key}=\s*([0-9.]+)",s)
+                  if not m: raise SystemExit(f"missing {key} in {path}")
+                  out[key]=float(m.group(1))
+              return out
+          def phase(label):
+              s=Path("build/perf/texture-detailed.txt").read_text()
+              m=re.search(rf"{re.escape(label)}\s+avg=\s*([0-9.]+) T\s+min=\s*([0-9]+) max=\s*([0-9]+)",s)
+              if not m: raise SystemExit(f"missing phase {label}")
+              return tuple(map(float,m.groups()))
+          raw=cadence("build/perf/texture-raw-cadence.txt")
+          prof=cadence("build/perf/texture-profiled-cadence.txt")
+          motion=phase("input+motion")
+          patch=phase("render/build")
+          vram=phase("VRAM-upload")
+          tail=phase("loop-tail")
+          wait=phase("vsync-wait")
+          active=sum(x[0] for x in (motion,patch,vram,tail))
+          active_upper=sum(x[2] for x in (motion,patch,vram,tail))
+          print("EXACT-BOUNDED BAKED TEXTURE PERFORMANCE")
+          print(f"raw mean={raw['mean']:.1f} T p95={raw['p95']:.1f} p99={raw['p99']:.1f} max={raw['max']:.0f} -> {CPU/raw['mean']:.3f} loops/s")
+          print(f"profile hook delta={prof['mean']-raw['mean']:+.1f} T")
+          print(f"active avg={active:.1f} T")
+          print(f"  motion avg/max={motion[0]:.1f}/{motion[2]:.0f}")
+          print(f"  patch avg/max={patch[0]:.1f}/{patch[2]:.0f}")
+          print(f"  tile+NT VRAM avg/max={vram[0]:.1f}/{vram[2]:.0f}")
+          print(f"  tail avg/max={tail[0]:.1f}/{tail[2]:.0f}")
+          print(f"component-max upper bound={active_upper:.1f} T")
+          print(f"vsync wait avg/max={wait[0]:.1f}/{wait[2]:.0f}")
+          print(f"raw mean fraction of 60Hz frame={100*raw['mean']/(CPU/60.0):.1f}%")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-baked-texture-performance
+          path: |
+            build/perf/
+            build/texture-profile-generator.txt
+            build/generated/polar_demo_patch/tile_schedule.csv
+          retention-days: 30
