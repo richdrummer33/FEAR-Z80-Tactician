@@ -249,45 +249,89 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const ch
     free(jobs);
     return chosen_budget;
 }
-static uint8_t patch_mode(uint16_t a,uint16_t b){
-    if((a^b)==TSP_ATTR_PALETTE)return 2u; /* palette toggle */
-    if((a&0xff00u)==(b&0xff00u))return 1u; /* low byte only */
-    return 0u;                             /* literal word */
+static uint8_t palette_toggle_only(uint16_t a,uint16_t b){
+    return (uint8_t)((a^b)==TSP_ATTR_PALETTE);
 }
+static uint8_t low_byte_only(uint16_t a,uint16_t b){
+    return (uint8_t)((a&0xff00u)==(b&0xff00u));
+}
+
+/*
+ * Exact minimum-cost partition of each contiguous changed row span.
+ * TSP_COLS is only 20, so an O(n^3) host-side DP is tiny and guarantees the
+ * low-byte opcode never loses to extra run headers.
+ *
+ * mode: 0 literal word, 1 low byte, 2 palette toggle.
+ */
 static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
                           uint16_t *changed_out,uint16_t *runs_out){
     size_t p=2u;uint16_t changed=0u,runs=0u;uint8_t row;
     for(row=0u;row<TSP_ROWS;++row){
         uint8_t x=0u;uint16_t base=(uint16_t)row*TSP_COLS;
         while(x<TSP_COLS){
-            uint8_t start,count,c,mode;
+            uint8_t start,end,i;
+            uint16_t cost[TSP_COLS+1u];
+            uint8_t best_mode[TSP_COLS],best_len[TSP_COLS];
+
             while(x<TSP_COLS&&a[base+x]==b[base+x])++x;
             if(x>=TSP_COLS)break;
-            start=x;mode=patch_mode(a[base+x],b[base+x]);
-            while(x<TSP_COLS&&a[base+x]!=b[base+x]&&
-                  patch_mode(a[base+x],b[base+x])==mode)++x;
-            count=(uint8_t)(x-start);
-            {
+            start=x;
+            while(x<TSP_COLS&&a[base+x]!=b[base+x])++x;
+            end=x;
+
+            cost[end]=0u;
+            for(i=end;i>start;){
+                uint8_t pos=(uint8_t)(--i),j;
+                uint16_t best=0xffffu;
+                uint8_t bm=0u,bl=1u;
+                uint8_t pal_ok=1u,low_ok=1u;
+                for(j=pos;j<end;++j){
+                    uint8_t n=(uint8_t)(j-pos+1u);
+                    uint16_t q;
+                    pal_ok=(uint8_t)(pal_ok&&palette_toggle_only(a[base+j],b[base+j]));
+                    low_ok=(uint8_t)(low_ok&&low_byte_only(a[base+j],b[base+j]));
+
+                    q=(uint16_t)(3u+(uint16_t)n*2u+cost[j+1u]);
+                    if(q<best){best=q;bm=0u;bl=n;}
+                    if(low_ok){
+                        q=(uint16_t)(3u+(uint16_t)n+cost[j+1u]);
+                        if(q<best){best=q;bm=1u;bl=n;}
+                    }
+                    if(pal_ok){
+                        q=(uint16_t)(3u+cost[j+1u]);
+                        if(q<best){best=q;bm=2u;bl=n;}
+                    }
+                }
+                cost[pos]=best;best_mode[pos]=bm;best_len[pos]=bl;
+            }
+
+            i=start;
+            while(i<end){
+                uint8_t mode=best_mode[i],count=best_len[i],c;
                 size_t payload=mode==2u?0u:(mode==1u?(size_t)count:(size_t)count*2u);
                 if(p+3u+payload>PATCH_SCRATCH_MAX)die("patch scratch overflow");
-            }
-            dst[p++]=row;dst[p++]=start;
-            dst[p++]=(uint8_t)(count|(mode==2u?0x80u:(mode==1u?0x40u:0u)));
-            if(mode==1u){
-                for(c=0u;c<count;++c){
-                    uint16_t w=b[base+(uint16_t)start+c];
-                    dst[p++]=(uint8_t)w;
+                dst[p++]=row;dst[p++]=i;
+                dst[p++]=(uint8_t)(count|(mode==2u?0x80u:(mode==1u?0x40u:0u)));
+                if(mode==1u){
+                    for(c=0u;c<count;++c){
+                        uint16_t w=b[base+(uint16_t)i+c];
+                        dst[p++]=(uint8_t)w;
+                    }
+                }else if(mode==0u){
+                    for(c=0u;c<count;++c){
+                        uint16_t w=b[base+(uint16_t)i+c];
+                        dst[p++]=(uint8_t)w;dst[p++]=(uint8_t)(w>>8);
+                    }
                 }
-            }else if(mode==0u)for(c=0u;c<count;++c){
-                uint16_t w=b[base+(uint16_t)start+c];
-                dst[p++]=(uint8_t)w;dst[p++]=(uint8_t)(w>>8);
+                changed=(uint16_t)(changed+count);++runs;
+                i=(uint8_t)(i+count);
             }
-            changed=(uint16_t)(changed+count);++runs;
         }
     }
     dst[0]=(uint8_t)runs;dst[1]=(uint8_t)(runs>>8);
     *changed_out=changed;*runs_out=runs;return p;
 }
+
 static int apply_patch(uint16_t *map,const uint8_t *src,size_t len){
     size_t p=2u;uint16_t n,i;
     if(len<2u)return 0;
