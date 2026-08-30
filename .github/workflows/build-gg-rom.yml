@@ -60,6 +60,47 @@ jobs:
           cp build/gg-polar-patch-demo.sym build/manual-artifact/GG-Polar-Latest.sym
           printf '64-bank / 1 MiB spec build\n' > build/manual-artifact/BUILD-NOTE.txt
 
+      - name: Build player-control vertical explorer
+        id: manual64
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_manual_gg.o \
+                build/tilesector_polar_manual_motion_gg.o \
+                build/tilesector_polar_manual_renderer_gg.o \
+                build/tilesector_polar_manual_ntstate_gg.o \
+                build/tilesector_polar_manual_materialize_gg.o \
+                build/tilesector_polar_manual_rowupload_gg.o \
+                build/gg-polar-manual-explore.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 \
+               POLAR_PATCH_ROM_BANKS=64 gg-polar-manual-explore
+
+      - name: Package player-control vertical explorer
+        if: steps.manual64.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/gg-polar-manual-explore.gg build/manual-artifact/GG-Polar-Vertical-Manual.gg
+          cp build/gg-polar-manual-explore.sym build/manual-artifact/GG-Polar-Vertical-Manual.sym
+
+      - name: Build oversize player-control fallback
+        if: steps.manual64.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_manual_gg.o \
+                build/tilesector_polar_manual_motion_gg.o \
+                build/tilesector_polar_manual_renderer_gg.o \
+                build/tilesector_polar_manual_ntstate_gg.o \
+                build/tilesector_polar_manual_materialize_gg.o \
+                build/tilesector_polar_manual_rowupload_gg.o \
+                build/gg-polar-manual-explore.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 \
+               POLAR_PATCH_ROM_BANKS=128 gg-polar-manual-explore
+          cp build/gg-polar-manual-explore.gg build/manual-artifact/GG-Polar-Vertical-Manual-OVERSIZE-128bank.gg
+          cp build/gg-polar-manual-explore.sym build/manual-artifact/GG-Polar-Vertical-Manual-OVERSIZE-128bank.sym
+
       - name: Build oversize 128-bank diagnostic fallback
         if: steps.build64.outcome == 'failure'
         shell: bash
