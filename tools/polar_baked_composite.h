@@ -47,6 +47,9 @@ uint16_t tsp_host_composite_frame_unique_count(void);
 uint16_t tsp_host_composite_peak_unique_count(void);
 uint16_t tsp_host_composite_peak_load_count(void);
 uint32_t tsp_host_composite_total_load_count(void);
+/* Host-only semantic probes used to validate portal sidedness. */
+uint16_t tsp_host_composite_owner_pixel_count(uint8_t sid);
+uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid);
 int tsp_host_composite_write_ppm(const char *path);
 
 #endif
