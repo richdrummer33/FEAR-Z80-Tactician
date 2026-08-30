@@ -66,7 +66,8 @@ static uint8_t parse_lighting_stage(const char *s){
     if(!strcmp(s,"baseline"))return TSP_HOST_LIGHT_BASELINE;
     if(!strcmp(s,"ao"))return TSP_HOST_LIGHT_AO;
     if(!strcmp(s,"point"))return TSP_HOST_LIGHT_POINT;
-    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|point)\n",s);
+    if(!strcmp(s,"texture"))return TSP_HOST_LIGHT_TEXTURE;
+    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|point|texture)\n",s);
     exit(2);
 }
 static int capture_frame(uint16_t frame){
@@ -474,7 +475,7 @@ int main(int argc,char **argv){
     unsigned bank_count=0u,tilebank_count=0u,tile_vblank_budget=0u;
     PolarExploreCursor explore;
 
-    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|point]\n",argv[0]);return 2;}
+    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|point|texture]\n",argv[0]);return 2;}
     if(!tilepatches||!all_maps)die("out of memory allocating bake tables");
     dir=argv[1];
     if(argc==3){g_lighting_name=argv[2];g_lighting_stage=parse_lighting_stage(argv[2]);}
@@ -488,8 +489,10 @@ int main(int argc,char **argv){
     lighting_info=fopen(lightpath,"w");
     if(!lighting_info){fprintf(stderr,"cannot write %s: %s\n",lightpath,strerror(errno));return 2;}
     fprintf(lighting_info,"stage=%s\n",g_lighting_name);
-    if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)
+    if(g_lighting_stage==TSP_HOST_LIGHT_POINT)
         fprintf(lighting_info,"static_point_light_world=92.0,50.0 height=8.0 radius=76\n");
+    if(g_lighting_stage==TSP_HOST_LIGHT_TEXTURE)
+        fprintf(lighting_info,"wall_texture=TWBARLT1_2bpp.txt projection=ray-wall perspective snap=1/2/4/8 texels\n");
     fclose(lighting_info);
 
     tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
