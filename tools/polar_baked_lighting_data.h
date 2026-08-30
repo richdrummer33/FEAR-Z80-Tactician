@@ -4,11 +4,8 @@
 #include <stdint.h>
 
 /*
- * Host-only lighting authoring data.
- *
- * These records are consumed by the PC bake and deliberately never linked into
- * the Game Gear runtime. The point light sits just beyond Room A's east opening
- * so the doorway/corners make the world-space visibility boundary obvious.
+ * Host-only lighting authoring data. None of this is linked into the GG
+ * runtime; the cartridge still replays only precomputed tile/name patches.
  */
 typedef struct TSPHostStaticLight {
     int16_t x_q4;
@@ -25,26 +22,43 @@ static const TSPHostStaticLight k_tsp_host_static_lights[] = {
 #define TSP_HOST_STATIC_LIGHT_COUNT \
     ((uint8_t)(sizeof(k_tsp_host_static_lights)/sizeof(k_tsp_host_static_lights[0])))
 
-/*
- * Authoritative demo world topology, mirrored from
- * experiments/adaptive_polar_field/polar_field_demo_v1.py.
- *
- * Segment IDs 0..13 are the same opaque SOLIDS used by the polar visibility
- * oracle. 14..16 are portal/profile surfaces: they can receive light but do not
- * occlude the light in this first hard-shadow experiment.
- *
- * Keeping this host-only is intentional. It is lighting-bake input, not a new
- * runtime geometry dependency.
- */
+enum {
+    TSP_HOST_PROFILE_FULL   = 0u,
+    TSP_HOST_PROFILE_LINTEL = 1u,
+    TSP_HOST_PROFILE_RAISED = 2u,
+    TSP_HOST_PROFILE_RISER  = 3u
+};
+
 typedef struct TSPHostWorldVertex {
     int16_t x;
     int16_t y;
 } TSPHostWorldVertex;
 
+/*
+ * front_sign is measured against the directed segment's right-hand normal
+ * (dy,-dx): +1 = that side, -1 = the opposite side, 0 = two-sided.
+ *
+ * light_front_sign applies only to RECEIVING the point light.
+ * visual_front_sign applies to visibility itself. The Room-2 threshold riser
+ * is front-visible only from the hallway because Room-2's virtual raised floor
+ * is flush with its top edge.
+ *
+ * Every segment, including portal profiles, can now block light. Vertical
+ * blocking extent comes from profile:
+ *   FULL   z 0..32
+ *   RAISED z 4..32
+ *   LINTEL z 24..32
+ *   RISER  z 0..4
+ * These values are exactly the world-space heights implied by the existing
+ * projection formulas with camera z=16.
+ */
 typedef struct TSPHostWorldSegment {
     uint8_t v0;
     uint8_t v1;
+    uint8_t profile;
     uint8_t blocks_light;
+    int8_t light_front_sign;
+    int8_t visual_front_sign;
 } TSPHostWorldSegment;
 
 static const TSPHostWorldVertex k_tsp_host_world_vertices[] = {
@@ -53,9 +67,34 @@ static const TSPHostWorldVertex k_tsp_host_world_vertices[] = {
 };
 
 static const TSPHostWorldSegment k_tsp_host_world_segments[] = {
-    {0,1,1},{1,2,1},{3,4,1},{4,5,1},{5,0,1},{2,6,1},{7,3,1},
-    {8,6,1},{7,9,1},{8,10,1},{10,11,1},{11,12,1},{12,13,1},{13,9,1},
-    {2,3,0},{6,7,0},{6,7,0}
+    /* Room A + hallway opaque FULL walls. */
+    {0,1,TSP_HOST_PROFILE_FULL,1,0,0},
+    {1,2,TSP_HOST_PROFILE_FULL,1,0,0},
+    {3,4,TSP_HOST_PROFILE_FULL,1,0,0},
+    {4,5,TSP_HOST_PROFILE_FULL,1,0,0},
+    {5,0,TSP_HOST_PROFILE_FULL,1,0,0},
+    {2,6,TSP_HOST_PROFILE_FULL,1,0,0},
+    {7,3,TSP_HOST_PROFILE_FULL,1,0,0},
+
+    /* Room B walls begin at its raised floor z=4. */
+    {8,6,TSP_HOST_PROFILE_RAISED,1,0,0},
+    {7,9,TSP_HOST_PROFILE_RAISED,1,0,0},
+    {8,10,TSP_HOST_PROFILE_RAISED,1,0,0},
+    {10,11,TSP_HOST_PROFILE_RAISED,1,0,0},
+    {11,12,TSP_HOST_PROFILE_RAISED,1,0,0},
+    {12,13,TSP_HOST_PROFILE_RAISED,1,0,0},
+    {13,9,TSP_HOST_PROFILE_RAISED,1,0,0},
+
+    /*
+     * Portal/profile planes.
+     * x=80 portal faces hallway (+x). x=112 portal faces hallway (-x).
+     * Lintels remain visually two-sided but only the hallway-facing material
+     * receives this hallway light. The x=112 RISER is visually one-sided:
+     * from Room B it is buried below the virtual raised floor.
+     */
+    {2,3,TSP_HOST_PROFILE_LINTEL,1, 1, 0},
+    {6,7,TSP_HOST_PROFILE_LINTEL,1,-1, 0},
+    {6,7,TSP_HOST_PROFILE_RISER, 1,-1,-1}
 };
 
 #define TSP_HOST_WORLD_VERTEX_COUNT \
