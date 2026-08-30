@@ -176,11 +176,19 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const ch
     }
     if(j!=job_count)die("tile job count mismatch");
 
-    /* Find the smallest steady-state uploads/VBlank that satisfies every
-     * release/deadline interval. Frame zero runs while DISPLAY_OFF and may
-     * preload any currently-free hardware slots. */
-    for(budget=1u;budget<=360u&&!chosen_budget;++budget){
+    /* Diagnostic search ladder. We care first about the hardware question
+     * "does this fit <=48?", then only need a coarse magnitude if it does not.
+     * Trying all 1..360 budgets makes an intentionally-unsimplified texture
+     * bake spend most of CI time proving the obvious. */
+    {
+    static const unsigned k_budget_probe[]={
+        4u,8u,12u,16u,20u,24u,28u,32u,36u,40u,44u,48u,
+        64u,80u,96u,128u,160u,192u,256u,320u,360u
+    };
+    unsigned bi;
+    for(bi=0u;bi<sizeof(k_budget_probe)/sizeof(k_budget_probe[0])&&!chosen_budget;++bi){
         uint32_t done=0u;
+        budget=k_budget_probe[bi];
         for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
         for(t=0u;t<PATCH_COUNT;++t){
             unsigned cap=(t==0u)?400u:budget,k;
@@ -199,6 +207,7 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const ch
             if(j<job_count)break;
         }
         if(done==job_count)chosen_budget=budget;
+    }
     }
     if(!chosen_budget)die("could not schedule tile uploads within 360 tiles/VBlank");
 
