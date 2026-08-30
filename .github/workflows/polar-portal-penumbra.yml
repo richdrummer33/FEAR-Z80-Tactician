@@ -1,0 +1,216 @@
+name: Polar portal penumbra experiment
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-portal-penumbra
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate host geometry oracle
+        run: make polar-test
+
+      - name: Build host bake generator
+        run: make build/polar_demo_patch_gen
+
+      - name: Bake corrected hard and penumbra variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          for STAGE in hard point; do
+            mkdir -p "build/portal-$STAGE"
+            ./build/polar_demo_patch_gen "build/portal-$STAGE" "$STAGE" \
+              | tee "build/portal-$STAGE/generator.txt"
+          done
+
+      - name: Compare penumbra deltas and bake costs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,re
+          from pathlib import Path
+          frames=[460,500,520,540,560,600,680,760]
+          def ppm(path):
+              b=Path(path).read_bytes()
+              p=b.find(b"255\n")
+              if p<0: raise SystemExit(f"bad ppm {path}")
+              return b[p+4:]
+          rows=[]
+          for f in frames:
+              a=ppm(f"build/portal-hard/host_composite_frame_{f}.ppm")
+              b=ppm(f"build/portal-point/host_composite_frame_{f}.ppm")
+              n=sum(a[i:i+3]!=b[i:i+3] for i in range(0,len(a),3))
+              rows.append((f,n))
+          Path("build/portal-penumbra-pixel-deltas.csv").write_text(
+              "frame,hard_vs_penumbra_pixels\n"+
+              "".join(f"{f},{n}\n" for f,n in rows)
+          )
+          def parse(stage):
+              s=Path(f"build/portal-{stage}/generator.txt").read_text()
+              def one(pat,cast=float):
+                  m=re.search(pat,s)
+                  if not m: raise SystemExit(f"missing {pat} for {stage}")
+                  return cast(m.group(1))
+              return dict(
+                  stage=stage,
+                  zero_pct=one(r"zero=\d+/\d+ \(([0-9.]+)%\)"),
+                  mean_changed=one(r"mean_changed=([0-9.]+) words"),
+                  peak_unique=one(r"peak_unique/frame=(\d+)",int),
+                  peak_loads=one(r"original_peak_loads=(\d+)",int),
+                  total_tile_loads=one(r"total_tile_loads=(\d+)",int),
+                  vblank_budget=one(r"scheduled_vblank_budget=(\d+)",int),
+                  tilepatch_banks=one(r"tilepatch_banks=(\d+)",int),
+                  raw_stream=one(r"raw_stream=(\d+) bytes",int),
+              )
+          metrics=[parse("hard"),parse("point")]
+          with open("build/portal-bake-metrics.csv","w",newline="") as fh:
+              w=csv.DictWriter(fh,fieldnames=list(metrics[0]))
+              w.writeheader();w.writerows(metrics)
+          print(Path("build/portal-penumbra-pixel-deltas.csv").read_text())
+          print(Path("build/portal-bake-metrics.csv").read_text())
+          PY
+
+      - name: Generate final penumbra runtime packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/generated/polar_demo_patch
+          mkdir -p build/generated/polar_demo_patch
+          ./build/polar_demo_patch_gen build/generated/polar_demo_patch point \
+            | tee build/portal-runtime-generator.txt
+          touch build/generated/polar_demo_patch/.stamp
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build current Game Gear ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+               POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+               gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/GG-Polar-Portal-Penumbra.gg
+          cp build/gg-polar-patch-demo.sym build/GG-Polar-Portal-Penumbra.sym
+          sha256sum build/GG-Polar-Portal-Penumbra.gg | tee build/portal-rom-sha256.txt
+          wc -c build/GG-Polar-Portal-Penumbra.gg | tee build/portal-rom-bytes.txt
+
+      - name: Build Gearsystem runners
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Capture portal-heavy ROM poses
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/portal-gg-shots
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/GG-Polar-Portal-Penumbra.gg
+          SYM=build/GG-Polar-Portal-Penumbra.sym
+          PATCH_ADDR="$(awk '$2=="_g_patch_index"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$PATCH_ADDR"
+          for P in 460 500 520 540 560 600 680 760; do
+            TARGET=$((P+2))
+            ./build/libretro_runner "$CORE" "$ROM" 5000 \
+              "build/portal-gg-shots/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
+          done
+
+      - name: Prove delayed D-pad freezes the baked rail
+        shell: bash
+        run: |
+          set -euo pipefail
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/GG-Polar-Portal-Penumbra.gg
+          SYM=build/GG-Polar-Portal-Penumbra.sym
+          PATCH_ADDR="$(awk '$2=="_g_patch_index"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$PATCH_ADDR"
+
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=120 \
+            ./build/libretro_runner "$CORE" "$ROM" 300 - "$PATCH_ADDR" 2 \
+            | tee build/dpad-freeze-300.txt
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=120 \
+            ./build/libretro_runner "$CORE" "$ROM" 700 - "$PATCH_ADDR" 2 \
+            | tee build/dpad-freeze-700.txt
+
+          python3 - <<'PY' | tee build/dpad-freeze-proof.txt
+          import re
+          from pathlib import Path
+          vals=[]
+          for p in ("build/dpad-freeze-300.txt","build/dpad-freeze-700.txt"):
+              s=Path(p).read_text()
+              m=re.search(r"RAM addr=[0-9A-F]+ .* data=([0-9A-F]{4})",s)
+              if not m: raise SystemExit(f"missing patch RAM in {p}")
+              b=bytes.fromhex(m.group(1))
+              vals.append(b[0]|(b[1]<<8))
+          print("patch_index_after_300=",vals[0])
+          print("patch_index_after_700=",vals[1])
+          if vals[0]!=vals[1]:
+              raise SystemExit("D-pad did not freeze patch playback")
+          if vals[0]<=1:
+              raise SystemExit("D-pad was active from boot instead of delayed")
+          print("DPAD_FREEZE_STABLE=1")
+          PY
+
+      - name: Summarize result
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/portal-stage-summary.txt
+          from pathlib import Path
+          print("PORTAL PROFILE + PENUMBRA STAGE")
+          print(Path("build/portal-rom-sha256.txt").read_text().strip())
+          print(Path("build/portal-rom-bytes.txt").read_text().strip())
+          print()
+          print(Path("build/portal-bake-metrics.csv").read_text().strip())
+          print()
+          print(Path("build/portal-penumbra-pixel-deltas.csv").read_text().strip())
+          print()
+          print(Path("build/dpad-freeze-proof.txt").read_text().strip())
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-portal-penumbra-current
+          path: |
+            build/GG-Polar-Portal-Penumbra.gg
+            build/GG-Polar-Portal-Penumbra.sym
+            build/portal-hard/*.ppm
+            build/portal-hard/camera_poses.csv
+            build/portal-hard/generator.txt
+            build/portal-point/*.ppm
+            build/portal-point/camera_poses.csv
+            build/portal-point/generator.txt
+            build/portal-gg-shots/*.ppm
+            build/portal-bake-metrics.csv
+            build/portal-penumbra-pixel-deltas.csv
+            build/portal-runtime-generator.txt
+            build/portal-rom-sha256.txt
+            build/portal-rom-bytes.txt
+            build/dpad-freeze-300.txt
+            build/dpad-freeze-700.txt
+            build/dpad-freeze-proof.txt
+            build/portal-stage-summary.txt
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/tile_schedule.csv
+          retention-days: 30
