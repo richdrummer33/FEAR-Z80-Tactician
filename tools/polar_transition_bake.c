@@ -111,7 +111,9 @@ static uint32_t hash_slot(uint64_t h,uint32_t mask) {
 
 static void state_at(TSPState *s,int16_t xq,int16_t yq,uint8_t yaw) {
     memset(s,0,sizeof(*s));
-    s->x_q4=xq;s->y_q4=yq;s->yaw=yaw;s->speed_scale=1u;
+    s->x_q4=xq;s->y_q4=yq;
+    s->z_q4=(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(xq,yq));
+    s->yaw=yaw;s->speed_scale=1u;
 }
 static int map_valid(const uint16_t map[TSP_MAP_CELLS]) {
     uint16_t i;
