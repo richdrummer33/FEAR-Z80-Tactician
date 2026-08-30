@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - experiment/gg-polar-baked-lighting
+      - experiment/gg-polar-world-lighting
   workflow_dispatch:
 
 permissions:
