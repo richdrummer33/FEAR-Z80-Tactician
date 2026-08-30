@@ -33,7 +33,8 @@ enum {
     SEM_FLOOR=2u,
     SEM_FAR=3u,
     SEM_MID=4u,
-    SEM_NEAR=5u
+    SEM_NEAR=5u,
+    MAT_MORTAR=6u
 };
 
 typedef struct FramePattern {
@@ -112,8 +113,16 @@ static void ensure_init(void){
 
 static uint8_t shade_sem(uint8_t shade){return (uint8_t)(SEM_FAR+(shade>2u?2u:shade));}
 
+/* In textured mode indices 1..6 all have an authored lit palette variant.
+ * Earlier grayscale stages preserve the old clamp at SEM_NEAR. */
+static int light_reactive(uint8_t v){
+    if(g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE)
+        return v>=SEM_CEILING&&v<=MAT_MORTAR;
+    return v>SEM_BLACK&&v<SEM_NEAR;
+}
+
 void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
-    g_lighting_stage=stage>TSP_HOST_LIGHT_POINT?TSP_HOST_LIGHT_POINT:stage;
+    g_lighting_stage=stage>TSP_HOST_LIGHT_TEXTURE?TSP_HOST_LIGHT_TEXTURE:stage;
     if(camera){
         g_camera_x_q4=camera->x_q4;
         g_camera_y_q4=camera->y_q4;
@@ -343,6 +352,46 @@ static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,doub
     return 1;
 }
 
+/*
+ * First GG material experiment: an authored 8x8 industrial/oxide wall tile.
+ * One texel spans 2 world units, so the pattern repeats every 16 world units.
+ * U is segment-local distance from v0; V is absolute world Z. This keeps the
+ * pattern glued to geometry while remaining intentionally low-frequency.
+ *
+ * Values are palette indices, not RGB. Palette 0 supplies ambient colors;
+ * palette 1 supplies their lit variants.
+ */
+static const uint8_t k_wall_material_8x8[64]={
+    6,6,6,6,6,6,6,6,
+    6,4,4,4,6,5,5,5,
+    6,4,3,4,6,5,4,5,
+    6,4,4,4,6,5,5,5,
+    6,6,6,6,6,6,6,6,
+    6,5,5,5,6,4,4,4,
+    6,5,4,5,6,4,3,4,
+    6,5,5,5,6,4,4,4
+};
+
+static uint8_t wall_material_sample(uint8_t sid,int sx,int sy,uint8_t fallback){
+    const TSPHostWorldSegment *seg;
+    const TSPHostWorldVertex *a,*b;
+    double wx,wy,wz,dx,dy,len,u;
+    int tx,ty;
+    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return fallback;
+    if(!wall_world_point(sid,sx,sy,&wx,&wy,&wz))return fallback;
+    seg=&k_tsp_host_world_segments[sid];
+    a=&k_tsp_host_world_vertices[seg->v0];
+    b=&k_tsp_host_world_vertices[seg->v1];
+    dx=(double)b->x-(double)a->x;
+    dy=(double)b->y-(double)a->y;
+    len=sqrt(dx*dx+dy*dy);
+    if(len<1e-9)return fallback;
+    u=((wx-(double)a->x)*dx+(wy-(double)a->y)*dy)/len;
+    tx=(int)floor(u*0.5);ty=(int)floor(wz*0.5);
+    tx%=8;ty%=8;if(tx<0)tx+=8;if(ty<0)ty+=8;
+    return k_wall_material_8x8[(unsigned)ty*8u+(unsigned)tx];
+}
+
 static uint8_t lit_semantic(uint8_t v){
     /* First geometric test deliberately has only two states: ambient and
      * one shade brighter. No radius, attenuation band or penumbra yet. */
@@ -370,7 +419,7 @@ static void quantize_light_cell(uint16_t cell){
     for(i=0u;i<PIXELS;++i){
         uint8_t v=g_cells[cell][i];
         uint64_t bit=UINT64_C(1)<<i;
-        if(v>SEM_BLACK&&v<SEM_NEAR){
+        if(light_reactive(v)){
             eligible|=bit;
             if(g_lit[cell][i])target|=bit;
         }
@@ -405,7 +454,7 @@ found_exact:
     if(best_cost>64u)return;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=g_cells[cell][i];
-        if(v>SEM_BLACK&&v<SEM_NEAR)
+        if(light_reactive(v))
             g_lit[cell][i]=(uint8_t)((best>>i)&UINT64_C(1));
     }
 }
@@ -443,7 +492,7 @@ static void apply_one_sided_penumbra(void){
         int x,y,k;
         for(i=0u;i<PIXELS;++i){
             uint8_t v=g_cells[cell][i];
-            if(v>SEM_BLACK&&v<SEM_NEAR){
+            if(light_reactive(v)){
                 ++eligible;
                 if(hard[cell][i])++lit;
             }
@@ -453,7 +502,7 @@ static void apply_one_sided_penumbra(void){
         for(y=0;y<8;++y)for(x=0;x<8;++x){
             uint16_t pi=(uint16_t)y*8u+(uint16_t)x;
             uint8_t v=g_cells[cell][pi],touch=0u;
-            if(hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
+            if(hard[cell][pi]||!light_reactive(v))continue;
 
             for(k=0;k<8;++k){
                 static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
@@ -494,7 +543,7 @@ static void apply_point_light(void){
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
             ok=background_world_receiver(x,y,&wx,&wy,&wz);
         }
-        if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,wz,receiver))
+        if(ok&&light_reactive(v)&&world_point_lit(wx,wy,wz,receiver))
             g_lit[cell][pi]=1u;
     }
     quantize_point_light_edges();
@@ -616,7 +665,9 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
-            if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
+            if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE){
+                pixel=wall_material_sample(sid,sx,y,color);
+            }else if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
                 uint8_t strength=0u;
                 if(ao_left){
                     uint8_t d=(uint8_t)(sx-clip_x0);
@@ -685,12 +736,13 @@ static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
     uint8_t i,any=0u;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=ambient[i];
-        if(lit[i]&&v>SEM_BLACK&&v<SEM_NEAR){any=1u;break;}
+        if(lit[i]&&light_reactive(v)){any=1u;break;}
     }
     if(!any){memcpy(encoded,ambient,PIXELS);return 0u;}
+
     for(i=0u;i<PIXELS;++i){
         uint8_t v=ambient[i];
-        if(v==SEM_BLACK||v>=SEM_NEAR)encoded[i]=v;
+        if(!light_reactive(v))encoded[i]=v;
         else if(lit[i])encoded[i]=v;
         else encoded[i]=(uint8_t)(v+7u);
     }
@@ -793,8 +845,14 @@ uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid){
 }
 
 int tsp_host_composite_write_ppm(const char *path){
-    static const uint8_t rgb[6][3]={
+    static const uint8_t gray[6][3]={
         {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240}
+    };
+    static const uint8_t material_ambient[7][3]={
+        {0,0,0},{18,18,42},{48,50,60},{66,42,34},{112,68,48},{158,100,64},{150,140,120}
+    };
+    static const uint8_t material_lit[7][3]={
+        {0,0,0},{30,30,54},{70,72,82},{100,60,46},{154,92,62},{210,132,82},{208,194,160}
     };
     FILE *f=fopen(path,"wb");
     uint16_t y,x;
@@ -806,10 +864,15 @@ int tsp_host_composite_write_ppm(const char *path){
         uint16_t cell=(uint16_t)row*TSP_COLS+col;
         uint16_t pi=(uint16_t)py*8u+px;
         uint8_t v=g_cells[cell][pi];
-        if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])
-            v=lit_semantic(v);
-        if(v>5u)v=0u;
-        fwrite(rgb[v],1,3,f);
+        if(g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE){
+            if(v>MAT_MORTAR)v=SEM_BLACK;
+            fwrite(g_lit[cell][pi]?material_lit[v]:material_ambient[v],1,3,f);
+        }else{
+            if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])
+                v=lit_semantic(v);
+            if(v>SEM_NEAR)v=SEM_BLACK;
+            fwrite(gray[v],1,3,f);
+        }
     }
     fclose(f);return 1;
 }
