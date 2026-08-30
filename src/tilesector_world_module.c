@@ -11,15 +11,15 @@ static uint16_t mix16(uint16_t x){
 }
 
 static const TSPModuleTopology k_topology[TSP_MODULE_KIND_COUNT] = {
-    /* straight */ {{1u}, {{ 0,0},{0,0},{0,0}}},
-    /* left     */ {{1u}, {{-1,0},{0,0},{0,0}}},
-    /* right    */ {{1u}, {{ 1,0},{0,0},{0,0}}},
-    /* room     */ {{3u}, {{ 0,0},{-1,0},{1,0}}},
-    /* T        */ {{2u}, {{-1,0},{ 1,0},{0,0}}},
-    /* up left  */ {{1u}, {{-1,TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}},
-    /* up right */ {{1u}, {{ 1,TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}},
-    /* dn left  */ {{1u}, {{-1,-TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}},
-    /* dn right */ {{1u}, {{ 1,-TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}}
+    /* straight */ {1u, {{ 0,0},{0,0},{0,0}}},
+    /* left     */ {1u, {{-1,0},{0,0},{0,0}}},
+    /* right    */ {1u, {{ 1,0},{0,0},{0,0}}},
+    /* room     */ {3u, {{ 0,0},{-1,0},{1,0}}},
+    /* T        */ {2u, {{-1,0},{ 1,0},{0,0}}},
+    /* up left  */ {1u, {{-1,TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}},
+    /* up right */ {1u, {{ 1,TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}},
+    /* dn left  */ {1u, {{-1,-TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}},
+    /* dn right */ {1u, {{ 1,-TSP_MODULE_STAIR_RISE_Q4},{0,0},{0,0}}}
 };
 
 const TSPModuleTopology *tsp_module_topology(TSPModuleKind kind){
