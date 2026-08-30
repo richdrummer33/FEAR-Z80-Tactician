@@ -30,7 +30,8 @@
 #define MAX_BANK_STREAM 10000u
 #define MAX_TILEPATCH_BANKS 24u
 #define MAX_TILEPATCH_BANK_STREAM 14000u
-#define PATCH_SCRATCH_MAX (1u + TSP_ROWS * (3u + TSP_COLS * 2u))
+/* Textured name-table deltas can fragment into several runs per row. */
+#define PATCH_SCRATCH_MAX 2048u
 
 typedef struct Patch {
     uint16_t len;
