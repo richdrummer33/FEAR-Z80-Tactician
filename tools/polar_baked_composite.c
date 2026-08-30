@@ -141,8 +141,10 @@ static int wall_texture_phase(uint8_t sx,uint8_t v0,uint8_t v1,double *phase){
 }
 static uint8_t texture_semantic(uint8_t cls,uint8_t shade){
     uint8_t sem,loss;
-    if(!cls)return SEM_BLACK;
-    sem=(uint8_t)(SEM_FAR+(cls-1u));
+    /* Do not turn source-image black into a literal hole in the wall.
+     * Silhouette/border black is still owned by the proven geometry raster;
+     * texture class zero is simply the darkest wall material tone. */
+    sem=cls?((uint8_t)(SEM_FAR+(cls-1u))):SEM_FAR;
     loss=(uint8_t)(2u-(shade>2u?2u:shade));
     while(loss&&sem>SEM_FAR){--sem;--loss;}
     return sem;
