@@ -1,0 +1,203 @@
+name: Polar world texture experiment
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-world-texture
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  texture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate host geometry
+        run: make polar-test
+
+      - name: Build host bake generator
+        run: make build/polar_demo_patch_gen
+
+      - name: Bake grayscale control and world texture
+        shell: bash
+        run: |
+          set -euo pipefail
+          for STAGE in point texture; do
+            mkdir -p "build/world-$STAGE"
+            ./build/polar_demo_patch_gen "build/world-$STAGE" "$STAGE" \
+              | tee "build/world-$STAGE/generator.txt"
+          done
+
+      - name: Compare bake economics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/world-texture-metrics.txt
+          import re,csv
+          from pathlib import Path
+
+          def parse(stage):
+              s=Path(f"build/world-{stage}/generator.txt").read_text()
+              def one(pat,cast=float):
+                  m=re.search(pat,s)
+                  if not m: raise SystemExit(f"missing {pat!r} in {stage}")
+                  return cast(m.group(1))
+              return dict(
+                  stage=stage,
+                  raw_stream=one(r"raw_stream=(\d+) bytes",int),
+                  zero_pct=one(r"zero=\d+/\d+ \(([0-9.]+)%\)"),
+                  mean_changed=one(r"mean_changed=([0-9.]+) words"),
+                  peak_unique=one(r"peak_unique/frame=(\d+)",int),
+                  peak_loads=one(r"original_peak_loads=(\d+)",int),
+                  total_tile_loads=one(r"total_tile_loads=(\d+)",int),
+                  vblank_budget=one(r"scheduled_vblank_budget=(\d+)",int),
+                  tilepatch_banks=one(r"tilepatch_banks=(\d+)",int),
+              )
+
+          rows=[parse("point"),parse("texture")]
+          with open("build/world-texture-metrics.csv","w",newline="") as f:
+              w=csv.DictWriter(f,fieldnames=list(rows[0]))
+              w.writeheader();w.writerows(rows)
+
+          print(Path("build/world-texture-metrics.csv").read_text())
+          a,b=rows
+          print("texture/control ratios:")
+          for k in ("raw_stream","mean_changed","peak_unique","peak_loads","total_tile_loads","vblank_budget","tilepatch_banks"):
+              av=float(a[k]);bv=float(b[k])
+              print(f"  {k}: {bv/av:.3f}x" if av else f"  {k}: n/a")
+          PY
+
+      - name: Quantify visual change at review poses
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/world-texture-pixel-deltas.txt
+          from pathlib import Path
+          frames=[0,120,300,460,500,520,540,560,600,680,760,1000,1113]
+          def ppm(path):
+              b=Path(path).read_bytes()
+              p=b.find(b"255\n")
+              if p<0: raise SystemExit(f"bad ppm {path}")
+              return b[p+4:]
+          print("frame,changed_pixels")
+          for f in frames:
+              a=ppm(f"build/world-point/host_composite_frame_{f}.ppm")
+              b=ppm(f"build/world-texture/host_composite_frame_{f}.ppm")
+              n=sum(a[i:i+3]!=b[i:i+3] for i in range(0,len(a),3))
+              print(f"{f},{n}")
+          PY
+
+      - name: Generate texture runtime packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/generated/polar_demo_patch
+          mkdir -p build/generated/polar_demo_patch
+          ./build/polar_demo_patch_gen build/generated/polar_demo_patch texture \
+            | tee build/world-texture-runtime-generator.txt
+          touch build/generated/polar_demo_patch/.stamp
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 64-bank textured automatic ROM
+        id: autorom
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+               POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+               gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/GG-Polar-WorldTexture.gg
+          cp build/gg-polar-patch-demo.sym build/GG-Polar-WorldTexture.sym
+          sha256sum build/GG-Polar-WorldTexture.gg | tee build/world-texture-rom-sha256.txt
+          wc -c build/GG-Polar-WorldTexture.gg | tee build/world-texture-rom-bytes.txt
+
+      - name: Build 64-bank textured manual-takeover ROM
+        id: manualrom
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+               POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+               gg-polar-manual-explore
+          cp build/gg-polar-manual-explore.gg build/GG-Polar-WorldTexture-MANUAL.gg
+          cp build/gg-polar-manual-explore.sym build/GG-Polar-WorldTexture-MANUAL.sym
+          sha256sum build/GG-Polar-WorldTexture-MANUAL.gg | tee build/world-texture-manual-sha256.txt
+          wc -c build/GG-Polar-WorldTexture-MANUAL.gg | tee build/world-texture-manual-bytes.txt
+
+      - name: Record cartridge fit
+        shell: bash
+        run: |
+          {
+            echo "automatic_64bank=${{ steps.autorom.outcome }}"
+            echo "manual_64bank=${{ steps.manualrom.outcome }}"
+          } | tee build/world-texture-cartridge-fit.txt
+
+      - name: Build Gearsystem runners
+        if: steps.autorom.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Capture textured GG review poses
+        if: steps.autorom.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/world-texture-gg
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/GG-Polar-WorldTexture.gg
+          SYM=build/GG-Polar-WorldTexture.sym
+          PATCH_ADDR="$(awk '$2=="_g_patch_index"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$PATCH_ADDR"
+          for P in 0 120 300 460 520 560 600 680 760 1000; do
+            TARGET=$((P+2))
+            ./build/libretro_runner "$CORE" "$ROM" 5000 \
+              "build/world-texture-gg/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
+          done
+
+      - name: Upload texture experiment
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-world-texture-current
+          path: |
+            build/GG-Polar-WorldTexture.gg
+            build/GG-Polar-WorldTexture.sym
+            build/GG-Polar-WorldTexture-MANUAL.gg
+            build/GG-Polar-WorldTexture-MANUAL.sym
+            build/world-point/*.ppm
+            build/world-point/generator.txt
+            build/world-texture/*.ppm
+            build/world-texture/generator.txt
+            build/world-texture/lighting_stage.txt
+            build/world-texture/camera_poses.csv
+            build/world-texture-gg/*.ppm
+            build/world-texture-metrics.csv
+            build/world-texture-metrics.txt
+            build/world-texture-pixel-deltas.txt
+            build/world-texture-runtime-generator.txt
+            build/world-texture-cartridge-fit.txt
+            build/world-texture-rom-sha256.txt
+            build/world-texture-rom-bytes.txt
+            build/world-texture-manual-sha256.txt
+            build/world-texture-manual-bytes.txt
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/tile_schedule.csv
+          retention-days: 30
