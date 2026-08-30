@@ -666,7 +666,17 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
             if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE){
-                pixel=wall_material_sample(sid,sx,y,color);
+                /*
+                 * GG-native texture LOD 0: sample one world-space material
+                 * value per 8x8 screen cell/surface. Geometry silhouettes and
+                 * light boundaries remain pixel-precise; only material detail
+                 * is quantized. This bounds tile-pattern entropy while keeping
+                 * the selected color anchored to world-space UVs.
+                 */
+                int msx=(int)(((uint16_t)sx&~7u)+4u);
+                int msy=(int)(((uint16_t)y&~7u)+4u);
+                if(msx>159)msx=159;if(msy>143)msy=143;
+                pixel=wall_material_sample(sid,msx,msy,color);
             }else if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
                 uint8_t strength=0u;
                 if(ao_left){
