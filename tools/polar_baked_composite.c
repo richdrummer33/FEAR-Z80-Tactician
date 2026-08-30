@@ -56,6 +56,10 @@ static uint8_t g_owner[TSP_MAP_CELLS][PIXELS];
  * ambient semantic colour so palette 1 can implement the common +1 shade
  * transform without creating a new 32-byte pattern for every fully-lit tile. */
 static uint8_t g_lit[TSP_MAP_CELLS][PIXELS];
+/* Receiver/material mask independent of visibility. Quantized hard edges and
+ * penumbra may approximate only where this specific light is legally allowed
+ * to affect the final visible receiver. */
+static uint8_t g_lightable[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -366,7 +370,7 @@ static void quantize_light_cell(uint16_t cell){
     for(i=0u;i<PIXELS;++i){
         uint8_t v=g_cells[cell][i];
         uint64_t bit=UINT64_C(1)<<i;
-        if(v>SEM_BLACK&&v<SEM_NEAR){
+        if(g_lightable[cell][i]&&v>SEM_BLACK&&v<SEM_NEAR){
             eligible|=bit;
             if(g_lit[cell][i])target|=bit;
         }
@@ -401,7 +405,7 @@ found_exact:
     if(best_cost>64u)return;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=g_cells[cell][i];
-        if(v>SEM_BLACK&&v<SEM_NEAR)
+        if(g_lightable[cell][i]&&v>SEM_BLACK&&v<SEM_NEAR)
             g_lit[cell][i]=(uint8_t)((best>>i)&UINT64_C(1));
     }
 }
@@ -409,17 +413,6 @@ found_exact:
 static void quantize_point_light_edges(void){
     uint16_t cell;
     for(cell=0u;cell<TSP_MAP_CELLS;++cell)quantize_light_cell(cell);
-}
-
-static int same_penumbra_receiver(int x0,int y0,int x1,int y1){
-    uint16_t c0=(uint16_t)((y0>>3)*TSP_COLS+(x0>>3));
-    uint16_t c1=(uint16_t)((y1>>3)*TSP_COLS+(x1>>3));
-    uint16_t p0=(uint16_t)(y0&7)*8u+(uint16_t)(x0&7);
-    uint16_t p1=(uint16_t)(y1&7)*8u+(uint16_t)(x1&7);
-    uint8_t o0=g_owner[c0][p0],o1=g_owner[c1][p1];
-    if(o0!=0xffu||o1!=0xffu)return o0==o1;
-    /* Background penumbra must stay on the same horizontal receiver family. */
-    return (y0<72&&y1<72)||(y0>72&&y1>72);
 }
 
 static void apply_one_sided_penumbra(void){
@@ -439,7 +432,7 @@ static void apply_one_sided_penumbra(void){
         int x,y,k;
         for(i=0u;i<PIXELS;++i){
             uint8_t v=g_cells[cell][i];
-            if(v>SEM_BLACK&&v<SEM_NEAR){
+            if(g_lightable[cell][i]&&v>SEM_BLACK&&v<SEM_NEAR){
                 ++eligible;
                 if(hard[cell][i])++lit;
             }
@@ -449,7 +442,7 @@ static void apply_one_sided_penumbra(void){
         for(y=0;y<8;++y)for(x=0;x<8;++x){
             uint16_t pi=(uint16_t)y*8u+(uint16_t)x;
             uint8_t v=g_cells[cell][pi],touch=0u;
-            if(hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
+            if(!g_lightable[cell][pi]||hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
 
             for(k=0;k<8;++k){
                 static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
@@ -488,8 +481,10 @@ static void apply_point_light(void){
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
             ok=background_world_receiver(x,y,&wx,&wy,&wz);
         }
-        if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,wz,receiver))
-            g_lit[cell][pi]=1u;
+        if(ok&&v>SEM_BLACK&&v<SEM_NEAR){
+            g_lightable[cell][pi]=1u;
+            if(world_point_lit(wx,wy,wz,receiver))g_lit[cell][pi]=1u;
+        }
     }
     quantize_point_light_edges();
     if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)apply_one_sided_penumbra();
@@ -557,6 +552,7 @@ void tsp_host_composite_begin_frame(void){
     ensure_init();
     memset(g_owner,0xff,sizeof(g_owner));
     memset(g_lit,0,sizeof(g_lit));
+    memset(g_lightable,0,sizeof(g_lightable));
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
         if(row<9u)tile_fill(p,SEM_CEILING);
