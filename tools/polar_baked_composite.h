@@ -18,7 +18,9 @@ enum {
     /* Correct world/portal hard cast, no soft edge. */
     TSP_HOST_LIGHT_HARD = 2u,
     /* Same hard cast plus one-sided ordered-dither penumbra. */
-    TSP_HOST_LIGHT_POINT = 3u
+    TSP_HOST_LIGHT_POINT = 3u,
+    /* World-space wall material texture, then the same point-light stack. */
+    TSP_HOST_LIGHT_TEXTURE = 4u
 };
 
 /* Select one host-bake presentation layer and provide the exact camera state.
