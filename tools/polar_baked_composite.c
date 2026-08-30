@@ -125,6 +125,12 @@ static uint8_t ao_pixel(uint8_t color,uint8_t strength,uint8_t sx,uint8_t sy){
     return color;
 }
 
+#define TSP_CAMERA_Z 16.0
+#define TSP_CEILING_Z 32.0
+#define TSP_ROOM_B_FLOOR_Z 4.0
+#define TSP_FOCAL_PX 80.0
+#define TSP_HORIZON_PX 72.0
+
 static int ray_segment_params(double ox,double oy,double dx,double dy,
                               double ax,double ay,double bx,double by,
                               double *t_out,double *u_out){
@@ -140,30 +146,78 @@ static int ray_segment_params(double ox,double oy,double dx,double dy,
     return 1;
 }
 
+static void profile_z_range(uint8_t profile,double *z0,double *z1){
+    switch(profile){
+        case TSP_HOST_PROFILE_RAISED:*z0=4.0;*z1=32.0;break;
+        case TSP_HOST_PROFILE_LINTEL:*z0=24.0;*z1=32.0;break;
+        case TSP_HOST_PROFILE_RISER:*z0=0.0;*z1=4.0;break;
+        default:*z0=0.0;*z1=32.0;break;
+    }
+}
+
+/* Signed position against the segment's directed right-hand normal (dy,-dx). */
+static double segment_right_side(const TSPHostWorldSegment *s,double x,double y){
+    const TSPHostWorldVertex *a=&k_tsp_host_world_vertices[s->v0];
+    const TSPHostWorldVertex *b=&k_tsp_host_world_vertices[s->v1];
+    double dx=(double)b->x-(double)a->x;
+    double dy=(double)b->y-(double)a->y;
+    return (x-(double)a->x)*dy-(y-(double)a->y)*dx;
+}
+static int point_on_signed_front(const TSPHostWorldSegment *s,int8_t sign,double x,double y){
+    double q;
+    if(!sign)return 1;
+    q=segment_right_side(s,x,y);
+    return sign>0?q>=-1e-7:q<=1e-7;
+}
+static int surface_visible_from_camera(uint8_t sid){
+    const TSPHostWorldSegment *s;
+    double cx,cy;
+    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return 1;
+    s=&k_tsp_host_world_segments[sid];
+    if(!s->visual_front_sign)return 1;
+    cx=(double)g_camera_x_q4/16.0;cy=(double)g_camera_y_q4/16.0;
+    return point_on_signed_front(s,s->visual_front_sign,cx,cy);
+}
+static int receiver_accepts_light(uint8_t sid){
+    const TSPHostWorldSegment *s;
+    const TSPHostStaticLight *light=&k_tsp_host_static_lights[0];
+    double cx,cy,lx,ly;
+    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return 1;
+    s=&k_tsp_host_world_segments[sid];
+    if(!s->light_front_sign)return 1;
+    cx=(double)g_camera_x_q4/16.0;cy=(double)g_camera_y_q4/16.0;
+    lx=(double)light->x_q4/16.0;ly=(double)light->y_q4/16.0;
+    /* The visible face and the light must both be on the authored front side.
+     * Thus a Room-B view of the x=112 lintel is its ambient backside. */
+    return point_on_signed_front(s,s->light_front_sign,cx,cy) &&
+           point_on_signed_front(s,s->light_front_sign,lx,ly);
+}
+
 /*
- * Treat the light as another world-space visibility observer. For a receiver
- * point P, each opaque segment AB defines a shadow wedge bounded by the rays
- * L->A and L->B. Testing whether LP crosses AB is exactly the clipped-wedge
- * membership test, without ever rasterizing a screen-space radial mask.
+ * 2.5D ray test: XY finds the crossing with each wall/profile segment, then
+ * the same parametric t gives the ray's Z at that crossing. A segment blocks
+ * only if z_hit lies inside its profile-derived vertical interval.
  */
-static int world_point_lit(double wx,double wy,int receiver_sid){
+static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
     const TSPHostStaticLight *light=&k_tsp_host_static_lights[0];
     double lx=(double)light->x_q4/16.0,ly=(double)light->y_q4/16.0;
+    double lz=(double)light->height_q4/16.0;
     double dx=wx-lx,dy=wy-ly;
     uint8_t sid;
     if(dx*dx+dy*dy<1e-10)return 1;
     for(sid=0u;sid<TSP_HOST_WORLD_SEGMENT_COUNT;++sid){
         const TSPHostWorldSegment *s=&k_tsp_host_world_segments[sid];
         const TSPHostWorldVertex *a,*b;
-        double t,u;
+        double t,u,z0,z1,zhit;
         if(!s->blocks_light||(int)sid==receiver_sid)continue;
         a=&k_tsp_host_world_vertices[s->v0];
         b=&k_tsp_host_world_vertices[s->v1];
         if(!ray_segment_params(lx,ly,dx,dy,(double)a->x,(double)a->y,
                                (double)b->x,(double)b->y,&t,&u))continue;
-        /* Strictly between light and receiver. End-point hits at P are not
-         * blockers, preventing shared wall corners from self-shadowing. */
-        if(t>1e-7&&t<1.0-1e-7&&u>=-1e-7&&u<=1.0+1e-7)return 0;
+        if(t<=1e-7||t>=1.0-1e-7||u<-1e-7||u>1.0+1e-7)continue;
+        zhit=lz+t*(wz-lz);
+        profile_z_range(s->profile,&z0,&z1);
+        if(zhit>=z0-1e-7&&zhit<=z1+1e-7)return 0;
     }
     return 1;
 }
@@ -175,38 +229,6 @@ static void camera_basis(double *fx,double *fy,double *rx,double *ry){
     *rx=-*fy;*ry=*fx;
 }
 
-/*
- * Inverse of the renderer's 80px focal-length floor/ceiling projection.
- * FULL walls place floor/ceiling 16 world units below/above the camera:
- *   abs(screen_y-72) = 80*16 / forward_depth = 1280/depth.
- * Therefore every visible background pixel maps to a unique world XY point.
- * The resulting light boundary lives on the world plane and only THEN appears
- * in screen space, so its edge follows perspective rather than the tile grid.
- */
-static int background_world_point(int sx,int sy,double *wx,double *wy){
-    double px=(double)sx+0.5,py=(double)sy+0.5;
-    double voff=fabs(py-72.0),depth,lateral,fx,fy,rx,ry;
-    double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
-    if(voff<0.25)return 0;
-    depth=1280.0/voff;
-    lateral=depth*((px-80.0)/80.0);
-    camera_basis(&fx,&fy,&rx,&ry);
-    *wx=cx+fx*depth+rx*lateral;
-    *wy=cy+fy*depth+ry*lateral;
-    return 1;
-}
-
-/* Recover the world XY receiver for a visible wall pixel by intersecting the
- * camera ray through screen X with that pixel's owning source segment. Since
- * the first pass uses vertically extruded blockers, all Y pixels in a wall
- * screen column share the same light/shadow classification: wall shadow cuts
- * are naturally vertical, while floor/ceiling cuts can be arbitrary angles. */
-/*
- * Horizontal receivers are finite authored surfaces, not an infinite plane.
- * These three polygons mirror the actual Room A, connector, and Room B floor
- * plan from polar_field_demo_v1.py. Ceiling uses the same XY footprint in this
- * first vertical-extrusion lighting pass.
- */
 static int point_on_world_edge(double x,double y,
                                const TSPHostWorldVertex *a,
                                const TSPHostWorldVertex *b){
@@ -229,32 +251,91 @@ static int point_in_world_poly(double x,double y,const uint8_t *vid,uint8_t n){
     }
     return inside;
 }
-static int world_horizontal_receiver(double x,double y){
-    static const uint8_t room_a[]={0u,1u,2u,3u,4u,5u};
-    static const uint8_t connector[]={2u,6u,7u,3u};
-    static const uint8_t room_b[]={8u,10u,11u,12u,13u,9u,7u,6u};
-    return point_in_world_poly(x,y,room_a,(uint8_t)(sizeof(room_a)/sizeof(room_a[0])))||
-           point_in_world_poly(x,y,connector,(uint8_t)(sizeof(connector)/sizeof(connector[0])))||
-           point_in_world_poly(x,y,room_b,(uint8_t)(sizeof(room_b)/sizeof(room_b[0])));
+static int point_in_room_a(double x,double y){
+    static const uint8_t p[]={0u,1u,2u,3u,4u,5u};
+    return point_in_world_poly(x,y,p,(uint8_t)(sizeof(p)/sizeof(p[0])));
+}
+static int point_in_connector(double x,double y){
+    static const uint8_t p[]={2u,6u,7u,3u};
+    return point_in_world_poly(x,y,p,(uint8_t)(sizeof(p)/sizeof(p[0])));
+}
+static int point_in_room_b(double x,double y){
+    static const uint8_t p[]={8u,10u,11u,12u,13u,9u,7u,6u};
+    return point_in_world_poly(x,y,p,(uint8_t)(sizeof(p)/sizeof(p[0])));
+}
+static int point_in_any_horizontal(double x,double y){
+    return point_in_room_a(x,y)||point_in_connector(x,y)||point_in_room_b(x,y);
 }
 
-static int wall_world_point(uint8_t sid,int sx,double *wx,double *wy){
+/* Intersect the camera ray through one screen pixel with a horizontal plane. */
+static int screen_plane_world(int sx,int sy,double zplane,
+                              double *wx,double *wy,double *depth_out){
+    double px=(double)sx+0.5,py=(double)sy+0.5;
+    double vz=-(py-TSP_HORIZON_PX)/TSP_FOCAL_PX;
+    double depth,lateral,fx,fy,rx,ry;
+    double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
+    if(fabs(vz)<1e-10)return 0;
+    depth=(zplane-TSP_CAMERA_Z)/vz;
+    if(depth<=1e-6)return 0;
+    lateral=depth*((px-80.0)/TSP_FOCAL_PX);
+    camera_basis(&fx,&fy,&rx,&ry);
+    *wx=cx+fx*depth+rx*lateral;
+    *wy=cy+fy*depth+ry*lateral;
+    if(depth_out)*depth_out=depth;
+    return 1;
+}
+
+/*
+ * Background receiver selection now respects the virtual raised Room-B floor.
+ * Room A + connector use z=0; Room B uses z=4. Because a screen ray can in
+ * principle hit more than one candidate plane footprint, choose the nearest
+ * valid authored receiver.
+ */
+static int background_world_receiver(int sx,int sy,double *wx,double *wy,double *wz){
+    double x,y,d,best=1e30,bx=0.0,by=0.0,bz=0.0;
+    if(sy<72){
+        if(screen_plane_world(sx,sy,TSP_CEILING_Z,&x,&y,&d)&&point_in_any_horizontal(x,y)){
+            *wx=x;*wy=y;*wz=TSP_CEILING_Z;return 1;
+        }
+        return 0;
+    }
+    if(sy<=72)return 0;
+
+    if(screen_plane_world(sx,sy,TSP_ROOM_B_FLOOR_Z,&x,&y,&d)&&point_in_room_b(x,y)){
+        best=d;bx=x;by=y;bz=TSP_ROOM_B_FLOOR_Z;
+    }
+    if(screen_plane_world(sx,sy,0.0,&x,&y,&d)&&
+       (point_in_room_a(x,y)||point_in_connector(x,y))&&d<best){
+        best=d;bx=x;by=y;bz=0.0;
+    }
+    if(best>=1e29)return 0;
+    *wx=bx;*wy=by;*wz=bz;return 1;
+}
+
+/* Recover full XYZ of a visible wall/profile pixel. */
+static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,double *wz){
     const TSPHostWorldSegment *s;
     const TSPHostWorldVertex *a,*b;
-    double fx,fy,rx,ry,lateral,dx,dy,t,u;
+    double fx,fy,rx,ry,lateral,dx,dy,t,u,z0,z1;
     double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
+    double py=(double)sy+0.5;
     if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return 0;
     s=&k_tsp_host_world_segments[sid];
     a=&k_tsp_host_world_vertices[s->v0];
     b=&k_tsp_host_world_vertices[s->v1];
     camera_basis(&fx,&fy,&rx,&ry);
-    lateral=(((double)sx+0.5)-80.0)/80.0;
-    dx=fx+rx*lateral;
-    dy=fy+ry*lateral;
+    lateral=(((double)sx+0.5)-80.0)/TSP_FOCAL_PX;
+    dx=fx+rx*lateral;dy=fy+ry*lateral;
     if(!ray_segment_params(cx,cy,dx,dy,(double)a->x,(double)a->y,
                            (double)b->x,(double)b->y,&t,&u))return 0;
     if(t<=1e-7||u<-1e-5||u>1.0+1e-5)return 0;
     *wx=cx+dx*t;*wy=cy+dy*t;
+    *wz=TSP_CAMERA_Z-((py-TSP_HORIZON_PX)/TSP_FOCAL_PX)*t;
+    /* Raster rounding can land boundary-adjacent pixel centers a fraction
+     * outside the analytic profile. Clamp only that rounding residue. */
+    profile_z_range(s->profile,&z0,&z1);
+    if(*wz<z0)*wz=z0;
+    if(*wz>z1)*wz=z1;
     return 1;
 }
 
@@ -330,6 +411,44 @@ static void quantize_point_light_edges(void){
     for(cell=0u;cell<TSP_MAP_CELLS;++cell)quantize_light_cell(cell);
 }
 
+static int same_penumbra_receiver(int x0,int y0,int x1,int y1){
+    uint16_t c0=(uint16_t)((y0>>3)*TSP_COLS+(x0>>3));
+    uint16_t c1=(uint16_t)((y1>>3)*TSP_COLS+(x1>>3));
+    uint16_t p0=(uint16_t)(y0&7)*8u+(uint16_t)(x0&7);
+    uint16_t p1=(uint16_t)(y1&7)*8u+(uint16_t)(x1&7);
+    uint8_t o0=g_owner[c0][p0],o1=g_owner[c1][p1];
+    if(o0!=0xffu||o1!=0xffu)return o0==o1;
+    /* Background penumbra must stay on the same horizontal receiver family. */
+    return (y0<72&&y1<72)||(y0>72&&y1>72);
+}
+
+static void apply_one_sided_penumbra(void){
+    uint8_t hard[TSP_MAP_CELLS][PIXELS];
+    int x,y,k;
+    static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
+    static const int8_t ny[8]={-1,-1,-1,0,0,1,1,1};
+    memcpy(hard,g_lit,sizeof(hard));
+
+    for(y=0;y<144;++y)for(x=0;x<160;++x){
+        uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
+        uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
+        uint8_t v=g_cells[cell][pi],touch=0u;
+        if(hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
+        for(k=0;k<8;++k){
+            int xx=x+nx[k],yy=y+ny[k];
+            uint16_t nc,np;
+            if(xx<0||xx>=160||yy<0||yy>=144)continue;
+            if(!same_penumbra_receiver(x,y,xx,yy))continue;
+            nc=(uint16_t)((yy>>3)*TSP_COLS+(xx>>3));
+            np=(uint16_t)(yy&7)*8u+(uint16_t)(xx&7);
+            if(hard[nc][np]){touch=1u;break;}
+        }
+        /* AO-style stable half coverage, but only OUTWARD into the shadow.
+         * The hard-lit side is never dimmed. */
+        if(touch&&(((x+y)&1)==0))g_lit[cell][pi]=1u;
+    }
+}
+
 static void apply_point_light(void){
     int x,y;
     if(!TSP_HOST_STATIC_LIGHT_COUNT)return;
@@ -337,20 +456,21 @@ static void apply_point_light(void){
         uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
         uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
         uint8_t v=g_cells[cell][pi],owner=g_owner[cell][pi];
-        double wx,wy;
+        double wx,wy,wz;
         int ok=0,receiver=-1;
         if(v==SEM_BLACK)continue;
         if(owner!=0xffu){
             receiver=(int)owner;
-            ok=wall_world_point(owner,x,&wx,&wy);
+            if(receiver_accepts_light(owner))
+                ok=wall_world_point(owner,x,y,&wx,&wy,&wz);
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
-            ok=background_world_point(x,y,&wx,&wy);
-            if(ok&&!world_horizontal_receiver(wx,wy))ok=0;
+            ok=background_world_receiver(x,y,&wx,&wy,&wz);
         }
-        if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,receiver))
+        if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,wz,receiver))
             g_lit[cell][pi]=1u;
     }
     quantize_point_light_edges();
+    if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)apply_one_sided_penumbra();
 }
 
 static void generic_unflipped_indices(uint16_t id,uint8_t out[PIXELS]){
@@ -444,6 +564,7 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
     uint8_t sx,color=shade_sem(shade);
     uint16_t coarse_x=(uint16_t)col*8u;
     if(col>=TSP_COLS||clip_x0>clip_x1||clip_x1>159u)die("surface raster bounds invalid");
+    if(!surface_visible_from_camera(sid))return;
 
     for(sx=clip_x0;sx<=clip_x1;++sx){
         uint8_t local=(uint8_t)((uint16_t)sx-coarse_x);
@@ -553,7 +674,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     uint8_t needed[HW_TILES];
     uint16_t req_count=0u,i;
     ensure_init();
-    if(g_lighting_stage>=TSP_HOST_LIGHT_POINT&&TSP_HOST_STATIC_LIGHT_COUNT)
+    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&TSP_HOST_STATIC_LIGHT_COUNT)
         apply_point_light();
     ++g_frame_no;
     memset(htab,0xff,sizeof(htab));
@@ -564,7 +685,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
         uint8_t canon[PIXELS],encoded[PIXELS],use_lit_palette=0u;
         uint16_t attr,pos;
         uint64_t h;
-        if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)
+        if(g_lighting_stage>=TSP_HOST_LIGHT_HARD)
             use_lit_palette=point_tile_encode(g_cells[i],g_lit[i],encoded);
         else memcpy(encoded,g_cells[i],PIXELS);
         canonicalize(encoded,canon,&attr);
