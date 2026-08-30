@@ -179,7 +179,7 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const ch
     /* Find the smallest steady-state uploads/VBlank that satisfies every
      * release/deadline interval. Frame zero runs while DISPLAY_OFF and may
      * preload any currently-free hardware slots. */
-    for(budget=1u;budget<=48u&&!chosen_budget;++budget){
+    for(budget=1u;budget<=360u&&!chosen_budget;++budget){
         uint32_t done=0u;
         for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
         for(t=0u;t<PATCH_COUNT;++t){
@@ -200,7 +200,7 @@ static unsigned schedule_tilepatches(TilePatch *tp,const uint16_t *maps,const ch
         }
         if(done==job_count)chosen_budget=budget;
     }
-    if(!chosen_budget)die("could not schedule tile uploads within 48 tiles/VBlank");
+    if(!chosen_budget)die("could not schedule tile uploads within 360 tiles/VBlank");
 
     /* Durable scheduler trace: lets us distinguish a bad visual bake from a
      * stale/reused VRAM slot without reverse-engineering generated C banks. */
