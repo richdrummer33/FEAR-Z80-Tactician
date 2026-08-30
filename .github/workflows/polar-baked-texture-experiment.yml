@@ -1,0 +1,186 @@
+name: Polar baked texture experiment
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-texture
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  texture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate unchanged host geometry oracle
+        run: make polar-test
+
+      - name: Build host bake generator
+        run: make build/polar_demo_patch_gen
+
+      - name: Bake baseline and perspective-texture variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          for STAGE in baseline texture; do
+            mkdir -p "build/texture-$STAGE"
+            ./build/polar_demo_patch_gen "build/texture-$STAGE" "$STAGE" \
+              | tee "build/texture-$STAGE/generator.txt"
+          done
+
+      - name: Compare visual delta and bake costs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv, re
+          from pathlib import Path
+          frames=[0,120,300,520,680,760,1000,1113]
+          def ppm(path):
+              b=Path(path).read_bytes(); marker=b"255\n"; p=b.find(marker)
+              if p<0: raise SystemExit(f"bad PPM: {path}")
+              return b[p+len(marker):]
+          rows=[]
+          for f in frames:
+              a=ppm(f"build/texture-baseline/host_composite_frame_{f}.ppm")
+              t=ppm(f"build/texture-texture/host_composite_frame_{f}.ppm")
+              changed=sum(a[i:i+3]!=t[i:i+3] for i in range(0,len(a),3))
+              rows.append((f,changed))
+          with open("build/texture-pixel-deltas.csv","w",newline="") as fh:
+              w=csv.writer(fh); w.writerow(["frame","baseline_vs_texture_pixels"]); w.writerows(rows)
+          def parse(stage):
+              s=Path(f"build/texture-{stage}/generator.txt").read_text()
+              def one(pat,cast=float):
+                  m=re.search(pat,s)
+                  if not m: raise SystemExit(f"missing {pat} for {stage}")
+                  return cast(m.group(1))
+              return {
+                  "stage":stage,
+                  "zero_pct":one(r"zero=\d+/\d+ \(([0-9.]+)%\)"),
+                  "mean_changed":one(r"mean_changed=([0-9.]+) words"),
+                  "peak_unique":one(r"peak_unique/frame=(\d+)",int),
+                  "peak_loads":one(r"original_peak_loads=(\d+)",int),
+                  "total_tile_loads":one(r"total_tile_loads=(\d+)",int),
+                  "vblank_budget":one(r"scheduled_vblank_budget=(\d+)",int),
+                  "tilepatch_banks":one(r"tilepatch_banks=(\d+)",int),
+                  "raw_stream":one(r"raw_stream=(\d+) bytes",int),
+              }
+          metrics=[parse("baseline"),parse("texture")]
+          with open("build/texture-bake-metrics.csv","w",newline="") as fh:
+              w=csv.DictWriter(fh,fieldnames=list(metrics[0])); w.writeheader(); w.writerows(metrics)
+          print(Path("build/texture-pixel-deltas.csv").read_text())
+          print(Path("build/texture-bake-metrics.csv").read_text())
+          PY
+
+      - name: Generate texture runtime packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/generated/polar_demo_patch
+          mkdir -p build/generated/polar_demo_patch
+          ./build/polar_demo_patch_gen build/generated/polar_demo_patch texture \
+            | tee build/texture-runtime-generator.txt
+          touch build/generated/polar_demo_patch/.stamp
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build zero-texture-math Game Gear patch player
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+               POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+               gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/GG-Polar-Perspective-Texture-Baked.gg
+          cp build/gg-polar-patch-demo.sym build/GG-Polar-Perspective-Texture-Baked.sym
+          wc -c build/GG-Polar-Perspective-Texture-Baked.gg
+          sha256sum build/GG-Polar-Perspective-Texture-Baked.gg | tee build/texture-rom-sha256.txt
+
+      - name: Build Gearsystem screenshot runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            -I.toolchain/Gearsystem/platforms/libretro \
+            tools/libretro_runner.cpp -ldl -o build/libretro_runner
+
+      - name: Capture texture ROM at matched camera states
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/texture-gg-shots
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/GG-Polar-Perspective-Texture-Baked.gg
+          PATCH_ADDR="$(awk '$2=="_g_patch_index"{split($1,a,":"); print a[2]; exit}' build/GG-Polar-Perspective-Texture-Baked.sym)"
+          test -n "$PATCH_ADDR"
+          for P in 120 300 520 680 760 1000 1113; do
+            TARGET=$((P + 2))
+            ./build/libretro_runner "$CORE" "$ROM" 5000 \
+              "build/texture-gg-shots/patch_\${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
+          done
+
+      - name: Verify matched host and GG texture pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          frames=[120,300,520,760,1000,1113]
+          HOST={(0,0,0):0,(16,16,48):1,(64,64,96):2,(96,112,144):3,(144,160,192):4,(208,224,240):5}
+          GG={(0,0,0):0,(16,16,49):1,(32,32,49):2,(49,68,98):3,(98,117,156):4,(172,186,222):5}
+          def semantics(path,palette):
+              b=Path(path).read_bytes(); marker=b"255\n"; p=b.find(marker)
+              if p<0: raise SystemExit(f"bad ppm {path}")
+              pix=b[p+len(marker):]; out=[]
+              for i in range(0,len(pix),3):
+                  rgb=tuple(pix[i:i+3])
+                  if rgb not in palette: raise SystemExit(f"{path}: unknown RGB {rgb}")
+                  out.append(palette[rgb])
+              return out
+          bad=[]
+          for f in frames:
+              a=semantics(f"build/texture-texture/host_composite_frame_{f}.ppm",HOST)
+              b=semantics(f"build/texture-gg-shots/patch_{f}.ppm",GG)
+              mismatch=[i for i,(x,y) in enumerate(zip(a,b)) if x!=y]
+              print(f"frame={f} semantic_pixel_diff={len(mismatch)}/{len(a)}")
+              if mismatch: bad.append((f,len(mismatch),mismatch[:24]))
+          if bad: raise SystemExit(f"host/GG texture mismatch: {bad}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-baked-texture-experiment
+          path: |
+            build/texture-baseline/*.ppm
+            build/texture-baseline/camera_poses.csv
+            build/texture-baseline/generator.txt
+            build/texture-texture/*.ppm
+            build/texture-texture/camera_poses.csv
+            build/texture-texture/generator.txt
+            build/texture-texture/tile_schedule.csv
+            build/texture-gg-shots/*.ppm
+            build/texture-pixel-deltas.csv
+            build/texture-bake-metrics.csv
+            build/texture-runtime-generator.txt
+            build/texture-rom-sha256.txt
+            build/GG-Polar-Perspective-Texture-Baked.gg
+            build/GG-Polar-Perspective-Texture-Baked.sym
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/polar_demo_reference_maps.bin
+            build/generated/polar_demo_patch/tile_schedule.csv
+          retention-days: 30
