@@ -1,0 +1,68 @@
+name: Build GG ROM (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-rom:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build host bake generator
+        run: make build/polar_demo_patch_gen
+
+      - name: Generate runtime packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/generated/polar_demo_patch
+          mkdir -p build/generated/polar_demo_patch
+          POLAR_SKIP_PORTAL_PROBES=1 ./build/polar_demo_patch_gen build/generated/polar_demo_patch point | tee build/manual-rom-bake.txt
+          touch build/generated/polar_demo_patch/.stamp
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 64-bank Game Gear ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 gg-polar-patch-demo
+          mkdir -p build/manual-artifact
+          cp build/gg-polar-patch-demo.gg build/manual-artifact/GG-Polar-Latest.gg
+          cp build/gg-polar-patch-demo.sym build/manual-artifact/GG-Polar-Latest.sym
+          sha256sum build/manual-artifact/GG-Polar-Latest.gg | tee build/manual-artifact/SHA256.txt
+          wc -c build/manual-artifact/GG-Polar-Latest.gg | tee build/manual-artifact/ROM-size.txt
+          git rev-parse HEAD | tee build/manual-artifact/COMMIT.txt
+          cp build/manual-rom-bake.txt build/manual-artifact/bake-metrics.txt
+
+      - name: Upload ROM
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-ROM
+          path: build/manual-artifact/*
+          retention-days: 30
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-ROM-build-failure
+          path: |
+            build/manual-rom-bake.txt
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/tile_schedule.csv
+          if-no-files-found: ignore
+          retention-days: 7
