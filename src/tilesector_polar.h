@@ -27,6 +27,13 @@
 #define TSP_INPUT_STRAFE_LEFT   0x20u
 #define TSP_INPUT_STRAFE_RIGHT  0x40u
 
+/* World/elevation convention. Geometry profiles use z=0..32 world units.
+ * The ordinary floor is z=0 and the player's eye is 16 units above it.
+ * Raised/stair modules may change floor Z while preserving the same eye height. */
+#define TSP_BASE_FLOOR_Z_Q4   0
+#define TSP_EYE_HEIGHT_Q4     (16<<4)
+#define TSP_ROOM_B_FLOOR_Z_Q4 (4<<4)
+
 #define TSP_SHADE_COUNT 3u
 #define TSP_BORDER_COUNT 4u
 #define TSP_CAP_COUNT 3u
@@ -64,6 +71,7 @@ typedef enum TSPProfile {
 typedef struct TSPState {
     int16_t x_q4;
     int16_t y_q4;
+    int16_t z_q4;
     uint8_t yaw;
     int16_t speed_q4;
     int16_t strafe_q4;
@@ -93,6 +101,7 @@ extern volatile uint8_t g_tspf_appearance_mode;
 void tsp_reset(TSPState *s);
 void tsp_step(TSPState *s,uint8_t input);
 uint8_t tsp_is_walkable_q4(int16_t x_q4,int16_t y_q4);
+int16_t tsp_floor_z_q4(int16_t x_q4,int16_t y_q4);
 void tsp_polar_renderer_reset(void) BANKED;
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED;
 
