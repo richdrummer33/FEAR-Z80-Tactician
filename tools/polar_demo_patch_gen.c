@@ -28,9 +28,9 @@
 
 #define DEMO_FRAMES POLAR_EXPLORE_FRAMES
 #define PATCH_COUNT (DEMO_FRAMES+1u)
-#define MAX_BANKS 24u
+#define MAX_BANKS 32u
 #define MAX_BANK_STREAM 10000u
-#define MAX_TILEPATCH_BANKS 24u
+#define MAX_TILEPATCH_BANKS 40u
 #define MAX_TILEPATCH_BANK_STREAM 14000u
 /* Palette-only and literal spans may alternate within a row. Worst case is
  * one 3-byte header plus one 16-bit literal per cell, plus the u16 run count. */
