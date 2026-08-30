@@ -151,10 +151,10 @@ static double unwrap_period64(double from,double to){
 }
 static int quant_span(double v,uint8_t coarse){
     static const uint8_t k_fine[]={
-        1u,2u,4u,6u,8u,12u,16u,24u,32u,48u,64u,96u,128u
+        2u,4u,8u,12u,16u,24u,32u,48u,64u,96u,128u
     };
     static const uint8_t k_edge[]={
-        2u,4u,8u,16u,24u,32u,48u,64u,96u,128u
+        4u,8u,16u,32u,64u,96u,128u
     };
     const uint8_t *k=coarse?k_edge:k_fine;
     unsigned n=coarse?sizeof(k_edge):sizeof(k_fine);
@@ -167,10 +167,10 @@ static int quant_span(double v,uint8_t coarse){
     }
     return (int)k[best];
 }
-static int wrap64(int u){
-    int q=u%64;
-    if(q<0)q+=64;
-    return q;
+static int mirror_repeat16(int u){
+    int q=u%32;
+    if(q<0)q+=32;
+    return q<16?q:31-q;
 }
 static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
                                              uint8_t sx,int16_t y,
@@ -185,8 +185,8 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
     int quspan,qvspan,ucenter_q,vcenter_q,ui,vi;
     int16_t yt=(int16_t)ybase,yb=(int16_t)(ybase+7);
     uint8_t edge_cell=(uint8_t)(tl>yt||tr>yt||bl<yb||br<yb);
-    int phase_snap=edge_cell?8:4;
-    int vphase_snap=edge_cell?8:4;
+    int phase_snap=edge_cell?16:8;
+    int vphase_snap=edge_cell?16:8;
     if(h<2)return SEM_FAR;
     if(!wall_texture_phase((uint8_t)sx0,v0,v1,&ul)||
        !wall_texture_phase((uint8_t)sx1,v0,v1,&ur)||
@@ -211,7 +211,7 @@ static uint8_t sample_wall_texture_quantized(uint8_t col,uint8_t row,
        ((double)((int)sx-sx0)-3.5)*(double)quspan/7.0;
     vf=(double)vcenter_q+
        ((double)(y-ybase)-3.5)*(double)qvspan/7.0;
-    ui=wrap64((int)floor(uf+0.5));
+    ui=mirror_repeat16((int)floor(uf+0.5));
     vi=(int)floor(vf+0.5);
     if(vi<0)vi=0;else if(vi>127)vi=127;
     return texture_semantic_exact(g_wall_tex[vi][ui]);
