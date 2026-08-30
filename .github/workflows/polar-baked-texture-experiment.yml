@@ -130,7 +130,7 @@ jobs:
           for P in 120 300 520 680 760 1000 1113; do
             TARGET=$((P + 2))
             ./build/libretro_runner "$CORE" "$ROM" 5000 \
-              "build/texture-gg-shots/patch_\${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
+              "build/texture-gg-shots/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
           done
 
       - name: Verify matched host and GG texture pixels
