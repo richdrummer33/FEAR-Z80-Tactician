@@ -354,7 +354,7 @@ static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,doub
 
 /*
  * First GG material experiment: an authored 8x8 industrial/oxide wall tile.
- * One texel spans 2 world units, so the pattern repeats every 16 world units.
+ * One texel spans 4 world units, so the pattern repeats every 32 world units.
  * U is segment-local distance from v0; V is absolute world Z. This keeps the
  * pattern glued to geometry while remaining intentionally low-frequency.
  *
@@ -387,7 +387,7 @@ static uint8_t wall_material_sample(uint8_t sid,int sx,int sy,uint8_t fallback){
     len=sqrt(dx*dx+dy*dy);
     if(len<1e-9)return fallback;
     u=((wx-(double)a->x)*dx+(wy-(double)a->y)*dy)/len;
-    tx=(int)floor(u*0.5);ty=(int)floor(wz*0.5);
+    tx=(int)floor(u*0.25);ty=(int)floor(wz*0.25);
     tx%=8;ty%=8;if(tx<0)tx+=8;if(ty<0)ty+=8;
     return k_wall_material_8x8[(unsigned)ty*8u+(unsigned)tx];
 }
