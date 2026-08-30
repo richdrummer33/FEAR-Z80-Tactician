@@ -521,7 +521,7 @@ int main(int argc,char **argv){
         fprintf(lighting_info,"static_point_light_world=92.0,50.0 height=8.0; hard=world_xyz_portal_profiles; penumbra=%s\n",
                 g_lighting_stage>=TSP_HOST_LIGHT_POINT?"one_sided_1px_dither":"off");
     if(g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE)
-        fprintf(lighting_info,"material=oxide_panel_8x8; uv=segment_distance_x_world_z; texel_world=2.0; repeat_world=16.0; wall_colors=4\n");
+        fprintf(lighting_info,"material=oxide_panel_8x8; uv=segment_distance_x_world_z; texel_world=4.0; repeat_world=32.0; wall_colors=4\n");
     fclose(lighting_info);
 
     tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
@@ -572,6 +572,11 @@ int main(int argc,char **argv){
     fclose(refs);
     fclose(camera_csv);
 
+    printf("pre_schedule_cache: peak_unique/frame=%u original_peak_loads=%u total_tile_loads=%" PRIu32 "\n",
+           (unsigned)tsp_host_composite_peak_unique_count(),
+           (unsigned)tsp_host_composite_peak_load_count(),
+           tsp_host_composite_total_load_count());
+    fflush(stdout);
     tile_vblank_budget=schedule_tilepatches(tilepatches,all_maps,dir);
 
     memset(banks,0,sizeof(banks));
