@@ -1,0 +1,177 @@
+name: Polar world-light performance
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-world-lighting
+  workflow_dispatch:
+
+concurrency:
+  group: polar-world-light-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  profile:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host acceptance
+        run: make polar-test
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Bake current world-space point light
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/generated/polar_demo_patch
+          make POLAR_LIGHTING_STAGE=point polar-demo-patch-gen \
+            | tee build/world-light-generator.txt
+
+      - name: Build raw and profiled Game Gear ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/perf
+
+          clean_patch() {
+            rm -f build/main_tilesector_polar_patch_gg.o \
+                  build/tilesector_polar_patch_motion_gg.o \
+                  build/tilesector_polar_patch_ntstate_gg.o \
+                  build/tilesector_polar_patch_ntupload_raw_gg.o \
+                  build/tilesector_polar_patch_ntupload_profiled_gg.o \
+                  build/polar_demo_patch_dispatch_gg.o \
+                  build/polar_demo_patch_bank*_gg.o \
+                  build/polar_demo_tilepatch_dispatch_gg.o \
+                  build/polar_demo_tilepatch_bank*_gg.o \
+                  build/gg-polar-patch-demo.*
+          }
+
+          clean_patch
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_LIGHTING_STAGE=point \
+            POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+            gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/perf/world-light-raw.gg
+          cp build/gg-polar-patch-demo.sym build/perf/world-light-raw.sym
+          cp build/gg-polar-patch-demo.map build/perf/world-light-raw.map
+          sha256sum build/perf/world-light-raw.gg | tee build/perf/world-light-raw.sha256
+          wc -c build/perf/world-light-raw.gg | tee build/perf/world-light-raw.bytes
+
+          clean_patch
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_LIGHTING_STAGE=point \
+            POLAR_PATCH_PROFILE_HOOKS=1 POLAR_PATCH_ROM_BANKS=64 \
+            gg-polar-patch-demo
+          cp build/gg-polar-patch-demo.gg build/perf/world-light-profiled.gg
+          cp build/gg-polar-patch-demo.sym build/perf/world-light-profiled.sym
+          cp build/gg-polar-patch-demo.map build/perf/world-light-profiled.map
+
+      - name: Build Gearsystem profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Zero-hook whole-frame cadence
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/polar_raw_profile_runner \
+            build/perf/world-light-raw.gg build/perf/world-light-raw.sym \
+            1100 8 build/perf/world-light-raw-cadence.csv \
+            build/perf/world-light-raw-map.bin \
+            _g_patch_index 16 \
+            | tee build/perf/world-light-raw-cadence.txt
+
+          ./build/polar_raw_profile_runner \
+            build/perf/world-light-profiled.gg build/perf/world-light-profiled.sym \
+            1100 8 build/perf/world-light-profiled-cadence.csv \
+            build/perf/world-light-profiled-map.bin \
+            _g_patch_index 16 \
+            | tee build/perf/world-light-profiled-cadence.txt
+
+          cmp build/perf/world-light-raw-map.bin build/perf/world-light-profiled-map.bin
+
+      - name: Detailed hooked runtime phases
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/tilesector_profile_runner \
+            build/perf/world-light-profiled.gg build/perf/world-light-profiled.sym \
+            1100 8 demo \
+            build/perf/world-light-detailed-map.bin \
+            build/perf/world-light-detailed-state.bin \
+            | tee build/perf/world-light-detailed.txt
+
+      - name: Summarize current hard-light performance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/perf/world-light-performance-summary.txt
+          from pathlib import Path
+          import csv, re, statistics
+
+          CPU=3579545.0
+          rows=list(csv.DictReader(Path("build/perf/world-light-raw-cadence.csv").open()))
+          ticks=[int(r["tstates"]) for r in rows]
+          if not ticks:
+              raise SystemExit("no zero-hook samples")
+          mean=sum(ticks)/len(ticks)
+          lo=min(ticks); hi=max(ticks)
+          ilo=ticks.index(lo); ihi=ticks.index(hi)
+          fps=CPU/mean
+          best_fps=CPU/lo
+          worst_fps=CPU/hi
+
+          raw=Path("build/perf/world-light-raw-cadence.txt").read_text()
+          prof=Path("build/perf/world-light-profiled-cadence.txt").read_text()
+          det=Path("build/perf/world-light-detailed.txt").read_text()
+
+          def grab(text,rx):
+              m=re.search(rx,text)
+              return float(m.group(1)) if m else float("nan")
+          prof_mean=grab(prof,r"update T\s+mean=\s*([0-9.]+)")
+          hook=prof_mean-mean
+
+          phases={}
+          for label in ("input+motion","render/build","vsync-wait","VRAM-upload","loop-tail"):
+              m=re.search(rf"{re.escape(label)}\s+avg=\s*([0-9.]+) T\s+min=\s*([0-9]+) max=\s*([0-9]+)",det)
+              if m:
+                  phases[label]=(float(m.group(1)),int(m.group(2)),int(m.group(3)))
+
+          active=sum(phases[k][0] for k in ("input+motion","render/build","VRAM-upload","loop-tail") if k in phases)
+          print("POLAR WORLD-LIGHT HARD-CAST PERFORMANCE")
+          print(f"samples={len(ticks)} warmup=8 CPU={CPU:.0f} Hz")
+          print(f"whole-frame zero-hook mean={mean:.1f} T -> {fps:.3f} FPS")
+          print(f"best frame={lo} T -> {best_fps:.3f} FPS sample={ilo}")
+          print(f"worst frame={hi} T -> {worst_fps:.3f} FPS sample={ihi}")
+          print(f"range={hi-lo} T; sd={statistics.pstdev(ticks):.1f} T")
+          print(f"profiled mean={prof_mean:.1f} T; profiler tax={hook:+.1f} T ({100*hook/mean:+.3f}%)")
+          print(f"hooked active-work subtotal={active:.1f} T")
+          for k,v in phases.items():
+              print(f"phase {k}: avg={v[0]:.1f} T min={v[1]} max={v[2]}")
+          print(f"approx transition index of best={ilo+9}; worst={ihi+9}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-world-light-current
+          path: |
+            build/perf/
+            build/world-light-generator.txt
+            build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
+            build/generated/polar_demo_patch/tile_schedule.csv
+          retention-days: 30
