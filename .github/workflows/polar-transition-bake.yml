@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o                 build/tilesector_polar_patch_ntstate_gg.o                 build/tilesector_polar_patch_ntupload_raw_gg.o build/tilesector_polar_patch_ntupload_profiled_gg.o                 build/polar_demo_patch_dispatch_gg.o build/polar_demo_patch_bank*_gg.o                 build/gg-polar-patch-demo.*
-          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=1 gg-polar-patch-demo
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=1 POLAR_PATCH_ROM_BANKS=64 gg-polar-patch-demo
           for ext in gg sym map noi cdb ihx; do
             [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/transition-proof/patch-profiled.$ext"
           done
@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f build/main_tilesector_polar_patch_gg.o build/tilesector_polar_patch_motion_gg.o                 build/tilesector_polar_patch_ntstate_gg.o                 build/tilesector_polar_patch_ntupload_raw_gg.o build/tilesector_polar_patch_ntupload_profiled_gg.o                 build/polar_demo_patch_dispatch_gg.o build/polar_demo_patch_bank*_gg.o                 build/gg-polar-patch-demo.*
-          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 gg-polar-patch-demo
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 gg-polar-patch-demo
           for ext in gg sym map noi cdb ihx; do
             [ ! -f "build/gg-polar-patch-demo.$ext" ] || cp "build/gg-polar-patch-demo.$ext" "build/transition-proof/patch-raw.$ext"
           done
