@@ -103,9 +103,9 @@ static void make_base(uint16_t map[TSP_MAP_CELLS]){
         for(c=0u;c<TSP_COLS;++c)
             map[(uint16_t)r*TSP_COLS+c]=base_word(r);
 }
-static void state_at(TSPState *s,int16_t xq,int16_t yq,uint8_t yaw){
+static void state_at(TSPState *s,int16_t xq,int16_t yq,int16_t zq,uint8_t yaw){
     memset(s,0,sizeof(*s));
-    s->x_q4=xq;s->y_q4=yq;s->yaw=yaw;s->speed_scale=1u;
+    s->x_q4=xq;s->y_q4=yq;s->z_q4=zq;s->yaw=yaw;s->speed_scale=1u;
 }
 static int map_valid(const uint16_t map[TSP_MAP_CELLS]){
     uint16_t i;
@@ -116,7 +116,7 @@ static int map_valid(const uint16_t map[TSP_MAP_CELLS]){
 static void render_fresh(const TSPState *src,uint16_t out[TSP_MAP_CELLS]){
     TSPState s;
     memset(out,0,sizeof(uint16_t)*TSP_MAP_CELLS);
-    state_at(&s,src->x_q4,src->y_q4,src->yaw);
+    state_at(&s,src->x_q4,src->y_q4,src->z_q4,src->yaw);
     /* Keep the geometric oracle fixed at appearance mode zero. AO and static
      * light are composed only after host rasterization, so the experiment
      * cannot smuggle extra Z80 projection/shading work into the runtime. */
