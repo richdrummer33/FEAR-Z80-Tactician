@@ -140,15 +140,12 @@ jobs:
           wc -c build/GG-Polar-AO-Point-Baked.gg
           sha256sum build/GG-Polar-AO-Point-Baked.gg | tee build/lighting-rom-sha256.txt
 
-      - name: Build Gearsystem screenshot runner
+      - name: Build Gearsystem screenshot and VRAM runners
         shell: bash
         run: |
           set -euo pipefail
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
-          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
-            -I.toolchain/Gearsystem/platforms/libretro \
-            tools/libretro_runner.cpp -ldl -o build/libretro_runner
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
       - name: Capture point-light ROM at matched camera states
         shell: bash
@@ -178,6 +175,34 @@ jobs:
           ./build/libretro_runner "$CORE" "$ROM" 5000 \
             "build/lighting-gg-shots/final-cell-settled.ppm" "$CELL_ADDR" 2 \
             | tee build/lighting-final-cell-ram.txt
+
+          # Direct VDP proof for the same tile. Slot 248 starts at VRAM 0x1F00.
+          ./build/gearsystem_core_runner "$ROM" 5000 - - 0 1F00 32 \
+            | tee build/lighting-final-slot248-vram.txt
+
+          python3 - <<'PY' | tee build/lighting-final-slot248-compare.txt
+          import csv,re
+          from pathlib import Path
+          rows=list(csv.DictReader(Path("build/generated/polar_demo_patch/tile_schedule.csv").open()))
+          candidates=[r for r in rows if int(r["slot"])==248]
+          if not candidates:
+              raise SystemExit("no scheduled job for slot 248")
+          job=max(candidates,key=lambda r:(int(r["deadline"]),int(r["assigned"]),int(r["job"])))
+          expected=job["bytes_hex"].upper()
+          t=Path("build/lighting-final-slot248-vram.txt").read_text()
+          m=re.search(r"VRAM\[1F00\.\.1F1F\]=([0-9A-Fa-f]{64})",t)
+          if not m:
+              raise SystemExit("slot 248 VRAM dump missing")
+          actual=m.group(1).upper()
+          print(f"slot248 final_job={job['job']} release={job['release']} deadline={job['deadline']} assigned={job['assigned']}")
+          print("expected="+expected)
+          print("actual  ="+actual)
+          if actual!=expected:
+              diffs=[i for i,(a,b) in enumerate(zip(bytes.fromhex(expected),bytes.fromhex(actual))) if a!=b]
+              print("byte_diffs="+",".join(map(str,diffs)))
+              raise SystemExit("slot 248 VRAM != host scheduled pattern")
+          print("SLOT248_VRAM_EXACT=1")
+          PY
 
       - name: Verify matched host and GG point-light pixels
         shell: bash
@@ -248,6 +273,8 @@ jobs:
             build/lighting-point-runtime-generator.txt
             build/lighting-rom-sha256.txt
             build/lighting-final-cell-ram.txt
+            build/lighting-final-slot248-vram.txt
+            build/lighting-final-slot248-compare.txt
             build/GG-Polar-AO-Point-Baked.gg
             build/GG-Polar-AO-Point-Baked.sym
             build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
