@@ -69,12 +69,16 @@ static const char *g_lighting_name="baseline";
 static uint8_t parse_lighting_stage(const char *s){
     if(!strcmp(s,"baseline"))return TSP_HOST_LIGHT_BASELINE;
     if(!strcmp(s,"ao"))return TSP_HOST_LIGHT_AO;
+    if(!strcmp(s,"hard"))return TSP_HOST_LIGHT_HARD;
     if(!strcmp(s,"point"))return TSP_HOST_LIGHT_POINT;
-    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|point)\n",s);
+    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|hard|point)\n",s);
     exit(2);
 }
 static int capture_frame(uint16_t frame){
-    static const uint16_t k[] = {0u,120u,300u,520u,680u,760u,1000u,1113u};
+    /* Extra portal-heavy poses make sidedness/riser/penumbra review explicit. */
+    static const uint16_t k[] = {
+        0u,120u,300u,460u,500u,520u,540u,560u,600u,680u,760u,1000u,1113u
+    };
     uint8_t i;
     for(i=0u;i<(uint8_t)(sizeof(k)/sizeof(k[0]));++i)if(frame==k[i])return 1;
     return 0;
@@ -498,7 +502,7 @@ int main(int argc,char **argv){
     unsigned bank_count=0u,tilebank_count=0u,tile_vblank_budget=0u;
     PolarExploreCursor explore;
 
-    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|point]\n",argv[0]);return 2;}
+    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|hard|point]\n",argv[0]);return 2;}
     if(!tilepatches||!all_maps)die("out of memory allocating bake tables");
     dir=argv[1];
     if(argc==3){g_lighting_name=argv[2];g_lighting_stage=parse_lighting_stage(argv[2]);}
@@ -512,8 +516,9 @@ int main(int argc,char **argv){
     lighting_info=fopen(lightpath,"w");
     if(!lighting_info){fprintf(stderr,"cannot write %s: %s\n",lightpath,strerror(errno));return 2;}
     fprintf(lighting_info,"stage=%s\n",g_lighting_name);
-    if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)
-        fprintf(lighting_info,"static_point_light_world=92.0,50.0 height=8.0 radius=76\n");
+    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD)
+        fprintf(lighting_info,"static_point_light_world=92.0,50.0 height=8.0; hard=world_xyz_portal_profiles; penumbra=%s\n",
+                g_lighting_stage>=TSP_HOST_LIGHT_POINT?"one_sided_1px_dither":"off");
     fclose(lighting_info);
 
     tsp_reset(&s);polar_explore_cursor_reset(&explore);make_base(base);render_fresh(&s,cur);
