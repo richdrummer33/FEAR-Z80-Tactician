@@ -370,7 +370,7 @@ static void quantize_light_cell(uint16_t cell){
     for(i=0u;i<PIXELS;++i){
         uint8_t v=g_cells[cell][i];
         uint64_t bit=UINT64_C(1)<<i;
-        if(g_lightable[cell][i]&&v>SEM_BLACK&&v<SEM_NEAR){
+        if(v>SEM_BLACK&&v<SEM_NEAR){
             eligible|=bit;
             if(g_lit[cell][i])target|=bit;
         }
@@ -405,7 +405,7 @@ found_exact:
     if(best_cost>64u)return;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=g_cells[cell][i];
-        if(g_lightable[cell][i]&&v>SEM_BLACK&&v<SEM_NEAR)
+        if(v>SEM_BLACK&&v<SEM_NEAR)
             g_lit[cell][i]=(uint8_t)((best>>i)&UINT64_C(1));
     }
 }
@@ -413,6 +413,17 @@ found_exact:
 static void quantize_point_light_edges(void){
     uint16_t cell;
     for(cell=0u;cell<TSP_MAP_CELLS;++cell)quantize_light_cell(cell);
+}
+
+/* Quantization approximates only the SHAPE of a hard shadow. Material
+ * sidedness is non-negotiable: clear any approximated light pixel that the
+ * exact receiver test marked as illegal. Keeping this as a post-clamp avoids
+ * fragmenting the reusable straight-edge vocabulary. */
+static void enforce_lightable_mask(void){
+    uint16_t cell;uint8_t i;
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell)
+        for(i=0u;i<PIXELS;++i)
+            if(!g_lightable[cell][i])g_lit[cell][i]=0u;
 }
 
 static void apply_one_sided_penumbra(void){
@@ -487,6 +498,7 @@ static void apply_point_light(void){
         }
     }
     quantize_point_light_edges();
+    enforce_lightable_mask();
     if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)apply_one_sided_penumbra();
 }
 
