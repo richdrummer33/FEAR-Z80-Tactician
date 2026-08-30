@@ -1,0 +1,157 @@
+name: Polar manual takeover build
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-portal-penumbra
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build point-light bake packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build/polar_demo_patch_gen
+          rm -rf build/generated/polar_demo_patch
+          mkdir -p build/generated/polar_demo_patch
+          ./build/polar_demo_patch_gen build/generated/polar_demo_patch point \
+            | tee build/manual-takeover-bake.txt
+          touch build/generated/polar_demo_patch/.stamp
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 64-bank manual takeover ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+               POLAR_PATCH_PROFILE_HOOKS=0 POLAR_PATCH_ROM_BANKS=64 \
+               gg-polar-manual-explore
+          cp build/gg-polar-manual-explore.gg build/GG-Polar-Portal-Penumbra-MANUAL.gg
+          cp build/gg-polar-manual-explore.sym build/GG-Polar-Portal-Penumbra-MANUAL.sym
+          sha256sum build/GG-Polar-Portal-Penumbra-MANUAL.gg | tee build/manual-rom-sha256.txt
+          wc -c build/GG-Polar-Portal-Penumbra-MANUAL.gg | tee build/manual-rom-bytes.txt
+
+      - name: Build Gearsystem runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove takeover and controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/GG-Polar-Portal-Penumbra-MANUAL.gg
+          SYM=build/GG-Polar-Portal-Penumbra-MANUAL.sym
+          STATE="$(awk '$2=="_g_state"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          RAIL="$(awk '$2=="_g_rail_active"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          DYN="$(awk '$2=="_g_dynamic_renderer"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATE" && test -n "$RAIL" && test -n "$DYN"
+
+          mkdir -p build/manual-shots
+
+          run_state () {
+            local name="$1" mask="$2" frames="$3"
+            LIBRETRO_JOYPAD_MASK="$mask" LIBRETRO_JOYPAD_AFTER_FRAME=120 \
+              ./build/libretro_runner "$CORE" "$ROM" "$frames" \
+                "build/manual-shots/${name}-${frames}.ppm" "$STATE" 16 \
+                | tee "build/${name}-${frames}.txt"
+          }
+
+          run_state up 16 150
+          run_state up 16 320
+          run_state right 128 150
+          run_state right 128 320
+          run_state strafe_b 1 150
+          run_state strafe_b 1 320
+          run_state strafe_a 256 150
+          run_state strafe_a 256 320
+
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=120 \
+            ./build/libretro_runner "$CORE" "$ROM" 320 - "$RAIL" 1 \
+            | tee build/manual-rail-state.txt
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=120 \
+            ./build/libretro_runner "$CORE" "$ROM" 320 - "$DYN" 1 \
+            | tee build/manual-dynamic-state.txt
+
+          python3 - <<'PY' | tee build/manual-control-proof.txt
+          import re, struct
+          from pathlib import Path
+
+          def raw(path):
+              s=Path(path).read_text()
+              m=re.search(r"RAM addr=[0-9A-F]+ .* data=([0-9A-F]+)",s)
+              if not m: raise SystemExit(f"missing RAM dump: {path}")
+              return bytes.fromhex(m.group(1))
+
+          def state(path):
+              b=raw(path)
+              if len(b)<5: raise SystemExit(f"short state dump: {path}")
+              x=struct.unpack_from("<h",b,0)[0]
+              y=struct.unpack_from("<h",b,2)[0]
+              yaw=b[4]
+              return x,y,yaw
+
+          def moved(a,b):
+              return a[0]!=b[0] or a[1]!=b[1]
+
+          up0,up1=state("build/up-150.txt"),state("build/up-320.txt")
+          rt0,rt1=state("build/right-150.txt"),state("build/right-320.txt")
+          sb0,sb1=state("build/strafe_b-150.txt"),state("build/strafe_b-320.txt")
+          sa0,sa1=state("build/strafe_a-150.txt"),state("build/strafe_a-320.txt")
+          rail=raw("build/manual-rail-state.txt")[0]
+          dyn=raw("build/manual-dynamic-state.txt")[0]
+
+          print("up:",up0,"->",up1)
+          print("right:",rt0,"->",rt1)
+          print("strafe_b:",sb0,"->",sb1)
+          print("strafe_a:",sa0,"->",sa1)
+          print("rail_active=",rail,"dynamic_renderer=",dyn)
+
+          if rail!=0: raise SystemExit("rail did not permanently cancel")
+          if dyn!=1: raise SystemExit("live renderer did not engage")
+          if not moved(up0,up1): raise SystemExit("UP did not move player")
+          if rt0[2]==rt1[2]: raise SystemExit("RIGHT did not rotate player")
+          if not moved(sb0,sb1): raise SystemExit("button B did not strafe")
+          if not moved(sa0,sa1): raise SystemExit("button A did not strafe")
+          print("MANUAL_TAKEOVER_CONTROLS_PASS=1")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-manual-takeover-current
+          path: |
+            build/GG-Polar-Portal-Penumbra-MANUAL.gg
+            build/GG-Polar-Portal-Penumbra-MANUAL.sym
+            build/manual-rom-sha256.txt
+            build/manual-rom-bytes.txt
+            build/manual-takeover-bake.txt
+            build/manual-control-proof.txt
+            build/manual-rail-state.txt
+            build/manual-dynamic-state.txt
+            build/up-*.txt
+            build/right-*.txt
+            build/strafe_*.txt
+            build/manual-shots/*.ppm
+          retention-days: 30
