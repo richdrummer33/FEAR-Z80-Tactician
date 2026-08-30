@@ -14,6 +14,7 @@ static enum retro_pixel_format g_pixfmt = RETRO_PIXEL_FORMAT_0RGB1555;
 static std::vector<uint8_t> g_frame;
 static unsigned g_w=0,g_h=0; static size_t g_pitch=0; static unsigned g_video_frames=0;
 static uint16_t g_joypad_mask=0u;
+static unsigned g_joypad_after_frame=0u;
 
 static bool env_cb(unsigned cmd, void *data) {
     switch (cmd) {
@@ -63,6 +64,7 @@ static size_t audio_batch_cb(const int16_t*, size_t frames) { return frames; }
 static void input_poll_cb() {}
 static int16_t input_state_cb(unsigned port,unsigned device,unsigned,unsigned id) {
     if(port!=0u || device!=RETRO_DEVICE_JOYPAD || id>=16u) return 0;
+    if(g_video_frames<g_joypad_after_frame)return 0;
     return (g_joypad_mask & (uint16_t)(1u<<id)) ? 1 : 0;
 }
 
@@ -100,6 +102,7 @@ int main(int argc,char **argv){
     if(argc<4){fprintf(stderr,"usage: %s <core.so> <rom.gg> <frames|max_frames> [frame.ppm] [ram_addr_hex] [ram_len] [wait_ram16_target]\n",argv[0]);return 2;}
     const char *core_path=argv[1], *rom_path=argv[2]; unsigned frames=(unsigned)strtoul(argv[3],nullptr,10);
     if(const char *joy=getenv("LIBRETRO_JOYPAD_MASK")) g_joypad_mask=(uint16_t)strtoul(joy,nullptr,0);
+    if(const char *after=getenv("LIBRETRO_JOYPAD_AFTER_FRAME")) g_joypad_after_frame=(unsigned)strtoul(after,nullptr,0);
     const char *ppm=(argc>=5)?argv[4]:nullptr;
     std::ifstream f(rom_path,std::ios::binary); if(!f){perror("rom");return 2;}
     std::vector<uint8_t> rom((std::istreambuf_iterator<char>(f)),{});
