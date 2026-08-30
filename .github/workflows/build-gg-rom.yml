@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - experiment/gg-polar-portal-penumbra
+      - feature/gg-polar-vertical-stairwell
   workflow_dispatch:
 
 permissions:
@@ -15,6 +16,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate vertical camera and module grammar
+        run: make polar-test
 
       - name: Build host bake generator
         run: make build/polar_demo_patch_gen
