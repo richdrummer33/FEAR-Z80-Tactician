@@ -38,7 +38,7 @@ static const char *k_action_name[ACTION_COUNT] = {
 
 typedef struct Node {
     uint8_t gx, gy;
-    int16_t xq, yq;
+    int16_t xq, yq, zq;
 } Node;
 
 typedef struct DisplayState {
@@ -109,11 +109,13 @@ static uint32_t hash_slot(uint64_t h,uint32_t mask) {
     return (uint32_t)h&mask;
 }
 
-static void state_at(TSPState *s,int16_t xq,int16_t yq,uint8_t yaw) {
+static void state_at_z(TSPState *s,int16_t xq,int16_t yq,int16_t zq,uint8_t yaw) {
     memset(s,0,sizeof(*s));
-    s->x_q4=xq;s->y_q4=yq;
-    s->z_q4=(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(xq,yq));
+    s->x_q4=xq;s->y_q4=yq;s->z_q4=zq;
     s->yaw=yaw;s->speed_scale=1u;
+}
+static void state_at(TSPState *s,int16_t xq,int16_t yq,uint8_t yaw) {
+    state_at_z(s,xq,yq,(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(xq,yq)),yaw);
 }
 static int map_valid(const uint16_t map[TSP_MAP_CELLS]) {
     uint16_t i;
@@ -121,15 +123,20 @@ static int map_valid(const uint16_t map[TSP_MAP_CELLS]) {
         if((map[i]&TSP_TILE_ID_MASK)>=TSP_GENERATED_TILE_COUNT) return 0;
     return 1;
 }
-static void render_fresh(int16_t xq,int16_t yq,uint8_t yaw,uint8_t appearance,
-                         uint16_t out[TSP_MAP_CELLS]) {
+static void render_fresh_z(int16_t xq,int16_t yq,int16_t zq,uint8_t yaw,uint8_t appearance,
+                           uint16_t out[TSP_MAP_CELLS]) {
     TSPState s;
     memset(out,0,sizeof(uint16_t)*TSP_MAP_CELLS);
-    state_at(&s,xq,yq,yaw);
+    state_at_z(&s,xq,yq,zq,yaw);
     g_tspf_appearance_mode=appearance;
     tsp_polar_renderer_reset();
     tsp_polar_render(&s,out,(TSPColumn *)0);
     if(!map_valid(out)) die("oracle emitted invalid tile id");
+}
+static void render_fresh(int16_t xq,int16_t yq,uint8_t yaw,uint8_t appearance,
+                         uint16_t out[TSP_MAP_CELLS]) {
+    render_fresh_z(xq,yq,(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(xq,yq)),
+                   yaw,appearance,out);
 }
 
 static uint16_t display_find_or_add(
@@ -283,8 +290,8 @@ static int emit_pack(const char *path,const Node *nodes,uint16_t node_count,
     uint32_t i;
     if(!f){fprintf(stderr,"cannot open %s: %s\n",path,strerror(errno));return 0;}
 #define W(expr) do{if((expr)<0){fclose(f);return 0;}}while(0)
-    if(fwrite("PTP1",1,4,f)!=4){fclose(f);return 0;}
-    W(write_u16(f,1u));W(write_u16(f,TSP_COLS));W(write_u16(f,TSP_ROWS));
+    if(fwrite("PTP2",1,4,f)!=4){fclose(f);return 0;}
+    W(write_u16(f,2u));W(write_u16(f,TSP_COLS));W(write_u16(f,TSP_ROWS));
     W(write_u16(f,node_count));W(write_u16(f,yaw_slots));W(write_u16(f,yaw_step));
     W(write_u8(f,appearance));W(write_u8(f,ACTION_COUNT));
     W(write_u32(f,pose_count));W(write_u32(f,display_count));W(write_u32(f,patch_count));
@@ -292,6 +299,7 @@ static int emit_pack(const char *path,const Node *nodes,uint16_t node_count,
     for(i=0u;i<node_count;++i){
         W(write_u8(f,nodes[i].gx));W(write_u8(f,nodes[i].gy));
         W(write_u16(f,(uint16_t)nodes[i].xq));W(write_u16(f,(uint16_t)nodes[i].yq));
+        W(write_u16(f,(uint16_t)nodes[i].zq));
     }
     for(i=0u;i<pose_count;++i)W(write_u32(f,pose_display[i]));
     for(i=0u;i<edge_slots;++i){
@@ -494,6 +502,7 @@ int main(int argc,char **argv) {
         if(tsp_is_walkable_q4(xq,yq)){
             Node *nd=&nodes[node_count];
             nd->gx=gx;nd->gy=gy;nd->xq=xq;nd->yq=yq;
+            nd->zq=(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(xq,yq));
             node_at[gy][gx]=(int32_t)node_count++;
         }
     }
@@ -516,7 +525,7 @@ int main(int argc,char **argv) {
             uint16_t map[TSP_MAP_CELLS];
             uint8_t yaw=(uint8_t)(ys*opt.yaw_step);
             uint32_t id;
-            render_fresh(nodes[n].xq,nodes[n].yq,yaw,opt.appearance,map);
+            render_fresh_z(nodes[n].xq,nodes[n].yq,nodes[n].zq,yaw,opt.appearance,map);
             id=display_find_or_add(displays,&display_count,pose_count,
                                    display_slots,display_slot_cap,map);
             pose_display[n*(uint32_t)yaw_slots+ys]=id;
@@ -611,22 +620,22 @@ int main(int argc,char **argv) {
     run_stress_suite(opt.appearance);
     run_demo_trace(opt.appearance);
 
-    /* Component estimate equals the explicit PTP1 writer below. */
+    /* Component estimate equals the explicit PTP2 writer below. */
     estimated_pack=(uint32_t)(
-        42u + (uint32_t)node_count*6u + pose_count*4u + edge_slots*8u +
+        42u + (uint32_t)node_count*8u + pose_count*4u + edge_slots*8u +
         patch_count*10u + (uint32_t)patch_pool_len);
-    printf("PTP1 uncompressed Phase-A pack estimate: %" PRIu32 " bytes (%.2f KiB, %.2f MiB)\n",
+    printf("PTP2 uncompressed Phase-A pack estimate: %" PRIu32 " bytes (%.2f KiB, %.2f MiB)\n",
            estimated_pack,estimated_pack/1024.0,estimated_pack/(1024.0*1024.0));
     printf("  components: header=42 nodes=%" PRIu32 " pose->display=%" PRIu32
            " edge_slots=%" PRIu32 " patch_dir=%" PRIu32 " patch_stream=%zu\n",
-           (uint32_t)node_count*6u,pose_count*4u,edge_slots*8u,patch_count*10u,patch_pool_len);
-    printf("  IMPORTANT: display tables themselves are NOT stored in PTP1; they are oracle-only bake intermediates.\n");
+           (uint32_t)node_count*8u,pose_count*4u,edge_slots*8u,patch_count*10u,patch_pool_len);
+    printf("  IMPORTANT: display tables themselves are NOT stored in PTP2; they are oracle-only bake intermediates.\n");
 
     if(opt.emit_path){
         if(!emit_pack(opt.emit_path,nodes,node_count,yaw_slots,opt.yaw_step,opt.appearance,
                       pose_display,pose_count,display_count,edges,edge_slots,legal_edges,
                       patches,patch_count,patch_pool,(uint32_t)patch_pool_len))
-            die("failed to emit PTP1 pack");
+            die("failed to emit PTP2 pack");
         probe=fopen(opt.emit_path,"rb");
         if(probe){
             long sz;fseek(probe,0,SEEK_END);sz=ftell(probe);fclose(probe);
