@@ -628,6 +628,45 @@ int main(int argc,char **argv){
            (unsigned)tsp_host_composite_peak_load_count(),
            tsp_host_composite_total_load_count(),tile_vblank_budget,tilebank_count);
     printf("final state=(%.2f,%.2f) yaw=%u\n",s.x_q4/16.0,s.y_q4/16.0,s.yaw);
+
+    /* Portal semantics probes are deliberately rendered AFTER all generated
+     * runtime sources and traversal metrics are finalized, so these diagnostic
+     * views cannot change the cartridge packet or its measured economics. */
+    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD){
+        TSPState probe;
+        char ppath[512];
+        uint16_t lintel_owner,lintel_lit,riser_owner,riser_lit;
+
+        /* Hallway side, looking east through the x=112 threshold. */
+        state_at(&probe,100<<4,50<<4,0u);
+        render_fresh(&probe,cur);
+        path_join(ppath,sizeof(ppath),dir,"portal_probe_hallway.ppm");
+        if(!tsp_host_composite_write_ppm(ppath))die("hallway portal probe write failed");
+        lintel_owner=tsp_host_composite_owner_pixel_count(15u);
+        lintel_lit=tsp_host_composite_lit_owner_pixel_count(15u);
+        riser_owner=tsp_host_composite_owner_pixel_count(16u);
+        riser_lit=tsp_host_composite_lit_owner_pixel_count(16u);
+        printf("portal_probe_hallway lintel_owner=%u lintel_lit=%u riser_owner=%u riser_lit=%u\n",
+               lintel_owner,lintel_lit,riser_owner,riser_lit);
+        if(!lintel_owner||!riser_owner)die("hallway portal profiles not visible");
+
+        /* Room-B side, looking west back through the same x=112 threshold. */
+        state_at(&probe,124<<4,50<<4,128u);
+        render_fresh(&probe,cur);
+        path_join(ppath,sizeof(ppath),dir,"portal_probe_room2_back.ppm");
+        if(!tsp_host_composite_write_ppm(ppath))die("Room2 portal probe write failed");
+        lintel_owner=tsp_host_composite_owner_pixel_count(15u);
+        lintel_lit=tsp_host_composite_lit_owner_pixel_count(15u);
+        riser_owner=tsp_host_composite_owner_pixel_count(16u);
+        riser_lit=tsp_host_composite_lit_owner_pixel_count(16u);
+        printf("portal_probe_room2 lintel_owner=%u lintel_lit=%u riser_owner=%u riser_lit=%u\n",
+               lintel_owner,lintel_lit,riser_owner,riser_lit);
+        if(!lintel_owner)die("Room2 backside lintel unexpectedly invisible");
+        if(lintel_lit)die("Room2 backside lintel received hallway light");
+        if(riser_owner||riser_lit)die("Room2-side riser face was not culled");
+        printf("PORTAL_SIDEDNESS_PROBES_PASS=1\n");
+    }
+
     for(i=0u;i<PATCH_COUNT;++i)free(tilepatches[i].bytes);
     free(tilepatches);free(all_maps);
     return 0;
