@@ -166,6 +166,19 @@ jobs:
               "build/lighting-gg-shots/patch_${P}.ppm" "$PATCH_ADDR" 2 "$TARGET"
           done
 
+          # Hard-cast cleanup diagnostic: the only remaining mismatch is in
+          # visible cell row 17, col 5 (screen x=40..47,y=136..143). Host
+          # reference says final word 0x0EF8 (slot 248 + H/V flip + palette 1).
+          # Run to a fully settled final state and dump that exact g_map word.
+          MAP_ADDR="$(awk '$2=="_g_map"{split($1,a,":"); print a[2]; exit}' build/GG-Polar-AO-Point-Baked.sym)"
+          test -n "$MAP_ADDR"
+          CELL_DEC=$((16#$MAP_ADDR + 2 * (17 * 20 + 5)))
+          printf -v CELL_ADDR "%04X" "$CELL_DEC"
+          echo "final diagnostic g_map base=$MAP_ADDR cell[17,5]=$CELL_ADDR expected_le=F80E"
+          ./build/libretro_runner "$CORE" "$ROM" 5000 \
+            "build/lighting-gg-shots/final-cell-settled.ppm" "$CELL_ADDR" 2 \
+            | tee build/lighting-final-cell-ram.txt
+
       - name: Verify matched host and GG point-light pixels
         shell: bash
         run: |
@@ -234,6 +247,7 @@ jobs:
             build/lighting-bake-metrics.csv
             build/lighting-point-runtime-generator.txt
             build/lighting-rom-sha256.txt
+            build/lighting-final-cell-ram.txt
             build/GG-Polar-AO-Point-Baked.gg
             build/GG-Polar-AO-Point-Baked.sym
             build/generated/polar_demo_patch/polar_demo_patch_manifest.txt
