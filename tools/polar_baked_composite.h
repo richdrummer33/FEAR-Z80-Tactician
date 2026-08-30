@@ -15,7 +15,8 @@ typedef struct TSPHostTileLoad {
 enum {
     TSP_HOST_LIGHT_BASELINE = 0u,
     TSP_HOST_LIGHT_AO = 1u,
-    TSP_HOST_LIGHT_POINT = 2u
+    TSP_HOST_LIGHT_POINT = 2u,
+    TSP_HOST_LIGHT_TEXTURE = 3u
 };
 
 /* Select one host-bake presentation layer and provide the exact camera state.
@@ -35,7 +36,8 @@ void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 int16_t tl,int16_t tr,int16_t bl,int16_t br,
                                 uint8_t shade,uint8_t border,
-                                uint8_t ao_left,uint8_t ao_right);
+                                uint8_t ao_left,uint8_t ao_right,
+                                uint8_t profile,uint8_t v0,uint8_t v1);
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
 uint16_t tsp_host_composite_frame_load_count(void);
