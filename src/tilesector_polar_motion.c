@@ -42,8 +42,19 @@ uint8_t tsp_is_walkable_q4(int16_t xq,int16_t yq){
     if(x>=112&&x<=172&&y>=20&&y<=78)return 1u;
     return 0u;
 }
+
+/* First real vertical traversal surface: Room B is four world-units above
+ * Room A/connector. Keep floor height as a world query rather than baking it
+ * into the camera so future stair/spiral modules can supply their own height
+ * function while movement/rendering keep the same contract. */
+int16_t tsp_floor_z_q4(int16_t xq,int16_t yq){
+    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
+    if(x>=112&&x<=172&&y>=20&&y<=78)return TSP_ROOM_B_FLOOR_Z_Q4;
+    return TSP_BASE_FLOOR_Z_Q4;
+}
 void tsp_reset(TSPState *s){
-    s->x_q4=(int16_t)(32<<4);s->y_q4=(int16_t)(48<<4);s->yaw=0u;
+    s->x_q4=(int16_t)(32<<4);s->y_q4=(int16_t)(48<<4);
+    s->z_q4=(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(s->x_q4,s->y_q4));s->yaw=0u;
     s->speed_q4=0;s->strafe_q4=0;s->turn_q4=0;s->speed_scale=1u;s->manual=0u;s->demo_phase=0u;s->demo_ticks=0u;
 }
 static void apply_motion(TSPState *s,int8_t throttle,int8_t strafe,uint8_t target_yaw,uint8_t manual_turn){
@@ -60,6 +71,7 @@ static void apply_motion(TSPState *s,int8_t throttle,int8_t strafe,uint8_t targe
     dxq=scale_small((int16_t)(fdx+sdx),scale);dyq=scale_small((int16_t)(fdy+sdy),scale);
     if(tsp_is_walkable_q4((int16_t)(s->x_q4+dxq),s->y_q4))s->x_q4=(int16_t)(s->x_q4+dxq);
     if(tsp_is_walkable_q4(s->x_q4,(int16_t)(s->y_q4+dyq)))s->y_q4=(int16_t)(s->y_q4+dyq);
+    s->z_q4=(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(s->x_q4,s->y_q4));
 }
 void tsp_step(TSPState *s,uint8_t input){
     uint8_t takeover=(uint8_t)(input&(TSP_INPUT_UP|TSP_INPUT_DOWN|TSP_INPUT_LEFT|TSP_INPUT_RIGHT|TSP_INPUT_STRAFE_LEFT|TSP_INPUT_STRAFE_RIGHT));
