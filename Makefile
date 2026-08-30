@@ -167,7 +167,7 @@ $(POLAR_TRANSITION_BAKE_BIN): src/tilesector_polar_motion.c src/tilesector_polar
 
 polar-transition-bake: $(POLAR_TRANSITION_BAKE_BIN)
 
-$(POLAR_DEMO_PATCH_GEN_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_demo_patch_gen.c tools/polar_baked_composite.c tools/polar_baked_composite.h tools/polar_baked_lighting_data.h | build
+$(POLAR_DEMO_PATCH_GEN_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_demo_patch_gen.c tools/polar_baked_composite.c tools/polar_baked_composite.h tools/polar_baked_lighting_data.h experiments/polar_texture/TWBARLT1_2bpp.txt | build
 	$(CC) $(CFLAGS) -DTSPF_HOST_PIXEL_COMPOSITE=1 -Isrc -Itools src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_baked_composite.c tools/polar_demo_patch_gen.c -lm -o $@
 
 $(POLAR_PATCH_STAMP): $(POLAR_DEMO_PATCH_GEN_BIN) | build
