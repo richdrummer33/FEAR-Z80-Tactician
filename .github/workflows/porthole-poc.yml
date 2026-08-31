@@ -112,10 +112,13 @@ jobs:
 
           # Exact logical-frame captures: these stop on the ROM's live route
           # progress marker rather than assuming one packet frame == one VBlank.
-          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=80             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-interior-frame80.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-interior-frame80.txt
-          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=112             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-interior-frame112.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-interior-frame112.txt
-          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=1080             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-exterior-frame80.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-exterior-frame80.txt
-          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=1112             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-exterior-frame112.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-exterior-frame112.txt
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=80 ./build/gearsystem_core_runner "$ROM" 1200 build/porthole/native-interior-frame80.ppm "$STATUS_ADDR" 6 | tee build/porthole/native-interior-frame80.txt
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=112 ./build/gearsystem_core_runner "$ROM" 1200 build/porthole/native-interior-frame112.ppm "$STATUS_ADDR" 6 | tee build/porthole/native-interior-frame112.txt
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=1080 ./build/gearsystem_core_runner "$ROM" 1200 build/porthole/native-exterior-frame80.ppm "$STATUS_ADDR" 6 | tee build/porthole/native-exterior-frame80.txt
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=1112 ./build/gearsystem_core_runner "$ROM" 1200 build/porthole/native-exterior-frame112.ppm "$STATUS_ADDR" 6 | tee build/porthole/native-exterior-frame112.txt
+
+          python3 tools/compare_porthole_semantics.py build/porthole/host build/porthole | tee build/porthole/semantic-compare.txt
+          grep -q 'PORTHOLE_SEMANTIC_EXACT=1' build/porthole/semantic-compare.txt
 
           # Native RunToVBlank pacing is deliberately independent of the
           # libretro video-frame counter. 500 native calls reach the second
@@ -158,6 +161,7 @@ jobs:
             build/porthole/native-interior-frame112.txt \
             build/porthole/native-exterior-frame80.txt \
             build/porthole/native-exterior-frame112.txt \
+            build/porthole/semantic-compare.txt \
             build/porthole/host/room_bundle_poc_manifest.txt \
             build/porthole/host/bundle0_route01_frame64.ppm \
             build/porthole/host/bundle0_route01_frame80.ppm \
