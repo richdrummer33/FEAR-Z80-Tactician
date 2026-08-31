@@ -1,0 +1,158 @@
+name: GG thick porthole proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-wall-angle-flicker
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  porthole-rom:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake interior and exterior thick portholes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/porthole/host build/porthole/generated
+          cc -std=c99 -O2 -Wall -Wextra -Werror -Isrc -Itools \
+             tools/polar_baked_composite.c \
+             tools/room_bundle_poc_gen.c \
+             -lm -o build/porthole/room-bundle-gen
+
+          build/porthole/room-bundle-gen build/porthole/host --portholes-only \
+             | tee build/porthole/bake.txt
+          grep -q 'thick_porthole_pair=PASS' \
+             build/porthole/host/room_bundle_poc_manifest.txt
+
+          python3 tools/room_bundle_pack_to_c.py \
+             build/porthole/host/room_bundle_poc.pack \
+             build/porthole/host/room_bundle_poc_canonical.bin \
+             build/porthole/generated \
+             | tee build/porthole/c-gen.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build standalone porthole Game Gear ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/porthole/generated"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo64 -Isrc -I"$GEN")
+          OBJS=()
+
+          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/main.o \
+            src/main_porthole_poc_gg.c
+          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/ntstate.o \
+            src/tilesector_polar_ntstate_gg.s
+          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/ntupload.o \
+            src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/dispatch.o \
+            "$GEN/room_bundle_poc_dispatch.c"
+          OBJS+=(build/porthole/main.o build/porthole/ntstate.o build/porthole/ntupload.o build/porthole/dispatch.o)
+
+          for src in "$GEN"/room_bundle_poc_data_bank*.c; do
+            base="$(basename "\${src%.c}")"
+            obj="build/porthole/\${base}.o"
+            "$LCC" "\${FLAGS[@]}" -c -o "$obj" "$src"
+            OBJS+=("$obj")
+          done
+
+          "$LCC" "\${FLAGS[@]}" -Wm-yS \
+            -o build/porthole/GG-Thick-Porthole-Proof.gg "\${OBJS[@]}"
+
+          test "$(wc -c < build/porthole/GG-Thick-Porthole-Proof.gg)" -eq 1048576
+          wc -c build/porthole/GG-Thick-Porthole-Proof.gg | tee build/porthole/ROM-size.txt
+          sha256sum build/porthole/GG-Thick-Porthole-Proof.gg | tee build/porthole/SHA256.txt
+
+      - name: Build Gearsystem runners
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Run and validate portholes in Gearsystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/porthole/GG-Thick-Porthole-Proof.gg
+          SYM=build/porthole/GG-Thick-Porthole-Proof.sym
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+
+          ./build/libretro_runner "$CORE" "$ROM" 100 \
+            build/porthole/emulator-interior-porthole.ppm \
+            | tee build/porthole/run-interior.txt
+          ./build/libretro_runner "$CORE" "$ROM" 290 \
+            build/porthole/emulator-exterior-porthole.ppm \
+            | tee build/porthole/run-exterior.txt
+          ./build/libretro_runner "$CORE" "$ROM" 500 \
+            build/porthole/emulator-final.ppm \
+            | tee build/porthole/run-final.txt
+
+          STATUS_ADDR="$(awk '$2=="_g_porthole_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATUS_ADDR"
+          ./build/gearsystem_core_runner "$ROM" 500 - "$STATUS_ADDR" 6 \
+            | tee build/porthole/native-final-state.txt
+          grep -q '=FECAEFBE4E57' build/porthole/native-final-state.txt
+
+          printf 'PASS: thick interior + exterior portholes replayed on Game Gear ROM.\n' \
+            | tee build/porthole/PORTHOLE-PASS.txt
+
+      - name: Package porthole proof
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/porthole-artifact
+          for f in \
+            build/porthole/GG-Thick-Porthole-Proof.gg \
+            build/porthole/GG-Thick-Porthole-Proof.sym \
+            build/porthole/GG-Thick-Porthole-Proof.map \
+            build/porthole/ROM-size.txt \
+            build/porthole/SHA256.txt \
+            build/porthole/bake.txt \
+            build/porthole/c-gen.txt \
+            build/porthole/PORTHOLE-PASS.txt \
+            build/porthole/native-final-state.txt \
+            build/porthole/run-interior.txt \
+            build/porthole/run-exterior.txt \
+            build/porthole/run-final.txt \
+            build/porthole/emulator-interior-porthole.ppm \
+            build/porthole/emulator-exterior-porthole.ppm \
+            build/porthole/emulator-final.ppm \
+            build/porthole/host/room_bundle_poc_manifest.txt \
+            build/porthole/host/bundle0_route01_frame64.ppm \
+            build/porthole/host/bundle0_route01_frame80.ppm \
+            build/porthole/host/bundle0_route01_frame96.ppm \
+            build/porthole/host/bundle0_route01_frame112.ppm \
+            build/porthole/host/bundle1_route01_frame64.ppm \
+            build/porthole/host/bundle1_route01_frame80.ppm \
+            build/porthole/host/bundle1_route01_frame96.ppm \
+            build/porthole/host/bundle1_route01_frame112.ppm; do
+            [ ! -f "$f" ] || cp "$f" build/porthole-artifact/
+          done
+          git rev-parse HEAD > build/porthole-artifact/COMMIT.txt
+
+      - name: Upload porthole proof ROM and images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-thick-porthole-proof
+          path: build/porthole-artifact/*
+          if-no-files-found: warn
