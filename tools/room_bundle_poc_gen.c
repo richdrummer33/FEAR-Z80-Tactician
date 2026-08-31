@@ -317,6 +317,11 @@ static void emit_bundle(FILE *pack,FILE *manifest,uint8_t bundle,
             (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
             (unsigned long)stats->tile_loads,(unsigned)stats->peak_tile_loads,
             (unsigned)stats->changed_words);
+    printf("ROOM_BUNDLE_STATS bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu peak_tile_loads=%u changed_words=%u\n",
+           (unsigned)bundle,(unsigned)ROUTE_FRAMES,
+           (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
+           (unsigned long)stats->tile_loads,(unsigned)stats->peak_tile_loads,
+           (unsigned)stats->changed_words);
 
     fputc((int)bundle,pack);fputc(1,pack);
     write_u16(pack,ROUTE_FRAMES);
@@ -418,6 +423,16 @@ int main(int argc,char **argv){
     fprintf(manifest,"canonical_seam_fnv64=%016llX\n",(unsigned long long)canonical_hash);
     fprintf(manifest,"independent_bundle_replay=PASS\n");
     fprintf(manifest,"cross_bundle_canonical_handoff=PASS\n");
+
+    snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
+    {
+        FILE *cf=fopen(path,"wb");
+        if(!cf)die("cannot create canonical seam map");
+        if(fwrite(canonical,1,sizeof(canonical),cf)!=sizeof(canonical))
+            die("canonical seam map write failed");
+        fclose(cf);
+    }
+
     fclose(manifest);fclose(pack);
 
     printf("ROOM_BUNDLE_POC_PASS bundles=%u frames_per_bundle=%u canonical=%016llX\n",
