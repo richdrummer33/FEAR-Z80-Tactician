@@ -305,11 +305,23 @@ jobs:
           ./build/libretro_runner "$CORE" "$ROM" 29000 \
             build/room-poc-stream/emulator-stair-descent.ppm "$PROGRESS_ADDR" 2 19096 \
             | tee build/room-poc-stream/run-stair-descent.txt
-          ./build/libretro_runner "$CORE" "$ROM" 34000 \
-            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 22000 \
+          ./build/libretro_runner "$CORE" "$ROM" 33000 \
+            build/room-poc-stream/emulator-wide-shadow-tour.ppm "$PROGRESS_ADDR" 2 23096 \
+            | tee build/room-poc-stream/run-wide-shadow.txt
+          ./build/libretro_runner "$CORE" "$ROM" 37000 \
+            build/room-poc-stream/emulator-spooky-tour.ppm "$PROGRESS_ADDR" 2 24096 \
+            | tee build/room-poc-stream/run-spooky.txt
+          ./build/libretro_runner "$CORE" "$ROM" 41000 \
+            build/room-poc-stream/emulator-turn-forward.ppm "$PROGRESS_ADDR" 2 25096 \
+            | tee build/room-poc-stream/run-turn-forward.txt
+          ./build/libretro_runner "$CORE" "$ROM" 45000 \
+            build/room-poc-stream/emulator-turn-reverse.ppm "$PROGRESS_ADDR" 2 26096 \
+            | tee build/room-poc-stream/run-turn-reverse.txt
+          ./build/libretro_runner "$CORE" "$ROM" 52000 \
+            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 30000 \
             | tee build/room-poc-stream/run-complete.txt
-          grep -q 'data=F055' build/room-poc-stream/run-complete.txt
-          printf 'PASS: reversible rooms + T-split + +4 quarter-stair rebase/descent completed.\n' \
+          grep -q 'data=3075' build/room-poc-stream/run-complete.txt
+          printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
       - name: Package runnable streamed-room ROM
@@ -337,6 +349,10 @@ jobs:
             build/room-poc-stream/run-stair-climb.txt \
             build/room-poc-stream/run-raised-child.txt \
             build/room-poc-stream/run-stair-descent.txt \
+            build/room-poc-stream/run-wide-shadow.txt \
+            build/room-poc-stream/run-spooky.txt \
+            build/room-poc-stream/run-turn-forward.txt \
+            build/room-poc-stream/run-turn-reverse.txt \
             build/room-poc-stream/run-complete.txt \
             build/room-poc-stream/emulator-root-forward.ppm \
             build/room-poc-stream/emulator-child-forward.ppm \
@@ -348,6 +364,10 @@ jobs:
             build/room-poc-stream/emulator-stair-climb.ppm \
             build/room-poc-stream/emulator-raised-child.ppm \
             build/room-poc-stream/emulator-stair-descent.ppm \
+            build/room-poc-stream/emulator-wide-shadow-tour.ppm \
+            build/room-poc-stream/emulator-spooky-tour.ppm \
+            build/room-poc-stream/emulator-turn-forward.ppm \
+            build/room-poc-stream/emulator-turn-reverse.ppm \
             build/room-poc-stream/emulator-final-seam.ppm \
             build/room-poc-stream/host/room_bundle_poc_manifest.txt \
             build/room-poc-stream/host/bundle0_route01_frame0.ppm \
@@ -370,7 +390,13 @@ jobs:
             build/room-poc-stream/host/bundle5_route01_frame96.ppm \
             build/room-poc-stream/host/bundle5_route10_frame96.ppm \
             build/room-poc-stream/host/bundle6_route01_frame96.ppm \
-            build/room-poc-stream/host/bundle7_route01_frame96.ppm; do
+            build/room-poc-stream/host/bundle7_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame80.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame112.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame80.ppm \
+            build/room-poc-stream/host/bundle5_route01_frame80.ppm \
+            build/room-poc-stream/host/bundle5_route01_frame112.ppm \
+            build/room-poc-stream/host/bundle7_route01_frame80.ppm; do
             [ ! -f "$f" ] || cp "$f" build/room-poc-stream-artifact/
           done
           git rev-parse HEAD > build/room-poc-stream-artifact/COMMIT.txt
