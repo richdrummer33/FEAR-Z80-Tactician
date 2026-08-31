@@ -1,0 +1,215 @@
+name: GG spooky flicker capture
+
+on:
+  push:
+    branches:
+      - experiment/gg-wall-angle-flicker
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flicker-capture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake spooky room only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/flicker/host build/flicker/generated
+          cc -std=c99 -O2 -Wall -Wextra -Werror -Isrc -Itools \
+             tools/polar_baked_composite.c \
+             tools/room_bundle_poc_gen.c \
+             -lm -o build/flicker/room-bundle-gen
+
+          build/flicker/room-bundle-gen build/flicker/host --spooky-only \
+             | tee build/flicker/bake.txt
+          grep -q 'spooky_capture_bundle=PASS' \
+             build/flicker/host/room_bundle_poc_manifest.txt
+
+          python3 tools/room_bundle_pack_to_c.py \
+             build/flicker/host/room_bundle_poc.pack \
+             build/flicker/host/room_bundle_poc_canonical.bin \
+             build/flicker/generated \
+             | tee build/flicker/c-gen.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build flicker capture Game Gear ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/flicker/generated"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo64 -Isrc -I"$GEN")
+          OBJS=()
+
+          "$LCC" "${FLAGS[@]}" -c -o build/flicker/main.o \
+            src/main_flicker_capture_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o build/flicker/ntstate.o \
+            src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o build/flicker/ntupload.o \
+            src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o build/flicker/dispatch.o \
+            "$GEN/room_bundle_poc_dispatch.c"
+          OBJS+=(build/flicker/main.o build/flicker/ntstate.o build/flicker/ntupload.o build/flicker/dispatch.o)
+
+          for src in "$GEN"/room_bundle_poc_data_bank*.c; do
+            base="$(basename "${src%.c}")"
+            obj="build/flicker/${base}.o"
+            "$LCC" "${FLAGS[@]}" -c -o "$obj" "$src"
+            OBJS+=("$obj")
+          done
+
+          "$LCC" "${FLAGS[@]}" -Wm-yS \
+            -o build/flicker/GG-Spooky-Flicker-Capture.gg "${OBJS[@]}"
+
+          test "$(wc -c < build/flicker/GG-Spooky-Flicker-Capture.gg)" -eq 1048576
+          wc -c build/flicker/GG-Spooky-Flicker-Capture.gg \
+            | tee build/flicker/ROM-size.txt
+          sha256sum build/flicker/GG-Spooky-Flicker-Capture.gg \
+            | tee build/flicker/SHA256.txt
+
+      - name: Build Gearsystem runners
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Capture exact flicker phases and validate runtime hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/flicker/GG-Spooky-Flicker-Capture.gg
+          SYM=build/flicker/GG-Spooky-Flicker-Capture.sym
+
+          PHASE_ADDR="$(awk '$2=="_g_flicker_capture_phase"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          STATUS_ADDR="$(awk '$2=="_g_flicker_capture_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          EDGES_ADDR="$(awk '$2=="_g_flicker_capture_edges"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          LEVEL_ADDR="$(awk '$2=="_g_flicker_capture_level"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$PHASE_ADDR"
+          test -n "$STATUS_ADDR"
+          test -n "$EDGES_ADDR"
+          test -n "$LEVEL_ADDR"
+
+          GS_WAIT_ADDR="$PHASE_ADDR" GS_WAIT_U16_GE=1 \
+            ./build/gearsystem_core_runner "$ROM" 1600 \
+              build/flicker/flicker-normal.ppm "$LEVEL_ADDR" 1 \
+              | tee build/flicker/flicker-normal.txt
+
+          GS_WAIT_ADDR="$PHASE_ADDR" GS_WAIT_U16_GE=2 \
+            ./build/gearsystem_core_runner "$ROM" 1600 \
+              build/flicker/flicker-dim.ppm "$LEVEL_ADDR" 1 \
+              | tee build/flicker/flicker-dim.txt
+
+          GS_WAIT_ADDR="$PHASE_ADDR" GS_WAIT_U16_GE=3 \
+            ./build/gearsystem_core_runner "$ROM" 1600 \
+              build/flicker/flicker-off.ppm "$LEVEL_ADDR" 1 \
+              | tee build/flicker/flicker-off.txt
+
+          GS_WAIT_ADDR="$PHASE_ADDR" GS_WAIT_U16_GE=4 \
+            ./build/gearsystem_core_runner "$ROM" 1600 \
+              build/flicker/flicker-normal-restored.ppm "$LEVEL_ADDR" 1 \
+              | tee build/flicker/flicker-normal-restored.txt
+
+          ./build/gearsystem_core_runner "$ROM" 1600 - "$STATUS_ADDR" 8 \
+            | tee build/flicker/flicker-final-state.txt
+          grep -q '=FECA' build/flicker/flicker-final-state.txt
+
+          grep -q 'DUMP.*=02' build/flicker/flicker-normal.txt
+          grep -q 'DUMP.*=01' build/flicker/flicker-dim.txt
+          grep -q 'DUMP.*=00' build/flicker/flicker-off.txt
+          grep -q 'DUMP.*=02' build/flicker/flicker-normal-restored.txt
+
+          ./build/gearsystem_core_runner "$ROM" 1600 - "$EDGES_ADDR" 2 \
+            | tee build/flicker/flicker-edges.txt
+          grep -q 'DUMP.*=0300' build/flicker/flicker-edges.txt
+
+          printf 'PASS: live GG flicker phases normal/dim/off/normal + 3 edges verified.\n' \
+            | tee build/flicker/FLICKER-CAPTURE-PASS.txt
+
+      - name: Record flicker video
+        shell: bash
+        run: |
+          set -euo pipefail
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/flicker/GG-Spooky-Flicker-Capture.gg
+          mkdir -p build/flicker/video-frames
+
+          LIBRETRO_RECORD_DIR=build/flicker/video-frames \
+          LIBRETRO_RECORD_START=120 \
+          LIBRETRO_RECORD_END=780 \
+          LIBRETRO_RECORD_STEP=2 \
+            ./build/libretro_runner "$CORE" "$ROM" 800 \
+              build/flicker/flicker-video-final.ppm \
+              | tee build/flicker/flicker-video-run.txt
+
+          command -v ffmpeg >/dev/null 2>&1 || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          }
+          ffmpeg -y -loglevel error \
+            -framerate 30 \
+            -pattern_type glob -i 'build/flicker/video-frames/frame_*.ppm' \
+            -c:v libx264 -pix_fmt yuv420p -crf 18 \
+            build/flicker/GG-Spooky-Flicker-Capture.mp4
+
+          test -s build/flicker/GG-Spooky-Flicker-Capture.mp4
+          ls -lh build/flicker/GG-Spooky-Flicker-Capture.mp4 \
+            | tee build/flicker/video-size.txt
+
+      - name: Package flicker proof
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/flicker-artifact
+          for f in \
+            build/flicker/GG-Spooky-Flicker-Capture.gg \
+            build/flicker/GG-Spooky-Flicker-Capture.sym \
+            build/flicker/GG-Spooky-Flicker-Capture.map \
+            build/flicker/GG-Spooky-Flicker-Capture.mp4 \
+            build/flicker/ROM-size.txt \
+            build/flicker/SHA256.txt \
+            build/flicker/bake.txt \
+            build/flicker/c-gen.txt \
+            build/flicker/FLICKER-CAPTURE-PASS.txt \
+            build/flicker/flicker-normal.ppm \
+            build/flicker/flicker-dim.ppm \
+            build/flicker/flicker-off.ppm \
+            build/flicker/flicker-normal-restored.ppm \
+            build/flicker/flicker-normal.txt \
+            build/flicker/flicker-dim.txt \
+            build/flicker/flicker-off.txt \
+            build/flicker/flicker-normal-restored.txt \
+            build/flicker/flicker-final-state.txt \
+            build/flicker/flicker-edges.txt \
+            build/flicker/flicker-video-run.txt \
+            build/flicker/flicker-video-final.ppm \
+            build/flicker/video-size.txt \
+            build/flicker/host/bundle0_route01_frame96.ppm \
+            build/flicker/host/room_bundle_poc_manifest.txt; do
+            [ ! -f "$f" ] || cp "$f" build/flicker-artifact/
+          done
+          git rev-parse HEAD > build/flicker-artifact/COMMIT.txt
+
+      - name: Upload flicker screenshots, ROM and video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-spooky-flicker-capture
+          path: build/flicker-artifact/*
+          if-no-files-found: warn
