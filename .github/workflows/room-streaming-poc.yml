@@ -257,22 +257,22 @@ jobs:
           SYM=build/room-poc-stream/GG-Room-Two-Bundle-Stream.sym
           CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
 
-          ./build/libretro_runner "$CORE" "$ROM" 70 \
-            build/room-poc-stream/emulator-roomA.ppm \
-            | tee build/room-poc-stream/run-roomA.txt
-          ./build/libretro_runner "$CORE" "$ROM" 165 \
-            build/room-poc-stream/emulator-seam-handoff.ppm \
-            | tee build/room-poc-stream/run-seam.txt
-          ./build/libretro_runner "$CORE" "$ROM" 235 \
-            build/room-poc-stream/emulator-roomB.ppm \
-            | tee build/room-poc-stream/run-roomB.txt
+          PROGRESS_ADDR="$(awk '$2=="_g_room_bundle_stream_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$PROGRESS_ADDR"
 
-          STATUS_ADDR="$(awk '$2=="_g_room_bundle_stream_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
-          test -n "$STATUS_ADDR"
-          ./build/libretro_runner "$CORE" "$ROM" 420 \
-            build/room-poc-stream/emulator-final-seam.ppm "$STATUS_ADDR" 2 2 \
+          ./build/libretro_runner "$CORE" "$ROM" 1200 \
+            build/room-poc-stream/emulator-roomA.ppm "$PROGRESS_ADDR" 2 64 \
+            | tee build/room-poc-stream/run-roomA.txt
+          ./build/libretro_runner "$CORE" "$ROM" 2400 \
+            build/room-poc-stream/emulator-seam-handoff.ppm "$PROGRESS_ADDR" 2 159 \
+            | tee build/room-poc-stream/run-seam.txt
+          ./build/libretro_runner "$CORE" "$ROM" 5000 \
+            build/room-poc-stream/emulator-roomB.ppm "$PROGRESS_ADDR" 2 1064 \
+            | tee build/room-poc-stream/run-roomB.txt
+          ./build/libretro_runner "$CORE" "$ROM" 8000 \
+            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 2000 \
             | tee build/room-poc-stream/run-complete.txt
-          grep -q 'data=0200' build/room-poc-stream/run-complete.txt
+          grep -q 'data=D007' build/room-poc-stream/run-complete.txt
           printf 'PASS: bundle 0 -> canonical seam -> bundle 1 -> canonical seam completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
