@@ -23,6 +23,8 @@
 #define BUNDLE_COUNT 2u
 #define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 24u
+#define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
+#define MAX_SCENE_RECTS 4u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
@@ -36,6 +38,14 @@ typedef struct Seg {
 typedef struct World {
     Seg seg[MAX_SEGMENTS];
     uint8_t count;
+    TSPHostSceneVertex scene_vertices[MAX_SCENE_VERTICES];
+    TSPHostSceneSegment scene_segments[MAX_SEGMENTS];
+    TSPHostSceneLight scene_lights[1];
+    TSPHostSceneRect scene_rects[MAX_SCENE_RECTS];
+    TSPHostCompositeScene scene;
+    uint8_t scene_vertex_count;
+    uint8_t scene_rect_count;
+    uint8_t lighting_stage;
 } World;
 typedef struct Pose {
     double x,y,z;
@@ -74,10 +84,49 @@ static void die(const char *msg){
 static void add_seg(World *w,double ax,double ay,double bx,double by,
                     double z0,double z1,int8_t bias){
     Seg *s;
-    if(w->count>=MAX_SEGMENTS)die("too many room PoC segments");
+    TSPHostSceneSegment *ls;
+    uint8_t sid=w->count;
+    uint8_t v0=w->scene_vertex_count;
+    uint8_t v1=(uint8_t)(v0+1u);
+    if(w->count>=MAX_SEGMENTS||v1>=MAX_SCENE_VERTICES)
+        die("too many room PoC segments");
     s=&w->seg[w->count++];
     s->a.x=ax;s->a.y=ay;s->b.x=bx;s->b.y=by;
     s->z0=z0;s->z1=z1;s->shade_bias=bias;
+
+    w->scene_vertices[v0].x=(int16_t)lround(ax);
+    w->scene_vertices[v0].y=(int16_t)lround(ay);
+    w->scene_vertices[v1].x=(int16_t)lround(bx);
+    w->scene_vertices[v1].y=(int16_t)lround(by);
+    w->scene_vertex_count=(uint8_t)(v1+1u);
+
+    ls=&w->scene_segments[sid];
+    ls->v0=v0;ls->v1=v1;
+    ls->profile=TSP_HOST_PROFILE_FULL;
+    ls->blocks_light=1u;
+    ls->light_front_sign=0;
+    ls->visual_front_sign=0;
+}
+static void add_rect(World *w,int16_t x0,int16_t y0,int16_t x1,int16_t y1,
+                     int16_t floor_z,int16_t ceiling_z){
+    TSPHostSceneRect *r;
+    if(w->scene_rect_count>=MAX_SCENE_RECTS)die("too many room scene rectangles");
+    r=&w->scene_rects[w->scene_rect_count++];
+    r->x0=x0;r->y0=y0;r->x1=x1;r->y1=y1;
+    r->floor_z=floor_z;r->ceiling_z=ceiling_z;
+}
+static void finalize_scene(World *w){
+    w->scene.vertices=w->scene_vertices;
+    w->scene.vertex_count=w->scene_vertex_count;
+    w->scene.segments=w->scene_segments;
+    w->scene.segment_count=w->count;
+    w->scene.lights=w->scene_lights;
+    w->scene.light_count=1u;
+    w->scene.rects=w->scene_rects;
+    w->scene.rect_count=w->scene_rect_count;
+}
+static void add_transformed_exit_seg(World *w,double ax,double ay,double bx,double by){
+    add_seg(w,152.0-ax,48.0-ay,152.0-bx,48.0-by,0,32,0);
 }
 
 /* Shared S-shaped seam plus one room beyond its east aperture.
@@ -92,41 +141,69 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
  * seam geometry complete and symmetric for later predecessor handoff tests.
  */
 static void make_world(uint8_t bundle,World *w){
+    double mouth_lo=bundle==0u?12.0:16.0;
+    double mouth_hi=bundle==0u?36.0:32.0;
+    double room_y0=bundle==0u?-28.0:-4.0;
+    double room_y1=bundle==0u?76.0:52.0;
+
     memset(w,0,sizeof(*w));
 
-    /* Entry S-throat: room aperture is x=36, y=20..28. */
+    /* Canonical inner S-throat remains narrow. Only the final hidden leg
+     * flares toward the room. This preserves the seam serialization proof
+     * while avoiding player-width room apertures. */
     add_seg(w,0,-4,20,-4,0,32,0);
     add_seg(w,20,-4,20,20,0,32,0);
+    add_seg(w,20,20,28,20,0,32,0);
+    add_seg(w,28,20,36,mouth_lo,0,32,0);
     add_seg(w,12,4,12,28,0,32,0);
-    add_seg(w,12,28,36,28,0,32,0);
+    add_seg(w,12,28,28,28,0,32,0);
+    add_seg(w,28,28,36,mouth_hi,0,32,0);
 
-    /* Exit S-throat is the exact entry throat rotated 180 degrees then
-     * translated by (152,48). Its room aperture is x=116, y=20..28.
-     * A camera transformed the same way therefore sees an identical canonical
-     * seam state, which is the room-to-room rebase contract. */
-    add_seg(w,152,52,132,52,0,32,0);
-    add_seg(w,132,52,132,28,0,32,0);
-    add_seg(w,140,44,140,20,0,32,0);
-    add_seg(w,140,20,116,20,0,32,0);
+    /* Exact 180-degree transformed exit throat. */
+    add_transformed_exit_seg(w,0,-4,20,-4);
+    add_transformed_exit_seg(w,20,-4,20,20);
+    add_transformed_exit_seg(w,20,20,28,20);
+    add_transformed_exit_seg(w,28,20,36,mouth_lo);
+    add_transformed_exit_seg(w,12,4,12,28);
+    add_transformed_exit_seg(w,12,28,28,28);
+    add_transformed_exit_seg(w,28,28,36,mouth_hi);
 
-    /* Room side walls, each split around its portal aperture. */
-    add_seg(w,36,4,36,20,0,32,0);
-    add_seg(w,36,28,36,60,0,32,0);
-    add_seg(w,116,4,116,20,0,32,0);
-    add_seg(w,116,28,116,60,0,32,0);
+    /* Main room. Bundle zero is intentionally very wide; bundle one remains
+     * tighter so the stream demonstrates spatial rhythm rather than one
+     * repeated corridor width. */
+    add_seg(w,36,room_y0,36,mouth_lo,0,32,0);
+    add_seg(w,36,mouth_hi,36,room_y1,0,32,0);
+    add_seg(w,116,room_y0,116,(48.0-mouth_hi),0,32,0);
+    add_seg(w,116,(48.0-mouth_lo),116,room_y1,0,32,0);
+    add_seg(w,36,room_y0,116,room_y0,0,32,0);
+    add_seg(w,116,room_y1,36,room_y1,0,32,0);
+
+    add_rect(w,36,(int16_t)room_y0,116,(int16_t)room_y1,0,32);
 
     if(bundle==0u){
-        /* Broad through-room. */
-        add_seg(w,36,4,116,4,0,32,0);
-        add_seg(w,116,60,36,60,0,32,0);
+        /* Portal-shadow room: put the lamp BEHIND the aperture. The two flared
+         * jambs are therefore deliberate shadow casters, producing diverging
+         * opening-corner shadows plus long far-wall cuts. */
+        w->scene_lights[0].x_q4=(int16_t)(28<<4);
+        w->scene_lights[0].y_q4=(int16_t)(24<<4);
+        w->scene_lights[0].height_q4=(uint8_t)(12<<4);
+        w->scene_lights[0].radius_world=112u;
+        w->scene_lights[0].intensity=255u;
     }else{
-        /* Same connector contract, different room internals. */
-        add_seg(w,36,4,116,4,0,32,0);
-        add_seg(w,116,60,36,60,0,32,0);
-        add_seg(w,66,34,78,34,0,32,1);
-        add_seg(w,78,34,78,48,0,32,1);
-        add_seg(w,92,10,92,20,0,32,-1);
+        /* Inset/spooky room: a low side light sits below a short baffle.
+         * Light escaping around its ends should form a curious asymmetric pool
+         * while the deeper occluder contributes a strong vertical shadow cut. */
+        add_seg(w,68,8,84,8,0,32,0);
+        add_seg(w,94,18,94,38,0,32,1);
+        w->scene_lights[0].x_q4=(int16_t)(76<<4);
+        w->scene_lights[0].y_q4=(int16_t)(0<<4);
+        w->scene_lights[0].height_q4=(uint8_t)(8<<4);
+        w->scene_lights[0].radius_world=88u;
+        w->scene_lights[0].intensity=255u;
     }
+
+    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    finalize_scene(w);
 }
 
 static uint8_t yaw_lerp(uint8_t a,uint8_t b,double q){
@@ -222,7 +299,7 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
     cam.z_q4=(int16_t)lround(p->z*16.0);
     cam.yaw=p->yaw;
 
-    tsp_host_composite_set_lighting(TSP_HOST_LIGHT_BASELINE,&cam);
+    tsp_host_composite_set_lighting(w->lighting_stage,&cam);
     tsp_host_composite_begin_frame();
 
     for(sx=0;sx<160;++sx){
@@ -250,7 +327,7 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
             tsp_host_composite_surface((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
                                        (int16_t)it,(int16_t)it,
                                        (int16_t)ib,(int16_t)ib,
-                                       (uint8_t)(200+best_sid),
+                                       (uint8_t)best_sid,
                                        shade_for_inv(inv,s->shade_bias),
                                        0u,0u,0u);
         }
@@ -494,6 +571,7 @@ int main(int argc,char **argv){
         uint16_t f;
         if(!frames||!maps)die("bundle frame/map allocation failed");
         make_world(bundle,&w);
+        tsp_host_composite_set_scene(&w.scene);
 
         /* Independent bundle: no dynamic VRAM history inherited. */
         tsp_host_composite_reset_cache();
