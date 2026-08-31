@@ -144,6 +144,9 @@ static int scene_vertex(uint8_t id,TSPHostSceneVertex *out){
     }else{
         out->x=k_tsp_host_world_vertices[id].x;
         out->y=k_tsp_host_world_vertices[id].y;
+        out->x_q4=0;
+        out->y_q4=0;
+        out->has_exact_q4=0u;
     }
     return 1;
 }
