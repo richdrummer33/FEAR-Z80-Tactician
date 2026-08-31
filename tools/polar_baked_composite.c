@@ -56,6 +56,13 @@ static uint8_t g_owner[TSP_MAP_CELLS][PIXELS];
  * ambient semantic colour so palette 1 can implement the common +1 shade
  * transform without creating a new 32-byte pattern for every fully-lit tile. */
 static uint8_t g_lit[TSP_MAP_CELLS][PIXELS];
+/* Per-receiver apparent brightness, 0..15. This is generated only on the host
+ * and converted into stable ordered coverage between ambient and lit palette
+ * semantics. A visible wall therefore has one quantized brightness response
+ * even though its 8x8 patterns use deterministic dither to represent it. */
+static uint8_t g_light_level[TSP_MAP_CELLS][PIXELS];
+static uint8_t g_wall_light_level[256u];
+static uint8_t g_wall_angle_enabled=1u;
 /* Final material veto mask. Keep it broad/cheap by default and clear only
  * authored one-sided wall/profile backfaces. Quantization and penumbra retain
  * their compact reusable vocabulary; this mask is an absolute final clamp. */
@@ -124,6 +131,10 @@ void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
     }
 }
 
+void tsp_host_composite_set_wall_angle_mode(uint8_t enabled){
+    g_wall_angle_enabled=(uint8_t)(enabled!=0u);
+}
+
 void tsp_host_composite_set_scene(const TSPHostCompositeScene *scene){
     g_scene_override=scene;
 }
@@ -170,6 +181,8 @@ static int scene_light(uint8_t id,TSPHostSceneLight *out){
         out->height_q4=l->height_q4;
         out->radius_world=l->radius_world;
         out->intensity=l->intensity;
+        out->wall_angle_response=l->wall_angle_response;
+        out->view_term_strength=l->view_term_strength;
     }
     return 1;
 }
@@ -244,6 +257,70 @@ static int receiver_accepts_light(uint8_t sid){
     lx=(double)light.x_q4/16.0;ly=(double)light.y_q4/16.0;
     return point_on_signed_front(&s,s.light_front_sign,cx,cy) &&
            point_on_signed_front(&s,s.light_front_sign,lx,ly);
+}
+
+/*
+ * One value for one visible wall face. The expensive vector work intentionally
+ * lives here in the PC bake. The GG never performs a dot product or reflection.
+ *
+ * The directed segment's right-hand normal is (dy,-dx). Authored one-sided
+ * receivers keep their authored face. Two-sided walls choose the face looking
+ * toward the camera, then N dot L supplies the primary Lambert-like response.
+ * A deliberately tiny reflected-light/view alignment may add a few of the
+ * sixteen quantization steps, giving a broad matte-ish camera cue rather than
+ * a sharp specular highlight.
+ */
+static uint8_t wall_angle_light_level(uint8_t sid){
+    TSPHostSceneSegment seg;
+    TSPHostSceneVertex a,b;
+    TSPHostSceneLight light;
+    double sx,sy,nx,ny,nlen,mx,my,lx,ly,llen,ndotl;
+    double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
+    double value;
+
+    if(!scene_segment(sid,&seg)||!scene_vertex(seg.v0,&a)||
+       !scene_vertex(seg.v1,&b)||!scene_light(0u,&light))
+        return 15u;
+    if(!g_wall_angle_enabled||!light.wall_angle_response)return 15u;
+
+    sx=(double)b.x-(double)a.x;sy=(double)b.y-(double)a.y;
+    nx=sy;ny=-sx;nlen=sqrt(nx*nx+ny*ny);
+    if(nlen<1e-10)return 15u;
+    nx/=nlen;ny/=nlen;
+    if(seg.light_front_sign<0){nx=-nx;ny=-ny;}
+    else if(!seg.light_front_sign){
+        mx=((double)a.x+(double)b.x)*0.5;
+        my=((double)a.y+(double)b.y)*0.5;
+        if(nx*(cx-mx)+ny*(cy-my)<0.0){nx=-nx;ny=-ny;}
+    }
+
+    mx=((double)a.x+(double)b.x)*0.5;
+    my=((double)a.y+(double)b.y)*0.5;
+    lx=(double)light.x_q4/16.0-mx;
+    ly=(double)light.y_q4/16.0-my;
+    llen=sqrt(lx*lx+ly*ly);
+    if(llen<1e-10)return 15u;
+    lx/=llen;ly/=llen;
+    ndotl=nx*lx+ny*ly;
+    if(ndotl<0.0)ndotl=0.0;
+    if(ndotl>1.0)ndotl=1.0;
+
+    value=15.0*ndotl*((double)light.intensity/255.0);
+    if(light.view_term_strength&&ndotl>0.0){
+        double vx=cx-mx,vy=cy-my,vlen=sqrt(vx*vx+vy*vy);
+        if(vlen>1e-10){
+            double rx=2.0*ndotl*nx-lx;
+            double ry=2.0*ndotl*ny-ly;
+            double rv;
+            vx/=vlen;vy/=vlen;
+            rv=rx*vx+ry*vy;
+            if(rv>0.0)
+                value+=rv*ndotl*(double)light.view_term_strength;
+        }
+    }
+    if(value<0.0)value=0.0;
+    if(value>15.0)value=15.0;
+    return (uint8_t)floor(value+0.5);
 }
 
 /*
@@ -488,6 +565,21 @@ static void enforce_lightable_mask(void){
             if(!g_lightable[cell][i])g_lit[cell][i]=0u;
 }
 
+static void build_light_levels(void){
+    uint16_t cell;
+    uint16_t count=(uint16_t)scene_segment_count();
+    uint16_t sid;
+    uint8_t i;
+    for(sid=0u;sid<count;++sid)
+        g_wall_light_level[sid]=wall_angle_light_level((uint8_t)sid);
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell)for(i=0u;i<PIXELS;++i){
+        uint8_t owner=g_owner[cell][i];
+        if(!g_lit[cell][i])g_light_level[cell][i]=0u;
+        else if(owner==0xffu)g_light_level[cell][i]=15u;
+        else g_light_level[cell][i]=g_wall_light_level[owner];
+    }
+}
+
 static void apply_one_sided_penumbra(void){
     uint8_t hard[TSP_MAP_CELLS][PIXELS];
     uint16_t cell;
@@ -562,6 +654,7 @@ static void apply_point_light(void){
     quantize_point_light_edges();
     if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)apply_one_sided_penumbra();
     enforce_lightable_mask();
+    build_light_levels();
 }
 
 static void generic_unflipped_indices(uint16_t id,uint8_t out[PIXELS]){
@@ -631,6 +724,7 @@ void tsp_host_composite_begin_frame(void){
     ensure_init();
     memset(g_owner,0xff,sizeof(g_owner));
     memset(g_lit,0,sizeof(g_lit));
+    memset(g_light_level,0,sizeof(g_light_level));
     memset(g_lightable,1,sizeof(g_lightable));
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
@@ -746,19 +840,39 @@ static int cache_find(uint64_t h,const uint8_t p[PIXELS]){
  * ambient form and only toggles one name-table palette bit. Only tiles actually
  * crossed by a hard light/shadow boundary require a distinct mixed pattern.
  */
+static const uint8_t k_bayer4[16] = {
+     0u, 8u, 2u,10u,
+    12u, 4u,14u, 6u,
+     3u,11u, 1u, 9u,
+    15u, 7u,13u, 5u
+};
+
+static uint8_t light_level_pass(uint8_t level,uint16_t cell,uint8_t pi){
+    uint8_t x,y,threshold;
+    if(!level)return 0u;
+    if(level>=15u)return 1u;
+    x=(uint8_t)((((cell%TSP_COLS)*8u)+(pi&7u))&3u);
+    y=(uint8_t)((((cell/TSP_COLS)*8u)+(pi>>3))&3u);
+    threshold=k_bayer4[(uint8_t)(y*4u+x)];
+    return (uint8_t)(level>threshold);
+}
+
 static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
                                  const uint8_t lit[PIXELS],
+                                 const uint8_t level[PIXELS],
+                                 uint16_t cell,
                                  uint8_t encoded[PIXELS]){
     uint8_t i,any=0u;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=ambient[i];
-        if(lit[i]&&v>SEM_BLACK&&v<SEM_NEAR){any=1u;break;}
+        if(lit[i]&&light_level_pass(level[i],cell,i)&&
+           v>SEM_BLACK&&v<SEM_NEAR){any=1u;break;}
     }
     if(!any){memcpy(encoded,ambient,PIXELS);return 0u;}
     for(i=0u;i<PIXELS;++i){
         uint8_t v=ambient[i];
         if(v==SEM_BLACK||v>=SEM_NEAR)encoded[i]=v;
-        else if(lit[i])encoded[i]=v;
+        else if(lit[i]&&light_level_pass(level[i],cell,i))encoded[i]=v;
         else encoded[i]=(uint8_t)(v+7u);
     }
     return 1u;
@@ -783,7 +897,8 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
         uint16_t attr,pos;
         uint64_t h;
         if(g_lighting_stage>=TSP_HOST_LIGHT_HARD)
-            use_lit_palette=point_tile_encode(g_cells[i],g_lit[i],encoded);
+            use_lit_palette=point_tile_encode(g_cells[i],g_lit[i],
+                                              g_light_level[i],i,encoded);
         else memcpy(encoded,g_cells[i],PIXELS);
         canonicalize(encoded,canon,&attr);
         if(use_lit_palette)attr|=TSP_ATTR_PALETTE;
@@ -873,7 +988,8 @@ int tsp_host_composite_write_ppm(const char *path){
         uint16_t cell=(uint16_t)row*TSP_COLS+col;
         uint16_t pi=(uint16_t)py*8u+px;
         uint8_t v=g_cells[cell][pi];
-        if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])
+        if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi]&&
+           light_level_pass(g_light_level[cell][pi],cell,(uint8_t)pi))
             v=lit_semantic(v);
         if(v>5u)v=0u;
         fwrite(rgb[v],1,3,f);
