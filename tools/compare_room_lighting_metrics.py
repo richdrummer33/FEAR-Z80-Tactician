@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare legacy binary point-light bundle metrics with wall-angle lighting."""
+"""Compare binary, wall-angle, and wall-angle-plus-view room-light metrics."""
 from __future__ import annotations
 
 import sys
@@ -37,39 +37,50 @@ def pct(new: int, old: int) -> float:
     return 0.0 if old == 0 else (new - old) * 100.0 / old
 
 
+def show(label: str, data: dict[str, int]) -> None:
+    print(
+        "LIGHTING_AB "
+        f"{label} routes={data['routes']} "
+        f"patch_bytes={data['patch_bytes']} "
+        f"tile_bytes={data['tile_bytes']} "
+        f"tile_loads={data['tile_loads']} "
+        f"changed_words={data['changed_words']} "
+        f"raw_peak={data['raw_peak_tile_loads']} "
+        f"scheduled_peak={data['scheduled_peak']} "
+        f"scheduled_budget={data['scheduled_budget']}"
+    )
+
+
+def delta(label: str, old: dict[str, int], new: dict[str, int]) -> None:
+    for key in SUM_KEYS:
+        d = new[key] - old[key]
+        print(f"LIGHTING_DELTA {label} {key}={d:+d} percent={pct(new[key], old[key]):+.3f}")
+    for key in MAX_KEYS:
+        print(
+            f"LIGHTING_DELTA {label} {key}={new[key] - old[key]:+d} "
+            f"old={old[key]} new={new[key]}"
+        )
+
+
 def main() -> int:
-    if len(sys.argv) != 3:
-        print(f"usage: {sys.argv[0]} CONTROL_MANIFEST ANGLE_MANIFEST", file=sys.stderr)
+    if len(sys.argv) != 4:
+        print(
+            f"usage: {sys.argv[0]} CONTROL_MANIFEST ANGLE_ONLY_MANIFEST ANGLE_VIEW_MANIFEST",
+            file=sys.stderr,
+        )
         return 2
     control = read_manifest(Path(sys.argv[1]))
     angle = read_manifest(Path(sys.argv[2]))
-    if control["routes"] != angle["routes"]:
-        raise SystemExit("control/angle route count mismatch")
+    angle_view = read_manifest(Path(sys.argv[3]))
+    if len({control["routes"], angle["routes"], angle_view["routes"]}) != 1:
+        raise SystemExit("lighting A/B route count mismatch")
 
-    for label, data in (("control", control), ("angle", angle)):
-        print(
-            "LIGHTING_AB "
-            f"{label} routes={data['routes']} "
-            f"patch_bytes={data['patch_bytes']} "
-            f"tile_bytes={data['tile_bytes']} "
-            f"tile_loads={data['tile_loads']} "
-            f"changed_words={data['changed_words']} "
-            f"raw_peak={data['raw_peak_tile_loads']} "
-            f"scheduled_peak={data['scheduled_peak']} "
-            f"scheduled_budget={data['scheduled_budget']}"
-        )
-
-    for key in SUM_KEYS:
-        delta = angle[key] - control[key]
-        print(
-            f"LIGHTING_DELTA {key}={delta:+d} "
-            f"percent={pct(angle[key], control[key]):+.3f}"
-        )
-    for key in MAX_KEYS:
-        print(
-            f"LIGHTING_DELTA {key}={angle[key] - control[key]:+d} "
-            f"control={control[key]} angle={angle[key]}"
-        )
+    show("control_binary", control)
+    show("angle_only", angle)
+    show("angle_plus_view", angle_view)
+    delta("control_to_angle", control, angle)
+    delta("angle_to_view", angle, angle_view)
+    delta("control_to_angle_view", control, angle_view)
     return 0
 
 
