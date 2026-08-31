@@ -1,0 +1,457 @@
+name: GG streamed-room PoC
+
+on:
+  push:
+    branches:
+      - experiment/gg-streaming-room-poc
+  pull_request:
+    branches:
+      - feature/gg-polar-vertical-stairwell
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  topology:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build deterministic topology proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc
+          cc -std=c99 -Wall -Wextra -Werror -Isrc \
+             src/tilesector_world_module.c \
+             src/tilesector_world_stream_poc.c \
+             tests/test_tilesector_world_stream_poc.c \
+             -o build/room-poc/test-room-stream
+          build/room-poc/test-room-stream | tee build/room-poc/topology-test.txt
+
+          cc -std=c99 -Wall -Wextra -Werror -Isrc \
+             src/tilesector_world_module.c \
+             src/tilesector_world_stream_poc.c \
+             src/tilesector_room_catalog_poc.c \
+             tests/test_tilesector_room_catalog_poc.c \
+             -o build/room-poc/test-room-catalog
+          build/room-poc/test-room-catalog | tee build/room-poc/catalog-test.txt
+
+          cc -std=c99 -Wall -Wextra -Werror -DTSP_ROOM_STREAM_POC=1 -Isrc \
+             src/tilesector_room_poc.c \
+             src/tilesector_polar_motion.c \
+             tests/test_tilesector_room_poc.c \
+             -o build/room-poc/test-room-local
+          build/room-poc/test-room-local | tee build/room-poc/room-local-test.txt
+
+          cc -std=c99 -Wall -Wextra -Werror -Isrc \
+             src/tilesector_room_seam_poc.c \
+             tests/test_tilesector_room_seam_poc.c \
+             -o build/room-poc/test-room-seam
+          build/room-poc/test-room-seam | tee build/room-poc/seam-test.txt
+
+          cc -std=c99 -Wall -Wextra -Werror -Isrc \
+             src/tilesector_room_bundle_poc.c \
+             tests/test_tilesector_room_bundle_poc.c \
+             -o build/room-poc/test-room-bundle
+          build/room-poc/test-room-bundle | tee build/room-poc/bundle-test.txt
+
+          mkdir -p build/room-poc/bundles
+          cc -std=c99 -Wall -Wextra -Werror -Isrc -Itools \
+             tools/polar_baked_composite.c \
+             tools/room_bundle_poc_gen.c \
+             -lm -o build/room-poc/room-bundle-gen
+          build/room-poc/room-bundle-gen build/room-poc/bundles \
+             | tee build/room-poc/bundle-bake-test.txt
+
+      - name: Upload topology proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-room-stream-topology-proof
+          path: |
+            build/room-poc/topology-test.txt
+            build/room-poc/catalog-test.txt
+            build/room-poc/room-local-test.txt
+            build/room-poc/seam-test.txt
+            build/room-poc/bundle-test.txt
+            build/room-poc/bundle-bake-test.txt
+            build/room-poc/bundles/**
+          retention-days: 30
+
+  four-mib-bank-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 256-bank / 4 MiB Game Gear sentinel ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          CFLAGS=(-mz80:gg -debug -Wl-j -Isrc)
+          SRCS=(
+            src/main_room_poc_bank_probe_gg.c
+            src/room_poc_bank_004.c
+            src/room_poc_bank_063.c
+            src/room_poc_bank_064.c
+            src/room_poc_bank_127.c
+            src/room_poc_bank_191.c
+            src/room_poc_bank_254.c
+          )
+          OBJS=()
+          for src in "${SRCS[@]}"; do
+            obj="build/room-poc/$(basename "${src%.c}").o"
+            "$LCC" "${CFLAGS[@]}" -c -o "$obj" "$src"
+            OBJS+=("$obj")
+          done
+          "$LCC" "${CFLAGS[@]}" -Wm-yo256 -Wm-yS \
+            -o build/room-poc/GG-Room-4MiB-Bank-Probe.gg "${OBJS[@]}"
+
+          test "$(wc -c < build/room-poc/GG-Room-4MiB-Bank-Probe.gg)" -eq 4194304
+          wc -c build/room-poc/GG-Room-4MiB-Bank-Probe.gg | tee build/room-poc/ROM-size.txt
+          sha256sum build/room-poc/GG-Room-4MiB-Bank-Probe.gg | tee build/room-poc/SHA256.txt
+
+      - name: Build Gearsystem runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Execute every low/high-bank sentinel in Gearsystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/room-poc/GG-Room-4MiB-Bank-Probe.gg
+          SYM=build/room-poc/GG-Room-4MiB-Bank-Probe.sym
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          STATUS_ADDR="$(awk '$2=="_g_room_poc_bank_probe_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATUS_ADDR"
+          ./build/libretro_runner "$CORE" "$ROM" 180 \
+            build/room-poc/bank-probe.ppm "$STATUS_ADDR" 2 1 \
+            | tee build/room-poc/bank-probe-run.txt
+
+          # status=1 and all six sentinel bits=0x3F -> little-endian bytes 01 3F.
+          grep -q 'data=013F' build/room-poc/bank-probe-run.txt
+          printf 'PASS: banks 4,63,64,127,191,254 executed and returned their own bank IDs.\n' \
+            | tee build/room-poc/BANK-PROBE-PASS.txt
+
+      - name: Package runnable ROM
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc-artifact
+          for f in \
+            build/room-poc/GG-Room-4MiB-Bank-Probe.gg \
+            build/room-poc/GG-Room-4MiB-Bank-Probe.sym \
+            build/room-poc/GG-Room-4MiB-Bank-Probe.map \
+            build/room-poc/bank-probe.ppm \
+            build/room-poc/bank-probe-run.txt \
+            build/room-poc/BANK-PROBE-PASS.txt \
+            build/room-poc/ROM-size.txt \
+            build/room-poc/SHA256.txt; do
+            [ ! -f "$f" ] || cp "$f" build/room-poc-artifact/
+          done
+          git rev-parse HEAD > build/room-poc-artifact/COMMIT.txt
+
+      - name: Upload runnable 4 MiB bank-probe ROM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-room-stream-4MiB-bank-probe
+          path: build/room-poc-artifact/*
+          if-no-files-found: warn
+          retention-days: 30
+
+
+  two-room-stream-rom:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake two independent room bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc-stream/host build/room-poc-stream/generated
+          cc -std=c99 -O2 -Wall -Wextra -Werror -Isrc -Itools \
+             tools/polar_baked_composite.c \
+             tools/room_bundle_poc_gen.c \
+             -lm -o build/room-poc-stream/room-bundle-gen
+          build/room-poc-stream/room-bundle-gen build/room-poc-stream/host \
+             | tee build/room-poc-stream/bundle-bake.txt
+          python3 tools/room_bundle_pack_to_c.py \
+             build/room-poc-stream/host/room_bundle_poc.pack \
+             build/room-poc-stream/host/room_bundle_poc_canonical.bin \
+             build/room-poc-stream/generated \
+             | tee build/room-poc-stream/c-gen.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 4 MiB two-room streaming ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/room-poc-stream/generated"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 -Isrc -I"$GEN")
+          OBJS=()
+
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/main.o \
+            src/main_room_bundle_stream_poc_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/world-module.o \
+            src/tilesector_world_module.c
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/world-stream.o \
+            src/tilesector_world_stream_poc.c
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/room-catalog.o \
+            src/tilesector_room_catalog_poc.c
+          OBJS+=(build/room-poc-stream/main.o build/room-poc-stream/world-module.o build/room-poc-stream/world-stream.o build/room-poc-stream/room-catalog.o)
+
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/ntstate.o \
+            src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/ntupload.o \
+            src/tilesector_polar_ntupload_raw_gg.s
+          OBJS+=(build/room-poc-stream/ntstate.o build/room-poc-stream/ntupload.o)
+
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/dispatch.o \
+            "$GEN/room_bundle_poc_dispatch.c"
+          OBJS+=(build/room-poc-stream/dispatch.o)
+
+          for src in "$GEN"/room_bundle_poc_data_bank*.c; do
+            base="$(basename "${src%.c}")"
+            obj="build/room-poc-stream/${base}.o"
+            "$LCC" "${FLAGS[@]}" -c -o "$obj" "$src"
+            OBJS+=("$obj")
+          done
+
+          "$LCC" "${FLAGS[@]}" -Wm-yS \
+            -o build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg "${OBJS[@]}"
+
+          test "$(wc -c < build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg)" -eq 4194304
+          wc -c build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg \
+            | tee build/room-poc-stream/ROM-size.txt
+          sha256sum build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg \
+            | tee build/room-poc-stream/SHA256.txt
+
+          # Sega fixed code lives at 0000-3FFF. Large generated dispatch code
+          # must never push core startup/VDP functions into frame 1.
+          for sym in _main _set_palette _set_bkg_4bpp_data; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' build/room-poc-stream/GG-Room-Two-Bundle-Stream.sym)"
+            test -n "$tok"
+            bank="${tok%%:*}"
+            addr="${tok##*:}"
+            test "$bank" = "00"
+            test $((16#$addr)) -lt $((0x4000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee build/room-poc-stream/FIXED-BANK-PASS.txt
+
+      - name: Build Gearsystem runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Play and validate streamed-room ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg
+          SYM=build/room-poc-stream/GG-Room-Two-Bundle-Stream.sym
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+
+          PROGRESS_ADDR="$(awk '$2=="_g_room_bundle_stream_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          STATUS_ADDR="$(awk '$2=="_g_room_bundle_stream_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          BOOT_ADDR="$(awk '$2=="_g_room_bundle_boot_trace"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$PROGRESS_ADDR"
+          test -n "$STATUS_ADDR"
+          test -n "$BOOT_ADDR"
+
+          # One short non-waiting diagnostic pass dumps the complete global
+          # state block. This survives even when normal progress never starts.
+          ./build/libretro_runner "$CORE" "$ROM" 120 \
+            build/room-poc-stream/emulator-boot-debug.ppm "$STATUS_ADDR" 32 \
+            | tee build/room-poc-stream/run-boot-debug.txt
+
+          ./build/libretro_runner "$CORE" "$ROM" 1800 \
+            build/room-poc-stream/emulator-root-forward.ppm "$PROGRESS_ADDR" 2 96 \
+            | tee build/room-poc-stream/run-root-forward.txt
+          ./build/libretro_runner "$CORE" "$ROM" 3600 \
+            build/room-poc-stream/emulator-child-forward.ppm "$PROGRESS_ADDR" 2 1096 \
+            | tee build/room-poc-stream/run-child-forward.txt
+          ./build/libretro_runner "$CORE" "$ROM" 6000 \
+            build/room-poc-stream/emulator-child-reverse.ppm "$PROGRESS_ADDR" 2 2096 \
+            | tee build/room-poc-stream/run-child-reverse.txt
+          ./build/libretro_runner "$CORE" "$ROM" 8500 \
+            build/room-poc-stream/emulator-root-reverse.ppm "$PROGRESS_ADDR" 2 3096 \
+            | tee build/room-poc-stream/run-root-reverse.txt
+          ./build/libretro_runner "$CORE" "$ROM" 11000 \
+            build/room-poc-stream/emulator-split-left-child.ppm "$PROGRESS_ADDR" 2 7096 \
+            | tee build/room-poc-stream/run-split-left.txt
+          ./build/libretro_runner "$CORE" "$ROM" 14000 \
+            build/room-poc-stream/emulator-split-sibling-cross.ppm "$PROGRESS_ADDR" 2 9096 \
+            | tee build/room-poc-stream/run-split-sibling.txt
+          ./build/libretro_runner "$CORE" "$ROM" 17000 \
+            build/room-poc-stream/emulator-split-right-child.ppm "$PROGRESS_ADDR" 2 10096 \
+            | tee build/room-poc-stream/run-split-right.txt
+          ./build/libretro_runner "$CORE" "$ROM" 21000 \
+            build/room-poc-stream/emulator-stair-climb.ppm "$PROGRESS_ADDR" 2 16096 \
+            | tee build/room-poc-stream/run-stair-climb.txt
+          ./build/libretro_runner "$CORE" "$ROM" 25000 \
+            build/room-poc-stream/emulator-raised-child.ppm "$PROGRESS_ADDR" 2 17096 \
+            | tee build/room-poc-stream/run-raised-child.txt
+          ./build/libretro_runner "$CORE" "$ROM" 29000 \
+            build/room-poc-stream/emulator-stair-descent.ppm "$PROGRESS_ADDR" 2 19096 \
+            | tee build/room-poc-stream/run-stair-descent.txt
+          ./build/libretro_runner "$CORE" "$ROM" 33000 \
+            build/room-poc-stream/emulator-wide-shadow-tour.ppm "$PROGRESS_ADDR" 2 23096 \
+            | tee build/room-poc-stream/run-wide-shadow.txt
+          ./build/libretro_runner "$CORE" "$ROM" 37000 \
+            build/room-poc-stream/emulator-spooky-tour.ppm "$PROGRESS_ADDR" 2 24096 \
+            | tee build/room-poc-stream/run-spooky.txt
+          ./build/libretro_runner "$CORE" "$ROM" 41000 \
+            build/room-poc-stream/emulator-turn-forward.ppm "$PROGRESS_ADDR" 2 25096 \
+            | tee build/room-poc-stream/run-turn-forward.txt
+          ./build/libretro_runner "$CORE" "$ROM" 45000 \
+            build/room-poc-stream/emulator-turn-reverse.ppm "$PROGRESS_ADDR" 2 26096 \
+            | tee build/room-poc-stream/run-turn-reverse.txt
+          ./build/libretro_runner "$CORE" "$ROM" 52000 \
+            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 30000 \
+            | tee build/room-poc-stream/run-complete.txt
+          grep -q 'data=3075' build/room-poc-stream/run-complete.txt
+          printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
+            | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
+
+          # GitHub's current Ubuntu image no longer guarantees ffmpeg.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+          # Continuous representative gameplay excerpt for human inspection.
+          # Record every second hardware video frame; encode as 30 fps MP4.
+          mkdir -p build/room-poc-stream/video-frames
+          LIBRETRO_CAPTURE_DIR=build/room-poc-stream/video-frames \
+          LIBRETRO_CAPTURE_EVERY=2 \
+            ./build/libretro_runner "$CORE" "$ROM" 1200 \
+              build/room-poc-stream/video-last-frame.ppm \
+              | tee build/room-poc-stream/run-video.txt
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/room-poc-stream/video-frames/frame_%06d.ppm \
+            -c:v libx264 -pix_fmt yuv420p -movflags +faststart \
+            build/room-poc-stream/GG-room-stream-run.mp4
+          rm -rf build/room-poc-stream/video-frames
+
+      - name: Package runnable streamed-room ROM
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc-stream-artifact
+          for f in \
+            build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg \
+            build/room-poc-stream/GG-Room-Two-Bundle-Stream.sym \
+            build/room-poc-stream/GG-Room-Two-Bundle-Stream.map \
+            build/room-poc-stream/ROM-size.txt \
+            build/room-poc-stream/SHA256.txt \
+            build/room-poc-stream/FIXED-BANK-PASS.txt \
+            build/room-poc-stream/GG-room-stream-run.mp4 \
+            build/room-poc-stream/video-last-frame.ppm \
+            build/room-poc-stream/run-video.txt \
+            build/room-poc-stream/bundle-bake.txt \
+            build/room-poc-stream/c-gen.txt \
+            build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt \
+            build/room-poc-stream/run-boot-debug.txt \
+            build/room-poc-stream/emulator-boot-debug.ppm \
+            build/room-poc-stream/run-root-forward.txt \
+            build/room-poc-stream/run-child-forward.txt \
+            build/room-poc-stream/run-child-reverse.txt \
+            build/room-poc-stream/run-root-reverse.txt \
+            build/room-poc-stream/run-split-left.txt \
+            build/room-poc-stream/run-split-sibling.txt \
+            build/room-poc-stream/run-split-right.txt \
+            build/room-poc-stream/run-stair-climb.txt \
+            build/room-poc-stream/run-raised-child.txt \
+            build/room-poc-stream/run-stair-descent.txt \
+            build/room-poc-stream/run-wide-shadow.txt \
+            build/room-poc-stream/run-spooky.txt \
+            build/room-poc-stream/run-turn-forward.txt \
+            build/room-poc-stream/run-turn-reverse.txt \
+            build/room-poc-stream/run-complete.txt \
+            build/room-poc-stream/emulator-root-forward.ppm \
+            build/room-poc-stream/emulator-child-forward.ppm \
+            build/room-poc-stream/emulator-child-reverse.ppm \
+            build/room-poc-stream/emulator-root-reverse.ppm \
+            build/room-poc-stream/emulator-split-left-child.ppm \
+            build/room-poc-stream/emulator-split-sibling-cross.ppm \
+            build/room-poc-stream/emulator-split-right-child.ppm \
+            build/room-poc-stream/emulator-stair-climb.ppm \
+            build/room-poc-stream/emulator-raised-child.ppm \
+            build/room-poc-stream/emulator-stair-descent.ppm \
+            build/room-poc-stream/emulator-wide-shadow-tour.ppm \
+            build/room-poc-stream/emulator-spooky-tour.ppm \
+            build/room-poc-stream/emulator-turn-forward.ppm \
+            build/room-poc-stream/emulator-turn-reverse.ppm \
+            build/room-poc-stream/emulator-final-seam.ppm \
+            build/room-poc-stream/host/room_bundle_poc_manifest.txt \
+            build/room-poc-stream/host/bundle0_route01_frame0.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame191.ppm \
+            build/room-poc-stream/host/bundle0_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame0.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame191.ppm \
+            build/room-poc-stream/host/bundle1_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route02_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route12_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route20_frame96.ppm \
+            build/room-poc-stream/host/bundle3_route01_frame64.ppm \
+            build/room-poc-stream/host/bundle3_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle3_route01_frame176.ppm \
+            build/room-poc-stream/host/bundle3_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle4_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle5_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle5_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle6_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle7_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame80.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame112.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame80.ppm \
+            build/room-poc-stream/host/bundle5_route01_frame80.ppm \
+            build/room-poc-stream/host/bundle5_route01_frame112.ppm \
+            build/room-poc-stream/host/bundle7_route01_frame80.ppm; do
+            [ ! -f "$f" ] || cp "$f" build/room-poc-stream-artifact/
+          done
+          git rev-parse HEAD > build/room-poc-stream-artifact/COMMIT.txt
+
+      - name: Upload runnable two-room streaming ROM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-room-stream-two-bundle-ROM
+          path: build/room-poc-stream-artifact/*
+          if-no-files-found: warn
+          retention-days: 30
