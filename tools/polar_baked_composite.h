@@ -12,6 +12,51 @@ typedef struct TSPHostTileLoad {
     uint8_t bytes[TSP_HOST_TILE_BYTES];
 } TSPHostTileLoad;
 
+typedef struct TSPHostSceneVertex {
+    int16_t x;
+    int16_t y;
+} TSPHostSceneVertex;
+
+typedef struct TSPHostSceneSegment {
+    uint8_t v0;
+    uint8_t v1;
+    uint8_t profile;
+    uint8_t blocks_light;
+    int8_t light_front_sign;
+    int8_t visual_front_sign;
+} TSPHostSceneSegment;
+
+typedef struct TSPHostSceneLight {
+    int16_t x_q4;
+    int16_t y_q4;
+    uint8_t height_q4;
+    uint8_t radius_world;
+    uint8_t intensity;
+} TSPHostSceneLight;
+
+/* Horizontal receiver volume. x/y bounds are inclusive for host ray tests.
+ * The floor/ceiling pair lets room-local bakes retain raised/sunken spaces
+ * without hard-coding one global world polygon into the compositor. */
+typedef struct TSPHostSceneRect {
+    int16_t x0;
+    int16_t y0;
+    int16_t x1;
+    int16_t y1;
+    int16_t floor_z;
+    int16_t ceiling_z;
+} TSPHostSceneRect;
+
+typedef struct TSPHostCompositeScene {
+    const TSPHostSceneVertex *vertices;
+    uint8_t vertex_count;
+    const TSPHostSceneSegment *segments;
+    uint8_t segment_count;
+    const TSPHostSceneLight *lights;
+    uint8_t light_count;
+    const TSPHostSceneRect *rects;
+    uint8_t rect_count;
+} TSPHostCompositeScene;
+
 enum {
     TSP_HOST_LIGHT_BASELINE = 0u,
     TSP_HOST_LIGHT_AO = 1u,
@@ -24,6 +69,10 @@ enum {
 /* Select one host-bake presentation layer and provide the exact camera state.
  * This API is host-only; the Game Gear runtime never sees a light record. */
 void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera);
+
+/* Optional room-local host scene. NULL restores the original static Polar
+ * lighting scene. This never exists on the Game Gear runtime path. */
+void tsp_host_composite_set_scene(const TSPHostCompositeScene *scene);
 
 /*
  * Host-only sub-tile compositor + persistent 512-slot VRAM cache model.
