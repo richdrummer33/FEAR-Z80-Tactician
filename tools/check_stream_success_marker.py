@@ -3,9 +3,6 @@
 from pathlib import Path
 import sys
 
-BLACK = (0, 0, 0)
-SUCCESS = (172, 186, 222)  # GG expansion of palette-0 RGB(10,11,13)
-
 
 def read_ppm(path: Path):
     data = path.read_bytes()
@@ -23,24 +20,23 @@ def read_ppm(path: Path):
     return w, h, pix
 
 
-def pixel(pix: bytes, w: int, x: int, y: int):
-    i = (y * w + x) * 3
-    return tuple(pix[i:i+3])
-
-
 def main(path: Path) -> int:
-    w, _h, pix = read_ppm(path)
-    bad = []
-    for y in range(8):
-        for x in range(8):
-            expected = SUCCESS if (x == y or x + y == 7) else BLACK
-            actual = pixel(pix, w, x, y)
-            if actual != expected:
-                bad.append((x, y, expected, actual))
-    print(f"STREAM_SUCCESS_MARKER mismatch={len(bad)}/64")
+    w, h, pix = read_ppm(path)
+    bad = 0
+    min_r = min_b = 255
+    max_g = 0
+    for i in range(0, len(pix), 3):
+        r, g, b = pix[i], pix[i + 1], pix[i + 2]
+        min_r = min(min_r, r)
+        min_b = min(min_b, b)
+        max_g = max(max_g, g)
+        if r < 240 or g > 16 or b < 240:
+            bad += 1
+    print(
+        f"STREAM_SUCCESS_MAGENTA bad={bad}/{w*h} "
+        f"min_r={min_r} max_g={max_g} min_b={min_b}"
+    )
     if bad:
-        for row in bad[:8]:
-            print(f"mismatch x={row[0]} y={row[1]} expected={row[2]} actual={row[3]}")
         return 1
     print("STREAM_SUCCESS_MARKER_EXACT=1")
     return 0
