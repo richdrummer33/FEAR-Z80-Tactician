@@ -13,8 +13,13 @@ typedef struct TSPHostTileLoad {
 } TSPHostTileLoad;
 
 typedef struct TSPHostSceneVertex {
+    /* Whole-unit fallback preserves the original static lighting scene. */
     int16_t x;
     int16_t y;
+    /* Room-bundle overrides may retain exact 1/16-world-unit coordinates. */
+    int16_t x_q4;
+    int16_t y_q4;
+    uint8_t has_exact_q4;
 } TSPHostSceneVertex;
 
 typedef struct TSPHostSceneSegment {
