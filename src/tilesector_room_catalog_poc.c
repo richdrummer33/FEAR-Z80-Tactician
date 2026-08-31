@@ -6,6 +6,12 @@ static uint8_t straight_bundle(uint32_t seed,uint32_t key){
     return k_straight[x%(uint32_t)(sizeof(k_straight)/sizeof(k_straight[0]))];
 }
 
+uint8_t tsp_room_catalog_flicker_profile(uint8_t bundle_id){
+    /* Bundle 1 is the deliberately inset/spooky lamp room. Keep other lights
+     * steady so flicker remains an authored punctuation rather than wallpaper. */
+    return bundle_id==1u?TSP_ROOM_FLICKER_CREEPY:TSP_ROOM_FLICKER_NONE;
+}
+
 uint8_t tsp_room_catalog_choose(uint32_t seed,const TSPStreamNodeDesc *node,
                                 uint8_t exit_index,TSPRoomCatalogChoice *out){
     TSPRoomCatalogChoice c;
