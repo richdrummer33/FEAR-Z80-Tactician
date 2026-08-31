@@ -29,6 +29,8 @@
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
 
+static uint8_t g_view_term_steps=2u;
+
 typedef struct V2 { double x,y; } V2;
 typedef struct Seg {
     V2 a,b;
@@ -126,7 +128,7 @@ static void finalize_scene(World *w){
         /* All current authored room lights use the experiment response:
          * sixteen apparent wall levels plus a subtle two-step view term. */
         w->scene_lights[0].wall_angle_response=1u;
-        w->scene_lights[0].view_term_strength=2u;
+        w->scene_lights[0].view_term_strength=g_view_term_steps;
     }
     w->scene.rects=w->scene_rects;
     w->scene.rect_count=w->scene_rect_count;
@@ -1078,15 +1080,20 @@ int main(int argc,char **argv){
     uint8_t bundle;
 
     if(argc<2||argc>3){
-        fprintf(stderr,"usage: %s OUTPUT_DIR [--legacy-binary-light]\n",argv[0]);
+        fprintf(stderr,
+                "usage: %s OUTPUT_DIR [--legacy-binary-light|--wall-angle-no-view]\n",
+                argv[0]);
         return 2;
     }
     if(argc==3){
-        if(strcmp(argv[2],"--legacy-binary-light")!=0){
+        if(strcmp(argv[2],"--legacy-binary-light")==0){
+            wall_angle_enabled=0u;
+        }else if(strcmp(argv[2],"--wall-angle-no-view")==0){
+            g_view_term_steps=0u;
+        }else{
             fprintf(stderr,"unknown option: %s\n",argv[2]);
             return 2;
         }
-        wall_angle_enabled=0u;
     }
     outdir=argv[1];
     tsp_host_composite_set_wall_angle_mode(wall_angle_enabled);
@@ -1101,8 +1108,9 @@ int main(int argc,char **argv){
     snprintf(path,sizeof(path),"%s/room_bundle_poc_manifest.txt",outdir);
     manifest=fopen(path,"w");if(!manifest)die("cannot create room bundle manifest");
     fprintf(manifest,"Room bundle PoC pack v2 - independently scheduled portal routes\n");
-    fprintf(manifest,"wall_angle_light=%s levels=16 view_term_max_steps=2\n",
-            wall_angle_enabled?"ON":"LEGACY_BINARY");
+    fprintf(manifest,"wall_angle_light=%s levels=16 view_term_max_steps=%u\n",
+            wall_angle_enabled?"ON":"LEGACY_BINARY",
+            (unsigned)(wall_angle_enabled?g_view_term_steps:0u));
 
     for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
         World w;
@@ -1147,8 +1155,9 @@ int main(int argc,char **argv){
     fclose(manifest);fclose(pack);
     tsp_host_composite_set_scene((const TSPHostCompositeScene *)0);
 
-    printf("ROOM_BUNDLE_POC_PASS bundles=%u ordinary_routes=2 split_routes=6 stair_routes=2 frames_per_route=%u canonical=%016llX wall_angle=%s\n",
+    printf("ROOM_BUNDLE_POC_PASS bundles=%u ordinary_routes=2 split_routes=6 stair_routes=2 frames_per_route=%u canonical=%016llX wall_angle=%s view_steps=%u\n",
            BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash,
-           wall_angle_enabled?"ON":"LEGACY_BINARY");
+           wall_angle_enabled?"ON":"LEGACY_BINARY",
+           (unsigned)(wall_angle_enabled?g_view_term_steps:0u));
     return 0;
 }
