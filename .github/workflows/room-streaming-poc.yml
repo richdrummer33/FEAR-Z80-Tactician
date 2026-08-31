@@ -384,8 +384,8 @@ jobs:
             build/room-poc-stream/run-spooky.txt \
             build/room-poc-stream/run-turn-forward.txt \
             build/room-poc-stream/run-turn-reverse.txt \
-            build/room-poc-stream/run-complete.txt \            build/room-poc-stream/native-final-state.txt \
-
+            build/room-poc-stream/run-complete.txt \
+            build/room-poc-stream/native-final-state.txt \
             build/room-poc-stream/emulator-root-forward.ppm \
             build/room-poc-stream/emulator-child-forward.ppm \
             build/room-poc-stream/emulator-child-reverse.ppm \
