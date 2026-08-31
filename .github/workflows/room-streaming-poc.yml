@@ -291,55 +291,62 @@ jobs:
           SYM=build/room-poc-stream/GG-Room-Two-Bundle-Stream.sym
           CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
 
-          PROGRESS_ADDR="$(awk '$2=="_g_room_bundle_stream_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
-          test -n "$PROGRESS_ADDR"
-
+          # Libretro's RETRO_MEMORY_SYSTEM_RAM view does not mirror the Z80's
+          # live C000-DFFF work RAM correctly in this Gearsystem build. It was
+          # the source of the persistent false "data=0000" progress failures.
+          # Use libretro only for framebuffer capture; use Gearsystem's native
+          # Memory::DebugRetrieve path below for authoritative RAM validation.
           ./build/libretro_runner "$CORE" "$ROM" 1800 \
-            build/room-poc-stream/emulator-root-forward.ppm "$PROGRESS_ADDR" 2 96 \
+            build/room-poc-stream/emulator-root-forward.ppm \
             | tee build/room-poc-stream/run-root-forward.txt
           ./build/libretro_runner "$CORE" "$ROM" 3600 \
-            build/room-poc-stream/emulator-child-forward.ppm "$PROGRESS_ADDR" 2 1096 \
+            build/room-poc-stream/emulator-child-forward.ppm \
             | tee build/room-poc-stream/run-child-forward.txt
           ./build/libretro_runner "$CORE" "$ROM" 6000 \
-            build/room-poc-stream/emulator-child-reverse.ppm "$PROGRESS_ADDR" 2 2096 \
+            build/room-poc-stream/emulator-child-reverse.ppm \
             | tee build/room-poc-stream/run-child-reverse.txt
           ./build/libretro_runner "$CORE" "$ROM" 8500 \
-            build/room-poc-stream/emulator-root-reverse.ppm "$PROGRESS_ADDR" 2 3096 \
+            build/room-poc-stream/emulator-root-reverse.ppm \
             | tee build/room-poc-stream/run-root-reverse.txt
           ./build/libretro_runner "$CORE" "$ROM" 11000 \
-            build/room-poc-stream/emulator-split-left-child.ppm "$PROGRESS_ADDR" 2 7096 \
+            build/room-poc-stream/emulator-split-left-child.ppm \
             | tee build/room-poc-stream/run-split-left.txt
           ./build/libretro_runner "$CORE" "$ROM" 14000 \
-            build/room-poc-stream/emulator-split-sibling-cross.ppm "$PROGRESS_ADDR" 2 9096 \
+            build/room-poc-stream/emulator-split-sibling-cross.ppm \
             | tee build/room-poc-stream/run-split-sibling.txt
           ./build/libretro_runner "$CORE" "$ROM" 17000 \
-            build/room-poc-stream/emulator-split-right-child.ppm "$PROGRESS_ADDR" 2 10096 \
+            build/room-poc-stream/emulator-split-right-child.ppm \
             | tee build/room-poc-stream/run-split-right.txt
           ./build/libretro_runner "$CORE" "$ROM" 21000 \
-            build/room-poc-stream/emulator-stair-climb.ppm "$PROGRESS_ADDR" 2 16096 \
+            build/room-poc-stream/emulator-stair-climb.ppm \
             | tee build/room-poc-stream/run-stair-climb.txt
           ./build/libretro_runner "$CORE" "$ROM" 25000 \
-            build/room-poc-stream/emulator-raised-child.ppm "$PROGRESS_ADDR" 2 17096 \
+            build/room-poc-stream/emulator-raised-child.ppm \
             | tee build/room-poc-stream/run-raised-child.txt
           ./build/libretro_runner "$CORE" "$ROM" 29000 \
-            build/room-poc-stream/emulator-stair-descent.ppm "$PROGRESS_ADDR" 2 19096 \
+            build/room-poc-stream/emulator-stair-descent.ppm \
             | tee build/room-poc-stream/run-stair-descent.txt
           ./build/libretro_runner "$CORE" "$ROM" 33000 \
-            build/room-poc-stream/emulator-wide-shadow-tour.ppm "$PROGRESS_ADDR" 2 23096 \
+            build/room-poc-stream/emulator-wide-shadow-tour.ppm \
             | tee build/room-poc-stream/run-wide-shadow.txt
           ./build/libretro_runner "$CORE" "$ROM" 37000 \
-            build/room-poc-stream/emulator-spooky-tour.ppm "$PROGRESS_ADDR" 2 24096 \
+            build/room-poc-stream/emulator-spooky-tour.ppm \
             | tee build/room-poc-stream/run-spooky.txt
           ./build/libretro_runner "$CORE" "$ROM" 41000 \
-            build/room-poc-stream/emulator-turn-forward.ppm "$PROGRESS_ADDR" 2 25096 \
+            build/room-poc-stream/emulator-turn-forward.ppm \
             | tee build/room-poc-stream/run-turn-forward.txt
           ./build/libretro_runner "$CORE" "$ROM" 45000 \
-            build/room-poc-stream/emulator-turn-reverse.ppm "$PROGRESS_ADDR" 2 26096 \
+            build/room-poc-stream/emulator-turn-reverse.ppm \
             | tee build/room-poc-stream/run-turn-reverse.txt
           ./build/libretro_runner "$CORE" "$ROM" 52000 \
-            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 30000 \
+            build/room-poc-stream/emulator-final-seam.ppm \
             | tee build/room-poc-stream/run-complete.txt
-          grep -q 'data=3075' build/room-poc-stream/run-complete.txt
+
+          # Authoritative Z80 RAM proof through native Gearsystem memory.
+          ./build/gearsystem_core_runner "$ROM" 52000 - C392 20 \
+            | tee build/room-poc-stream/native-final-state.txt
+          grep -q 'DUMP\[C392..C3A5\]=1E0030751DB2' \
+            build/room-poc-stream/native-final-state.txt
           printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
@@ -377,7 +384,8 @@ jobs:
             build/room-poc-stream/run-spooky.txt \
             build/room-poc-stream/run-turn-forward.txt \
             build/room-poc-stream/run-turn-reverse.txt \
-            build/room-poc-stream/run-complete.txt \
+            build/room-poc-stream/run-complete.txt \            build/room-poc-stream/native-final-state.txt \
+
             build/room-poc-stream/emulator-root-forward.ppm \
             build/room-poc-stream/emulator-child-forward.ppm \
             build/room-poc-stream/emulator-child-reverse.ppm \
