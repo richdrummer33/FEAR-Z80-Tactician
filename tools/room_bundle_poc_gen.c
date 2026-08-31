@@ -20,11 +20,11 @@
 #include "tilesector_polar.h"
 #include "polar_baked_composite.h"
 
-#define BUNDLE_COUNT 3u
+#define BUNDLE_COUNT 4u
 #define ROUTE_FRAMES 192u
-#define MAX_SEGMENTS 40u
+#define MAX_SEGMENTS 48u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
-#define MAX_SCENE_RECTS 6u
+#define MAX_SCENE_RECTS 8u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
@@ -147,6 +147,14 @@ static void add_xform_seg(World *w,double ax,double ay,double bx,double by,
     transform_point(bx,by,tx,ty,rot,&x1,&y1);
     add_seg(w,x0,y0,x1,y1,0,32,0);
 }
+static void add_xform_seg_z(World *w,double ax,double ay,double bx,double by,
+                            double tx,double ty,uint8_t rot,
+                            double z0,double z1){
+    double x0,y0,x1,y1;
+    transform_point(ax,ay,tx,ty,rot,&x0,&y0);
+    transform_point(bx,by,tx,ty,rot,&x1,&y1);
+    add_seg(w,x0,y0,x1,y1,z0,z1,0);
+}
 static void add_canonical_seam(World *w,double tx,double ty,uint8_t rot,
                                double mouth_lo,double mouth_hi){
     add_xform_seg(w,0,-4,20,-4,tx,ty,rot);
@@ -156,6 +164,16 @@ static void add_canonical_seam(World *w,double tx,double ty,uint8_t rot,
     add_xform_seg(w,12,4,12,28,tx,ty,rot);
     add_xform_seg(w,12,28,28,28,tx,ty,rot);
     add_xform_seg(w,28,28,36,mouth_hi,tx,ty,rot);
+}
+static void add_canonical_seam_z(World *w,double tx,double ty,uint8_t rot,
+                                 double mouth_lo,double mouth_hi,double zbase){
+    add_xform_seg_z(w,0,-4,20,-4,tx,ty,rot,zbase,zbase+32.0);
+    add_xform_seg_z(w,20,-4,20,20,tx,ty,rot,zbase,zbase+32.0);
+    add_xform_seg_z(w,20,20,28,20,tx,ty,rot,zbase,zbase+32.0);
+    add_xform_seg_z(w,28,20,36,mouth_lo,tx,ty,rot,zbase,zbase+32.0);
+    add_xform_seg_z(w,12,4,12,28,tx,ty,rot,zbase,zbase+32.0);
+    add_xform_seg_z(w,12,28,28,28,tx,ty,rot,zbase,zbase+32.0);
+    add_xform_seg_z(w,28,28,36,mouth_hi,tx,ty,rot,zbase,zbase+32.0);
 }
 
 /* Shared S-shaped seam plus one room beyond its east aperture.
@@ -264,9 +282,53 @@ static void make_split_world(World *w){
     finalize_scene(w);
 }
 
+static void make_stair_world(World *w){
+    memset(w,0,sizeof(*w));
+
+    /* Entry floor zero, exit floor +4 after a clockwise quarter turn. */
+    add_canonical_seam_z(w,36.0,24.0,0u,12.0,36.0,0.0);
+    add_canonical_seam_z(w,76.0,80.0,3u,12.0,36.0,4.0);
+
+    /* Outer L-shaped stairwell walls, partitioned by local floor band so wall
+     * bottoms climb with the steps instead of extending below the floor. */
+    add_seg(w,36,12,56,12,0,32,0);
+    add_seg(w,56,12,72,12,1,33,0);
+    add_seg(w,72,12,96,12,2,34,0);
+
+    add_seg(w,96,12,96,52,2,34,0);
+    add_seg(w,96,52,96,64,3,35,0);
+    add_seg(w,96,64,96,80,4,36,0);
+
+    add_seg(w,56,80,64,80,4,36,0);
+    add_seg(w,88,80,96,80,4,36,0);
+
+    add_seg(w,56,36,56,52,2,34,0);
+    add_seg(w,56,52,56,64,3,35,0);
+    add_seg(w,56,64,56,80,4,36,0);
+    add_seg(w,36,36,56,36,0,32,0);
+
+    /* Actual vertical riser faces. */
+    add_seg(w,56,12,56,36,0,1,1);
+    add_seg(w,72,12,72,36,1,2,1);
+    add_seg(w,56,52,96,52,2,3,1);
+    add_seg(w,56,64,96,64,3,4,1);
+
+    /* Horizontal receivers: non-overlapping bands with matched ceiling shift. */
+    add_rect(w,36,12,55,36,0,32);
+    add_rect(w,56,12,71,36,1,33);
+    add_rect(w,72,12,96,36,2,34);
+    add_rect(w,56,37,96,51,2,34);
+    add_rect(w,56,52,96,63,3,35);
+    add_rect(w,56,64,96,80,4,36);
+
+    w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
+    finalize_scene(w);
+}
+
 static void make_world(uint8_t bundle,World *w){
     if(bundle<2u)make_linear_world(bundle,w);
     else if(bundle==2u)make_split_world(w);
+    else if(bundle==3u)make_stair_world(w);
     else die("invalid room bundle id");
 }
 
@@ -310,6 +372,21 @@ static Pose portal_transform_pose(Pose p,uint8_t portal){
     transform_point(p.x,p.y,tx,ty,rot,&nx,&ny);
     p.x=nx;p.y=ny;p.yaw=(uint8_t)(p.yaw+(uint8_t)(rot*64u));
     return p;
+}
+static Pose portal_transform_pose_z(Pose p,double tx,double ty,uint8_t rot,double zbase){
+    double nx,ny;
+    transform_point(p.x,p.y,tx,ty,rot,&nx,&ny);
+    p.x=nx;p.y=ny;p.z+=zbase;
+    p.yaw=(uint8_t)(p.yaw+(uint8_t)(rot*64u));
+    return p;
+}
+static double stair_floor_z(double x,double y){
+    if(y>=64.0)return 4.0;
+    if(y>=52.0&&x>=56.0)return 3.0;
+    if(y>=36.0&&x>=56.0)return 2.0;
+    if(x>=72.0)return 2.0;
+    if(x>=56.0)return 1.0;
+    return 0.0;
 }
 static uint8_t yaw_from_vec(double dx,double dy){
     double a=atan2(dy,dx);
@@ -391,6 +468,37 @@ static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal
     return p;
 }
 
+static Pose stair_forward_pose(uint16_t f){
+    Pose p,a,b;
+    double q,cx=84.0,cy=36.0;
+    if(f<64u){
+        p=entry_outbound_pose(f);
+        p.z=16.0+stair_floor_z(p.x,p.y);
+        return p;
+    }
+    if(f>=128u){
+        p=entry_outbound_pose((uint16_t)(191u-f));
+        return portal_transform_pose_z(p,76.0,80.0,3u,4.0);
+    }
+
+    a=entry_outbound_pose(63u);
+    a.z=16.0+stair_floor_z(a.x,a.y);
+    b=portal_transform_pose_z(entry_outbound_pose(63u),76.0,80.0,3u,4.0);
+    q=(double)(f-64u)/63.0;
+    {
+        double u=1.0-q;
+        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
+        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
+        p.z=16.0+stair_floor_z(p.x,p.y);
+    }
+    {
+        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
+        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*20.0));
+    }
+    return p;
+}
+
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
     if(bundle<2u){
@@ -401,6 +509,12 @@ static Pose route_pose_portals(uint16_t f,uint8_t bundle,
         die("invalid linear room route pair");
     }
     if(bundle==2u)return split_route_pose(f,entry_portal,exit_portal);
+    if(bundle==3u){
+        if(entry_portal==0u&&exit_portal==1u)return stair_forward_pose(f);
+        if(entry_portal==1u&&exit_portal==0u)
+            return stair_forward_pose((uint16_t)(ROUTE_FRAMES-1u-f));
+        die("invalid stair route pair");
+    }
     die("invalid room bundle route");
     return route_pose(f,0u);
 }
@@ -790,14 +904,7 @@ int main(int argc,char **argv){
         World w;
         make_world(bundle,&w);
         fputc((int)bundle,pack);
-        if(bundle<2u){
-            fputc(2,pack);
-            write_u16(pack,0u);
-            bake_route(outdir,pack,manifest,bundle,&w,0u,1u,
-                       canonical,&canonical_hash,&canonical_ready);
-            bake_route(outdir,pack,manifest,bundle,&w,1u,0u,
-                       canonical,&canonical_hash,&canonical_ready);
-        }else{
+        if(bundle==2u){
             static const uint8_t pairs[6][2]={{0,1},{1,0},{0,2},{2,0},{1,2},{2,1}};
             uint8_t r;
             fputc(6,pack);
@@ -805,6 +912,13 @@ int main(int argc,char **argv){
             for(r=0u;r<6u;++r)
                 bake_route(outdir,pack,manifest,bundle,&w,pairs[r][0],pairs[r][1],
                            canonical,&canonical_hash,&canonical_ready);
+        }else{
+            fputc(2,pack);
+            write_u16(pack,0u);
+            bake_route(outdir,pack,manifest,bundle,&w,0u,1u,
+                       canonical,&canonical_hash,&canonical_ready);
+            bake_route(outdir,pack,manifest,bundle,&w,1u,0u,
+                       canonical,&canonical_hash,&canonical_ready);
         }
     }
 
@@ -814,6 +928,7 @@ int main(int argc,char **argv){
     fprintf(manifest,"cross_bundle_canonical_handoff=PASS\n");
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
     fprintf(manifest,"three_portal_split_routes=PASS\n");
+    fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
@@ -827,7 +942,7 @@ int main(int argc,char **argv){
     fclose(manifest);fclose(pack);
     tsp_host_composite_set_scene((const TSPHostCompositeScene *)0);
 
-    printf("ROOM_BUNDLE_POC_PASS bundles=%u linear_routes=2 split_routes=6 frames_per_route=%u canonical=%016llX\n",
+    printf("ROOM_BUNDLE_POC_PASS bundles=%u ordinary_routes=2 split_routes=6 stair_routes=2 frames_per_route=%u canonical=%016llX\n",
            BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash);
     return 0;
 }
