@@ -342,16 +342,16 @@ jobs:
             build/room-poc-stream/emulator-final-seam.ppm \
             | tee build/room-poc-stream/run-complete.txt
 
-          # Authoritative Z80 RAM proof through native Gearsystem memory.
-          # Resolve the linked symbol every build; never freeze a WRAM address
-          # into the harness again.
-          STATUS_ADDR="$(awk '$2=="_g_room_bundle_stream_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
-          test -n "$STATUS_ADDR"
-          ./build/gearsystem_core_runner "$ROM" 52000 - "$STATUS_ADDR" 20 \
-            | tee build/room-poc-stream/native-final-state.txt
-          grep -q '=1E0030751DB2' \
-            build/room-poc-stream/native-final-state.txt
-          printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
+          # Four-megabyte validation must stay on Gearsystem's libretro path:
+          # that core boots the full ROM correctly, while the standalone native
+          # runner does not. Successful completion is therefore exposed as a
+          # terminal 8x8 framebuffer marker stamped only after flicker_edges>=10.
+          python3 tools/check_stream_success_marker.py \
+            build/room-poc-stream/emulator-final-seam.ppm \
+            | tee build/room-poc-stream/stream-success-marker.txt
+          grep -q 'STREAM_SUCCESS_MARKER_EXACT=1' \
+            build/room-poc-stream/stream-success-marker.txt
+          printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour + flicker self-check completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
       - name: Package runnable streamed-room ROM
@@ -389,7 +389,7 @@ jobs:
             build/room-poc-stream/run-turn-forward.txt \
             build/room-poc-stream/run-turn-reverse.txt \
             build/room-poc-stream/run-complete.txt \
-            build/room-poc-stream/native-final-state.txt \
+            build/room-poc-stream/stream-success-marker.txt \
             build/room-poc-stream/emulator-root-forward.ppm \
             build/room-poc-stream/emulator-child-forward.ppm \
             build/room-poc-stream/emulator-child-reverse.ppm \
