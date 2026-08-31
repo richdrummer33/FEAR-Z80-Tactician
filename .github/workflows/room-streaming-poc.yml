@@ -289,69 +289,70 @@ jobs:
           set -euo pipefail
           ROM=build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg
           SYM=build/room-poc-stream/GG-Room-Two-Bundle-Stream.sym
-          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
 
-          # Libretro's RETRO_MEMORY_SYSTEM_RAM view does not mirror the Z80's
-          # live C000-DFFF work RAM correctly in this Gearsystem build. It was
-          # the source of the persistent false "data=0000" progress failures.
-          # Use libretro only for framebuffer capture; use Gearsystem's native
-          # Memory::DebugRetrieve path below for authoritative RAM validation.
-          ./build/libretro_runner "$CORE" "$ROM" 1800 \
-            build/room-poc-stream/emulator-root-forward.ppm \
-            | tee build/room-poc-stream/run-root-forward.txt
-          ./build/libretro_runner "$CORE" "$ROM" 3600 \
-            build/room-poc-stream/emulator-child-forward.ppm \
-            | tee build/room-poc-stream/run-child-forward.txt
-          ./build/libretro_runner "$CORE" "$ROM" 6000 \
-            build/room-poc-stream/emulator-child-reverse.ppm \
-            | tee build/room-poc-stream/run-child-reverse.txt
-          ./build/libretro_runner "$CORE" "$ROM" 8500 \
-            build/room-poc-stream/emulator-root-reverse.ppm \
-            | tee build/room-poc-stream/run-root-reverse.txt
-          ./build/libretro_runner "$CORE" "$ROM" 11000 \
-            build/room-poc-stream/emulator-split-left-child.ppm \
-            | tee build/room-poc-stream/run-split-left.txt
-          ./build/libretro_runner "$CORE" "$ROM" 14000 \
-            build/room-poc-stream/emulator-split-sibling-cross.ppm \
-            | tee build/room-poc-stream/run-split-sibling.txt
-          ./build/libretro_runner "$CORE" "$ROM" 17000 \
-            build/room-poc-stream/emulator-split-right-child.ppm \
-            | tee build/room-poc-stream/run-split-right.txt
-          ./build/libretro_runner "$CORE" "$ROM" 21000 \
-            build/room-poc-stream/emulator-stair-climb.ppm \
-            | tee build/room-poc-stream/run-stair-climb.txt
-          ./build/libretro_runner "$CORE" "$ROM" 25000 \
-            build/room-poc-stream/emulator-raised-child.ppm \
-            | tee build/room-poc-stream/run-raised-child.txt
-          ./build/libretro_runner "$CORE" "$ROM" 29000 \
-            build/room-poc-stream/emulator-stair-descent.ppm \
-            | tee build/room-poc-stream/run-stair-descent.txt
-          ./build/libretro_runner "$CORE" "$ROM" 33000 \
-            build/room-poc-stream/emulator-wide-shadow-tour.ppm \
-            | tee build/room-poc-stream/run-wide-shadow.txt
-          ./build/libretro_runner "$CORE" "$ROM" 37000 \
-            build/room-poc-stream/emulator-spooky-tour.ppm \
-            | tee build/room-poc-stream/run-spooky.txt
-          ./build/libretro_runner "$CORE" "$ROM" 41000 \
-            build/room-poc-stream/emulator-turn-forward.ppm \
-            | tee build/room-poc-stream/run-turn-forward.txt
-          ./build/libretro_runner "$CORE" "$ROM" 45000 \
-            build/room-poc-stream/emulator-turn-reverse.ppm \
-            | tee build/room-poc-stream/run-turn-reverse.txt
-          ./build/libretro_runner "$CORE" "$ROM" 60000 \
-            build/room-poc-stream/emulator-final-seam.ppm \
-            | tee build/room-poc-stream/run-complete.txt
+          STATUS_ADDR="$(awk '$2=="_g_room_bundle_stream_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          PROGRESS_ADDR="$(awk '$2=="_g_room_bundle_stream_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          LEVEL_ADDR="$(awk '$2=="_g_room_bundle_flicker_level"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          EDGES_ADDR="$(awk '$2=="_g_room_bundle_flicker_edges"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATUS_ADDR"
+          test -n "$PROGRESS_ADDR"
+          test -n "$LEVEL_ADDR"
+          test -n "$EDGES_ADDR"
 
-          # Four-megabyte validation must stay on Gearsystem's libretro path:
-          # that core boots the full ROM correctly, while the standalone native
-          # runner does not. Successful completion is therefore exposed as a
-          # terminal 8x8 framebuffer marker stamped only after flicker_edges>=10.
-          python3 tools/check_stream_success_marker.py \
-            build/room-poc-stream/emulator-final-seam.ppm \
-            | tee build/room-poc-stream/stream-success-marker.txt
-          grep -q 'STREAM_SUCCESS_MARKER_EXACT=1' \
-            build/room-poc-stream/stream-success-marker.txt
-          printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour + flicker self-check completed.\n' \
+          # The native runner now uses Gearsystem's LoadROMFromBuffer path,
+          # matching libretro's cartridge loader while retaining authoritative
+          # Memory::DebugRetrieve() access to live Z80 work RAM.
+          #
+          # Real production spooky-room flicker sequence around frames 18..21:
+          #   18 normal/bright (2)
+          #   19 off           (0)
+          #   20 dim           (1)
+          #   21 normal/bright (2)
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=24018 \
+            ./build/gearsystem_core_runner "$ROM" 30000 \
+              build/room-poc-stream/runtime-flicker-normal.ppm "$LEVEL_ADDR" 1 \
+              | tee build/room-poc-stream/runtime-flicker-normal.txt
+
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=24019 \
+            ./build/gearsystem_core_runner "$ROM" 30000 \
+              build/room-poc-stream/runtime-flicker-off.ppm "$LEVEL_ADDR" 1 \
+              | tee build/room-poc-stream/runtime-flicker-off.txt
+
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=24020 \
+            ./build/gearsystem_core_runner "$ROM" 30000 \
+              build/room-poc-stream/runtime-flicker-dim.ppm "$LEVEL_ADDR" 1 \
+              | tee build/room-poc-stream/runtime-flicker-dim.txt
+
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=24021 \
+            ./build/gearsystem_core_runner "$ROM" 30000 \
+              build/room-poc-stream/runtime-flicker-normal-restored.ppm "$LEVEL_ADDR" 1 \
+              | tee build/room-poc-stream/runtime-flicker-normal-restored.txt
+
+          grep -q 'DUMP.*=02' build/room-poc-stream/runtime-flicker-normal.txt
+          grep -q 'DUMP.*=00' build/room-poc-stream/runtime-flicker-off.txt
+          grep -q 'DUMP.*=01' build/room-poc-stream/runtime-flicker-dim.txt
+          grep -q 'DUMP.*=02' build/room-poc-stream/runtime-flicker-normal-restored.txt
+
+          # Complete the actual four-megabyte streamed tour. This target is
+          # written only after every procedural route, hostile-camera tour and
+          # the in-ROM flicker_edges>=10 assertion have all passed.
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=30000 \
+            ./build/gearsystem_core_runner "$ROM" 30000 \
+              build/room-poc-stream/runtime-final-success.ppm "$STATUS_ADDR" 6 \
+              | tee build/room-poc-stream/runtime-final-state.txt
+          grep -q 'DUMP.*=1E0030751DB2' build/room-poc-stream/runtime-final-state.txt
+
+          ./build/gearsystem_core_runner "$ROM" 30000 - "$EDGES_ADDR" 2 \
+            | tee build/room-poc-stream/runtime-flicker-edges.txt
+          EDGE_HEX="$(sed -n 's/.*DUMP\[[^]]*\]=//p' build/room-poc-stream/runtime-flicker-edges.txt | tail -1)"
+          test "${#EDGE_HEX}" -ge 4
+          EDGE_LO="${EDGE_HEX:0:2}"
+          EDGE_HI="${EDGE_HEX:2:2}"
+          EDGE_COUNT=$((16#${EDGE_HI}${EDGE_LO}))
+          echo "runtime_flicker_edges=${EDGE_COUNT}" | tee build/room-poc-stream/runtime-flicker-summary.txt
+          test "$EDGE_COUNT" -ge 10
+
+          printf 'PASS: 4 MiB runtime completed; production flicker normal/off/dim/normal captured; flicker edge self-check passed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
       - name: Package runnable streamed-room ROM
@@ -374,6 +375,18 @@ jobs:
             build/room-poc-stream/angle-only/room_bundle_poc_manifest.txt \
             build/room-poc-stream/c-gen.txt \
             build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt \
+            build/room-poc-stream/runtime-flicker-normal.ppm \
+            build/room-poc-stream/runtime-flicker-off.ppm \
+            build/room-poc-stream/runtime-flicker-dim.ppm \
+            build/room-poc-stream/runtime-flicker-normal-restored.ppm \
+            build/room-poc-stream/runtime-final-success.ppm \
+            build/room-poc-stream/runtime-flicker-normal.txt \
+            build/room-poc-stream/runtime-flicker-off.txt \
+            build/room-poc-stream/runtime-flicker-dim.txt \
+            build/room-poc-stream/runtime-flicker-normal-restored.txt \
+            build/room-poc-stream/runtime-final-state.txt \
+            build/room-poc-stream/runtime-flicker-edges.txt \
+            build/room-poc-stream/runtime-flicker-summary.txt \
             build/room-poc-stream/run-root-forward.txt \
             build/room-poc-stream/run-child-forward.txt \
             build/room-poc-stream/run-child-reverse.txt \
