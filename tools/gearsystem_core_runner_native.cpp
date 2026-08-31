@@ -28,12 +28,32 @@ int main(int argc,char**argv){
     GS_RuntimeInfo ri{}; core.GetRuntimeInfo(ri);
     std::vector<u8> fb(GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN*GS_RESOLUTION_MAX_HEIGHT_WITH_OVERSCAN*4);
     std::vector<s16> audio(16384); int samples=0;
-    for(int i=0;i<frames;i++) { samples=0; core.RunToVBlank(fb.data(), audio.data(), &samples, nullptr, true); }
+    Memory* mem=core.GetMemory();
+
+    /* Optional exact logical-frame capture. The ROM may spend more than one
+     * display VBlank applying one baked packet; waiting on a live Z80 marker
+     * keeps framebuffer captures aligned with host-bake frame numbers.
+     * Dormant unless both environment variables are supplied. */
+    const char *wait_addr_env=getenv("GS_WAIT_ADDR");
+    const char *wait_u16_env=getenv("GS_WAIT_U16_GE");
+    bool wait_marker=(wait_addr_env&&wait_u16_env);
+    u16 wait_addr=wait_marker?(u16)strtoul(wait_addr_env,nullptr,16):0u;
+    unsigned wait_target=wait_marker?(unsigned)strtoul(wait_u16_env,nullptr,0):0u;
+    int ran=0;
+    for(;ran<frames;ran++) {
+        samples=0;
+        core.RunToVBlank(fb.data(), audio.data(), &samples, nullptr, true);
+        if(wait_marker){
+            unsigned v=(unsigned)mem->DebugRetrieve(wait_addr) |
+                       ((unsigned)mem->DebugRetrieve((u16)(wait_addr+1u))<<8);
+            if(v>=wait_target){++ran;break;}
+        }
+    }
     auto *st=core.GetProcessor()->GetState();
-    printf("frames=%d screen=%dx%d cycles=%llu PC=%04X SP=%04X AF=%04X BC=%04X DE=%04X HL=%04X RAM[C000..C007]=",
-        frames,ri.screen_width,ri.screen_height,(unsigned long long)core.GetMasterClockCycles(),
+    printf("frames=%d ran=%d screen=%dx%d cycles=%llu PC=%04X SP=%04X AF=%04X BC=%04X DE=%04X HL=%04X RAM[C000..C007]=",
+        frames,ran,ri.screen_width,ri.screen_height,(unsigned long long)core.GetMasterClockCycles(),
         st->PC->GetValue(),st->SP->GetValue(),st->AF->GetValue(),st->BC->GetValue(),st->DE->GetValue(),st->HL->GetValue());
-    Memory* mem=core.GetMemory(); for(int i=0;i<8;i++) printf("%02X",mem->DebugRetrieve((u16)(0xC000+i))); printf("\n");
+    for(int i=0;i<8;i++) printf("%02X",mem->DebugRetrieve((u16)(0xC000+i))); printf("\n");
     if(argc>=4 && argv[3][0] != '-') {save_ppm(argv[3],fb,ri.screen_width,ri.screen_height);printf("saved=%s\n",argv[3]);}
     if(argc>=5 && argv[4][0] != '-') {
         unsigned addr = (unsigned)strtoul(argv[4], nullptr, 16);
