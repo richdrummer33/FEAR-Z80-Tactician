@@ -1,0 +1,57 @@
+name: GG wall-angle lighting metrics
+
+on:
+  push:
+    branches:
+      - experiment/gg-wall-angle-flicker
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lighting-metrics:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and compare lighting treatments
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/wall-light/control build/wall-light/angle-only build/wall-light/angle-view
+          cc -std=c99 -O2 -Wall -Wextra -Werror -Isrc -Itools \
+             tools/polar_baked_composite.c \
+             tools/room_bundle_poc_gen.c \
+             -lm -o build/wall-light/room-bundle-gen
+
+          build/wall-light/room-bundle-gen build/wall-light/control --legacy-binary-light \
+             | tee build/wall-light/control.txt
+          build/wall-light/room-bundle-gen build/wall-light/angle-only --wall-angle-no-view \
+             | tee build/wall-light/angle-only.txt
+          build/wall-light/room-bundle-gen build/wall-light/angle-view \
+             | tee build/wall-light/angle-view.txt
+
+          python3 tools/compare_room_lighting_metrics.py \
+             build/wall-light/control/room_bundle_poc_manifest.txt \
+             build/wall-light/angle-only/room_bundle_poc_manifest.txt \
+             build/wall-light/angle-view/room_bundle_poc_manifest.txt \
+             | tee build/wall-light/lighting-ab.txt
+
+      - name: Upload lighting metrics and visual samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-wall-angle-lighting-metrics
+          path: |
+            build/wall-light/*.txt
+            build/wall-light/control/room_bundle_poc_manifest.txt
+            build/wall-light/angle-only/room_bundle_poc_manifest.txt
+            build/wall-light/angle-view/room_bundle_poc_manifest.txt
+            build/wall-light/control/bundle0_route01_frame96.ppm
+            build/wall-light/angle-only/bundle0_route01_frame96.ppm
+            build/wall-light/angle-view/bundle0_route01_frame96.ppm
+            build/wall-light/control/bundle1_route01_frame96.ppm
+            build/wall-light/angle-only/bundle1_route01_frame96.ppm
+            build/wall-light/angle-view/bundle1_route01_frame96.ppm
+          if-no-files-found: error
