@@ -131,6 +131,36 @@ jobs:
           printf 'PASS: thick interior + exterior portholes replayed on Game Gear ROM.\n' \
             | tee build/porthole/PORTHOLE-PASS.txt
 
+      - name: Record porthole tour video
+        shell: bash
+        run: |
+          set -euo pipefail
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM=build/porthole/GG-Thick-Porthole-Proof.gg
+          mkdir -p build/porthole/video-frames
+
+          LIBRETRO_RECORD_DIR=build/porthole/video-frames \
+          LIBRETRO_RECORD_START=1 \
+          LIBRETRO_RECORD_END=1200 \
+          LIBRETRO_RECORD_STEP=3 \
+            ./build/libretro_runner "$CORE" "$ROM" 1200 \
+              build/porthole/porthole-video-final.ppm \
+              | tee build/porthole/porthole-video-run.txt
+
+          command -v ffmpeg >/dev/null 2>&1 || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          }
+          ffmpeg -y -loglevel error \
+            -framerate 20 \
+            -pattern_type glob -i 'build/porthole/video-frames/frame_*.ppm' \
+            -c:v libx264 -pix_fmt yuv420p -crf 18 \
+            build/porthole/GG-Thick-Porthole-Tour.mp4
+
+          test -s build/porthole/GG-Thick-Porthole-Tour.mp4
+          ls -lh build/porthole/GG-Thick-Porthole-Tour.mp4 \
+            | tee build/porthole/video-size.txt
+
       - name: Package porthole proof
         if: always()
         shell: bash
@@ -141,6 +171,7 @@ jobs:
             build/porthole/GG-Thick-Porthole-Proof.gg \
             build/porthole/GG-Thick-Porthole-Proof.sym \
             build/porthole/GG-Thick-Porthole-Proof.map \
+            build/porthole/GG-Thick-Porthole-Tour.mp4 \
             build/porthole/ROM-size.txt \
             build/porthole/SHA256.txt \
             build/porthole/bake.txt \
@@ -150,6 +181,9 @@ jobs:
             build/porthole/run-interior.txt \
             build/porthole/run-exterior.txt \
             build/porthole/run-final.txt \
+            build/porthole/porthole-video-run.txt \
+            build/porthole/porthole-video-final.ppm \
+            build/porthole/video-size.txt \
             build/porthole/emulator-interior-porthole.ppm \
             build/porthole/emulator-exterior-porthole.ppm \
             build/porthole/emulator-final.ppm \
