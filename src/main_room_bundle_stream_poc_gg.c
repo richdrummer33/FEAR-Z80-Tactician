@@ -30,6 +30,7 @@ uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_room_bundle_stream_status;
 volatile uint16_t g_room_bundle_stream_progress;
 volatile uint16_t g_room_bundle_stream_signature;
+volatile uint16_t g_room_bundle_boot_trace;
 volatile uint8_t g_room_bundle_root_asset;
 volatile uint8_t g_room_bundle_child_asset;
 volatile uint8_t g_room_bundle_split_left_asset;
@@ -120,12 +121,19 @@ void main(void){
     TSPRoomCatalogChoice stair_choice,stair_child_choice;
     uint8_t root_bundle,child_bundle,left_bundle,right_bundle,stair_child_bundle;
 
+    /* Boot trace is deliberately written BEFORE the first VDP/library call.
+     * CI reads this independently of the normal progress word so a startup
+     * failure can be localized without guessing from a black framebuffer. */
+    g_room_bundle_boot_trace=0xA001u;
+
     DISPLAY_OFF;
     __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
     set_bkg_palette(0u,2u,k_palettes);
+    g_room_bundle_boot_trace=0xA002u;
     init_base_tiles();
+    g_room_bundle_boot_trace=0xA003u;
 
     g_room_bundle_stream_status=0u;
     g_room_bundle_stream_progress=0u;
@@ -156,7 +164,9 @@ void main(void){
                                          root_choice.exit_portal,0u);
     tsp_room_bundle_generated_load_canonical();
     tsp_polar_nt_upload_dirty();
+    g_room_bundle_boot_trace=0xA004u;
     DISPLAY_ON;
+    g_room_bundle_boot_trace=0xA005u;
 
     play_route(root_bundle,root_choice.entry_portal,root_choice.exit_portal,1u,0u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
