@@ -107,6 +107,133 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
     ls->light_front_sign=0;
     ls->visual_front_sign=0;
 }
+
+/*
+ * Host-only volumetric wall authoring.
+ *
+ * The legacy room PoC stores every vertical face as an infinitely thin Seg.
+ * That is still the right representation for room/perimeter boundaries, but
+ * it is a poor authoring primitive for free-standing interior walls: authors
+ * otherwise have to draw both broad sides plus every exposed end/reveal by
+ * hand. These helpers keep the runtime format unchanged and expand one
+ * centerline into the exposed vertical faces of a rectangular wall prism.
+ *
+ * Full-height solids are therefore closed laterally by construction. Horizontal
+ * cap/reveal planes (table tops, window sills/lintels) are deliberately not
+ * emitted here because the current room baker is a vertical-wall ray caster.
+ */
+#define SOLID_WALL_DEFAULT_THICKNESS 1.0
+
+static V2 v2_lerp(V2 a,V2 b,double q){
+    V2 p;
+    p.x=a.x+(b.x-a.x)*q;
+    p.y=a.y+(b.y-a.y)*q;
+    return p;
+}
+
+static void wall_offsets(double ax,double ay,double bx,double by,double thickness,
+                         V2 *a_left,V2 *a_right,V2 *b_left,V2 *b_right,
+                         double *length_out){
+    double dx=bx-ax,dy=by-ay,len=sqrt(dx*dx+dy*dy);
+    double nx,ny,h;
+    if(len<=1e-9)die("solid wall line has zero length");
+    if(thickness<=0.0)die("solid wall thickness must be positive");
+    nx=-dy/len;
+    ny= dx/len;
+    h=thickness*0.5;
+    a_left->x=ax+nx*h; a_left->y=ay+ny*h;
+    a_right->x=ax-nx*h;a_right->y=ay-ny*h;
+    b_left->x=bx+nx*h; b_left->y=by+ny*h;
+    b_right->x=bx-nx*h;b_right->y=by-ny*h;
+    if(length_out)*length_out=len;
+}
+
+static void add_solid_wall_line_caps(World *w,
+                                     double ax,double ay,double bx,double by,
+                                     double thickness,double z0,double z1,
+                                     int8_t bias,uint8_t cap_a,uint8_t cap_b){
+    V2 al,ar,bl,br;
+    wall_offsets(ax,ay,bx,by,thickness,&al,&ar,&bl,&br,(double *)0);
+
+    /* The two broad faces plus only the physically exposed end caps. */
+    add_seg(w,al.x,al.y,bl.x,bl.y,z0,z1,bias);
+    add_seg(w,br.x,br.y,ar.x,ar.y,z0,z1,bias);
+    if(cap_a)add_seg(w,ar.x,ar.y,al.x,al.y,z0,z1,bias);
+    if(cap_b)add_seg(w,bl.x,bl.y,br.x,br.y,z0,z1,bias);
+}
+
+static void add_solid_wall_line(World *w,
+                                double ax,double ay,double bx,double by,
+                                double thickness,double z0,double z1,
+                                int8_t bias){
+    add_solid_wall_line_caps(w,ax,ay,bx,by,thickness,z0,z1,bias,1u,1u);
+}
+
+/*
+ * A rectangular window cut through a solid wall. open_from/open_to are world
+ * distances measured along the authored centerline from A toward B.
+ *
+ * The broad front/back faces are split above, below and beside the opening,
+ * and the two vertical jamb/reveal faces across wall thickness are generated
+ * automatically. Horizontal sill/lintel reveal planes are outside the current
+ * vertical-wall baker and remain a separate horizontal-surface feature.
+ */
+static void add_solid_window_line_caps(World *w,
+                                       double ax,double ay,double bx,double by,
+                                       double thickness,
+                                       double open_from,double open_to,
+                                       double open_z0,double open_z1,
+                                       double z0,double z1,int8_t bias,
+                                       uint8_t cap_a,uint8_t cap_b){
+    V2 al,ar,bl,br,l0,l1,r0,r1;
+    double len,u0,u1;
+    wall_offsets(ax,ay,bx,by,thickness,&al,&ar,&bl,&br,&len);
+    if(open_from<=0.0||open_to>=len||open_from>=open_to)
+        die("window opening must lie strictly inside wall endpoints");
+    if(open_z0<=z0||open_z1>=z1||open_z0>=open_z1)
+        die("window vertical opening must lie strictly inside wall height");
+
+    u0=open_from/len;
+    u1=open_to/len;
+    l0=v2_lerp(al,bl,u0);l1=v2_lerp(al,bl,u1);
+    r0=v2_lerp(ar,br,u0);r1=v2_lerp(ar,br,u1);
+
+    /* Left/broad side. */
+    add_seg(w,al.x,al.y,l0.x,l0.y,z0,z1,bias);
+    add_seg(w,l0.x,l0.y,l1.x,l1.y,z0,open_z0,bias);
+    add_seg(w,l0.x,l0.y,l1.x,l1.y,open_z1,z1,bias);
+    add_seg(w,l1.x,l1.y,bl.x,bl.y,z0,z1,bias);
+
+    /* Right/broad side, reverse winding for outward consistency. */
+    add_seg(w,br.x,br.y,r1.x,r1.y,z0,z1,bias);
+    add_seg(w,r1.x,r1.y,r0.x,r0.y,z0,open_z0,bias);
+    add_seg(w,r1.x,r1.y,r0.x,r0.y,open_z1,z1,bias);
+    add_seg(w,r0.x,r0.y,ar.x,ar.y,z0,z1,bias);
+
+    /* Physical wall ends. */
+    if(cap_a)add_seg(w,ar.x,ar.y,al.x,al.y,z0,z1,bias);
+    if(cap_b)add_seg(w,bl.x,bl.y,br.x,br.y,z0,z1,bias);
+
+    /* The part the old thin-segment model could not infer: window jambs. */
+    add_seg(w,r0.x,r0.y,l0.x,l0.y,open_z0,open_z1,bias);
+    add_seg(w,l1.x,l1.y,r1.x,r1.y,open_z0,open_z1,bias);
+}
+
+static void self_test_solid_wall_geometry(void){
+    World w;
+    memset(&w,0,sizeof(w));
+    add_solid_wall_line(&w,0.0,0.0,10.0,0.0,1.0,0.0,32.0,0);
+    if(w.count!=4u)die("solid wall self-test: expected four vertical faces");
+
+    memset(&w,0,sizeof(w));
+    add_solid_window_line_caps(&w,0.0,0.0,10.0,0.0,1.0,
+                               2.0,8.0,10.0,22.0,0.0,32.0,0,1u,1u);
+    if(w.count!=12u)die("solid window self-test: expected 12 vertical faces");
+    if(fabs(w.seg[10].a.y-w.seg[10].b.y-1.0)>1e-8 &&
+       fabs(w.seg[10].b.y-w.seg[10].a.y-1.0)>1e-8)
+        die("solid window self-test: jamb does not span wall thickness");
+}
+
 static void add_rect(World *w,int16_t x0,int16_t y0,int16_t x1,int16_t y1,
                      int16_t floor_z,int16_t ceiling_z){
     TSPHostSceneRect *r;
@@ -245,7 +372,7 @@ static void make_linear_world(uint8_t bundle,World *w){
          * Light escaping around its ends should form a curious asymmetric pool
          * while the deeper occluder contributes a strong vertical shadow cut. */
         add_seg(w,68,8,84,8,0,32,0);
-        add_seg(w,94,18,94,38,0,32,1);
+        add_solid_wall_line(w,94,18,94,38,SOLID_WALL_DEFAULT_THICKNESS,0,32,1);
         w->scene_lights[0].x_q4=(int16_t)(76<<4);
         w->scene_lights[0].y_q4=(int16_t)(0<<4);
         w->scene_lights[0].height_q4=(uint8_t)(8<<4);
@@ -279,7 +406,7 @@ static void make_split_world(World *w){
 
     /* Central divider gives the junction a readable silhouette without
      * preventing both branch mouths being visible from the main floor. */
-    add_seg(w,94,10,94,38,0,32,1);
+    add_solid_wall_line(w,94,10,94,38,SOLID_WALL_DEFAULT_THICKNESS,0,32,1);
 
     add_rect(w,36,-40,116,88,0,32);
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
@@ -341,8 +468,15 @@ static void make_gallery_world(World *w){
     add_seg(w,116,96,36,96,0,32,0);
 
     /* Sparse architectural fins leave the centre broad and open. */
-    add_seg(w,68,-48,68,-18,0,32,1);
-    add_seg(w,90,66,90,96,0,32,1);
+    /* Wall zero is attached to the north perimeter and carries a real
+     * through-window. The baker now derives both thickness faces plus the two
+     * vertical window reveals from this one centerline declaration. */
+    add_solid_window_line_caps(w,68,-48,68,-18,SOLID_WALL_DEFAULT_THICKNESS,
+                               8.0,20.0,10.0,22.0,0,32,1,0u,1u);
+    /* Wall one terminates into the south perimeter, so its buried cap is
+     * intentionally omitted. */
+    add_solid_wall_line_caps(w,90,66,90,96,SOLID_WALL_DEFAULT_THICKNESS,
+                             0,32,1,1u,0u);
 
     add_rect(w,36,-48,116,96,0,32);
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
@@ -366,7 +500,7 @@ static void make_turn_world(World *w){
     add_seg(w,36,36,36,40,0,32,0);
 
     /* Short corner baffle gives the inset light a deliberate shadow edge. */
-    add_seg(w,80,48,92,48,0,32,1);
+    add_solid_wall_line(w,80,48,92,48,SOLID_WALL_DEFAULT_THICKNESS,0,32,1);
 
     add_rect(w,36,8,96,40,0,32);
     add_rect(w,60,40,96,80,0,32);
@@ -421,16 +555,10 @@ static void make_pillar_world(World *w){
     add_seg(w,36,-40,116,-40,0,32,0);
     add_seg(w,116,88,36,88,0,32,0);
 
-    /* Two compact full-height pillars, offset away from the travel rail. */
-    add_seg(w,64,2,76,2,0,32,1);
-    add_seg(w,76,2,76,16,0,32,1);
-    add_seg(w,76,16,64,16,0,32,1);
-    add_seg(w,64,16,64,2,0,32,1);
-
-    add_seg(w,90,44,102,44,0,32,1);
-    add_seg(w,102,44,102,58,0,32,1);
-    add_seg(w,102,58,90,58,0,32,1);
-    add_seg(w,90,58,90,44,0,32,1);
+    /* Two compact full-height pillars. Each is now authored as ONE centerline
+     * plus thickness; the baker derives the four enclosed vertical sides. */
+    add_solid_wall_line(w,70,2,70,16,12.0,0,32,1);
+    add_solid_wall_line(w,96,44,96,58,12.0,0,32,1);
 
     add_rect(w,36,-40,116,88,0,32);
 
@@ -1073,6 +1201,10 @@ int main(int argc,char **argv){
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
     outdir=argv[1];
 
+    /* Fail before a multi-thousand-frame bake if the authoring expansion ever
+     * stops producing the promised closed vertical wall/window topology. */
+    self_test_solid_wall_geometry();
+
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
     fwrite("RBP2",1,4,pack);
@@ -1114,6 +1246,8 @@ int main(int argc,char **argv){
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
     fprintf(manifest,"eight_module_catalog=PASS\n");
+    fprintf(manifest,"solid_interior_wall_expansion=PASS\n");
+    fprintf(manifest,"window_vertical_reveal_generation=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
