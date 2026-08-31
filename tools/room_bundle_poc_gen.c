@@ -548,6 +548,14 @@ static void make_exterior_porthole_world(World *w){
     add_seg(w,48,124,104,124,0,32,2);
     add_rect(w,48,78,104,124,0,32);
 
+    /* Offset exterior masonry post: a deliberately simple depth cue visible
+     * through the aperture, proving that the bright rectangle is a view into
+     * space rather than merely a differently coloured wall patch. */
+    add_seg(w,82,104,90,104,0,32,1);
+    add_seg(w,90,104,90,114,0,32,1);
+    add_seg(w,90,114,82,114,0,32,1);
+    add_seg(w,82,114,82,104,0,32,1);
+
     w->multi_surface=1u;
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
     finalize_scene(w);
