@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - experiment/gg-streaming-room-poc
+  pull_request:
+    branches:
+      - feature/gg-polar-vertical-stairwell
   workflow_dispatch:
 
 permissions:
