@@ -50,6 +50,14 @@ jobs:
              -o build/room-poc/test-room-bundle
           build/room-poc/test-room-bundle | tee build/room-poc/bundle-test.txt
 
+          mkdir -p build/room-poc/bundles
+          cc -std=c99 -Wall -Wextra -Werror -Isrc -Itools \
+             tools/polar_baked_composite.c \
+             tools/room_bundle_poc_gen.c \
+             -lm -o build/room-poc/room-bundle-gen
+          build/room-poc/room-bundle-gen build/room-poc/bundles \
+             | tee build/room-poc/bundle-bake-test.txt
+
       - name: Upload topology proof
         uses: actions/upload-artifact@v4
         with:
@@ -59,6 +67,8 @@ jobs:
             build/room-poc/room-local-test.txt
             build/room-poc/seam-test.txt
             build/room-poc/bundle-test.txt
+            build/room-poc/bundle-bake-test.txt
+            build/room-poc/bundles/**
           retention-days: 30
 
   four-mib-bank-probe:
