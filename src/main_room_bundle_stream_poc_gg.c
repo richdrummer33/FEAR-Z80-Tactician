@@ -142,6 +142,12 @@ void main(void){
     child=world.current;
     child_bundle=bundle_for_node(&child);
     g_room_bundle_child_asset=child_bundle;
+    if(child_bundle==root_bundle){
+        /* This fixed PoC seed is intentionally chosen to exercise both the
+         * tight/inset-lit and wide/portal-shadow bundle classes. */
+        g_room_bundle_stream_status=0xEE04u;
+        for(;;)vsync();
+    }
 
     play_route(child_bundle,0u,1u,1u,1000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
