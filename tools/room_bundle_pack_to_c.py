@@ -4,7 +4,7 @@ import pathlib
 import struct
 
 BANK_STREAM_MAX = 12000
-MAX_BANK_FILES = 192
+MAX_BANK_FILES = 224
 
 def u16(b, p):
     return struct.unpack_from("<H", b, p)[0]
