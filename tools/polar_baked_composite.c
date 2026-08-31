@@ -157,6 +157,9 @@ static int scene_segment(uint8_t id,TSPHostSceneSegment *out){
         out->blocks_light=s->blocks_light;
         out->light_front_sign=s->light_front_sign;
         out->visual_front_sign=s->visual_front_sign;
+        out->z0_q4=0;
+        out->z1_q4=0;
+        out->has_exact_z=0u;
     }
     return 1;
 }
@@ -208,6 +211,15 @@ static void profile_z_range(uint8_t profile,double *z0,double *z1){
         case TSP_HOST_PROFILE_LINTEL:*z0=24.0;*z1=32.0;break;
         case TSP_HOST_PROFILE_RISER:*z0=0.0;*z1=4.0;break;
         default:*z0=0.0;*z1=32.0;break;
+    }
+}
+
+static void segment_z_range(const TSPHostSceneSegment *s,double *z0,double *z1){
+    if(s&&s->has_exact_z){
+        *z0=(double)s->z0_q4/16.0;
+        *z1=(double)s->z1_q4/16.0;
+    }else{
+        profile_z_range(s?s->profile:TSP_PROFILE_FULL,z0,z1);
     }
 }
 
@@ -270,7 +282,7 @@ static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
                                (double)b.x,(double)b.y,&t,&u))continue;
         if(t<=1e-7||t>=1.0-1e-7||u<-1e-7||u>1.0+1e-7)continue;
         zhit=lz+t*(wz-lz);
-        profile_z_range(s.profile,&z0,&z1);
+        segment_z_range(&s,&z0,&z1);
         if(zhit>=z0-1e-7&&zhit<=z1+1e-7)return 0;
     }
     return 1;
@@ -399,7 +411,7 @@ static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,doub
     if(t<=1e-7||u<-1e-5||u>1.0+1e-5)return 0;
     *wx=cx+dx*t;*wy=cy+dy*t;
     *wz=camera_z_world()-((py-TSP_HORIZON_PX)/TSP_FOCAL_PX)*t;
-    profile_z_range(s.profile,&z0,&z1);
+    segment_z_range(&s,&z0,&z1);
     if(*wz<z0)*wz=z0;
     if(*wz>z1)*wz=z1;
     return 1;
