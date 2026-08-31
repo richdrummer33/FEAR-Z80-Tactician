@@ -12,8 +12,11 @@ bool g_mcp_stdio_mode = false;
 static void save_ppm(const char* path, const std::vector<u8>& fb, int w, int h) {
     FILE* f=fopen(path,"wb"); if(!f){perror("fopen"); return;}
     fprintf(f,"P6\n%d %d\n255\n",w,h);
+    /* Gearsystem's rendered output buffer is tightly packed at the active
+     * runtime width. The allocation is max-overscan sized, but using that max
+     * width as the row pitch shears Game Gear screenshots after row zero. */
     for(int y=0;y<h;y++) for(int x=0;x<w;x++) {
-        const u8* p=&fb[(y*GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN + x)*4];
+        const u8* p=&fb[((size_t)y*(size_t)w + (size_t)x)*4u];
         // GS_PIXEL_RGBA8888 buffer is byte R,G,B,A on this build.
         fwrite(p,1,3,f);
     }
