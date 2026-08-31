@@ -32,6 +32,11 @@ typedef struct TSPHostSceneLight {
     uint8_t height_q4;
     uint8_t radius_world;
     uint8_t intensity;
+    /* Host-bake wall response. When enabled, illumination is quantized from
+     * wall normal vs wall-center-to-light. view_term_strength adds at most
+     * that many of 15 quantization steps from reflected-light/view alignment. */
+    uint8_t wall_angle_response;
+    uint8_t view_term_strength;
 } TSPHostSceneLight;
 
 /* Horizontal receiver volume. x/y bounds are inclusive for host ray tests.
@@ -69,6 +74,10 @@ enum {
 /* Select one host-bake presentation layer and provide the exact camera state.
  * This API is host-only; the Game Gear runtime never sees a light record. */
 void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera);
+
+/* A/B diagnostic control. Enabled by default. Disabling this restores the
+ * previous binary ambient/+1 point-light response while retaining occlusion. */
+void tsp_host_composite_set_wall_angle_mode(uint8_t enabled);
 
 /* Optional room-local host scene. NULL restores the original static Polar
  * lighting scene. This never exists on the Game Gear runtime path. */
