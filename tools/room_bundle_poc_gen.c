@@ -195,6 +195,43 @@ static void add_two_portal_seams(World *w,double mouth_lo,double mouth_hi){
     add_canonical_seam(w,116.0,24.0,2u,mouth_lo,mouth_hi);
 }
 
+/*
+ * Add a genuinely thick wall slab with one rectangular view aperture.
+ *
+ * y0/y1 are the two wall faces. The slab is closed in plan by end caps, and
+ * the opening has recessed left/right reveal faces between z=8 and z=24.
+ * Front/back opening spans contain a z=0..8 sill plus z=24..32 lintel, leaving
+ * the middle transparent. The top/bottom reveal planes are intentionally
+ * deferred: this first 2.5D proof gets visible thickness from face parallax and
+ * the side reveals without inventing horizontal mid-air quads.
+ */
+static void add_thick_window_wall_y(World *w,
+                                    double x0,double x1,
+                                    double y0,double y1,
+                                    double open_x0,double open_x1){
+    /* South/front face. */
+    add_seg(w,x0,y0,open_x0,y0,0,32,0);
+    add_seg_profile(w,open_x0,y0,open_x1,y0,0,8,0,TSP_PROFILE_WINDOW_SILL);
+    add_seg_profile(w,open_x0,y0,open_x1,y0,24,32,0,TSP_PROFILE_LINTEL);
+    add_seg(w,open_x1,y0,x1,y0,0,32,0);
+
+    /* North/back face, reversed winding for clean sidedness if authored later. */
+    add_seg(w,x1,y1,open_x1,y1,0,32,0);
+    add_seg_profile(w,open_x1,y1,open_x0,y1,0,8,0,TSP_PROFILE_WINDOW_SILL);
+    add_seg_profile(w,open_x1,y1,open_x0,y1,24,32,0,TSP_PROFILE_LINTEL);
+    add_seg(w,open_x0,y1,x0,y1,0,32,0);
+
+    /* Close the slab at both ends. */
+    add_seg(w,x0,y1,x0,y0,0,32,0);
+    add_seg(w,x1,y0,x1,y1,0,32,0);
+
+    /* Recessed vertical jamb/reveal faces inside the porthole. */
+    add_seg_profile(w,open_x0,y0,open_x0,y1,8,24,1,
+                    TSP_PROFILE_WINDOW_REVEAL);
+    add_seg_profile(w,open_x1,y1,open_x1,y0,8,24,1,
+                    TSP_PROFILE_WINDOW_REVEAL);
+}
+
 /* Shared S-shaped seam plus one room beyond its east aperture.
  *
  * seam:
@@ -459,6 +496,62 @@ static void make_pillar_world(World *w){
     finalize_scene(w);
 }
 
+static void make_interior_porthole_world(World *w){
+    memset(w,0,sizeof(*w));
+    add_two_portal_seams(w,12.0,36.0);
+
+    /* Main room shell with the canonical west/east entry mouths. */
+    add_seg(w,36,-24,36,12,0,32,0);
+    add_seg(w,36,36,36,88,0,32,0);
+    add_seg(w,116,-24,116,12,0,32,0);
+    add_seg(w,116,36,116,88,0,32,0);
+    add_seg(w,36,-24,116,-24,0,32,0);
+    add_seg(w,116,88,36,88,0,32,0);
+    add_rect(w,36,-24,116,88,0,32);
+
+    /* A freestanding thick divider. The route stays south of it and looks
+     * through the aperture into the north half of the SAME room. */
+    add_thick_window_wall_y(w,48,104,48,54,70,90);
+
+    /* A farther object makes the through-wall depth unmistakable. */
+    add_seg(w,62,78,74,78,0,32,1);
+    add_seg(w,74,78,74,84,0,32,1);
+    add_seg(w,74,84,62,84,0,32,1);
+    add_seg(w,62,84,62,78,0,32,1);
+
+    w->multi_surface=1u;
+    w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
+    finalize_scene(w);
+}
+
+static void make_exterior_porthole_world(World *w){
+    memset(w,0,sizeof(*w));
+    add_two_portal_seams(w,12.0,36.0);
+
+    /* Interior shell. The north boundary is a six-unit-thick exterior wall,
+     * not a single line. */
+    add_seg(w,36,-24,36,12,0,32,0);
+    add_seg(w,36,36,36,72,0,32,0);
+    add_seg(w,116,-24,116,12,0,32,0);
+    add_seg(w,116,36,116,72,0,32,0);
+    add_seg(w,36,-24,116,-24,0,32,0);
+    add_rect(w,36,-24,116,72,0,32);
+
+    add_thick_window_wall_y(w,36,116,72,78,70,90);
+
+    /* Shallow inaccessible exterior court/lightwell. It deliberately has no
+     * traversable connection; the porthole is visual-only. A bright far wall
+     * and offset side return make parallax/depth visible through the recess. */
+    add_seg(w,48,78,48,124,0,32,1);
+    add_seg(w,104,124,104,78,0,32,1);
+    add_seg(w,48,124,104,124,0,32,2);
+    add_rect(w,48,78,104,124,0,32);
+
+    w->multi_surface=1u;
+    w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
+    finalize_scene(w);
+}
+
 static void make_world(uint8_t bundle,World *w){
     if(bundle<2u)make_linear_world(bundle,w);
     else if(bundle==2u)make_split_world(w);
@@ -467,6 +560,8 @@ static void make_world(uint8_t bundle,World *w){
     else if(bundle==5u)make_turn_world(w);
     else if(bundle==6u)make_step_world(w);
     else if(bundle==7u)make_pillar_world(w);
+    else if(bundle==8u)make_interior_porthole_world(w);
+    else if(bundle==9u)make_exterior_porthole_world(w);
     else die("invalid room bundle id");
 }
 
