@@ -734,6 +734,24 @@ static uint8_t shade_for_inv(double inv,int8_t bias){
 }
 static int iround(double v){return (int)floor(v+0.5);}
 
+static void draw_segment_hit(const World *w,const Pose *p,int sx,
+                             double rel,uint8_t sid,double t){
+    const Seg *seg=&w->seg[sid];
+    double depth=t*cos(rel);
+    double top,bottom,inv;
+    int it,ib;
+    if(depth<0.01)depth=0.01;
+    top=72.0-(seg->z1-p->z)*80.0/depth;
+    bottom=72.0-(seg->z0-p->z)*80.0/depth;
+    inv=2560.0/depth;if(inv>255.0)inv=255.0;
+    it=iround(top);ib=iround(bottom);
+    tsp_host_composite_surface((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
+                               (int16_t)it,(int16_t)it,
+                               (int16_t)ib,(int16_t)ib,
+                               sid,shade_for_inv(inv,seg->shade_bias),
+                               0u,0u,0u);
+}
+
 static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]){
     int sx;
     TSPState cam;
@@ -749,31 +767,47 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
     for(sx=0;sx<160;++sx){
         double rel=atan(((double)sx+0.5-80.0)/80.0);
         double ang=(double)p->yaw*(2.0*PI/256.0)+rel;
-        double dx=cos(ang),dy=sin(ang),best=1e30;
-        int best_sid=-1;
-        uint8_t sid;
-        for(sid=0u;sid<w->count;++sid){
-            double t;
-            if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)&&t<best){
-                best=t;best_sid=(int)sid;
+        double dx=cos(ang),dy=sin(ang);
+
+        if(!w->multi_surface){
+            double best=1e30;
+            int best_sid=-1;
+            uint8_t sid;
+            for(sid=0u;sid<w->count;++sid){
+                double t;
+                if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)&&t<best){
+                    best=t;best_sid=(int)sid;
+                }
             }
-        }
-        if(best_sid>=0){
-            const Seg *s=&w->seg[best_sid];
-            double depth=best*cos(rel);
-            double top,bottom,inv;
-            int it,ib;
-            if(depth<0.01)depth=0.01;
-            top=72.0-(s->z1-p->z)*80.0/depth;
-            bottom=72.0-(s->z0-p->z)*80.0/depth;
-            inv=2560.0/depth;if(inv>255.0)inv=255.0;
-            it=iround(top);ib=iround(bottom);
-            tsp_host_composite_surface((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
-                                       (int16_t)it,(int16_t)it,
-                                       (int16_t)ib,(int16_t)ib,
-                                       (uint8_t)best_sid,
-                                       shade_for_inv(inv,s->shade_bias),
-                                       0u,0u,0u);
+            if(best_sid>=0)
+                draw_segment_hit(w,p,sx,rel,(uint8_t)best_sid,best);
+        }else{
+            double hit_t[MAX_SEGMENTS];
+            uint8_t hit_sid[MAX_SEGMENTS];
+            uint8_t n=0u,sid,i,j;
+
+            /* Windows need the farther room plus the near sill/lintel/reveals
+             * in the same screen column. Gather every XY crossing, then paint
+             * far-to-near so nearer aperture geometry naturally overwrites it. */
+            for(sid=0u;sid<w->count;++sid){
+                double t;
+                if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)){
+                    hit_t[n]=t;hit_sid[n]=sid;++n;
+                }
+            }
+            for(i=1u;i<n;++i){
+                double kt=hit_t[i];
+                uint8_t ks=hit_sid[i];
+                j=i;
+                while(j>0u&&hit_t[(uint8_t)(j-1u)]<kt){
+                    hit_t[j]=hit_t[(uint8_t)(j-1u)];
+                    hit_sid[j]=hit_sid[(uint8_t)(j-1u)];
+                    --j;
+                }
+                hit_t[j]=kt;hit_sid[j]=ks;
+            }
+            for(i=0u;i<n;++i)
+                draw_segment_hit(w,p,sx,rel,hit_sid[i],hit_t[i]);
         }
     }
     tsp_host_composite_export(out);
