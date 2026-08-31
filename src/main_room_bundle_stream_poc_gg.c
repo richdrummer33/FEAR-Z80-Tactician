@@ -1,28 +1,34 @@
 /*
- * First visible streamed-room proof.
+ * Reversible streamed-room proof.
  *
- * No projection, visibility or room geometry exists on the Game Gear side.
- * The ROM replays two independently host-baked room bundles through their
- * shared canonical S-shaped seam:
+ * The GG runtime knows only deterministic node descriptors plus portal-local
+ * baked packet routes. Geometry, visibility and cast lighting remain host-side.
  *
- *   seam -> Room A -> seam/cache canonicalization
- *        -> Room B -> seam/cache canonicalization
+ *   root 0->1
+ *   child 0->1
+ *   child 1->0
+ *   breadcrumb pop/identity check
+ *   root 1->0
  *
- * The generated dispatcher accepts only bundle-local frame numbers.
+ * Every route begins and ends at the exact same canonical seam/cache state.
  */
 #include <stdint.h>
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
+#include "tilesector_world_stream_poc.h"
 #include "room_bundle_poc_meta.h"
 
 #define C_BLACK 0u
 #define C_CEILING 1u
 #define C_FLOOR 2u
+#define STREAM_SEED UINT32_C(0xC0FFEE42)
 
 uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_room_bundle_stream_status;
 volatile uint16_t g_room_bundle_stream_progress;
 volatile uint16_t g_room_bundle_stream_signature;
+volatile uint8_t g_room_bundle_root_asset;
+volatile uint8_t g_room_bundle_child_asset;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -65,19 +71,39 @@ static void init_base_tiles(void){
     emit_horizon();
 }
 
-static void play_bundle(uint8_t bundle,uint16_t first_frame){
-    uint16_t frame,count=tsp_room_bundle_generated_frames(bundle);
-    uint16_t base=bundle?1000u:0u;
+static uint8_t same_node(const TSPStreamNodeDesc *a,const TSPStreamNodeDesc *b){
+    return (uint8_t)(a->key==b->key &&
+                     a->module_kind==b->module_kind &&
+                     a->asset_variant==b->asset_variant &&
+                     a->rotation==b->rotation &&
+                     a->logical_floor_q4==b->logical_floor_q4);
+}
+static uint8_t bundle_for_node(const TSPStreamNodeDesc *n){
+    return (uint8_t)(n->asset_variant&1u);
+}
+
+static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
+                       uint16_t first_frame,uint16_t progress_base){
+    uint16_t frame;
+    uint16_t count=tsp_room_bundle_generated_frames(bundle,entry,exit_portal);
+    if(!count){
+        g_room_bundle_stream_status=0xEE01u;
+        return;
+    }
     for(frame=first_frame;frame<count;++frame){
-        tsp_room_bundle_generated_apply_name(bundle,frame);
+        tsp_room_bundle_generated_apply_name(bundle,entry,exit_portal,frame);
         vsync();
-        tsp_room_bundle_generated_apply_tile(bundle,frame);
+        tsp_room_bundle_generated_apply_tile(bundle,entry,exit_portal,frame);
         tsp_polar_nt_upload_dirty();
-        g_room_bundle_stream_progress=(uint16_t)(base+frame);
+        g_room_bundle_stream_progress=(uint16_t)(progress_base+frame);
     }
 }
 
 void main(void){
+    TSPStreamWorld world;
+    TSPStreamNodeDesc root,child;
+    uint8_t root_bundle,child_bundle;
+
     DISPLAY_OFF;
     __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
     HIDE_SPRITES;
@@ -88,28 +114,53 @@ void main(void){
     g_room_bundle_stream_status=0u;
     g_room_bundle_stream_progress=0u;
     g_room_bundle_stream_signature=0xB21Du;
+    g_room_bundle_root_asset=0xffu;
+    g_room_bundle_child_asset=0xffu;
+
+    tsp_stream_reset(&world,STREAM_SEED,0u);
+    root=world.current;
+    root_bundle=bundle_for_node(&root);
+    g_room_bundle_root_asset=root_bundle;
 
     tsp_polar_nt_init();
 
-    /* Frame zero was baked from a fresh canonical cache. Load its exact
-     * dynamic seam patterns, then install the canonical name table while the
-     * display is still off. */
-    tsp_room_bundle_generated_apply_tile(0u,0u);
+    /* Cold boot uses canonical frame zero from the selected root's forward
+     * route. Normal seam-to-seam transitions begin at frame one. */
+    tsp_room_bundle_generated_apply_tile(root_bundle,0u,1u,0u);
     tsp_room_bundle_generated_load_canonical();
     tsp_polar_nt_upload_dirty();
-
     DISPLAY_ON;
 
-    /* Bundle zero starts at frame one because frame zero is already visible. */
-    play_bundle(0u,1u);
+    play_route(root_bundle,0u,1u,1u,0u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     g_room_bundle_stream_status=1u;
 
-    /* Bundle frame zero is the cold/canonical bootstrap. At an ordinary
-     * room-to-room handoff the predecessor has already restored that exact
-     * name-table + dynamic-slot contract, so the successor begins at frame 1. */
-    play_bundle(1u,1u);
+    if(!tsp_stream_enter(&world,0u,0u)){
+        g_room_bundle_stream_status=0xEE02u;
+        for(;;)vsync();
+    }
+    child=world.current;
+    child_bundle=bundle_for_node(&child);
+    g_room_bundle_child_asset=child_bundle;
+
+    play_route(child_bundle,0u,1u,1u,1000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     g_room_bundle_stream_status=2u;
-    g_room_bundle_stream_progress=2000u;
+
+    play_route(child_bundle,1u,0u,1u,2000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+    g_room_bundle_stream_status=3u;
+
+    if(!tsp_stream_back(&world)||!same_node(&world.current,&root)){
+        g_room_bundle_stream_status=0xEE03u;
+        for(;;)vsync();
+    }
+    g_room_bundle_stream_status=4u;
+
+    play_route(root_bundle,1u,0u,1u,3000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+    g_room_bundle_stream_status=5u;
+    g_room_bundle_stream_progress=5000u;
 
     for(;;)vsync();
 }
