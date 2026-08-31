@@ -257,6 +257,18 @@ jobs:
           sha256sum build/room-poc-stream/GG-Room-Two-Bundle-Stream.gg \
             | tee build/room-poc-stream/SHA256.txt
 
+          # Sega fixed code lives at 0000-3FFF. Large generated dispatch code
+          # must never push core startup/VDP functions into frame 1.
+          for sym in _main _set_palette _set_bkg_4bpp_data; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' build/room-poc-stream/GG-Room-Two-Bundle-Stream.sym)"
+            test -n "$tok"
+            bank="${tok%%:*}"
+            addr="${tok##*:}"
+            test "$bank" = "00"
+            test $((16#$addr)) -lt $((0x4000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee build/room-poc-stream/FIXED-BANK-PASS.txt
+
       - name: Build Gearsystem runner
         shell: bash
         run: |
@@ -334,6 +346,20 @@ jobs:
           printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
+          # Continuous representative gameplay excerpt for human inspection.
+          # Record every second hardware video frame; encode as 30 fps MP4.
+          mkdir -p build/room-poc-stream/video-frames
+          LIBRETRO_CAPTURE_DIR=build/room-poc-stream/video-frames \
+          LIBRETRO_CAPTURE_EVERY=2 \
+            ./build/libretro_runner "$CORE" "$ROM" 1200 \
+              build/room-poc-stream/video-last-frame.ppm \
+              | tee build/room-poc-stream/run-video.txt
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/room-poc-stream/video-frames/frame_%06d.ppm \
+            -c:v libx264 -pix_fmt yuv420p -movflags +faststart \
+            build/room-poc-stream/GG-room-stream-run.mp4
+          rm -rf build/room-poc-stream/video-frames
+
       - name: Package runnable streamed-room ROM
         if: always()
         shell: bash
@@ -346,6 +372,10 @@ jobs:
             build/room-poc-stream/GG-Room-Two-Bundle-Stream.map \
             build/room-poc-stream/ROM-size.txt \
             build/room-poc-stream/SHA256.txt \
+            build/room-poc-stream/FIXED-BANK-PASS.txt \
+            build/room-poc-stream/GG-room-stream-run.mp4 \
+            build/room-poc-stream/video-last-frame.ppm \
+            build/room-poc-stream/run-video.txt \
             build/room-poc-stream/bundle-bake.txt \
             build/room-poc-stream/c-gen.txt \
             build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt \
