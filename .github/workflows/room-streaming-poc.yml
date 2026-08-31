@@ -338,7 +338,7 @@ jobs:
           ./build/libretro_runner "$CORE" "$ROM" 45000 \
             build/room-poc-stream/emulator-turn-reverse.ppm \
             | tee build/room-poc-stream/run-turn-reverse.txt
-          ./build/libretro_runner "$CORE" "$ROM" 52000 \
+          ./build/libretro_runner "$CORE" "$ROM" 60000 \
             build/room-poc-stream/emulator-final-seam.ppm \
             | tee build/room-poc-stream/run-complete.txt
 
