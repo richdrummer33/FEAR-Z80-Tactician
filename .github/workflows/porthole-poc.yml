@@ -56,25 +56,25 @@ jobs:
           FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo64 -Isrc -I"$GEN")
           OBJS=()
 
-          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/main.o \
+          "$LCC" "${FLAGS[@]}" -c -o build/porthole/main.o \
             src/main_porthole_poc_gg.c
-          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/ntstate.o \
+          "$LCC" "${FLAGS[@]}" -c -o build/porthole/ntstate.o \
             src/tilesector_polar_ntstate_gg.s
-          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/ntupload.o \
+          "$LCC" "${FLAGS[@]}" -c -o build/porthole/ntupload.o \
             src/tilesector_polar_ntupload_raw_gg.s
-          "$LCC" "\${FLAGS[@]}" -c -o build/porthole/dispatch.o \
+          "$LCC" "${FLAGS[@]}" -c -o build/porthole/dispatch.o \
             "$GEN/room_bundle_poc_dispatch.c"
           OBJS+=(build/porthole/main.o build/porthole/ntstate.o build/porthole/ntupload.o build/porthole/dispatch.o)
 
           for src in "$GEN"/room_bundle_poc_data_bank*.c; do
-            base="$(basename "\${src%.c}")"
-            obj="build/porthole/\${base}.o"
-            "$LCC" "\${FLAGS[@]}" -c -o "$obj" "$src"
+            base="$(basename "${src%.c}")"
+            obj="build/porthole/${base}.o"
+            "$LCC" "${FLAGS[@]}" -c -o "$obj" "$src"
             OBJS+=("$obj")
           done
 
-          "$LCC" "\${FLAGS[@]}" -Wm-yS \
-            -o build/porthole/GG-Thick-Porthole-Proof.gg "\${OBJS[@]}"
+          "$LCC" "${FLAGS[@]}" -Wm-yS \
+            -o build/porthole/GG-Thick-Porthole-Proof.gg "${OBJS[@]}"
 
           test "$(wc -c < build/porthole/GG-Thick-Porthole-Proof.gg)" -eq 1048576
           wc -c build/porthole/GG-Thick-Porthole-Proof.gg | tee build/porthole/ROM-size.txt
