@@ -1,5 +1,12 @@
 #include "tilesector_polar.h"
 
+#ifndef TSP_ROOM_STREAM_POC
+#define TSP_ROOM_STREAM_POC 0
+#endif
+#if TSP_ROOM_STREAM_POC
+#include "tilesector_room_poc.h"
+#endif
+
 #define RUN_SPEED_Q4 192
 #define ACCEL_Q4 6
 #define MANUAL_TURN_Q4 48
@@ -36,10 +43,16 @@ static int16_t scale_small(int16_t v,uint8_t s){
 static int8_t yaw_error(uint8_t target,uint8_t yaw){return (int8_t)(target-yaw);}
 
 uint8_t tsp_is_walkable_q4(int16_t xq,int16_t yq){
-    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
-    if(x>=20&&x<=76&&y>=20&&y<=76)return 1u;
-    if(x>=74&&x<=116&&y>=40&&y<=60)return 1u;
-    if(x>=112&&x<=172&&y>=20&&y<=78)return 1u;
+#if TSP_ROOM_STREAM_POC
+    const TSPRoomPocDef *room=tsp_room_poc_active();
+    if(room)return tsp_room_poc_is_walkable(room,xq,yq);
+#endif
+    {
+        int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
+        if(x>=20&&x<=76&&y>=20&&y<=76)return 1u;
+        if(x>=74&&x<=116&&y>=40&&y<=60)return 1u;
+        if(x>=112&&x<=172&&y>=20&&y<=78)return 1u;
+    }
     return 0u;
 }
 
@@ -48,12 +61,24 @@ uint8_t tsp_is_walkable_q4(int16_t xq,int16_t yq){
  * into the camera so future stair/spiral modules can supply their own height
  * function while movement/rendering keep the same contract. */
 int16_t tsp_floor_z_q4(int16_t xq,int16_t yq){
-    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
-    if(x>=112&&x<=172&&y>=20&&y<=78)return TSP_ROOM_B_FLOOR_Z_Q4;
+#if TSP_ROOM_STREAM_POC
+    const TSPRoomPocDef *room=tsp_room_poc_active();
+    if(room)return tsp_room_poc_floor_z(room,xq,yq);
+#endif
+    {
+        int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
+        if(x>=112&&x<=172&&y>=20&&y<=78)return TSP_ROOM_B_FLOOR_Z_Q4;
+    }
     return TSP_BASE_FLOOR_Z_Q4;
 }
 void tsp_reset(TSPState *s){
+#if TSP_ROOM_STREAM_POC
+    const TSPRoomPocDef *room=tsp_room_poc_active();
+    if(room){s->x_q4=room->spawn_x_q4;s->y_q4=room->spawn_y_q4;}
+    else {s->x_q4=(int16_t)(32<<4);s->y_q4=(int16_t)(48<<4);}
+#else
     s->x_q4=(int16_t)(32<<4);s->y_q4=(int16_t)(48<<4);
+#endif
     s->z_q4=(int16_t)(TSP_EYE_HEIGHT_Q4+tsp_floor_z_q4(s->x_q4,s->y_q4));s->yaw=0u;
     s->speed_q4=0;s->strafe_q4=0;s->turn_q4=0;s->speed_scale=1u;s->manual=0u;s->demo_phase=0u;s->demo_ticks=0u;
 }
