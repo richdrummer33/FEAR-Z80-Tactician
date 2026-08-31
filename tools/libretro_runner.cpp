@@ -130,16 +130,34 @@ int main(int argc,char **argv){
     size_t ram_off=(ram&&ram_size)?((ram_addr>=0xC000u)?((size_t)(ram_addr-0xC000u)%ram_size):((size_t)ram_addr%ram_size)):0u;
     bool wait_marker=(argc>=8);
     unsigned wait_target=wait_marker?(unsigned)strtoul(argv[7],nullptr,0):0u;
+    const char *capture_dir=getenv("LIBRETRO_CAPTURE_DIR");
+    unsigned capture_every=1u;
+    unsigned capture_index=0u;
+    if(const char *ev=getenv("LIBRETRO_CAPTURE_EVERY")){
+        capture_every=(unsigned)strtoul(ev,nullptr,0);
+        if(!capture_every)capture_every=1u;
+    }
+
     unsigned ran=0u;
     for(;ran<frames;++ran){
         retro_run();
+
+        if(capture_dir && (ran%capture_every)==0u && !g_frame.empty()){
+            char path[1024];
+            snprintf(path,sizeof(path),"%s/frame_%06u.ppm",capture_dir,capture_index++);
+            if(!save_ppm(path)){
+                fprintf(stderr,"failed to record frame %s\n",path);
+                return 7;
+            }
+        }
+
         if(wait_marker){
             if(!ram||ram_size<2u){fprintf(stderr,"system RAM unavailable\n");return 6;}
             uint16_t v=(uint16_t)ram[ram_off]|((uint16_t)ram[(ram_off+1u)%ram_size]<<8);
             if(v>=wait_target){++ran;break;}
         }
     }
-    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
+    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu captures=%u\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size(),capture_index);
     if(ppm){ if(!save_ppm(ppm)){fprintf(stderr,"failed to save ppm\n");return 5;} printf("saved=%s\n",ppm); }
     if(argc>=6){
         unsigned len=(argc>=7)?(unsigned)strtoul(argv[6],nullptr,0):2u;
