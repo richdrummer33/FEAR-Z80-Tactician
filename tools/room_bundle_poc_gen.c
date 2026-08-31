@@ -526,131 +526,61 @@ static uint8_t yaw_from_vec(double dx,double dy){
 
 static Pose route_pose(uint16_t f,uint8_t bundle){
     Pose p;
-    double q;
-    (void)bundle;
+    double q,inspect_y=30.0;
+
+    if(bundle==0u)inspect_y=52.0;      /* wide portal-shadow room */
+    else if(bundle==1u)inspect_y=46.0; /* clear the inset baffle */
+    else if(bundle==4u)inspect_y=54.0; /* broad gallery */
+    else if(bundle==6u)inspect_y=44.0; /* stepped room */
+    else if(bundle==7u)inspect_y=70.0; /* sweep around both pillars */
 
     /* 0..63: canonical entry seam -> inside room. */
     if(f<64u)return entry_outbound_pose(f);
 
     p.z=16.0;
-    /* 64..79: inspect upper side of the room. */
+
+    /* 64..79: lateral excursion with an intentional side-look. */
     if(f<80u){
         q=(double)(f-64u)/15.0;
-        p.x=62.0;p.y=24.0;p.yaw=yaw_lerp(0u,32u,q);return p;
-    }
-    /* 80..95: cross toward the far side on a slightly offset line. */
-    if(f<96u){
-        q=(double)(f-80u)/15.0;
-        p.x=lerp(62.0,90.0,q);p.y=30.0;p.yaw=yaw_lerp(32u,0u,q);return p;
-    }
-    /* 96..111: look across the room rather than beelining. */
-    if(f<112u){
-        q=(double)(f-96u)/15.0;
-        p.x=90.0;p.y=30.0;p.yaw=yaw_lerp(0u,224u,q);return p;
-    }
-    /* 112..127: settle beside exit while still looking back. */
-    q=(double)(f-112u)/15.0;
-    p.x=lerp(90.0,90.0,q);p.y=lerp(30.0,24.0,q);
-    p.yaw=yaw_lerp(224u,128u,q);
-    if(f<128u)return p;
-
-    /* 128..191: room -> transformed exit seam. Reversing the transformed
-     * entry trajectory intentionally means the player backs through the exit
-     * while looking toward the room. Once the inner wall occludes it, the
-     * final transformed canonical pose is exactly equivalent to frame zero. */
-    p=entry_outbound_pose((uint16_t)(191u-f));
-    return exit_transform(p);
-}
-
-static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal){
-    Pose a,b,p;
-    double q,cx=76.0,cy=24.0;
-    if(entry_portal>2u||exit_portal>2u||entry_portal==exit_portal)
-        die("invalid split route pair");
-
-    if(f<64u)
-        return portal_transform_pose(entry_outbound_pose(f),entry_portal);
-
-    if(f>=128u)
-        return portal_transform_pose(entry_outbound_pose((uint16_t)(191u-f)),exit_portal);
-
-    a=portal_transform_pose(entry_outbound_pose(63u),entry_portal);
-    b=portal_transform_pose(entry_outbound_pose(63u),exit_portal);
-    q=(double)(f-64u)/63.0;
-
-    /* Quadratic arc through the room centre. This keeps the route away from
-     * the walls and gives the camera a chance to expose both branch mouths. */
-    {
-        double u=1.0-q;
-        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
-        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
-        p.z=16.0;
-    }
-    {
-        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
-        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
-        int look=(int)lround(sin(q*PI)*32.0);
-        /* Alternate the look offset by route parity so sibling directions are
-         * stressed from opposite sides rather than producing identical rails. */
-        if(((uint8_t)(entry_portal+exit_portal)&1u)==0u)look=-look;
-        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)look);
-    }
-    return p;
-}
-
-static Pose stair_forward_pose(uint16_t f){
-    Pose p,a,b;
-    double q,cx=84.0,cy=36.0;
-    if(f<64u){
-        p=entry_outbound_pose(f);
-        p.z=16.0+stair_floor_z(p.x,p.y);
+        p.x=62.0;
+        p.y=lerp(24.0,inspect_y,q);
+        p.yaw=yaw_lerp(0u,56u,q);
         return p;
     }
-    if(f>=128u){
-        p=entry_outbound_pose((uint16_t)(191u-f));
-        return portal_transform_pose_z(p,76.0,80.0,3u,4.0);
+
+    /* 80..95: travel deep along the offset line, still not facing perfectly
+     * along motion. This is the closest analogue to the old scripted strafe. */
+    if(f<96u){
+        q=(double)(f-80u)/15.0;
+        p.x=lerp(62.0,106.0,q);
+        p.y=inspect_y;
+        p.yaw=yaw_lerp(56u,16u,q);
+        return p;
     }
 
-    a=entry_outbound_pose(63u);
-    a.z=16.0+stair_floor_z(a.x,a.y);
-    b=portal_transform_pose_z(entry_outbound_pose(63u),76.0,80.0,3u,4.0);
-    q=(double)(f-64u)/63.0;
-    {
-        double u=1.0-q;
-        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
-        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
-        p.z=16.0+stair_floor_z(p.x,p.y);
+    /* 96..111: cross back toward the exit line while turning to look behind.
+     * On the pillar room this happens after the camera has passed the pillars,
+     * avoiding an invalid through-solid path while still stressing occlusion. */
+    if(f<112u){
+        q=(double)(f-96u)/15.0;
+        p.x=106.0;
+        p.y=lerp(inspect_y,24.0,q);
+        p.yaw=yaw_lerp(16u,176u,q);
+        return p;
     }
-    {
-        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
-        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
-        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*20.0));
-    }
-    return p;
-}
 
-static Pose turn_forward_pose(uint16_t f){
-    Pose p,a,b;
-    double q,cx=86.0,cy=38.0;
-    if(f<64u)return entry_outbound_pose(f);
-    if(f>=128u)
-        return portal_transform_pose_z(entry_outbound_pose((uint16_t)(191u-f)),76.0,80.0,3u,0.0);
+    /* 112..127: settle onto the exit anchor while mostly looking back toward
+     * the room we just crossed. */
+    q=(double)(f-112u)/15.0;
+    p.x=lerp(106.0,90.0,q);
+    p.y=24.0;
+    p.yaw=yaw_lerp(176u,128u,q);
+    if(f<128u)return p;
 
-    a=entry_outbound_pose(63u);
-    b=portal_transform_pose_z(entry_outbound_pose(63u),76.0,80.0,3u,0.0);
-    q=(double)(f-64u)/63.0;
-    {
-        double u=1.0-q;
-        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
-        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
-        p.z=16.0;
-    }
-    {
-        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
-        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
-        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*24.0));
-    }
-    return p;
+    /* 128..191: back through the exit throat while still looking toward the
+     * old room until the seam mathematically occludes it. */
+    p=entry_outbound_pose((uint16_t)(191u-f));
+    return exit_transform(p);
 }
 
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
@@ -1012,7 +942,7 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
         if(frames[f].tile_loads>stats.raw_peak_tile_loads)
             stats.raw_peak_tile_loads=frames[f].tile_loads;
 
-        if(f==0u||f==64u||f==96u||f==176u||f==191u){
+        if(f==0u||f==64u||f==80u||f==96u||f==112u||f==176u||f==191u){
             snprintf(path,sizeof(path),"%s/bundle%u_route%u%u_frame%u.ppm",
                      outdir,(unsigned)bundle,(unsigned)entry_portal,
                      (unsigned)exit_portal,(unsigned)f);
