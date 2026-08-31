@@ -79,6 +79,14 @@ void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera);
  * previous binary ambient/+1 point-light response while retaining occlusion. */
 void tsp_host_composite_set_wall_angle_mode(uint8_t enabled);
 
+enum {
+    TSP_HOST_LIGHT_QUANT_DITHER16=0u,
+    TSP_HOST_LIGHT_QUANT_SOLID8=1u
+};
+/* DITHER16 preserves the previous palette transform and is the control-friendly
+ * mode. SOLID8 uses eight true wall colours and no spatial halftone. */
+void tsp_host_composite_set_wall_quant_mode(uint8_t mode);
+
 /* Optional room-local host scene. NULL restores the original static Polar
  * lighting scene. This never exists on the Game Gear runtime path. */
 void tsp_host_composite_set_scene(const TSPHostCompositeScene *scene);
