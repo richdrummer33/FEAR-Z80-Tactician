@@ -22,6 +22,7 @@
 #define C_CEILING 1u
 #define C_FLOOR 2u
 #define STREAM_SEED UINT32_C(0xC0FFEE42)
+#define SPLIT_STREAM_SEED UINT32_C(0x00000020)
 
 uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_room_bundle_stream_status;
@@ -29,6 +30,8 @@ volatile uint16_t g_room_bundle_stream_progress;
 volatile uint16_t g_room_bundle_stream_signature;
 volatile uint8_t g_room_bundle_root_asset;
 volatile uint8_t g_room_bundle_child_asset;
+volatile uint8_t g_room_bundle_split_left_asset;
+volatile uint8_t g_room_bundle_split_right_asset;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -108,7 +111,8 @@ static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
 void main(void){
     TSPStreamWorld world;
     TSPStreamNodeDesc root,child;
-    uint8_t root_bundle,child_bundle;
+    TSPStreamNodeDesc split,left_child,right_child,left_again;
+    uint8_t root_bundle,child_bundle,left_bundle,right_bundle;
 
     DISPLAY_OFF;
     __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
@@ -122,6 +126,8 @@ void main(void){
     g_room_bundle_stream_signature=0xB21Du;
     g_room_bundle_root_asset=0xffu;
     g_room_bundle_child_asset=0xffu;
+    g_room_bundle_split_left_asset=0xffu;
+    g_room_bundle_split_right_asset=0xffu;
 
     tsp_stream_reset(&world,STREAM_SEED,0u);
     root=world.current;
@@ -173,6 +179,88 @@ void main(void){
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     g_room_bundle_stream_status=5u;
     g_room_bundle_stream_progress=5000u;
+
+    /*
+     * Split proof. Seed 0x20 deterministically resolves its root to T_SPLIT.
+     * Authored portal 0 is the parent/entry seam; authored portals 1 and 2
+     * correspond to topology exit indices 0 (left) and 1 (right).
+     */
+    tsp_stream_reset(&world,SPLIT_STREAM_SEED,0u);
+    split=world.current;
+    if(split.module_kind!=TSP_MODULE_T_SPLIT){
+        g_room_bundle_stream_status=0xEE10u;
+        for(;;)vsync();
+    }
+
+    /* Enter the split from its parent side and choose left. */
+    play_route(2u,0u,1u,1u,6000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    if(!tsp_stream_enter(&world,0u,0u)){
+        g_room_bundle_stream_status=0xEE11u;
+        for(;;)vsync();
+    }
+    left_child=world.current;
+    left_bundle=bundle_for_node(&left_child);
+    g_room_bundle_split_left_asset=left_bundle;
+
+    play_route(left_bundle,0u,1u,1u,7000u);
+    play_route(left_bundle,1u,0u,1u,8000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    if(!tsp_stream_back(&world)||!same_node(&world.current,&split)){
+        g_room_bundle_stream_status=0xEE12u;
+        for(;;)vsync();
+    }
+
+    /* We are visually back at portal 1. Cross the junction directly to the
+     * sibling portal; both branch mouths are visible during this route. */
+    play_route(2u,1u,2u,1u,9000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    if(!tsp_stream_enter(&world,1u,0u)){
+        g_room_bundle_stream_status=0xEE13u;
+        for(;;)vsync();
+    }
+    right_child=world.current;
+    right_bundle=bundle_for_node(&right_child);
+    g_room_bundle_split_right_asset=right_bundle;
+    if(right_child.key==left_child.key){
+        g_room_bundle_stream_status=0xEE14u;
+        for(;;)vsync();
+    }
+
+    play_route(right_bundle,0u,1u,1u,10000u);
+    play_route(right_bundle,1u,0u,1u,11000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    if(!tsp_stream_back(&world)||!same_node(&world.current,&split)){
+        g_room_bundle_stream_status=0xEE15u;
+        for(;;)vsync();
+    }
+
+    /* Return from right branch to the original parent portal. */
+    play_route(2u,2u,0u,1u,12000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    /* Re-select left after visiting right: deterministic branch identity must
+     * reproduce exactly, not merely choose the same visual bundle class. */
+    if(!tsp_stream_enter(&world,0u,0u)){
+        g_room_bundle_stream_status=0xEE16u;
+        for(;;)vsync();
+    }
+    left_again=world.current;
+    if(!same_node(&left_again,&left_child)){
+        g_room_bundle_stream_status=0xEE17u;
+        for(;;)vsync();
+    }
+    if(!tsp_stream_back(&world)||!same_node(&world.current,&split)){
+        g_room_bundle_stream_status=0xEE18u;
+        for(;;)vsync();
+    }
+
+    g_room_bundle_stream_status=10u;
+    g_room_bundle_stream_progress=15000u;
 
     for(;;)vsync();
 }
