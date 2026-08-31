@@ -73,20 +73,22 @@ static const palette_color_t k_palettes[32] = {
  * of mixed tiles and therefore never pulse. Palette 1 is shared with sprites
  * on GG, so production sprite art must avoid these animated entries unless it
  * intentionally belongs to the same light group. */
-static const palette_color_t k_lit_bright[10] = {
-    RGB(2,2,3),RGB(3,4,6),
-    RGB(3,4,6),RGB(4,5,7),RGB(6,7,9),RGB(8,9,11),
-    RGB(10,11,13),RGB(11,12,14),RGB(13,14,15),RGB(15,15,15)
-};
-static const palette_color_t k_lit_dim[10] = {
+/* Full palette-1 snapshots for the two non-bright flicker states.
+ * Writing one 32-byte palette snapshot is both simpler and safer than ten
+ * separate CRAM helper calls. Entries 11..15 are deliberately invariant. */
+static const palette_color_t k_lit_dim[16] = {
+    RGB(0,0,0),
     RGB(1,1,3),RGB(2,3,4),
     RGB(2,3,5),RGB(3,4,6),RGB(4,5,7),RGB(5,6,8),
-    RGB(6,7,9),RGB(8,9,11),RGB(10,11,13),RGB(11,12,14)
+    RGB(6,7,9),RGB(8,9,11),RGB(10,11,13),RGB(11,12,14),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
 };
-static const palette_color_t k_lit_off[10] = {
+static const palette_color_t k_lit_off[16] = {
+    RGB(0,0,0),
     RGB(1,1,3),RGB(2,2,3),
     RGB(3,4,6),RGB(3,4,6),RGB(4,5,7),RGB(4,5,7),
-    RGB(6,7,9),RGB(6,7,9),RGB(8,9,11),RGB(8,9,11)
+    RGB(6,7,9),RGB(6,7,9),RGB(8,9,11),RGB(8,9,11),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
 };
 static uint8_t g_flicker_last_level=0xffu;
 
@@ -101,18 +103,19 @@ static uint8_t creepy_flicker_level(uint16_t frame){
 
 static void set_lit_palette_level(uint8_t level){
     const palette_color_t *p;
-    uint8_t i;
     if(level>2u)level=2u;
     if(level==g_flicker_last_level)return;
-    p=level==0u?k_lit_off:(level==1u?k_lit_dim:k_lit_bright);
-    for(i=0u;i<10u;++i)set_palette_entry(1u,(uint8_t)(i+1u),p[i]);
+    p=level==0u?k_lit_off:
+      (level==1u?k_lit_dim:&k_palettes[16]);
+    /* One complete palette write: 16 colours = 32 CRAM bytes on Game Gear.
+     * This occurs only at an authored pulse edge, never every display frame. */
+    set_palette(1u,1u,p);
     if(g_flicker_last_level!=0xffu)++g_room_bundle_flicker_edges;
     g_flicker_last_level=level;
     g_room_bundle_flicker_level=level;
 }
 
-static void update_room_flicker(uint8_t bundle,uint16_t frame){
-    uint8_t profile=tsp_room_catalog_flicker_profile(bundle);
+static void update_room_flicker(uint8_t profile,uint16_t frame){
     set_lit_palette_level(profile==TSP_ROOM_FLICKER_CREEPY?
                           creepy_flicker_level(frame):2u);
 }
@@ -157,6 +160,10 @@ static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
                        uint16_t first_frame,uint16_t progress_base){
     uint16_t frame;
     uint16_t count=tsp_room_bundle_generated_frames(bundle,entry,exit_portal);
+    /* Resolve authored presentation metadata once, outside the packet replay
+     * loop. Do not interpose a banked catalog lookup between generated name
+     * and tile packet operations. */
+    uint8_t flicker_profile=tsp_room_catalog_flicker_profile(bundle);
     if(!count){
         g_room_bundle_stream_status=0xEE01u;
         return;
@@ -164,7 +171,7 @@ static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
     for(frame=first_frame;frame<count;++frame){
         tsp_room_bundle_generated_apply_name(bundle,entry,exit_portal,frame);
         vsync();
-        update_room_flicker(bundle,frame);
+        update_room_flicker(flicker_profile,frame);
         tsp_room_bundle_generated_apply_tile(bundle,entry,exit_portal,frame);
         tsp_polar_nt_upload_dirty();
         g_room_bundle_stream_progress=(uint16_t)(progress_base+frame);
@@ -201,7 +208,9 @@ void main(void){
     g_room_bundle_stair_floor_after_q4=0;
     g_room_bundle_flicker_level=2u;
     g_room_bundle_flicker_edges=0u;
-    g_flicker_last_level=0xffu;
+    /* set_bkg_palette() above already installed the bright palette, so the
+     * first ordinary frame requires no redundant CRAM write. */
+    g_flicker_last_level=2u;
 
     tsp_stream_reset(&world,STREAM_SEED,0u);
     root=world.current;
