@@ -20,7 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/wall-light/control build/wall-light/angle-only build/wall-light/angle-view
+          mkdir -p build/wall-light/control build/wall-light/angle-only build/wall-light/angle-view build/wall-light/dither16
           cc -std=c99 -O2 -Wall -Wextra -Werror -Isrc -Itools \
              tools/polar_baked_composite.c \
              tools/room_bundle_poc_gen.c \
@@ -32,11 +32,14 @@ jobs:
              | tee build/wall-light/angle-only.txt
           build/wall-light/room-bundle-gen build/wall-light/angle-view \
              | tee build/wall-light/angle-view.txt
+          build/wall-light/room-bundle-gen build/wall-light/dither16 --dither16-angle \
+             | tee build/wall-light/dither16.txt
 
           python3 tools/compare_room_lighting_metrics.py \
              build/wall-light/control/room_bundle_poc_manifest.txt \
              build/wall-light/angle-only/room_bundle_poc_manifest.txt \
              build/wall-light/angle-view/room_bundle_poc_manifest.txt \
+             build/wall-light/dither16/room_bundle_poc_manifest.txt \
              | tee build/wall-light/lighting-ab.txt
 
       - name: Upload lighting metrics and visual samples
@@ -48,6 +51,7 @@ jobs:
             build/wall-light/control/room_bundle_poc_manifest.txt
             build/wall-light/angle-only/room_bundle_poc_manifest.txt
             build/wall-light/angle-view/room_bundle_poc_manifest.txt
+            build/wall-light/dither16/room_bundle_poc_manifest.txt
             build/wall-light/control/bundle0_route01_frame80.ppm
             build/wall-light/control/bundle0_route01_frame96.ppm
             build/wall-light/control/bundle0_route01_frame112.ppm
@@ -57,6 +61,9 @@ jobs:
             build/wall-light/angle-view/bundle0_route01_frame80.ppm
             build/wall-light/angle-view/bundle0_route01_frame96.ppm
             build/wall-light/angle-view/bundle0_route01_frame112.ppm
+            build/wall-light/dither16/bundle0_route01_frame80.ppm
+            build/wall-light/dither16/bundle0_route01_frame96.ppm
+            build/wall-light/dither16/bundle0_route01_frame112.ppm
             build/wall-light/control/bundle1_route01_frame80.ppm
             build/wall-light/control/bundle1_route01_frame96.ppm
             build/wall-light/control/bundle1_route01_frame112.ppm
@@ -66,4 +73,7 @@ jobs:
             build/wall-light/angle-view/bundle1_route01_frame80.ppm
             build/wall-light/angle-view/bundle1_route01_frame96.ppm
             build/wall-light/angle-view/bundle1_route01_frame112.ppm
+            build/wall-light/dither16/bundle1_route01_frame80.ppm
+            build/wall-light/dither16/bundle1_route01_frame96.ppm
+            build/wall-light/dither16/bundle1_route01_frame112.ppm
           if-no-files-found: error
