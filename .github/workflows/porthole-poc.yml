@@ -107,7 +107,11 @@ jobs:
 
           STATUS_ADDR="$(awk '$2=="_g_porthole_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           test -n "$STATUS_ADDR"
-          ./build/gearsystem_core_runner "$ROM" 500 - "$STATUS_ADDR" 6 \
+          # Native RunToVBlank pacing is deliberately independent of the
+          # libretro video-frame counter. 500 native calls reach the second
+          # route but not its terminal marker, so give packet replay ample
+          # headroom and validate the actual final RAM state instead.
+          ./build/gearsystem_core_runner "$ROM" 1200 - "$STATUS_ADDR" 6 \
             | tee build/porthole/native-final-state.txt
           grep -q '=FECAEFBE4E57' build/porthole/native-final-state.txt
 
