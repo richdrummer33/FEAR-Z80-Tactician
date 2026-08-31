@@ -21,6 +21,7 @@
 
 uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_room_bundle_stream_status;
+volatile uint16_t g_room_bundle_stream_progress;
 volatile uint16_t g_room_bundle_stream_signature;
 
 void tsp_polar_nt_init(void);
@@ -66,11 +67,13 @@ static void init_base_tiles(void){
 
 static void play_bundle(uint8_t bundle,uint16_t first_frame){
     uint16_t frame,count=tsp_room_bundle_generated_frames(bundle);
+    uint16_t base=bundle?1000u:0u;
     for(frame=first_frame;frame<count;++frame){
         tsp_room_bundle_generated_apply_name(bundle,frame);
         vsync();
         tsp_room_bundle_generated_apply_tile(bundle,frame);
         tsp_polar_nt_upload_dirty();
+        g_room_bundle_stream_progress=(uint16_t)(base+frame);
     }
 }
 
@@ -83,6 +86,7 @@ void main(void){
     init_base_tiles();
 
     g_room_bundle_stream_status=0u;
+    g_room_bundle_stream_progress=0u;
     g_room_bundle_stream_signature=0xB21Du;
 
     tsp_polar_nt_init();
@@ -105,6 +109,7 @@ void main(void){
      * explicit in the runtime trace. */
     play_bundle(1u,0u);
     g_room_bundle_stream_status=2u;
+    g_room_bundle_stream_progress=2000u;
 
     for(;;)vsync();
 }
