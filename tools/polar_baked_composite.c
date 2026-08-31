@@ -65,6 +65,7 @@ static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
 static int16_t g_camera_z_q4=TSP_EYE_HEIGHT_Q4;
 static uint8_t g_camera_yaw;
+static const TSPHostCompositeScene *g_scene_override;
 
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
 static uint64_t g_cache_hash[HW_TILES];
@@ -123,6 +124,56 @@ void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
     }
 }
 
+void tsp_host_composite_set_scene(const TSPHostCompositeScene *scene){
+    g_scene_override=scene;
+}
+
+static uint8_t scene_vertex_count(void){
+    return g_scene_override?g_scene_override->vertex_count:TSP_HOST_WORLD_VERTEX_COUNT;
+}
+static uint8_t scene_segment_count(void){
+    return g_scene_override?g_scene_override->segment_count:TSP_HOST_WORLD_SEGMENT_COUNT;
+}
+static uint8_t scene_light_count(void){
+    return g_scene_override?g_scene_override->light_count:TSP_HOST_STATIC_LIGHT_COUNT;
+}
+static int scene_vertex(uint8_t id,TSPHostSceneVertex *out){
+    if(!out||id>=scene_vertex_count())return 0;
+    if(g_scene_override){
+        *out=g_scene_override->vertices[id];
+    }else{
+        out->x=k_tsp_host_world_vertices[id].x;
+        out->y=k_tsp_host_world_vertices[id].y;
+    }
+    return 1;
+}
+static int scene_segment(uint8_t id,TSPHostSceneSegment *out){
+    if(!out||id>=scene_segment_count())return 0;
+    if(g_scene_override){
+        *out=g_scene_override->segments[id];
+    }else{
+        const TSPHostWorldSegment *s=&k_tsp_host_world_segments[id];
+        out->v0=s->v0;out->v1=s->v1;out->profile=s->profile;
+        out->blocks_light=s->blocks_light;
+        out->light_front_sign=s->light_front_sign;
+        out->visual_front_sign=s->visual_front_sign;
+    }
+    return 1;
+}
+static int scene_light(uint8_t id,TSPHostSceneLight *out){
+    if(!out||id>=scene_light_count())return 0;
+    if(g_scene_override){
+        *out=g_scene_override->lights[id];
+    }else{
+        const TSPHostStaticLight *l=&k_tsp_host_static_lights[id];
+        out->x_q4=l->x_q4;out->y_q4=l->y_q4;
+        out->height_q4=l->height_q4;
+        out->radius_world=l->radius_world;
+        out->intensity=l->intensity;
+    }
+    return 1;
+}
+
 static uint8_t ao_pixel(uint8_t color,uint8_t strength,uint8_t sx,uint8_t sy){
     if(!strength||color<=SEM_FAR)return color;
     /* Stable ordered coverage rather than a temporal shimmer.  Stronger
@@ -161,41 +212,38 @@ static void profile_z_range(uint8_t profile,double *z0,double *z1){
 }
 
 /* Signed position against the segment's directed right-hand normal (dy,-dx). */
-static double segment_right_side(const TSPHostWorldSegment *s,double x,double y){
-    const TSPHostWorldVertex *a=&k_tsp_host_world_vertices[s->v0];
-    const TSPHostWorldVertex *b=&k_tsp_host_world_vertices[s->v1];
-    double dx=(double)b->x-(double)a->x;
-    double dy=(double)b->y-(double)a->y;
-    return (x-(double)a->x)*dy-(y-(double)a->y)*dx;
+static double segment_right_side(const TSPHostSceneSegment *s,double x,double y){
+    TSPHostSceneVertex a,b;
+    double dx,dy;
+    if(!scene_vertex(s->v0,&a)||!scene_vertex(s->v1,&b))return 0.0;
+    dx=(double)b.x-(double)a.x;
+    dy=(double)b.y-(double)a.y;
+    return (x-(double)a.x)*dy-(y-(double)a.y)*dx;
 }
-static int point_on_signed_front(const TSPHostWorldSegment *s,int8_t sign,double x,double y){
+static int point_on_signed_front(const TSPHostSceneSegment *s,int8_t sign,double x,double y){
     double q;
     if(!sign)return 1;
     q=segment_right_side(s,x,y);
     return sign>0?q>=-1e-7:q<=1e-7;
 }
 static int surface_visible_from_camera(uint8_t sid){
-    const TSPHostWorldSegment *s;
+    TSPHostSceneSegment s;
     double cx,cy;
-    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return 1;
-    s=&k_tsp_host_world_segments[sid];
-    if(!s->visual_front_sign)return 1;
+    if(!scene_segment(sid,&s))return 1;
+    if(!s.visual_front_sign)return 1;
     cx=(double)g_camera_x_q4/16.0;cy=(double)g_camera_y_q4/16.0;
-    return point_on_signed_front(s,s->visual_front_sign,cx,cy);
+    return point_on_signed_front(&s,s.visual_front_sign,cx,cy);
 }
 static int receiver_accepts_light(uint8_t sid){
-    const TSPHostWorldSegment *s;
-    const TSPHostStaticLight *light=&k_tsp_host_static_lights[0];
+    TSPHostSceneSegment s;
+    TSPHostSceneLight light;
     double cx,cy,lx,ly;
-    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return 1;
-    s=&k_tsp_host_world_segments[sid];
-    if(!s->light_front_sign)return 1;
+    if(!scene_segment(sid,&s)||!scene_light(0u,&light))return 1;
+    if(!s.light_front_sign)return 1;
     cx=(double)g_camera_x_q4/16.0;cy=(double)g_camera_y_q4/16.0;
-    lx=(double)light->x_q4/16.0;ly=(double)light->y_q4/16.0;
-    /* The visible face and the light must both be on the authored front side.
-     * Thus a Room-B view of the x=112 lintel is its ambient backside. */
-    return point_on_signed_front(s,s->light_front_sign,cx,cy) &&
-           point_on_signed_front(s,s->light_front_sign,lx,ly);
+    lx=(double)light.x_q4/16.0;ly=(double)light.y_q4/16.0;
+    return point_on_signed_front(&s,s.light_front_sign,cx,cy) &&
+           point_on_signed_front(&s,s.light_front_sign,lx,ly);
 }
 
 /*
@@ -204,24 +252,25 @@ static int receiver_accepts_light(uint8_t sid){
  * only if z_hit lies inside its profile-derived vertical interval.
  */
 static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
-    const TSPHostStaticLight *light=&k_tsp_host_static_lights[0];
-    double lx=(double)light->x_q4/16.0,ly=(double)light->y_q4/16.0;
-    double lz=(double)light->height_q4/16.0;
-    double dx=wx-lx,dy=wy-ly;
+    TSPHostSceneLight light;
+    double lx,ly,lz,dx,dy;
     uint8_t sid;
+    if(!scene_light(0u,&light))return 0;
+    lx=(double)light.x_q4/16.0;ly=(double)light.y_q4/16.0;
+    lz=(double)light.height_q4/16.0;
+    dx=wx-lx;dy=wy-ly;
     if(dx*dx+dy*dy<1e-10)return 1;
-    for(sid=0u;sid<TSP_HOST_WORLD_SEGMENT_COUNT;++sid){
-        const TSPHostWorldSegment *s=&k_tsp_host_world_segments[sid];
-        const TSPHostWorldVertex *a,*b;
+    for(sid=0u;sid<scene_segment_count();++sid){
+        TSPHostSceneSegment s;
+        TSPHostSceneVertex a,b;
         double t,u,z0,z1,zhit;
-        if(!s->blocks_light||(int)sid==receiver_sid)continue;
-        a=&k_tsp_host_world_vertices[s->v0];
-        b=&k_tsp_host_world_vertices[s->v1];
-        if(!ray_segment_params(lx,ly,dx,dy,(double)a->x,(double)a->y,
-                               (double)b->x,(double)b->y,&t,&u))continue;
+        if(!scene_segment(sid,&s)||!s.blocks_light||(int)sid==receiver_sid)continue;
+        if(!scene_vertex(s.v0,&a)||!scene_vertex(s.v1,&b))continue;
+        if(!ray_segment_params(lx,ly,dx,dy,(double)a.x,(double)a.y,
+                               (double)b.x,(double)b.y,&t,&u))continue;
         if(t<=1e-7||t>=1.0-1e-7||u<-1e-7||u>1.0+1e-7)continue;
         zhit=lz+t*(wz-lz);
-        profile_z_range(s->profile,&z0,&z1);
+        profile_z_range(s.profile,&z0,&z1);
         if(zhit>=z0-1e-7&&zhit<=z1+1e-7)return 0;
     }
     return 1;
@@ -300,6 +349,21 @@ static int screen_plane_world(int sx,int sy,double zplane,
  */
 static int background_world_receiver(int sx,int sy,double *wx,double *wy,double *wz){
     double x,y,d,best=1e30,bx=0.0,by=0.0,bz=0.0;
+    if(g_scene_override&&g_scene_override->rects&&g_scene_override->rect_count){
+        uint8_t i;
+        if(sy==72)return 0;
+        for(i=0u;i<g_scene_override->rect_count;++i){
+            const TSPHostSceneRect *r=&g_scene_override->rects[i];
+            double plane=(double)(sy<72?r->ceiling_z:r->floor_z);
+            if(screen_plane_world(sx,sy,plane,&x,&y,&d)&&
+               x>=(double)r->x0-1e-7&&x<=(double)r->x1+1e-7&&
+               y>=(double)r->y0-1e-7&&y<=(double)r->y1+1e-7&&d<best){
+                best=d;bx=x;by=y;bz=plane;
+            }
+        }
+        if(best>=1e29)return 0;
+        *wx=bx;*wy=by;*wz=bz;return 1;
+    }
     if(sy<72){
         if(screen_plane_world(sx,sy,TSP_CEILING_Z,&x,&y,&d)&&point_in_any_horizontal(x,y)){
             *wx=x;*wy=y;*wz=TSP_CEILING_Z;return 1;
@@ -321,26 +385,21 @@ static int background_world_receiver(int sx,int sy,double *wx,double *wy,double 
 
 /* Recover full XYZ of a visible wall/profile pixel. */
 static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,double *wz){
-    const TSPHostWorldSegment *s;
-    const TSPHostWorldVertex *a,*b;
+    TSPHostSceneSegment s;
+    TSPHostSceneVertex a,b;
     double fx,fy,rx,ry,lateral,dx,dy,t,u,z0,z1;
     double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
     double py=(double)sy+0.5;
-    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return 0;
-    s=&k_tsp_host_world_segments[sid];
-    a=&k_tsp_host_world_vertices[s->v0];
-    b=&k_tsp_host_world_vertices[s->v1];
+    if(!scene_segment(sid,&s)||!scene_vertex(s.v0,&a)||!scene_vertex(s.v1,&b))return 0;
     camera_basis(&fx,&fy,&rx,&ry);
     lateral=(((double)sx+0.5)-80.0)/TSP_FOCAL_PX;
     dx=fx+rx*lateral;dy=fy+ry*lateral;
-    if(!ray_segment_params(cx,cy,dx,dy,(double)a->x,(double)a->y,
-                           (double)b->x,(double)b->y,&t,&u))return 0;
+    if(!ray_segment_params(cx,cy,dx,dy,(double)a.x,(double)a.y,
+                           (double)b.x,(double)b.y,&t,&u))return 0;
     if(t<=1e-7||u<-1e-5||u>1.0+1e-5)return 0;
     *wx=cx+dx*t;*wy=cy+dy*t;
     *wz=camera_z_world()-((py-TSP_HORIZON_PX)/TSP_FOCAL_PX)*t;
-    /* Raster rounding can land boundary-adjacent pixel centers a fraction
-     * outside the analytic profile. Clamp only that rounding residue. */
-    profile_z_range(s->profile,&z0,&z1);
+    profile_z_range(s.profile,&z0,&z1);
     if(*wz<z0)*wz=z0;
     if(*wz>z1)*wz=z1;
     return 1;
@@ -480,7 +539,7 @@ static void apply_one_sided_penumbra(void){
 
 static void apply_point_light(void){
     int x,y;
-    if(!TSP_HOST_STATIC_LIGHT_COUNT)return;
+    if(!scene_light_count())return;
     for(y=0;y<144;++y)for(x=0;x<160;++x){
         uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
         uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
@@ -712,7 +771,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     uint8_t needed[HW_TILES];
     uint16_t req_count=0u,i;
     ensure_init();
-    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&TSP_HOST_STATIC_LIGHT_COUNT)
+    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&scene_light_count())
         apply_point_light();
     ++g_frame_no;
     memset(htab,0xff,sizeof(htab));
