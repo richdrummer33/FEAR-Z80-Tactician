@@ -16,4 +16,13 @@ typedef struct TSPRoomCatalogChoice {
 uint8_t tsp_room_catalog_choose(uint32_t seed,const TSPStreamNodeDesc *node,
                                 uint8_t exit_index,TSPRoomCatalogChoice *out);
 
+typedef enum TSPRoomFlickerProfile {
+    TSP_ROOM_FLICKER_NONE=0,
+    TSP_ROOM_FLICKER_CREEPY=1
+} TSPRoomFlickerProfile;
+
+/* Authored presentation property of the reusable visual bundle. It therefore
+ * survives deterministic maze reuse without becoming part of world topology. */
+uint8_t tsp_room_catalog_flicker_profile(uint8_t bundle_id);
+
 #endif
