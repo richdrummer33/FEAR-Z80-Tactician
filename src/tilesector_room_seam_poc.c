@@ -19,7 +19,7 @@ static const TSPSeamPocContract k_contract = {
     { Q(12), Q(4),  Q(28) },
     { Q(20), Q(-4), Q(20) },
     Q(13), Q(19),
-    Q(8),
+    Q(9),
     (int16_t)(Q(16)+8)
 };
 
