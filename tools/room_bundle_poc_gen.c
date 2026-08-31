@@ -55,8 +55,17 @@ typedef struct BundleStats {
     uint32_t tile_bytes;
     uint32_t tile_loads;
     uint16_t peak_tile_loads;
+    uint16_t raw_peak_tile_loads;
+    uint16_t scheduled_budget;
     uint16_t changed_words;
 } BundleStats;
+typedef struct TileJob {
+    uint16_t release;
+    uint16_t deadline;
+    uint16_t slot;
+    uint16_t assigned;
+    uint8_t bytes[TSP_HOST_TILE_BYTES];
+} TileJob;
 
 static void die(const char *msg){
     fprintf(stderr,"fatal: %s\n",msg);
@@ -296,6 +305,103 @@ static void capture_tiles(FramePack *fp){
     fp->tile_len=(uint16_t)p;
 }
 
+static uint16_t frame_tile_loads(const FramePack *fp){
+    return (uint16_t)fp->tile[0]|((uint16_t)fp->tile[1]<<8);
+}
+
+/* Same release/deadline model as polar_demo_patch_gen.c, but frame zero is
+ * deliberately excluded: it is the canonical seam bootstrap. Every normal
+ * runtime frame receives the smallest steady-state tile-upload budget that
+ * can satisfy all slot-use constraints. */
+static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
+                                      const uint16_t *maps){
+    uint32_t job_count=0u,j=0u;
+    TileJob *jobs;
+    int16_t last_use[512];
+    uint16_t t,i;
+    uint16_t chosen=0u,budget;
+
+    for(t=1u;t<ROUTE_FRAMES;++t)job_count+=frame_tile_loads(&frames[t]);
+    jobs=(TileJob *)malloc((job_count?job_count:1u)*sizeof(TileJob));
+    if(!jobs)die("bundle tile scheduler allocation failed");
+    for(i=0u;i<512u;++i)last_use[i]=-1;
+    for(i=0u;i<TSP_MAP_CELLS;++i){
+        uint16_t slot=maps[i]&TSP_TILE_ID_MASK;
+        last_use[slot]=0;
+    }
+
+    for(t=1u;t<ROUTE_FRAMES;++t){
+        const uint8_t *p=frames[t].tile+2u;
+        uint16_t n=frame_tile_loads(&frames[t]),q;
+        for(q=0u;q<n;++q){
+            uint16_t slot=(uint16_t)p[0]|((uint16_t)p[1]<<8);
+            p+=2u;
+            jobs[j].release=(uint16_t)(last_use[slot]+1);
+            jobs[j].deadline=t;
+            jobs[j].slot=slot;
+            jobs[j].assigned=0xffffu;
+            memcpy(jobs[j].bytes,p,TSP_HOST_TILE_BYTES);
+            p+=TSP_HOST_TILE_BYTES;
+            ++j;
+        }
+        for(i=0u;i<TSP_MAP_CELLS;++i){
+            uint16_t slot=maps[(size_t)t*TSP_MAP_CELLS+i]&TSP_TILE_ID_MASK;
+            last_use[slot]=(int16_t)t;
+        }
+    }
+    if(j!=job_count)die("bundle tile scheduler job count mismatch");
+
+    for(budget=1u;budget<=48u&&!chosen;++budget){
+        uint32_t done=0u;
+        for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
+        for(t=1u;t<ROUTE_FRAMES;++t){
+            uint16_t k;
+            for(k=0u;k<budget;++k){
+                uint32_t best=UINT32_MAX,x;
+                uint16_t best_deadline=0xffffu;
+                for(x=0u;x<job_count;++x){
+                    if(jobs[x].assigned==0xffffu &&
+                       jobs[x].release<=t &&
+                       jobs[x].deadline<best_deadline){
+                        best=x;
+                        best_deadline=jobs[x].deadline;
+                    }
+                }
+                if(best==UINT32_MAX)break;
+                jobs[best].assigned=t;
+                ++done;
+            }
+            for(j=0u;j<job_count;++j){
+                if(jobs[j].assigned==0xffffu&&jobs[j].deadline==t)break;
+            }
+            if(j<job_count)break;
+        }
+        if(done==job_count)chosen=budget;
+    }
+    if(!chosen)die("bundle tile scheduler needs more than 48 uploads/VBlank");
+
+    for(t=1u;t<ROUTE_FRAMES;++t){
+        uint16_t n=0u;
+        size_t p=2u;
+        for(j=0u;j<job_count;++j)if(jobs[j].assigned==t)++n;
+        frames[t].tile[0]=(uint8_t)n;
+        frames[t].tile[1]=(uint8_t)(n>>8);
+        frames[t].tile_loads=n;
+        for(j=0u;j<job_count;++j)if(jobs[j].assigned==t){
+            if(p+2u+TSP_HOST_TILE_BYTES>TILEPATCH_MAX)
+                die("scheduled bundle tilepatch overflow");
+            frames[t].tile[p++]=(uint8_t)jobs[j].slot;
+            frames[t].tile[p++]=(uint8_t)(jobs[j].slot>>8);
+            memcpy(frames[t].tile+p,jobs[j].bytes,TSP_HOST_TILE_BYTES);
+            p+=TSP_HOST_TILE_BYTES;
+        }
+        frames[t].tile_len=(uint16_t)p;
+    }
+
+    free(jobs);
+    return chosen;
+}
+
 static uint64_t fnv64(const void *data,size_t n){
     const uint8_t *p=(const uint8_t *)data;
     uint64_t h=UINT64_C(1469598103934665603);
@@ -312,15 +418,21 @@ static void emit_bundle(FILE *pack,FILE *manifest,uint8_t bundle,
                         const uint16_t canonical[TSP_MAP_CELLS],
                         BundleStats *stats){
     uint16_t i;
-    fprintf(manifest,"bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu peak_tile_loads=%u changed_words=%u\n",
+    fprintf(manifest,"bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak_tile_loads=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
             (unsigned)bundle,(unsigned)ROUTE_FRAMES,
             (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
-            (unsigned long)stats->tile_loads,(unsigned)stats->peak_tile_loads,
+            (unsigned long)stats->tile_loads,
+            (unsigned)stats->raw_peak_tile_loads,
+            (unsigned)stats->peak_tile_loads,
+            (unsigned)stats->scheduled_budget,
             (unsigned)stats->changed_words);
-    printf("ROOM_BUNDLE_STATS bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu peak_tile_loads=%u changed_words=%u\n",
+    printf("ROOM_BUNDLE_STATS bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
            (unsigned)bundle,(unsigned)ROUTE_FRAMES,
            (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
-           (unsigned long)stats->tile_loads,(unsigned)stats->peak_tile_loads,
+           (unsigned long)stats->tile_loads,
+           (unsigned)stats->raw_peak_tile_loads,
+           (unsigned)stats->peak_tile_loads,
+           (unsigned)stats->scheduled_budget,
            (unsigned)stats->changed_words);
 
     fputc((int)bundle,pack);fputc(1,pack);
@@ -358,10 +470,11 @@ int main(int argc,char **argv){
     for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
         World w;
         FramePack *frames=(FramePack *)calloc(ROUTE_FRAMES,sizeof(FramePack));
+        uint16_t *maps=(uint16_t *)malloc((size_t)ROUTE_FRAMES*TSP_MAP_CELLS*sizeof(uint16_t));
         uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],replay[TSP_MAP_CELLS];
-        BundleStats stats={0u,0u,0u,0u,0u};
+        BundleStats stats={0};
         uint16_t f;
-        if(!frames)die("frame allocation failed");
+        if(!frames||!maps)die("bundle frame/map allocation failed");
         make_world(bundle,&w);
 
         /* Independent bundle: no dynamic VRAM history inherited. */
@@ -376,6 +489,7 @@ int main(int argc,char **argv){
 
             render_pose(&w,&p,cur);
             capture_tiles(&frames[f]);
+            memcpy(maps+(size_t)f*TSP_MAP_CELLS,cur,sizeof(cur));
 
             if(f==0u){
                 memcpy(prev,cur,sizeof(prev));
@@ -401,8 +515,8 @@ int main(int argc,char **argv){
             stats.tile_bytes+=frames[f].tile_len;
             stats.tile_loads+=frames[f].tile_loads;
             stats.changed_words=(uint16_t)(stats.changed_words+frames[f].changed);
-            if(frames[f].tile_loads>stats.peak_tile_loads)
-                stats.peak_tile_loads=frames[f].tile_loads;
+            if(frames[f].tile_loads>stats.raw_peak_tile_loads)
+                stats.raw_peak_tile_loads=frames[f].tile_loads;
 
             if((f==0u||f==64u||f==96u||f==148u||f==159u)){
                 snprintf(path,sizeof(path),"%s/bundle%u_frame%u.ppm",outdir,
@@ -414,9 +528,21 @@ int main(int argc,char **argv){
         if(memcmp(prev,canonical,sizeof(canonical))!=0)
             die("bundle terminal seam name table != canonical seam");
 
+        stats.scheduled_budget=schedule_bundle_tiles(frames,maps);
+        stats.tile_bytes=0u;
+        stats.tile_loads=0u;
+        stats.peak_tile_loads=0u;
+        for(f=0u;f<ROUTE_FRAMES;++f){
+            stats.tile_bytes+=frames[f].tile_len;
+            stats.tile_loads+=frames[f].tile_loads;
+            if(frames[f].tile_loads>stats.peak_tile_loads)
+                stats.peak_tile_loads=frames[f].tile_loads;
+        }
+
         fprintf(manifest,"bundle=%u canonical_begin=PASS canonical_end=PASS terminal_hash=%016llX\n",
                 (unsigned)bundle,(unsigned long long)fnv64(prev,sizeof(prev)));
         emit_bundle(pack,manifest,bundle,frames,canonical,&stats);
+        free(maps);
         free(frames);
     }
 
