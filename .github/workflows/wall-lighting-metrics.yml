@@ -48,10 +48,22 @@ jobs:
             build/wall-light/control/room_bundle_poc_manifest.txt
             build/wall-light/angle-only/room_bundle_poc_manifest.txt
             build/wall-light/angle-view/room_bundle_poc_manifest.txt
+            build/wall-light/control/bundle0_route01_frame80.ppm
             build/wall-light/control/bundle0_route01_frame96.ppm
+            build/wall-light/control/bundle0_route01_frame112.ppm
+            build/wall-light/angle-only/bundle0_route01_frame80.ppm
             build/wall-light/angle-only/bundle0_route01_frame96.ppm
+            build/wall-light/angle-only/bundle0_route01_frame112.ppm
+            build/wall-light/angle-view/bundle0_route01_frame80.ppm
             build/wall-light/angle-view/bundle0_route01_frame96.ppm
+            build/wall-light/angle-view/bundle0_route01_frame112.ppm
+            build/wall-light/control/bundle1_route01_frame80.ppm
             build/wall-light/control/bundle1_route01_frame96.ppm
+            build/wall-light/control/bundle1_route01_frame112.ppm
+            build/wall-light/angle-only/bundle1_route01_frame80.ppm
             build/wall-light/angle-only/bundle1_route01_frame96.ppm
+            build/wall-light/angle-only/bundle1_route01_frame112.ppm
+            build/wall-light/angle-view/bundle1_route01_frame80.ppm
             build/wall-light/angle-view/bundle1_route01_frame96.ppm
+            build/wall-light/angle-view/bundle1_route01_frame112.ppm
           if-no-files-found: error
