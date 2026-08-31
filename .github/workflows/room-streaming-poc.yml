@@ -31,6 +31,14 @@ jobs:
              -o build/room-poc/test-room-stream
           build/room-poc/test-room-stream | tee build/room-poc/topology-test.txt
 
+          cc -std=c99 -Wall -Wextra -Werror -Isrc \
+             src/tilesector_world_module.c \
+             src/tilesector_world_stream_poc.c \
+             src/tilesector_room_catalog_poc.c \
+             tests/test_tilesector_room_catalog_poc.c \
+             -o build/room-poc/test-room-catalog
+          build/room-poc/test-room-catalog | tee build/room-poc/catalog-test.txt
+
           cc -std=c99 -Wall -Wextra -Werror -DTSP_ROOM_STREAM_POC=1 -Isrc \
              src/tilesector_room_poc.c \
              src/tilesector_polar_motion.c \
@@ -64,6 +72,7 @@ jobs:
           name: GG-room-stream-topology-proof
           path: |
             build/room-poc/topology-test.txt
+            build/room-poc/catalog-test.txt
             build/room-poc/room-local-test.txt
             build/room-poc/seam-test.txt
             build/room-poc/bundle-test.txt
@@ -218,7 +227,9 @@ jobs:
             src/tilesector_world_module.c
           "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/world-stream.o \
             src/tilesector_world_stream_poc.c
-          OBJS+=(build/room-poc-stream/main.o build/room-poc-stream/world-module.o build/room-poc-stream/world-stream.o)
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/room-catalog.o \
+            src/tilesector_room_catalog_poc.c
+          OBJS+=(build/room-poc-stream/main.o build/room-poc-stream/world-module.o build/room-poc-stream/world-stream.o build/room-poc-stream/room-catalog.o)
 
           "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/ntstate.o \
             src/tilesector_polar_ntstate_gg.s
@@ -354,7 +365,12 @@ jobs:
             build/room-poc-stream/host/bundle3_route01_frame64.ppm \
             build/room-poc-stream/host/bundle3_route01_frame96.ppm \
             build/room-poc-stream/host/bundle3_route01_frame176.ppm \
-            build/room-poc-stream/host/bundle3_route10_frame96.ppm; do
+            build/room-poc-stream/host/bundle3_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle4_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle5_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle5_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle6_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle7_route01_frame96.ppm; do
             [ ! -f "$f" ] || cp "$f" build/room-poc-stream-artifact/
           done
           git rev-parse HEAD > build/room-poc-stream-artifact/COMMIT.txt
