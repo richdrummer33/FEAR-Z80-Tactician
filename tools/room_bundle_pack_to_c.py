@@ -14,40 +14,50 @@ def u32(b, p):
 
 def parse_pack(path):
     data = pathlib.Path(path).read_bytes()
-    if data[:4] != b"RBP1":
+    if data[:4] != b"RBP2":
         raise SystemExit("bad room bundle pack magic")
     version = u16(data, 4)
-    if version != 1:
+    if version != 2:
         raise SystemExit(f"unsupported room bundle pack version {version}")
     bundle_count = data[6]
     p = 8
     bundles = []
     for _ in range(bundle_count):
+        if p + 4 > len(data):
+            raise SystemExit("truncated room bundle header")
         bundle_id = data[p]
         route_count = data[p+1]
-        frame_count = u16(data, p+2)
-        patch_bytes = u32(data, p+4)
-        tile_bytes = u32(data, p+8)
-        p += 12
-        if route_count != 1:
-            raise SystemExit("PoC converter currently expects one route per bundle")
-        frames = []
-        for _f in range(frame_count):
-            plen = u16(data, p)
-            tlen = u16(data, p+2)
-            p += 4
-            patch = data[p:p+plen]
-            p += plen
-            tile = data[p:p+tlen]
-            p += tlen
-            if len(patch) != plen or len(tile) != tlen:
-                raise SystemExit("truncated room bundle frame")
-            frames.append((patch, tile))
-        if sum(len(x[0]) for x in frames) != patch_bytes:
-            raise SystemExit(f"bundle {bundle_id} patch byte count mismatch")
-        if sum(len(x[1]) for x in frames) != tile_bytes:
-            raise SystemExit(f"bundle {bundle_id} tile byte count mismatch")
-        bundles.append((bundle_id, frames))
+        p += 4  # id, route count, reserved u16
+        routes = []
+        for _r in range(route_count):
+            if p + 12 > len(data):
+                raise SystemExit("truncated room route header")
+            entry = data[p]
+            exit_portal = data[p+1]
+            frame_count = u16(data, p+2)
+            patch_bytes = u32(data, p+4)
+            tile_bytes = u32(data, p+8)
+            p += 12
+            frames = []
+            for _f in range(frame_count):
+                if p + 4 > len(data):
+                    raise SystemExit("truncated room route frame header")
+                plen = u16(data, p)
+                tlen = u16(data, p+2)
+                p += 4
+                patch = data[p:p+plen]
+                p += plen
+                tile = data[p:p+tlen]
+                p += tlen
+                if len(patch) != plen or len(tile) != tlen:
+                    raise SystemExit("truncated room route frame")
+                frames.append((patch, tile))
+            if sum(len(x[0]) for x in frames) != patch_bytes:
+                raise SystemExit(f"bundle {bundle_id} route {entry}->{exit_portal} patch byte count mismatch")
+            if sum(len(x[1]) for x in frames) != tile_bytes:
+                raise SystemExit(f"bundle {bundle_id} route {entry}->{exit_portal} tile byte count mismatch")
+            routes.append((entry, exit_portal, frames))
+        bundles.append((bundle_id, routes))
     if p != len(data):
         raise SystemExit(f"room bundle pack has {len(data)-p} trailing bytes")
     return bundles
@@ -174,13 +184,20 @@ def emit_dispatch(outdir, bundles, chunks, canonical):
     if bundle_ids != list(range(len(bundle_ids))):
         raise SystemExit("PoC runtime requires dense bundle ids from zero")
 
-    firsts = []
-    counts = []
+    route_bundle = []
+    route_entry = []
+    route_exit = []
+    route_first = []
+    route_count = []
     pos = 0
-    for _, frames in bundles:
-        firsts.append(pos)
-        counts.append(len(frames))
-        pos += len(frames)
+    for bundle_id, routes in bundles:
+        for entry, exit_portal, frames in routes:
+            route_bundle.append(bundle_id)
+            route_entry.append(entry)
+            route_exit.append(exit_portal)
+            route_first.append(pos)
+            route_count.append(len(frames))
+            pos += len(frames)
 
     words = list(struct.unpack("<" + "H"*(len(canonical)//2), canonical))
     if len(words) != 360:
@@ -212,32 +229,52 @@ extern uint16_t g_map[TSP_MAP_CELLS];
 extern uint8_t g_polar_nt_row_min[TSP_ROWS];
 extern uint8_t g_polar_nt_row_max[TSP_ROWS];
 
-{c_u16_array("k_bundle_first", firsts)}
-{c_u16_array("k_bundle_count", counts)}
+{c_u8_array("k_route_bundle", route_bundle)}
+{c_u8_array("k_route_entry", route_entry)}
+{c_u8_array("k_route_exit", route_exit)}
+{c_u16_array("k_route_first", route_first)}
+{c_u16_array("k_route_count", route_count)}
 {c_u16_array("k_canonical_map", words)}
 
 #define ROOM_BUNDLE_COUNT {len(bundles)}u
+#define ROOM_ROUTE_COUNT {len(route_bundle)}u
 
 uint8_t tsp_room_bundle_generated_count(void){{return ROOM_BUNDLE_COUNT;}}
+uint8_t tsp_room_bundle_generated_route_count(void){{return ROOM_ROUTE_COUNT;}}
 
-uint16_t tsp_room_bundle_generated_frames(uint8_t bundle){{
-    if(bundle>=ROOM_BUNDLE_COUNT)return 0u;
-    return k_bundle_count[bundle];
+static int16_t find_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal){{
+    uint8_t i;
+    for(i=0u;i<ROOM_ROUTE_COUNT;++i)
+        if(k_route_bundle[i]==bundle &&
+           k_route_entry[i]==entry &&
+           k_route_exit[i]==exit_portal)
+            return (int16_t)i;
+    return -1;
 }}
 
-static uint16_t global_frame(uint8_t bundle,uint16_t frame){{
-    if(bundle>=ROOM_BUNDLE_COUNT||frame>=k_bundle_count[bundle])return 0xffffu;
-    return (uint16_t)(k_bundle_first[bundle]+frame);
+uint16_t tsp_room_bundle_generated_frames(uint8_t bundle,uint8_t entry,uint8_t exit_portal){{
+    int16_t ri=find_route(bundle,entry,exit_portal);
+    if(ri<0)return 0u;
+    return k_route_count[(uint8_t)ri];
 }}
 
-void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint16_t frame){{
-    uint16_t global=global_frame(bundle,frame);
+static uint16_t global_frame(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame){{
+    int16_t ri=find_route(bundle,entry,exit_portal);
+    uint8_t i;
+    if(ri<0)return 0xffffu;
+    i=(uint8_t)ri;
+    if(frame>=k_route_count[i])return 0xffffu;
+    return (uint16_t)(k_route_first[i]+frame);
+}}
+
+void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame){{
+    uint16_t global=global_frame(bundle,entry,exit_portal,frame);
     if(global==0xffffu)return;
 {chr(10).join(dispatch_cases_name)}
 }}
 
-void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint16_t frame){{
-    uint16_t global=global_frame(bundle,frame);
+void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame){{
+    uint16_t global=global_frame(bundle,entry,exit_portal,frame);
     if(global==0xffffu)return;
 {chr(10).join(dispatch_cases_tile)}
 }}
@@ -258,13 +295,12 @@ void tsp_room_bundle_generated_load_canonical(void){{
 #define ROOM_BUNDLE_POC_META_H
 #include <stdint.h>
 #define ROOM_BUNDLE_POC_COUNT {len(bundles)}u
-"""
-    for i,count in enumerate(counts):
-        h += f"#define ROOM_BUNDLE_POC_{i}_FRAMES {count}u\n"
-    h += """uint8_t tsp_room_bundle_generated_count(void);
-uint16_t tsp_room_bundle_generated_frames(uint8_t bundle);
-void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint16_t frame);
-void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint16_t frame);
+#define ROOM_BUNDLE_POC_ROUTE_COUNT {len(route_bundle)}u
+uint8_t tsp_room_bundle_generated_count(void);
+uint8_t tsp_room_bundle_generated_route_count(void);
+uint16_t tsp_room_bundle_generated_frames(uint8_t bundle,uint8_t entry,uint8_t exit_portal);
+void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame);
+void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame);
 void tsp_room_bundle_generated_load_canonical(void);
 #endif
 """
@@ -283,8 +319,9 @@ def main():
     canonical = pathlib.Path(args.canonical).read_bytes()
 
     global_frames = []
-    for _, frames in bundles:
-        global_frames.extend(frames)
+    for _, routes in bundles:
+        for _entry, _exit, frames in routes:
+            global_frames.extend(frames)
     chunks = make_chunks(global_frames)
 
     for i,(first,frames) in enumerate(chunks):
@@ -292,8 +329,9 @@ def main():
     emit_dispatch(outdir, bundles, chunks, canonical)
 
     total = sum(4 + len(p) + len(t) for p,t in global_frames)
-    print(f"ROOM_BUNDLE_C_GEN_PASS bundles={len(bundles)} frames={len(global_frames)} "
-          f"banks={len(chunks)} stream_bytes={total}")
+    route_total = sum(len(routes) for _, routes in bundles)
+    print(f"ROOM_BUNDLE_C_GEN_PASS bundles={len(bundles)} routes={route_total} "
+          f"frames={len(global_frames)} banks={len(chunks)} stream_bytes={total}")
 
 if __name__ == "__main__":
     main()
