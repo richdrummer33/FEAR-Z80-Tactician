@@ -523,10 +523,10 @@ static void make_interior_porthole_world(World *w){
 
     /* A farther object makes the through-wall depth unmistakable. */
     w->proof_far_sid=w->count;
-    add_seg(w,62,78,74,78,0,32,1);
-    add_seg(w,74,78,74,84,0,32,1);
-    add_seg(w,74,84,62,84,0,32,1);
-    add_seg(w,62,84,62,78,0,32,1);
+    add_seg(w,78,78,86,78,0,32,1);
+    add_seg(w,86,78,86,84,0,32,1);
+    add_seg(w,86,84,78,84,0,32,1);
+    add_seg(w,78,84,78,78,0,32,1);
 
     w->multi_surface=1u;
     w->aperture_proof=1u;
@@ -1201,6 +1201,19 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
         if(f==176u)tsp_host_composite_reset_cache();
 
         render_pose(w,&p,cur);
+
+        /* Mechanical porthole proof on the forward inspection route.
+         * Frame 80 looks straight through the opening; frame 112 is the
+         * oblique end of the side-slide where a recessed jamb must appear. */
+        if(w->aperture_proof&&entry_portal==0u&&exit_portal==1u){
+            if(f==80u&&
+               tsp_host_composite_owner_pixel_count(w->proof_far_sid)==0u)
+                die("porthole far-side geometry not visible through aperture");
+            if(f==112u&&
+               tsp_host_composite_owner_pixel_count(w->proof_reveal_sid)==0u)
+                die("porthole recessed reveal not visible");
+        }
+
         capture_tiles(&frames[f]);
         memcpy(maps+(size_t)f*TSP_MAP_CELLS,cur,sizeof(cur));
 
