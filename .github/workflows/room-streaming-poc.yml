@@ -261,13 +261,13 @@ jobs:
           test -n "$PROGRESS_ADDR"
 
           ./build/libretro_runner "$CORE" "$ROM" 1200 \
-            build/room-poc-stream/emulator-roomA.ppm "$PROGRESS_ADDR" 2 64 \
+            build/room-poc-stream/emulator-roomA.ppm "$PROGRESS_ADDR" 2 96 \
             | tee build/room-poc-stream/run-roomA.txt
           ./build/libretro_runner "$CORE" "$ROM" 2400 \
-            build/room-poc-stream/emulator-seam-handoff.ppm "$PROGRESS_ADDR" 2 159 \
+            build/room-poc-stream/emulator-seam-handoff.ppm "$PROGRESS_ADDR" 2 191 \
             | tee build/room-poc-stream/run-seam.txt
           ./build/libretro_runner "$CORE" "$ROM" 5000 \
-            build/room-poc-stream/emulator-roomB.ppm "$PROGRESS_ADDR" 2 1064 \
+            build/room-poc-stream/emulator-roomB.ppm "$PROGRESS_ADDR" 2 1096 \
             | tee build/room-poc-stream/run-roomB.txt
           ./build/libretro_runner "$CORE" "$ROM" 8000 \
             build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 2000 \
@@ -301,11 +301,11 @@ jobs:
             build/room-poc-stream/emulator-final-seam.ppm \
             build/room-poc-stream/host/room_bundle_poc_manifest.txt \
             build/room-poc-stream/host/bundle0_frame0.ppm \
-            build/room-poc-stream/host/bundle0_frame64.ppm \
-            build/room-poc-stream/host/bundle0_frame159.ppm \
+            build/room-poc-stream/host/bundle0_frame96.ppm \
+            build/room-poc-stream/host/bundle0_frame191.ppm \
             build/room-poc-stream/host/bundle1_frame0.ppm \
-            build/room-poc-stream/host/bundle1_frame64.ppm \
-            build/room-poc-stream/host/bundle1_frame159.ppm; do
+            build/room-poc-stream/host/bundle1_frame96.ppm \
+            build/room-poc-stream/host/bundle1_frame191.ppm; do
             [ ! -f "$f" ] || cp "$f" build/room-poc-stream-artifact/
           done
           git rev-parse HEAD > build/room-poc-stream-artifact/COMMIT.txt
