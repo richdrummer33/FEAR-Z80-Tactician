@@ -106,7 +106,17 @@ jobs:
             | tee build/porthole/run-final.txt
 
           STATUS_ADDR="$(awk '$2=="_g_porthole_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          PROGRESS_ADDR="$(awk '$2=="_g_porthole_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           test -n "$STATUS_ADDR"
+          test -n "$PROGRESS_ADDR"
+
+          # Exact logical-frame captures: these stop on the ROM's live route
+          # progress marker rather than assuming one packet frame == one VBlank.
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=80             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-interior-frame80.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-interior-frame80.txt
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=112             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-interior-frame112.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-interior-frame112.txt
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=1080             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-exterior-frame80.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-exterior-frame80.txt
+          GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE=1112             ./build/gearsystem_core_runner "$ROM" 1200               build/porthole/native-exterior-frame112.ppm "$STATUS_ADDR" 6               | tee build/porthole/native-exterior-frame112.txt
+
           # Native RunToVBlank pacing is deliberately independent of the
           # libretro video-frame counter. 500 native calls reach the second
           # route but not its terminal marker, so give packet replay ample
@@ -140,6 +150,14 @@ jobs:
             build/porthole/emulator-interior-porthole.ppm \
             build/porthole/emulator-exterior-porthole.ppm \
             build/porthole/emulator-final.ppm \
+            build/porthole/native-interior-frame80.ppm \
+            build/porthole/native-interior-frame112.ppm \
+            build/porthole/native-exterior-frame80.ppm \
+            build/porthole/native-exterior-frame112.ppm \
+            build/porthole/native-interior-frame80.txt \
+            build/porthole/native-interior-frame112.txt \
+            build/porthole/native-exterior-frame80.txt \
+            build/porthole/native-exterior-frame112.txt \
             build/porthole/host/room_bundle_poc_manifest.txt \
             build/porthole/host/bundle0_route01_frame64.ppm \
             build/porthole/host/bundle0_route01_frame80.ppm \
