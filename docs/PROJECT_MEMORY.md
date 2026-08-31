@@ -69,3 +69,52 @@ These are accepted lessons from the mature TileSector branches that MUST be chec
 - V2.2 strict 20x18 / 8x8 name-word proxy over the GG demo path: ~10.53% geometry-word mismatch (~37.9/360 words), ~11.81% with material/shade, ~12.90% with AO. This proxy is intentionally stricter than raw pixel mismatch because any edge difference marks the affected 8x8 output descriptor different.
 - V2.2 AO decision: fake AO is static authored-geometry metadata, **2 bits per concave corner** (none/mild/medium/strong), with intensity derived offline from free-space corner angle. Runtime only selects preloaded edge/cap tile variants at projected physical corner IDs. Narrow wall/ceiling and wall/floor AO can live inside the existing edge tile as a one-pixel cap variant; do not add a separate ceiling/floor rendering pass for AO.
 - V2.2 coarse runtime model (NOT measured Z80 timing): ~21.3K T/update core field path, ~+0.97K T material/shade, ~+0.24K T AO on the current demo trajectory. Use only as go/no-go evidence; authoritative cycle counts must come from GG C/ASM profiler instrumentation.
+
+
+## Game Gear renderer — wall-light response, authored flicker, and aperture-light ideas
+
+**APPROVED EXPERIMENT DIRECTION — Aug 31, 2026:** Build and measure a cheap wall-wide lighting response on top of the mature baked room/streaming renderer. Preserve a control path so appearance cost is measured against the previous binary point-light bake rather than guessed.
+
+### Hardware dimming conclusion
+
+- The GG VDP does **not** provide a per-pixel or per-tile brightness multiplier/alpha operation. Background name words can select tile pattern, H/V flip, priority and one of the two palettes, but arbitrary mixed wall/floor/ceiling pixels cannot be independently dimmed without palette semantics or a different tile pattern.
+- Palette selection is still a powerful coarse accelerator. The baked-light path already uses background palette 1 as the lit transform while reserved indices inside that same palette reproduce ambient colours for shadow-side pixels in mixed tiles.
+- Palette 1 is shared with sprites on Game Gear. Treat animated palette entries as a global art-resource contract: sprites using those entries will inherit the same pulse unless deliberately segregated.
+
+### Wall-normal light response experiment
+
+- Static wall response is a **host-bake concern**, not new Z80 lighting math.
+- For each visible wall face, use one wall-wide quantized value from the angle between the oriented wall normal and the wall-centre-to-light vector: normal pointing toward light is strongest; approaching 90 degrees approaches ambient/minimum contribution.
+- Current experiment target is **16 apparent levels**. Represent intermediate levels with stable ordered coverage between the existing ambient and lit palette semantics rather than requiring sixteen hardware palettes.
+- Preserve a nonzero ambient/base wall appearance; the light contribution may fall to zero, but the wall itself does not become black.
+- An optional camera term may add only a few quantization steps from the alignment between camera/view direction and the reflected light direction about the wall normal. Keep it broad/subtle, matte-looking, and independently removable if it produces distracting view-dependent shimmer.
+- No runtime trigonometry, normalization or dot products are justified for static authored lights in the current architecture. The host computes the result; the GG replays the already-baked name-table/tile packets.
+- Main falsifier is **tile-pattern/state entropy**, not Z80 arithmetic. A visually modest extra quantization can still create many distinct 8x8 patterns and increase scheduled pattern uploads. Always compare binary-light control vs angle-light experiment on unique patterns, patch bytes, tile loads, and required uploads/VBlank.
+
+### Authored flickering lights
+
+- Flicker is an authored property of selected reusable room/light assets, not a global effect. The initial target is the inset/spooky light room.
+- Prefer a deterministic short-pulse pattern: isolated one-frame twitch, occasional double pulse, and a brief ragged burst.
+- The current cheapest mechanism is palette-only animation of the lit palette entries. Leave the reserved ambient/shadow entries unchanged, so only pixels already classified as illuminated pulse.
+- Cache the current flicker level and write CRAM only when the level changes. This avoids re-rendering walls, rebuilding tile graphics, or rewriting the name table.
+- This naturally works when the same authored room bundle appears in the deterministic streaming maze. Multiple independently flickering light groups visible simultaneously would require a later palette/tile-class budgeting decision.
+
+### Later visual experiment — directional outside light through architectural openings
+
+- Explore narrow arrow-slit / embrasure-like apertures admitting a fake directional sun or moon vector.
+- Gate admission by the opening's outward normal vs the authored directional-light vector; openings facing away can remain dark.
+- Project the admitted beam onto floor/wall receiver geometry on the host. Low-angle light may intentionally form long stretched rectangular/trapezoidal pools across a room.
+- Runtime should remain ordinary baked packet replay. The real cost risk is additional tile/state entropy as long beam edges move across the projected screen.
+- Creative intent: imply a larger inaccessible exterior world and provide strong time-of-day / atmosphere cues without actually rendering outdoors.
+
+### Later visual experiment — windows and view-through wall slits
+
+- Treat a small non-traversable opening as portal-like visibility geometry. The first proof only needs to show another authored space through the aperture; cross-room dynamic lighting is explicitly deferred.
+- For streamed rooms, the bake must know enough about the visible neighbour to compose the view. Prefer deterministic neighbour/bundle references or a deliberately bounded window-view dependency rather than turning runtime into a general cross-room renderer.
+- Small window-like portals are also a useful stress case for the existing selective intra-tile compositor and multi-boundary handling.
+
+### Later visual experiment — bars, grilles, and gratings
+
+- Runtime alpha is not required. Thin bars/grilles can be ordinary baked occluder geometry composed into each camera state.
+- Prefer canonical thin-coverage masks/pattern reuse and final-pattern deduplication. Very thin geometry can alias, shimmer, or multiply tile variants as viewpoint changes, so measure pattern entropy before promoting it to a common architectural motif.
+- Keep hardware sprites as an optional later alternative for rare foreground grille layers, but the default concept is baked geometry with no runtime transparency.
