@@ -20,7 +20,7 @@ static const TSPSeamPocContract k_contract = {
     { Q(20), Q(-4), Q(20) },
     Q(13), Q(19),
     Q(8),
-    Q(20)
+    (int16_t)(Q(16)+8)
 };
 
 const TSPSeamPocContract *tsp_seam_poc_contract(void){
