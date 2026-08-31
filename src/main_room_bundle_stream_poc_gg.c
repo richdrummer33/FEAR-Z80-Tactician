@@ -22,6 +22,8 @@
 #define C_BLACK 0u
 #define C_CEILING 1u
 #define C_FLOOR 2u
+#define C_SUCCESS 5u
+#define STREAM_SUCCESS_TILE 447u
 #define STREAM_SEED UINT32_C(0xC0FFEE42)
 #define SPLIT_STREAM_SEED UINT32_C(0x00000023)
 #define STAIR_STREAM_SEED UINT32_C(0x00000010)
@@ -42,6 +44,8 @@ volatile uint16_t g_room_bundle_flicker_edges;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
+extern uint8_t g_polar_nt_row_min[TSP_ROWS];
+extern uint8_t g_polar_nt_row_max[TSP_ROWS];
 
 static uint8_t g_tile[32u];
 
@@ -147,6 +151,25 @@ static void init_base_tiles(void){
     emit_solid(TSP_TILE_CEILING,C_CEILING);
     emit_solid(TSP_TILE_FLOOR,C_FLOOR);
     emit_horizon();
+}
+
+/*
+ * Framebuffer-visible completion oracle for the four-megabyte stream ROM.
+ * Slot 447 is overwritten only after every route and the authored flicker
+ * self-check have completed, so it is safe to steal from the dynamic cache
+ * at this terminal point. The X marker is deliberately unique and survives
+ * without any debugger RAM API.
+ */
+static void stamp_success_marker(void){
+    uint8_t x,y;
+    clear_tile();
+    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)
+        if(x==y||(uint8_t)(x+y)==7u)paint_pixel(x,y,C_SUCCESS);
+    set_bkg_4bpp_data(STREAM_SUCCESS_TILE,1u,g_tile);
+    g_map[0]=STREAM_SUCCESS_TILE;
+    g_polar_nt_row_min[0]=0u;
+    g_polar_nt_row_max[0]=0u;
+    tsp_polar_nt_upload_dirty();
 }
 
 static uint8_t same_node(const TSPStreamNodeDesc *a,const TSPStreamNodeDesc *b){
@@ -445,6 +468,7 @@ void main(void){
 
     g_room_bundle_stream_status=30u;
     g_room_bundle_stream_progress=30000u;
+    stamp_success_marker();
 
     for(;;)vsync();
 }
