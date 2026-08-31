@@ -20,11 +20,11 @@
 #include "tilesector_polar.h"
 #include "polar_baked_composite.h"
 
-#define BUNDLE_COUNT 4u
+#define BUNDLE_COUNT 8u
 #define ROUTE_FRAMES 192u
-#define MAX_SEGMENTS 48u
+#define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
-#define MAX_SCENE_RECTS 8u
+#define MAX_SCENE_RECTS 12u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
@@ -174,6 +174,10 @@ static void add_canonical_seam_z(World *w,double tx,double ty,uint8_t rot,
     add_xform_seg_z(w,12,4,12,28,tx,ty,rot,zbase,zbase+32.0);
     add_xform_seg_z(w,12,28,28,28,tx,ty,rot,zbase,zbase+32.0);
     add_xform_seg_z(w,28,28,36,mouth_hi,tx,ty,rot,zbase,zbase+32.0);
+}
+static void add_two_portal_seams(World *w,double mouth_lo,double mouth_hi){
+    add_canonical_seam(w,36.0,24.0,0u,mouth_lo,mouth_hi);
+    add_canonical_seam(w,116.0,24.0,2u,mouth_lo,mouth_hi);
 }
 
 /* Shared S-shaped seam plus one room beyond its east aperture.
@@ -325,10 +329,129 @@ static void make_stair_world(World *w){
     finalize_scene(w);
 }
 
+static void make_gallery_world(World *w){
+    memset(w,0,sizeof(*w));
+    add_two_portal_seams(w,8.0,40.0);
+
+    add_seg(w,36,-48,36,8,0,32,0);
+    add_seg(w,36,40,36,96,0,32,0);
+    add_seg(w,116,-48,116,8,0,32,0);
+    add_seg(w,116,40,116,96,0,32,0);
+    add_seg(w,36,-48,116,-48,0,32,0);
+    add_seg(w,116,96,36,96,0,32,0);
+
+    /* Sparse architectural fins leave the centre broad and open. */
+    add_seg(w,68,-48,68,-18,0,32,1);
+    add_seg(w,90,66,90,96,0,32,1);
+
+    add_rect(w,36,-48,116,96,0,32);
+    w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
+    finalize_scene(w);
+}
+
+static void make_turn_world(World *w){
+    memset(w,0,sizeof(*w));
+
+    /* West entry, north exit: a genuine flat quarter-turn module. */
+    add_canonical_seam(w,36.0,24.0,0u,12.0,36.0);
+    add_canonical_seam(w,76.0,80.0,3u,12.0,36.0);
+
+    add_seg(w,36,8,96,8,0,32,0);
+    add_seg(w,96,8,96,80,0,32,0);
+    add_seg(w,60,80,64,80,0,32,0);
+    add_seg(w,88,80,96,80,0,32,0);
+    add_seg(w,60,40,60,80,0,32,0);
+    add_seg(w,36,40,60,40,0,32,0);
+    add_seg(w,36,8,36,12,0,32,0);
+    add_seg(w,36,36,36,40,0,32,0);
+
+    /* Short corner baffle gives the inset light a deliberate shadow edge. */
+    add_seg(w,80,48,92,48,0,32,1);
+
+    add_rect(w,36,8,96,40,0,32);
+    add_rect(w,60,40,96,80,0,32);
+
+    w->scene_lights[0].x_q4=(int16_t)(88<<4);
+    w->scene_lights[0].y_q4=(int16_t)(60<<4);
+    w->scene_lights[0].height_q4=(uint8_t)(9<<4);
+    w->scene_lights[0].radius_world=82u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    finalize_scene(w);
+}
+
+static void make_step_world(World *w){
+    static const int16_t x0[5]={36,52,68,84,100};
+    static const int16_t x1[5]={51,67,83,99,116};
+    static const int16_t z[5]={0,2,4,2,0};
+    uint8_t i;
+    memset(w,0,sizeof(*w));
+    add_two_portal_seams(w,12.0,36.0);
+
+    /* End walls around the wide entry/exit mouths. */
+    add_seg(w,36,-4,36,12,0,32,0);
+    add_seg(w,36,36,36,52,0,32,0);
+    add_seg(w,116,-4,116,12,0,32,0);
+    add_seg(w,116,36,116,52,0,32,0);
+
+    for(i=0u;i<5u;++i){
+        add_seg(w,x0[i],-4,x1[i],-4,z[i],z[i]+32,0);
+        add_seg(w,x1[i],52,x0[i],52,z[i],z[i]+32,0);
+        add_rect(w,x0[i],-4,x1[i],52,z[i],z[i]+32);
+    }
+
+    /* Two steps up, two steps down. */
+    add_seg(w,52,-4,52,52,0,2,1);
+    add_seg(w,68,-4,68,52,2,4,1);
+    add_seg(w,84,-4,84,52,2,4,1);
+    add_seg(w,100,-4,100,52,0,2,1);
+
+    w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
+    finalize_scene(w);
+}
+
+static void make_pillar_world(World *w){
+    memset(w,0,sizeof(*w));
+    add_two_portal_seams(w,8.0,40.0);
+
+    add_seg(w,36,-40,36,8,0,32,0);
+    add_seg(w,36,40,36,88,0,32,0);
+    add_seg(w,116,-40,116,8,0,32,0);
+    add_seg(w,116,40,116,88,0,32,0);
+    add_seg(w,36,-40,116,-40,0,32,0);
+    add_seg(w,116,88,36,88,0,32,0);
+
+    /* Two compact full-height pillars, offset away from the travel rail. */
+    add_seg(w,64,2,76,2,0,32,1);
+    add_seg(w,76,2,76,16,0,32,1);
+    add_seg(w,76,16,64,16,0,32,1);
+    add_seg(w,64,16,64,2,0,32,1);
+
+    add_seg(w,90,44,102,44,0,32,1);
+    add_seg(w,102,44,102,58,0,32,1);
+    add_seg(w,102,58,90,58,0,32,1);
+    add_seg(w,90,58,90,44,0,32,1);
+
+    add_rect(w,36,-40,116,88,0,32);
+
+    /* Side light makes both pillars cast long, readable room-scale shadows. */
+    w->scene_lights[0].x_q4=(int16_t)(76<<4);
+    w->scene_lights[0].y_q4=(int16_t)(76<<4);
+    w->scene_lights[0].height_q4=(uint8_t)(12<<4);
+    w->scene_lights[0].radius_world=120u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    finalize_scene(w);
+}
+
 static void make_world(uint8_t bundle,World *w){
     if(bundle<2u)make_linear_world(bundle,w);
     else if(bundle==2u)make_split_world(w);
     else if(bundle==3u)make_stair_world(w);
+    else if(bundle==4u)make_gallery_world(w);
+    else if(bundle==5u)make_turn_world(w);
+    else if(bundle==6u)make_step_world(w);
+    else if(bundle==7u)make_pillar_world(w);
     else die("invalid room bundle id");
 }
 
@@ -386,6 +509,13 @@ static double stair_floor_z(double x,double y){
     if(y>=36.0&&x>=56.0)return 2.0;
     if(x>=72.0)return 2.0;
     if(x>=56.0)return 1.0;
+    return 0.0;
+}
+static double step_room_floor_z(double x){
+    if(x<52.0)return 0.0;
+    if(x<68.0)return 2.0;
+    if(x<84.0)return 4.0;
+    if(x<100.0)return 2.0;
     return 0.0;
 }
 static uint8_t yaw_from_vec(double dx,double dy){
@@ -499,14 +629,44 @@ static Pose stair_forward_pose(uint16_t f){
     return p;
 }
 
+static Pose turn_forward_pose(uint16_t f){
+    Pose p,a,b;
+    double q,cx=86.0,cy=38.0;
+    if(f<64u)return entry_outbound_pose(f);
+    if(f>=128u)
+        return portal_transform_pose(entry_outbound_pose((uint16_t)(191u-f)),1u);
+
+    a=entry_outbound_pose(63u);
+    b=portal_transform_pose(entry_outbound_pose(63u),1u);
+    q=(double)(f-64u)/63.0;
+    {
+        double u=1.0-q;
+        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
+        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
+        p.z=16.0;
+    }
+    {
+        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
+        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*24.0));
+    }
+    return p;
+}
+
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
-    if(bundle<2u){
+    if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u){
+        Pose p;
         if(entry_portal==0u&&exit_portal==1u)
-            return route_pose(f,bundle);
-        if(entry_portal==1u&&exit_portal==0u)
-            return route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
-        die("invalid linear room route pair");
+            p=route_pose(f,bundle);
+        else if(entry_portal==1u&&exit_portal==0u)
+            p=route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
+        else{
+            die("invalid straight room route pair");
+            return route_pose(f,0u);
+        }
+        if(bundle==6u)p.z=16.0+step_room_floor_z(p.x);
+        return p;
     }
     if(bundle==2u)return split_route_pose(f,entry_portal,exit_portal);
     if(bundle==3u){
@@ -514,6 +674,12 @@ static Pose route_pose_portals(uint16_t f,uint8_t bundle,
         if(entry_portal==1u&&exit_portal==0u)
             return stair_forward_pose((uint16_t)(ROUTE_FRAMES-1u-f));
         die("invalid stair route pair");
+    }
+    if(bundle==5u){
+        if(entry_portal==0u&&exit_portal==1u)return turn_forward_pose(f);
+        if(entry_portal==1u&&exit_portal==0u)
+            return turn_forward_pose((uint16_t)(ROUTE_FRAMES-1u-f));
+        die("invalid turn route pair");
     }
     die("invalid room bundle route");
     return route_pose(f,0u);
@@ -929,6 +1095,7 @@ int main(int argc,char **argv){
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
+    fprintf(manifest,"eight_module_catalog=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
