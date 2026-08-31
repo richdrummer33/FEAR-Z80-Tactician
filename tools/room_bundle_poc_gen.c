@@ -1293,7 +1293,7 @@ int main(int argc,char **argv){
 
     if(argc<2||argc>3){
         fprintf(stderr,
-                "usage: %s OUTPUT_DIR [--legacy-binary-light|--wall-angle-no-view|--dither16-angle|--portholes-only]\n",
+                "usage: %s OUTPUT_DIR [--legacy-binary-light|--wall-angle-no-view|--dither16-angle|--portholes-only|--spooky-only]\n",
                 argv[0]);
         return 2;
     }
@@ -1309,6 +1309,10 @@ int main(int argc,char **argv){
             pack_bundle_count=PORTHOLE_BUNDLE_COUNT;
             visual_bundle_base=BASE_BUNDLE_COUNT;
             pack_mode="portholes";
+        }else if(strcmp(argv[2],"--spooky-only")==0){
+            pack_bundle_count=1u;
+            visual_bundle_base=1u;
+            pack_mode="spooky";
         }else{
             fprintf(stderr,"unknown option: %s\n",argv[2]);
             return 2;
@@ -1366,8 +1370,9 @@ int main(int argc,char **argv){
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
-    if(visual_bundle_base==0u)fprintf(manifest,"eight_module_catalog=PASS\n");
-    else fprintf(manifest,"thick_porthole_pair=PASS\n");
+    if(strcmp(pack_mode,"base")==0)fprintf(manifest,"eight_module_catalog=PASS\n");
+    else if(strcmp(pack_mode,"portholes")==0)fprintf(manifest,"thick_porthole_pair=PASS\n");
+    else fprintf(manifest,"spooky_capture_bundle=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
