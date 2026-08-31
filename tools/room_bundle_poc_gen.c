@@ -1072,6 +1072,7 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 int main(int argc,char **argv){
     const char *outdir;
     uint8_t wall_angle_enabled=1u;
+    uint8_t quant_mode=TSP_HOST_LIGHT_QUANT_SOLID8;
     char path[512];
     FILE *pack,*manifest;
     uint16_t canonical[TSP_MAP_CELLS];
@@ -1081,15 +1082,18 @@ int main(int argc,char **argv){
 
     if(argc<2||argc>3){
         fprintf(stderr,
-                "usage: %s OUTPUT_DIR [--legacy-binary-light|--wall-angle-no-view]\n",
+                "usage: %s OUTPUT_DIR [--legacy-binary-light|--wall-angle-no-view|--dither16-angle]\n",
                 argv[0]);
         return 2;
     }
     if(argc==3){
         if(strcmp(argv[2],"--legacy-binary-light")==0){
             wall_angle_enabled=0u;
+            quant_mode=TSP_HOST_LIGHT_QUANT_DITHER16;
         }else if(strcmp(argv[2],"--wall-angle-no-view")==0){
             g_view_term_steps=0u;
+        }else if(strcmp(argv[2],"--dither16-angle")==0){
+            quant_mode=TSP_HOST_LIGHT_QUANT_DITHER16;
         }else{
             fprintf(stderr,"unknown option: %s\n",argv[2]);
             return 2;
@@ -1097,6 +1101,7 @@ int main(int argc,char **argv){
     }
     outdir=argv[1];
     tsp_host_composite_set_wall_angle_mode(wall_angle_enabled);
+    tsp_host_composite_set_wall_quant_mode(quant_mode);
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
@@ -1108,8 +1113,9 @@ int main(int argc,char **argv){
     snprintf(path,sizeof(path),"%s/room_bundle_poc_manifest.txt",outdir);
     manifest=fopen(path,"w");if(!manifest)die("cannot create room bundle manifest");
     fprintf(manifest,"Room bundle PoC pack v2 - independently scheduled portal routes\n");
-    fprintf(manifest,"wall_angle_light=%s levels=16 view_term_max_steps=%u\n",
+    fprintf(manifest,"wall_angle_light=%s quant=%s view_term_max_steps=%u\n",
             wall_angle_enabled?"ON":"LEGACY_BINARY",
+            quant_mode==TSP_HOST_LIGHT_QUANT_SOLID8?"SOLID8":"DITHER16",
             (unsigned)(wall_angle_enabled?g_view_term_steps:0u));
 
     for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
@@ -1155,9 +1161,10 @@ int main(int argc,char **argv){
     fclose(manifest);fclose(pack);
     tsp_host_composite_set_scene((const TSPHostCompositeScene *)0);
 
-    printf("ROOM_BUNDLE_POC_PASS bundles=%u ordinary_routes=2 split_routes=6 stair_routes=2 frames_per_route=%u canonical=%016llX wall_angle=%s view_steps=%u\n",
+    printf("ROOM_BUNDLE_POC_PASS bundles=%u ordinary_routes=2 split_routes=6 stair_routes=2 frames_per_route=%u canonical=%016llX wall_angle=%s quant=%s view_steps=%u\n",
            BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash,
            wall_angle_enabled?"ON":"LEGACY_BINARY",
+           quant_mode==TSP_HOST_LIGHT_QUANT_SOLID8?"SOLID8":"DITHER16",
            (unsigned)(wall_angle_enabled?g_view_term_steps:0u));
     return 0;
 }
