@@ -147,6 +147,19 @@ static int scene_vertex(uint8_t id,TSPHostSceneVertex *out){
     }
     return 1;
 }
+
+static int scene_vertex_world(uint8_t id,double *x,double *y){
+    TSPHostSceneVertex v;
+    if(!x||!y||!scene_vertex(id,&v))return 0;
+    if(v.has_exact_q4){
+        *x=(double)v.x_q4/16.0;
+        *y=(double)v.y_q4/16.0;
+    }else{
+        *x=(double)v.x;
+        *y=(double)v.y;
+    }
+    return 1;
+}
 static int scene_segment(uint8_t id,TSPHostSceneSegment *out){
     if(!out||id>=scene_segment_count())return 0;
     if(g_scene_override){
@@ -225,12 +238,12 @@ static void segment_z_range(const TSPHostSceneSegment *s,double *z0,double *z1){
 
 /* Signed position against the segment's directed right-hand normal (dy,-dx). */
 static double segment_right_side(const TSPHostSceneSegment *s,double x,double y){
-    TSPHostSceneVertex a,b;
-    double dx,dy;
-    if(!scene_vertex(s->v0,&a)||!scene_vertex(s->v1,&b))return 0.0;
-    dx=(double)b.x-(double)a.x;
-    dy=(double)b.y-(double)a.y;
-    return (x-(double)a.x)*dy-(y-(double)a.y)*dx;
+    double ax,ay,bx,by,dx,dy;
+    if(!scene_vertex_world(s->v0,&ax,&ay)||!scene_vertex_world(s->v1,&bx,&by))
+        return 0.0;
+    dx=bx-ax;
+    dy=by-ay;
+    return (x-ax)*dy-(y-ay)*dx;
 }
 static int point_on_signed_front(const TSPHostSceneSegment *s,int8_t sign,double x,double y){
     double q;
@@ -274,12 +287,11 @@ static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
     if(dx*dx+dy*dy<1e-10)return 1;
     for(sid=0u;sid<scene_segment_count();++sid){
         TSPHostSceneSegment s;
-        TSPHostSceneVertex a,b;
-        double t,u,z0,z1,zhit;
+        double ax,ay,bx,by,t,u,z0,z1,zhit;
         if(!scene_segment(sid,&s)||!s.blocks_light||(int)sid==receiver_sid)continue;
-        if(!scene_vertex(s.v0,&a)||!scene_vertex(s.v1,&b))continue;
-        if(!ray_segment_params(lx,ly,dx,dy,(double)a.x,(double)a.y,
-                               (double)b.x,(double)b.y,&t,&u))continue;
+        if(!scene_vertex_world(s.v0,&ax,&ay)||!scene_vertex_world(s.v1,&bx,&by))
+            continue;
+        if(!ray_segment_params(lx,ly,dx,dy,ax,ay,bx,by,&t,&u))continue;
         if(t<=1e-7||t>=1.0-1e-7||u<-1e-7||u>1.0+1e-7)continue;
         zhit=lz+t*(wz-lz);
         segment_z_range(&s,&z0,&z1);
@@ -398,16 +410,16 @@ static int background_world_receiver(int sx,int sy,double *wx,double *wy,double 
 /* Recover full XYZ of a visible wall/profile pixel. */
 static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,double *wz){
     TSPHostSceneSegment s;
-    TSPHostSceneVertex a,b;
-    double fx,fy,rx,ry,lateral,dx,dy,t,u,z0,z1;
+    double ax,ay,bx,by,fx,fy,rx,ry,lateral,dx,dy,t,u,z0,z1;
     double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
     double py=(double)sy+0.5;
-    if(!scene_segment(sid,&s)||!scene_vertex(s.v0,&a)||!scene_vertex(s.v1,&b))return 0;
+    if(!scene_segment(sid,&s)||
+       !scene_vertex_world(s.v0,&ax,&ay)||!scene_vertex_world(s.v1,&bx,&by))
+        return 0;
     camera_basis(&fx,&fy,&rx,&ry);
     lateral=(((double)sx+0.5)-80.0)/TSP_FOCAL_PX;
     dx=fx+rx*lateral;dy=fy+ry*lateral;
-    if(!ray_segment_params(cx,cy,dx,dy,(double)a.x,(double)a.y,
-                           (double)b.x,(double)b.y,&t,&u))return 0;
+    if(!ray_segment_params(cx,cy,dx,dy,ax,ay,bx,by,&t,&u))return 0;
     if(t<=1e-7||u<-1e-5||u>1.0+1e-5)return 0;
     *wx=cx+dx*t;*wy=cy+dy*t;
     *wz=camera_z_world()-((py-TSP_HORIZON_PX)/TSP_FOCAL_PX)*t;
