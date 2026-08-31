@@ -46,30 +46,47 @@ void tsp_polar_nt_upload_dirty(void);
 static uint8_t g_tile[32u];
 
 /*
- * Match the mature baked-light semantic palette exactly.
- * Palette 0 = ambient semantic shades.
- * Palette 1 = one-step brighter lit transform, with indices 8..12 carrying
- * ambient-side pixels for mixed shadow-boundary tiles.
+ * Palette 0 keeps the ordinary ambient semantic shades.
+ *
+ * Palette 1 is the solid wall-light contract:
+ *   0      black
+ *   1..2   lit ceiling/floor
+ *   3..10  eight true wall brightness colours
+ *   11..12 ambient ceiling/floor inside mixed light tiles
+ *   13..15 ambient FAR/MID/NEAR wall colours inside mixed light tiles
+ *
+ * This lets a mixed edge tile alter only wall pixels while adjacent
+ * floor/ceiling and cast-shadow pixels retain their exact ambient colour.
  */
 static const palette_color_t k_palettes[32] = {
     RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
     RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
-    RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
+
+    RGB(0,0,0),
+    RGB(2,2,3),RGB(3,4,6),
+    RGB(3,4,6),RGB(4,5,7),RGB(6,7,9),RGB(8,9,11),
+    RGB(10,11,13),RGB(11,12,14),RGB(13,14,15),RGB(15,15,15),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
 };
 
-/* Only palette-1 entries 1..4 are animated. Reserved indices 8..12 keep
- * their ambient colours, so shadow-side pixels inside mixed tiles do not
- * flicker. Palette 1 is shared with sprites on GG; production sprite art must
- * therefore avoid these entries or intentionally join the same light group. */
-static const palette_color_t k_lit_bright[4] = {
-    RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
+/* Animate only palette-1 entries 1..10. Entries 11..15 are the ambient side
+ * of mixed tiles and therefore never pulse. Palette 1 is shared with sprites
+ * on GG, so production sprite art must avoid these animated entries unless it
+ * intentionally belongs to the same light group. */
+static const palette_color_t k_lit_bright[10] = {
+    RGB(2,2,3),RGB(3,4,6),
+    RGB(3,4,6),RGB(4,5,7),RGB(6,7,9),RGB(8,9,11),
+    RGB(10,11,13),RGB(11,12,14),RGB(13,14,15),RGB(15,15,15)
 };
-static const palette_color_t k_lit_dim[4] = {
-    RGB(1,1,3),RGB(2,3,4),RGB(4,5,7),RGB(8,9,11)
+static const palette_color_t k_lit_dim[10] = {
+    RGB(1,1,3),RGB(2,3,4),
+    RGB(2,3,5),RGB(3,4,6),RGB(4,5,7),RGB(5,6,8),
+    RGB(6,7,9),RGB(8,9,11),RGB(10,11,13),RGB(11,12,14)
 };
-static const palette_color_t k_lit_off[4] = {
-    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9)
+static const palette_color_t k_lit_off[10] = {
+    RGB(1,1,3),RGB(2,2,3),
+    RGB(3,4,6),RGB(3,4,6),RGB(4,5,7),RGB(4,5,7),
+    RGB(6,7,9),RGB(6,7,9),RGB(8,9,11),RGB(8,9,11)
 };
 static uint8_t g_flicker_last_level=0xffu;
 
@@ -88,7 +105,7 @@ static void set_lit_palette_level(uint8_t level){
     if(level>2u)level=2u;
     if(level==g_flicker_last_level)return;
     p=level==0u?k_lit_off:(level==1u?k_lit_dim:k_lit_bright);
-    for(i=0u;i<4u;++i)set_palette_entry(1u,(uint8_t)(i+1u),p[i]);
+    for(i=0u;i<10u;++i)set_palette_entry(1u,(uint8_t)(i+1u),p[i]);
     if(g_flicker_last_level!=0xffu)++g_room_bundle_flicker_edges;
     g_flicker_last_level=level;
     g_room_bundle_flicker_level=level;
