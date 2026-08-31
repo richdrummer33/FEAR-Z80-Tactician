@@ -562,6 +562,11 @@ static void decode_word(uint16_t word,uint8_t sem[PIXELS],uint8_t mask[PIXELS]){
     }
 }
 
+void tsp_host_composite_reset_cache(void){
+    g_ready=0u;
+    ensure_init();
+}
+
 void tsp_host_composite_begin_frame(void){
     uint8_t row,col;
     ensure_init();
