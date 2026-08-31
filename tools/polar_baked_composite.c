@@ -63,6 +63,9 @@ static uint8_t g_lit[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_light_level[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_wall_light_level[256u];
 static uint8_t g_wall_angle_enabled=1u;
+/* Default stays on the legacy-compatible quantizer so unrelated host tools
+ * retain their existing palette contract unless they explicitly opt in. */
+static uint8_t g_wall_quant_mode=TSP_HOST_LIGHT_QUANT_DITHER16;
 /* Final material veto mask. Keep it broad/cheap by default and clear only
  * authored one-sided wall/profile backfaces. Quantization and penumbra retain
  * their compact reusable vocabulary; this mask is an absolute final clamp. */
@@ -133,6 +136,11 @@ void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
 
 void tsp_host_composite_set_wall_angle_mode(uint8_t enabled){
     g_wall_angle_enabled=(uint8_t)(enabled!=0u);
+}
+
+void tsp_host_composite_set_wall_quant_mode(uint8_t mode){
+    g_wall_quant_mode=mode==TSP_HOST_LIGHT_QUANT_SOLID8?
+                      TSP_HOST_LIGHT_QUANT_SOLID8:TSP_HOST_LIGHT_QUANT_DITHER16;
 }
 
 void tsp_host_composite_set_scene(const TSPHostCompositeScene *scene){
@@ -857,11 +865,11 @@ static uint8_t light_level_pass(uint8_t level,uint16_t cell,uint8_t pi){
     return (uint8_t)(level>threshold);
 }
 
-static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
-                                 const uint8_t lit[PIXELS],
-                                 const uint8_t level[PIXELS],
-                                 uint16_t cell,
-                                 uint8_t encoded[PIXELS]){
+static uint8_t point_tile_encode_dither16(const uint8_t ambient[PIXELS],
+                                          const uint8_t lit[PIXELS],
+                                          const uint8_t level[PIXELS],
+                                          uint16_t cell,
+                                          uint8_t encoded[PIXELS]){
     uint8_t i,any=0u;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=ambient[i];
@@ -876,6 +884,73 @@ static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
         else encoded[i]=(uint8_t)(v+7u);
     }
     return 1u;
+}
+
+/*
+ * True solid-colour fallback for the actual GG experiment. Palette 1 is laid
+ * out as:
+ *   0      black
+ *   1..2   lit ceiling/floor
+ *   3..10  eight final wall brightness colours
+ *   11..12 ambient ceiling/floor inside a mixed light tile
+ *   13..15 ambient FAR/MID/NEAR wall colours inside a mixed light tile
+ *
+ * Thus edge tiles can shade wall pixels without touching adjacent floor or
+ * ceiling pixels, and cast-shadow wall pixels remain independently stable.
+ */
+static uint8_t solid_wall_level(uint8_t semantic,uint8_t level){
+    uint8_t base=(uint8_t)((semantic-SEM_FAR)*2u);
+    uint8_t light_step=(uint8_t)(((uint16_t)level*3u+7u)/15u);
+    uint8_t q=(uint8_t)(base+light_step);
+    return q>7u?7u:q;
+}
+
+static uint8_t point_tile_encode_solid8(const uint8_t ambient[PIXELS],
+                                        const uint8_t lit[PIXELS],
+                                        const uint8_t level[PIXELS],
+                                        uint8_t encoded[PIXELS]){
+    uint8_t i,any=0u;
+    for(i=0u;i<PIXELS;++i){
+        uint8_t v=ambient[i];
+        if(!lit[i])continue;
+        if(v==SEM_CEILING||v==SEM_FLOOR||
+           (v>=SEM_FAR&&v<=SEM_NEAR&&level[i]>0u)){
+            any=1u;break;
+        }
+    }
+    if(!any){memcpy(encoded,ambient,PIXELS);return 0u;}
+
+    for(i=0u;i<PIXELS;++i){
+        uint8_t v=ambient[i];
+        if(v==SEM_BLACK){encoded[i]=0u;continue;}
+        if(v==SEM_CEILING){
+            encoded[i]=lit[i]?1u:11u;
+            continue;
+        }
+        if(v==SEM_FLOOR){
+            encoded[i]=lit[i]?2u:12u;
+            continue;
+        }
+        if(v>=SEM_FAR&&v<=SEM_NEAR){
+            if(lit[i]&&level[i]>0u)
+                encoded[i]=(uint8_t)(3u+solid_wall_level(v,level[i]));
+            else
+                encoded[i]=(uint8_t)(13u+(v-SEM_FAR));
+            continue;
+        }
+        encoded[i]=0u;
+    }
+    return 1u;
+}
+
+static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
+                                 const uint8_t lit[PIXELS],
+                                 const uint8_t level[PIXELS],
+                                 uint16_t cell,
+                                 uint8_t encoded[PIXELS]){
+    if(g_wall_quant_mode==TSP_HOST_LIGHT_QUANT_SOLID8)
+        return point_tile_encode_solid8(ambient,lit,level,encoded);
+    return point_tile_encode_dither16(ambient,lit,level,cell,encoded);
 }
 
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
@@ -978,6 +1053,10 @@ int tsp_host_composite_write_ppm(const char *path){
     static const uint8_t rgb[6][3]={
         {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240}
     };
+    static const uint8_t wall8[8][3]={
+        {96,112,144},{112,128,160},{144,160,192},{160,176,208},
+        {208,224,240},{224,232,248},{240,248,255},{255,255,255}
+    };
     FILE *f=fopen(path,"wb");
     uint16_t y,x;
     if(!f)return 0;
@@ -988,9 +1067,21 @@ int tsp_host_composite_write_ppm(const char *path){
         uint16_t cell=(uint16_t)row*TSP_COLS+col;
         uint16_t pi=(uint16_t)py*8u+px;
         uint8_t v=g_cells[cell][pi];
-        if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi]&&
-           light_level_pass(g_light_level[cell][pi],cell,(uint8_t)pi))
-            v=lit_semantic(v);
+
+        if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi]){
+            if(g_wall_quant_mode==TSP_HOST_LIGHT_QUANT_SOLID8&&
+               v>=SEM_FAR&&v<=SEM_NEAR&&g_light_level[cell][pi]>0u){
+                uint8_t q=solid_wall_level(v,g_light_level[cell][pi]);
+                fwrite(wall8[q],1,3,f);
+                continue;
+            }
+            if(g_wall_quant_mode==TSP_HOST_LIGHT_QUANT_DITHER16&&
+               light_level_pass(g_light_level[cell][pi],cell,(uint8_t)pi))
+                v=lit_semantic(v);
+            else if(g_wall_quant_mode==TSP_HOST_LIGHT_QUANT_SOLID8&&
+                    (v==SEM_CEILING||v==SEM_FLOOR))
+                v=lit_semantic(v);
+        }
         if(v>5u)v=0u;
         fwrite(rgb[v],1,3,f);
     }
