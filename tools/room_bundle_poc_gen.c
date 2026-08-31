@@ -21,7 +21,7 @@
 #include "polar_baked_composite.h"
 
 #define BUNDLE_COUNT 2u
-#define ROUTE_FRAMES 160u
+#define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 16u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
@@ -94,29 +94,38 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
 static void make_world(uint8_t bundle,World *w){
     memset(w,0,sizeof(*w));
 
-    /* S-throat walls. */
+    /* Entry S-throat: room aperture is x=36, y=20..28. */
     add_seg(w,0,-4,20,-4,0,32,0);
     add_seg(w,20,-4,20,20,0,32,0);
     add_seg(w,12,4,12,28,0,32,0);
     add_seg(w,12,28,36,28,0,32,0);
 
-    /* Room left wall, split around doorway y=20..28. */
+    /* Exit S-throat is the exact entry throat rotated 180 degrees then
+     * translated by (152,48). Its room aperture is x=116, y=20..28.
+     * A camera transformed the same way therefore sees an identical canonical
+     * seam state, which is the room-to-room rebase contract. */
+    add_seg(w,152,52,132,52,0,32,0);
+    add_seg(w,132,52,132,28,0,32,0);
+    add_seg(w,140,44,140,20,0,32,0);
+    add_seg(w,140,20,116,20,0,32,0);
+
+    /* Room side walls, each split around its portal aperture. */
     add_seg(w,36,4,36,20,0,32,0);
     add_seg(w,36,28,36,60,0,32,0);
+    add_seg(w,116,4,116,20,0,32,0);
+    add_seg(w,116,28,116,60,0,32,0);
 
     if(bundle==0u){
-        /* Broad simple room. */
-        add_seg(w,36,4,92,4,0,32,0);
-        add_seg(w,92,4,92,60,0,32,0);
-        add_seg(w,92,60,36,60,0,32,0);
+        /* Broad through-room. */
+        add_seg(w,36,4,116,4,0,32,0);
+        add_seg(w,116,60,36,60,0,32,0);
     }else{
-        /* Distinct deeper room with a dog-leg/pillar-like inner occluder. */
-        add_seg(w,36,4,104,4,0,32,0);
-        add_seg(w,104,4,104,68,0,32,0);
-        add_seg(w,104,68,36,68,0,32,0);
-        add_seg(w,36,68,36,60,0,32,0);
+        /* Same connector contract, different room internals. */
+        add_seg(w,36,4,116,4,0,32,0);
+        add_seg(w,116,60,36,60,0,32,0);
         add_seg(w,66,34,78,34,0,32,1);
         add_seg(w,78,34,78,48,0,32,1);
+        add_seg(w,92,10,92,20,0,32,-1);
     }
 }
 
@@ -127,56 +136,65 @@ static uint8_t yaw_lerp(uint8_t a,uint8_t b,double q){
 }
 static double lerp(double a,double b,double q){return a+(b-a)*q;}
 
-static Pose route_pose(uint16_t f,uint8_t bundle){
+static Pose entry_outbound_pose(uint16_t f){
     Pose p;
     double q;
-    (void)bundle;
     p.z=16.0;
-
-    /* 0..15: canonical safe leg, then approach the reveal boundary. */
     if(f<16u){
         q=(double)f/15.0;
         p.x=16.0;p.y=lerp(12.0,16.0,q);p.yaw=64u;return p;
     }
-    /* 16..31: round second corner while continuing north. */
     if(f<32u){
         q=(double)(f-16u)/15.0;
         p.x=16.0;p.y=lerp(16.0,24.0,q);p.yaw=yaw_lerp(64u,0u,q);return p;
     }
-    /* 32..63: enter room. */
-    if(f<64u){
-        q=(double)(f-32u)/31.0;
-        p.x=lerp(16.0,62.0,q);p.y=24.0;p.yaw=0u;return p;
-    }
-    /* 64..79: deliberate look-around. */
+    q=(double)(f-32u)/31.0;
+    p.x=lerp(16.0,62.0,q);p.y=24.0;p.yaw=0u;return p;
+}
+
+static Pose exit_transform(Pose p){
+    p.x=152.0-p.x;
+    p.y=48.0-p.y;
+    p.yaw=(uint8_t)(p.yaw+128u);
+    return p;
+}
+
+static Pose route_pose(uint16_t f,uint8_t bundle){
+    Pose p;
+    double q;
+    (void)bundle;
+
+    /* 0..63: canonical entry seam -> inside room. */
+    if(f<64u)return entry_outbound_pose(f);
+
+    p.z=16.0;
+    /* 64..79: inspect upper side of the room. */
     if(f<80u){
         q=(double)(f-64u)/15.0;
         p.x=62.0;p.y=24.0;p.yaw=yaw_lerp(0u,32u,q);return p;
     }
-    /* 80..95: swing across the opposite side. */
+    /* 80..95: cross toward the far side on a slightly offset line. */
     if(f<96u){
         q=(double)(f-80u)/15.0;
-        p.x=62.0;p.y=24.0;p.yaw=yaw_lerp(32u,224u,q);return p;
+        p.x=lerp(62.0,90.0,q);p.y=30.0;p.yaw=yaw_lerp(32u,0u,q);return p;
     }
-    /* 96..111: turn back toward doorway. */
+    /* 96..111: look across the room rather than beelining. */
     if(f<112u){
         q=(double)(f-96u)/15.0;
-        p.x=62.0;p.y=24.0;p.yaw=yaw_lerp(224u,128u,q);return p;
+        p.x=90.0;p.y=30.0;p.yaw=yaw_lerp(0u,224u,q);return p;
     }
-    /* 112..135: return west. */
-    if(f<136u){
-        q=(double)(f-112u)/23.0;
-        p.x=lerp(62.0,16.0,q);p.y=24.0;p.yaw=128u;return p;
-    }
-    /* 136..147: turn south down the central leg. */
-    if(f<148u){
-        q=(double)(f-136u)/11.0;
-        p.x=16.0;p.y=lerp(24.0,16.0,q);p.yaw=yaw_lerp(128u,192u,q);return p;
-    }
-    /* 148..159: canonical safe leg endpoint. */
-    q=(double)(f-148u)/11.0;
-    p.x=16.0;p.y=lerp(16.0,12.0,q);p.yaw=yaw_lerp(192u,64u,q);
-    return p;
+    /* 112..127: settle beside exit while still looking back. */
+    q=(double)(f-112u)/15.0;
+    p.x=lerp(90.0,90.0,q);p.y=lerp(30.0,24.0,q);
+    p.yaw=yaw_lerp(224u,128u,q);
+    if(f<128u)return p;
+
+    /* 128..191: room -> transformed exit seam. Reversing the transformed
+     * entry trajectory intentionally means the player backs through the exit
+     * while looking toward the room. Once the inner wall occludes it, the
+     * final transformed canonical pose is exactly equivalent to frame zero. */
+    p=entry_outbound_pose((uint16_t)(191u-f));
+    return exit_transform(p);
 }
 
 static int ray_seg(double ox,double oy,double dx,double dy,const Seg *s,double *t_out){
@@ -485,7 +503,7 @@ int main(int argc,char **argv){
 
             /* Once back inside the proven safe seam leg, force the exact
              * canonical cache vocabulary before handing off to another room. */
-            if(f==148u)tsp_host_composite_reset_cache();
+            if(f==176u)tsp_host_composite_reset_cache();
 
             render_pose(&w,&p,cur);
             capture_tiles(&frames[f]);
@@ -518,7 +536,7 @@ int main(int argc,char **argv){
             if(frames[f].tile_loads>stats.raw_peak_tile_loads)
                 stats.raw_peak_tile_loads=frames[f].tile_loads;
 
-            if((f==0u||f==64u||f==96u||f==148u||f==159u)){
+            if((f==0u||f==64u||f==96u||f==176u||f==191u)){
                 snprintf(path,sizeof(path),"%s/bundle%u_frame%u.ppm",outdir,
                          (unsigned)bundle,(unsigned)f);
                 if(!tsp_host_composite_write_ppm(path))die("screenshot write failed");
