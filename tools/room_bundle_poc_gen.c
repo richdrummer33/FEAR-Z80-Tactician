@@ -583,6 +583,94 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
     return exit_transform(p);
 }
 
+static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal){
+    Pose a,b,p;
+    double q,cx=76.0,cy=24.0;
+    if(entry_portal>2u||exit_portal>2u||entry_portal==exit_portal)
+        die("invalid split route pair");
+
+    if(f<64u)
+        return portal_transform_pose(entry_outbound_pose(f),entry_portal);
+
+    if(f>=128u)
+        return portal_transform_pose(entry_outbound_pose((uint16_t)(191u-f)),exit_portal);
+
+    a=portal_transform_pose(entry_outbound_pose(63u),entry_portal);
+    b=portal_transform_pose(entry_outbound_pose(63u),exit_portal);
+    q=(double)(f-64u)/63.0;
+
+    {
+        double u=1.0-q;
+        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
+        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
+        p.z=16.0;
+    }
+    {
+        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
+        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
+        int look=(int)lround(sin(q*PI)*32.0);
+        if(((uint8_t)(entry_portal+exit_portal)&1u)==0u)look=-look;
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)look);
+    }
+    return p;
+}
+
+static Pose stair_forward_pose(uint16_t f){
+    Pose p,a,b;
+    double q,cx=84.0,cy=36.0;
+    if(f<64u){
+        p=entry_outbound_pose(f);
+        p.z=16.0+stair_floor_z(p.x,p.y);
+        return p;
+    }
+    if(f>=128u){
+        p=entry_outbound_pose((uint16_t)(191u-f));
+        return portal_transform_pose_z(p,76.0,80.0,3u,4.0);
+    }
+
+    a=entry_outbound_pose(63u);
+    a.z=16.0+stair_floor_z(a.x,a.y);
+    b=portal_transform_pose_z(entry_outbound_pose(63u),76.0,80.0,3u,4.0);
+    q=(double)(f-64u)/63.0;
+    {
+        double u=1.0-q;
+        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
+        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
+        p.z=16.0+stair_floor_z(p.x,p.y);
+    }
+    {
+        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
+        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*20.0));
+    }
+    return p;
+}
+
+static Pose turn_forward_pose(uint16_t f){
+    Pose p,a,b;
+    double q,cx=86.0,cy=38.0;
+    if(f<64u)return entry_outbound_pose(f);
+    if(f>=128u)
+        return portal_transform_pose_z(entry_outbound_pose((uint16_t)(191u-f)),
+                                       76.0,80.0,3u,0.0);
+
+    a=entry_outbound_pose(63u);
+    b=portal_transform_pose_z(entry_outbound_pose(63u),76.0,80.0,3u,0.0);
+    q=(double)(f-64u)/63.0;
+    {
+        double u=1.0-q;
+        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
+        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
+        p.z=16.0;
+    }
+    {
+        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
+        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*24.0));
+    }
+    return p;
+}
+
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
     if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u){
