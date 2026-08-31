@@ -52,6 +52,9 @@ typedef struct World {
     /* Window/porthole bundles need multiple depth layers in one screen
      * column. Keep the legacy nearest-surface bake untouched elsewhere. */
     uint8_t multi_surface;
+    uint8_t aperture_proof;
+    uint8_t proof_reveal_sid;
+    uint8_t proof_far_sid;
 } World;
 typedef struct Pose {
     double x,y,z;
@@ -206,10 +209,10 @@ static void add_two_portal_seams(World *w,double mouth_lo,double mouth_hi){
  * deferred: this first 2.5D proof gets visible thickness from face parallax and
  * the side reveals without inventing horizontal mid-air quads.
  */
-static void add_thick_window_wall_y(World *w,
-                                    double x0,double x1,
-                                    double y0,double y1,
-                                    double open_x0,double open_x1){
+static uint8_t add_thick_window_wall_y(World *w,
+                                       double x0,double x1,
+                                       double y0,double y1,
+                                       double open_x0,double open_x1){
     /* South/front face. */
     add_seg(w,x0,y0,open_x0,y0,0,32,0);
     add_seg_profile(w,open_x0,y0,open_x1,y0,0,8,0,TSP_PROFILE_WINDOW_SILL);
@@ -227,10 +230,14 @@ static void add_thick_window_wall_y(World *w,
     add_seg(w,x1,y0,x1,y1,0,32,0);
 
     /* Recessed vertical jamb/reveal faces inside the porthole. */
-    add_seg_profile(w,open_x0,y0,open_x0,y1,8,24,1,
-                    TSP_PROFILE_WINDOW_REVEAL);
-    add_seg_profile(w,open_x1,y1,open_x1,y0,8,24,1,
-                    TSP_PROFILE_WINDOW_REVEAL);
+    {
+        uint8_t first_reveal=w->count;
+        add_seg_profile(w,open_x0,y0,open_x0,y1,8,24,1,
+                        TSP_PROFILE_WINDOW_REVEAL);
+        add_seg_profile(w,open_x1,y1,open_x1,y0,8,24,1,
+                        TSP_PROFILE_WINDOW_REVEAL);
+        return first_reveal;
+    }
 }
 
 /* Shared S-shaped seam plus one room beyond its east aperture.
@@ -512,15 +519,17 @@ static void make_interior_porthole_world(World *w){
 
     /* A freestanding thick divider. The route stays south of it and looks
      * through the aperture into the north half of the SAME room. */
-    add_thick_window_wall_y(w,48,104,48,54,70,90);
+    w->proof_reveal_sid=add_thick_window_wall_y(w,48,104,48,54,70,90);
 
     /* A farther object makes the through-wall depth unmistakable. */
+    w->proof_far_sid=w->count;
     add_seg(w,62,78,74,78,0,32,1);
     add_seg(w,74,78,74,84,0,32,1);
     add_seg(w,74,84,62,84,0,32,1);
     add_seg(w,62,84,62,78,0,32,1);
 
     w->multi_surface=1u;
+    w->aperture_proof=1u;
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
     finalize_scene(w);
 }
@@ -538,7 +547,7 @@ static void make_exterior_porthole_world(World *w){
     add_seg(w,36,-24,116,-24,0,32,0);
     add_rect(w,36,-24,116,72,0,32);
 
-    add_thick_window_wall_y(w,36,116,72,78,70,90);
+    w->proof_reveal_sid=add_thick_window_wall_y(w,36,116,72,78,70,90);
 
     /* Shallow inaccessible exterior court/lightwell. It deliberately has no
      * traversable connection; the porthole is visual-only. A bright far wall
@@ -551,12 +560,14 @@ static void make_exterior_porthole_world(World *w){
     /* Offset exterior masonry post: a deliberately simple depth cue visible
      * through the aperture, proving that the bright rectangle is a view into
      * space rather than merely a differently coloured wall patch. */
+    w->proof_far_sid=w->count;
     add_seg(w,82,104,90,104,0,32,1);
     add_seg(w,90,104,90,114,0,32,1);
     add_seg(w,90,114,82,114,0,32,1);
     add_seg(w,82,114,82,104,0,32,1);
 
     w->multi_surface=1u;
+    w->aperture_proof=1u;
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
     finalize_scene(w);
 }
