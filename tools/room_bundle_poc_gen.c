@@ -20,7 +20,8 @@
 #include "tilesector_polar.h"
 #include "polar_baked_composite.h"
 
-#define BUNDLE_COUNT 10u
+#define BASE_BUNDLE_COUNT 8u
+#define PORTHOLE_BUNDLE_COUNT 2u
 #define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
@@ -1159,7 +1160,7 @@ static void emit_route(FILE *pack,FILE *manifest,uint8_t bundle,
 }
 
 static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
-                       uint8_t bundle,World *w,
+                       uint8_t pack_bundle,uint8_t visual_bundle,World *w,
                        uint8_t entry_portal,uint8_t exit_portal,
                        uint16_t canonical[TSP_MAP_CELLS],
                        uint64_t *canonical_hash,uint8_t *canonical_ready){
@@ -1175,7 +1176,7 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
     tsp_host_composite_reset_cache();
 
     for(f=0u;f<ROUTE_FRAMES;++f){
-        Pose p=route_pose_portals(f,bundle,entry_portal,exit_portal);
+        Pose p=route_pose_portals(f,visual_bundle,entry_portal,exit_portal);
 
         /* Both route directions terminate inside the canonical hidden leg. */
         if(f==176u)tsp_host_composite_reset_cache();
@@ -1215,7 +1216,7 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 
         if(f==0u||f==64u||f==80u||f==96u||f==112u||f==176u||f==191u){
             snprintf(path,sizeof(path),"%s/bundle%u_route%u%u_frame%u.ppm",
-                     outdir,(unsigned)bundle,(unsigned)entry_portal,
+                     outdir,(unsigned)pack_bundle,(unsigned)entry_portal,
                      (unsigned)exit_portal,(unsigned)f);
             if(!tsp_host_composite_write_ppm(path))die("route screenshot write failed");
         }
@@ -1237,9 +1238,9 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 
     fprintf(manifest,
             "bundle=%u route=%u->%u canonical_begin=PASS canonical_end=PASS terminal_hash=%016llX\n",
-            (unsigned)bundle,(unsigned)entry_portal,(unsigned)exit_portal,
+            (unsigned)pack_bundle,(unsigned)entry_portal,(unsigned)exit_portal,
             (unsigned long long)fnv64(prev,sizeof(prev)));
-    emit_route(pack,manifest,bundle,entry_portal,exit_portal,frames,&stats);
+    emit_route(pack,manifest,pack_bundle,entry_portal,exit_portal,frames,&stats);
     free(maps);
     free(frames);
 }
@@ -1254,10 +1255,13 @@ int main(int argc,char **argv){
     uint64_t canonical_hash=0u;
     uint8_t canonical_ready=0u;
     uint8_t bundle;
+    uint8_t pack_bundle_count=BASE_BUNDLE_COUNT;
+    uint8_t visual_bundle_base=0u;
+    const char *pack_mode="base";
 
     if(argc<2||argc>3){
         fprintf(stderr,
-                "usage: %s OUTPUT_DIR [--legacy-binary-light|--wall-angle-no-view|--dither16-angle]\n",
+                "usage: %s OUTPUT_DIR [--legacy-binary-light|--wall-angle-no-view|--dither16-angle|--portholes-only]\n",
                 argv[0]);
         return 2;
     }
@@ -1269,6 +1273,10 @@ int main(int argc,char **argv){
             g_view_term_steps=0u;
         }else if(strcmp(argv[2],"--dither16-angle")==0){
             quant_mode=TSP_HOST_LIGHT_QUANT_DITHER16;
+        }else if(strcmp(argv[2],"--portholes-only")==0){
+            pack_bundle_count=PORTHOLE_BUNDLE_COUNT;
+            visual_bundle_base=BASE_BUNDLE_COUNT;
+            pack_mode="portholes";
         }else{
             fprintf(stderr,"unknown option: %s\n",argv[2]);
             return 2;
@@ -1282,35 +1290,39 @@ int main(int argc,char **argv){
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
     fwrite("RBP2",1,4,pack);
     write_u16(pack,2u);
-    fputc(BUNDLE_COUNT,pack);
+    fputc(pack_bundle_count,pack);
     fputc(0,pack);
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_manifest.txt",outdir);
     manifest=fopen(path,"w");if(!manifest)die("cannot create room bundle manifest");
     fprintf(manifest,"Room bundle PoC pack v2 - independently scheduled portal routes\n");
+    fprintf(manifest,"pack_mode=%s local_bundle_count=%u visual_bundle_base=%u\n",
+            pack_mode,(unsigned)pack_bundle_count,(unsigned)visual_bundle_base);
     fprintf(manifest,"wall_angle_light=%s quant=%s view_term_max_steps=%u\n",
             wall_angle_enabled?"ON":"LEGACY_BINARY",
             quant_mode==TSP_HOST_LIGHT_QUANT_SOLID8?"SOLID8":"DITHER16",
             (unsigned)(wall_angle_enabled?g_view_term_steps:0u));
 
-    for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
+    for(bundle=0u;bundle<pack_bundle_count;++bundle){
         World w;
-        make_world(bundle,&w);
+        uint8_t visual_bundle=(uint8_t)(visual_bundle_base+bundle);
+        make_world(visual_bundle,&w);
         fputc((int)bundle,pack);
-        if(bundle==2u){
+        if(visual_bundle==2u){
             static const uint8_t pairs[6][2]={{0,1},{1,0},{0,2},{2,0},{1,2},{2,1}};
             uint8_t r;
             fputc(6,pack);
             write_u16(pack,0u);
             for(r=0u;r<6u;++r)
-                bake_route(outdir,pack,manifest,bundle,&w,pairs[r][0],pairs[r][1],
+                bake_route(outdir,pack,manifest,bundle,visual_bundle,&w,
+                           pairs[r][0],pairs[r][1],
                            canonical,&canonical_hash,&canonical_ready);
         }else{
             fputc(2,pack);
             write_u16(pack,0u);
-            bake_route(outdir,pack,manifest,bundle,&w,0u,1u,
+            bake_route(outdir,pack,manifest,bundle,visual_bundle,&w,0u,1u,
                        canonical,&canonical_hash,&canonical_ready);
-            bake_route(outdir,pack,manifest,bundle,&w,1u,0u,
+            bake_route(outdir,pack,manifest,bundle,visual_bundle,&w,1u,0u,
                        canonical,&canonical_hash,&canonical_ready);
         }
     }
@@ -1322,7 +1334,8 @@ int main(int argc,char **argv){
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
-    fprintf(manifest,"eight_module_catalog=PASS\n");
+    if(visual_bundle_base==0u)fprintf(manifest,"eight_module_catalog=PASS\n");
+    else fprintf(manifest,"thick_porthole_pair=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
@@ -1336,8 +1349,11 @@ int main(int argc,char **argv){
     fclose(manifest);fclose(pack);
     tsp_host_composite_set_scene((const TSPHostCompositeScene *)0);
 
-    printf("ROOM_BUNDLE_POC_PASS bundles=%u ordinary_routes=2 split_routes=6 stair_routes=2 frames_per_route=%u canonical=%016llX wall_angle=%s quant=%s view_steps=%u\n",
-           BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash,
+    printf("ROOM_BUNDLE_POC_PASS mode=%s bundles=%u ordinary_routes=2 split_routes=%u stair_routes=%u frames_per_route=%u canonical=%016llX wall_angle=%s quant=%s view_steps=%u\n",
+           pack_mode,(unsigned)pack_bundle_count,
+           visual_bundle_base==0u?6u:0u,
+           visual_bundle_base==0u?2u:0u,
+           ROUTE_FRAMES,(unsigned long long)canonical_hash,
            wall_angle_enabled?"ON":"LEGACY_BINARY",
            quant_mode==TSP_HOST_LIGHT_QUANT_SOLID8?"SOLID8":"DITHER16",
            (unsigned)(wall_angle_enabled?g_view_term_steps:0u));
