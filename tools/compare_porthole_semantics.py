@@ -11,13 +11,15 @@ HOST = {
     (144, 160, 192): 4,
     (208, 224, 240): 5,
 }
+# Native Gearsystem RGBA8888 expands the Game Gear's 4-bit channels to
+# exact 0x11 steps. (Libretro's packed path rounds slightly differently.)
 GG = {
     (0, 0, 0): 0,
-    (16, 16, 49): 1,
-    (32, 32, 49): 2,
-    (49, 68, 98): 3,
-    (98, 117, 156): 4,
-    (172, 186, 222): 5,
+    (17, 17, 51): 1,
+    (34, 34, 51): 2,
+    (51, 68, 102): 3,
+    (102, 119, 153): 4,
+    (170, 187, 221): 5,
 }
 
 PAIRS = (
