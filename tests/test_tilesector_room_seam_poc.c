@@ -16,7 +16,7 @@ int main(void){
      * every Q4 point across both room apertures. A single unblocked ray means
      * the room-retirement/prefetch contract is false. */
     for(cx=s->safe_x0_q4;cx<=s->safe_x1_q4;++cx){
-        for(cy=s->retire_old_y_q4;cy<Q(19);++cy){
+        for(cy=s->retire_old_y_q4;cy<s->reveal_new_y_q4;++cy){
             for(ty=s->old_aperture.y0_q4;ty<=s->old_aperture.y1_q4;++ty){
                 ++old_rays;
                 if(!tsp_seam_poc_ray_blocked(cx,cy,s->old_aperture.x_q4,ty,
