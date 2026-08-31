@@ -33,6 +33,10 @@ void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera);
  * Game Gear tile cache. Patterns retained between frames keep their slot;
  * newly needed patterns generate explicit pre-baked tile-pattern uploads.
  */
+/* Reset the simulated VRAM cache to the canonical permanent base tiles.
+ * Room-bundle bakes call this before each independent bundle so no route
+ * inherits dynamic slot state from a previous room. */
+void tsp_host_composite_reset_cache(void);
 void tsp_host_composite_begin_frame(void);
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
