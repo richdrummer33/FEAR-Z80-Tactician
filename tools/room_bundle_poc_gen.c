@@ -100,8 +100,14 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
 
     w->scene_vertices[v0].x=(int16_t)lround(ax);
     w->scene_vertices[v0].y=(int16_t)lround(ay);
+    w->scene_vertices[v0].x_q4=(int16_t)lround(ax*16.0);
+    w->scene_vertices[v0].y_q4=(int16_t)lround(ay*16.0);
+    w->scene_vertices[v0].has_exact_q4=1u;
     w->scene_vertices[v1].x=(int16_t)lround(bx);
     w->scene_vertices[v1].y=(int16_t)lround(by);
+    w->scene_vertices[v1].x_q4=(int16_t)lround(bx*16.0);
+    w->scene_vertices[v1].y_q4=(int16_t)lround(by*16.0);
+    w->scene_vertices[v1].has_exact_q4=1u;
     w->scene_vertex_count=(uint8_t)(v1+1u);
 
     ls=&w->scene_segments[sid];
