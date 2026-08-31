@@ -634,10 +634,10 @@ static Pose turn_forward_pose(uint16_t f){
     double q,cx=86.0,cy=38.0;
     if(f<64u)return entry_outbound_pose(f);
     if(f>=128u)
-        return portal_transform_pose(entry_outbound_pose((uint16_t)(191u-f)),1u);
+        return portal_transform_pose_z(entry_outbound_pose((uint16_t)(191u-f)),76.0,80.0,3u,0.0);
 
     a=entry_outbound_pose(63u);
-    b=portal_transform_pose(entry_outbound_pose(63u),1u);
+    b=portal_transform_pose_z(entry_outbound_pose(63u),76.0,80.0,3u,0.0);
     q=(double)(f-64u)/63.0;
     {
         double u=1.0-q;
