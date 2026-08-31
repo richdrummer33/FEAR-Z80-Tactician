@@ -58,7 +58,10 @@ void main(void){
     set_bkg_palette(0u,1u,pal);
     set_bkg_4bpp_data(0u,1u,g_tile);
     set_tile_map(0u,0u,32u,28u,g_map);
-    g_room_poc_bank_probe_status=ok?1u:2u;
+
+    /* Little-endian RAM bytes are 01 3F on complete success:
+     * low byte = pass/fail status; high byte = six sentinel bits. */
+    g_room_poc_bank_probe_status=(uint16_t)(((uint16_t)mask<<8)|(ok?1u:2u));
     DISPLAY_ON;
 
     for(;;)vsync();
