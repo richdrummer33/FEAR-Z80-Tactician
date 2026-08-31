@@ -274,6 +274,15 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
     return exit_transform(p);
 }
 
+static Pose route_pose_portals(uint16_t f,uint8_t bundle,
+                               uint8_t entry_portal,uint8_t exit_portal){
+    Pose p=route_pose(f,bundle);
+    if(entry_portal==0u&&exit_portal==1u)return p;
+    if(entry_portal==1u&&exit_portal==0u)return exit_transform(p);
+    die("invalid room route portal pair");
+    return p;
+}
+
 static int ray_seg(double ox,double oy,double dx,double dy,const Seg *s,double *t_out){
     double sx=s->b.x-s->a.x,sy=s->b.y-s->a.y;
     double den=dx*sy-dy*sx,qx,qy,t,u;
@@ -508,21 +517,24 @@ static uint64_t fnv64(const void *data,size_t n){
 static void write_u16(FILE *f,uint16_t v){fputc((int)(v&255u),f);fputc((int)(v>>8),f);}
 static void write_u32(FILE *f,uint32_t v){write_u16(f,(uint16_t)v);write_u16(f,(uint16_t)(v>>16));}
 
-static void emit_bundle(FILE *pack,FILE *manifest,uint8_t bundle,
-                        FramePack frames[ROUTE_FRAMES],
-                        const uint16_t canonical[TSP_MAP_CELLS],
-                        BundleStats *stats){
+static void emit_route(FILE *pack,FILE *manifest,uint8_t bundle,
+                       uint8_t entry_portal,uint8_t exit_portal,
+                       FramePack frames[ROUTE_FRAMES],
+                       BundleStats *stats){
     uint16_t i;
-    fprintf(manifest,"bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak_tile_loads=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
-            (unsigned)bundle,(unsigned)ROUTE_FRAMES,
+    fprintf(manifest,
+            "bundle=%u route=%u->%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak_tile_loads=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
+            (unsigned)bundle,(unsigned)entry_portal,(unsigned)exit_portal,
+            (unsigned)ROUTE_FRAMES,
             (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
             (unsigned long)stats->tile_loads,
             (unsigned)stats->raw_peak_tile_loads,
             (unsigned)stats->peak_tile_loads,
             (unsigned)stats->scheduled_budget,
             (unsigned)stats->changed_words);
-    printf("ROOM_BUNDLE_STATS bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
-           (unsigned)bundle,(unsigned)ROUTE_FRAMES,
+    printf("ROOM_BUNDLE_STATS bundle=%u route=%u->%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
+           (unsigned)bundle,(unsigned)entry_portal,(unsigned)exit_portal,
+           (unsigned)ROUTE_FRAMES,
            (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
            (unsigned long)stats->tile_loads,
            (unsigned)stats->raw_peak_tile_loads,
@@ -530,7 +542,8 @@ static void emit_bundle(FILE *pack,FILE *manifest,uint8_t bundle,
            (unsigned)stats->scheduled_budget,
            (unsigned)stats->changed_words);
 
-    fputc((int)bundle,pack);fputc(1,pack);
+    fputc((int)entry_portal,pack);
+    fputc((int)exit_portal,pack);
     write_u16(pack,ROUTE_FRAMES);
     write_u32(pack,stats->patch_bytes);
     write_u32(pack,stats->tile_bytes);
@@ -540,7 +553,92 @@ static void emit_bundle(FILE *pack,FILE *manifest,uint8_t bundle,
         fwrite(frames[i].patch,1,frames[i].patch_len,pack);
         fwrite(frames[i].tile,1,frames[i].tile_len,pack);
     }
-    (void)canonical;
+}
+
+static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
+                       uint8_t bundle,World *w,
+                       uint8_t entry_portal,uint8_t exit_portal,
+                       uint16_t canonical[TSP_MAP_CELLS],
+                       uint64_t *canonical_hash,uint8_t *canonical_ready){
+    char path[512];
+    FramePack *frames=(FramePack *)calloc(ROUTE_FRAMES,sizeof(FramePack));
+    uint16_t *maps=(uint16_t *)malloc((size_t)ROUTE_FRAMES*TSP_MAP_CELLS*sizeof(uint16_t));
+    uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],replay[TSP_MAP_CELLS];
+    BundleStats stats={0};
+    uint16_t f;
+    if(!frames||!maps)die("bundle route allocation failed");
+
+    tsp_host_composite_set_scene(&w->scene);
+    tsp_host_composite_reset_cache();
+
+    for(f=0u;f<ROUTE_FRAMES;++f){
+        Pose p=route_pose_portals(f,bundle,entry_portal,exit_portal);
+
+        /* Both route directions terminate inside the canonical hidden leg. */
+        if(f==176u)tsp_host_composite_reset_cache();
+
+        render_pose(w,&p,cur);
+        capture_tiles(&frames[f]);
+        memcpy(maps+(size_t)f*TSP_MAP_CELLS,cur,sizeof(cur));
+
+        if(f==0u){
+            memcpy(prev,cur,sizeof(prev));
+            memcpy(replay,cur,sizeof(replay));
+            frames[f].patch_len=(uint16_t)build_patch(cur,cur,frames[f].patch,
+                                                      &frames[f].changed,&frames[f].runs);
+            if(!*canonical_ready){
+                memcpy(canonical,cur,sizeof(cur));
+                *canonical_hash=fnv64(canonical,sizeof(cur));
+                *canonical_ready=1u;
+            }else if(memcmp(canonical,cur,sizeof(cur))!=0){
+                die("route initial seam name table != canonical seam");
+            }
+        }else{
+            frames[f].patch_len=(uint16_t)build_patch(prev,cur,frames[f].patch,
+                                                      &frames[f].changed,&frames[f].runs);
+            memcpy(replay,prev,sizeof(replay));
+            if(!apply_patch(replay,frames[f].patch,frames[f].patch_len)||
+               memcmp(replay,cur,sizeof(cur))!=0)
+                die("bundle route patch replay != oracle");
+            memcpy(prev,cur,sizeof(prev));
+        }
+
+        stats.patch_bytes+=frames[f].patch_len;
+        stats.tile_bytes+=frames[f].tile_len;
+        stats.tile_loads+=frames[f].tile_loads;
+        stats.changed_words=(uint16_t)(stats.changed_words+frames[f].changed);
+        if(frames[f].tile_loads>stats.raw_peak_tile_loads)
+            stats.raw_peak_tile_loads=frames[f].tile_loads;
+
+        if(f==0u||f==64u||f==96u||f==176u||f==191u){
+            snprintf(path,sizeof(path),"%s/bundle%u_route%u%u_frame%u.ppm",
+                     outdir,(unsigned)bundle,(unsigned)entry_portal,
+                     (unsigned)exit_portal,(unsigned)f);
+            if(!tsp_host_composite_write_ppm(path))die("route screenshot write failed");
+        }
+    }
+
+    if(memcmp(prev,canonical,sizeof(prev))!=0)
+        die("route terminal seam name table != canonical seam");
+
+    stats.scheduled_budget=schedule_bundle_tiles(frames,maps);
+    stats.tile_bytes=0u;
+    stats.tile_loads=0u;
+    stats.peak_tile_loads=0u;
+    for(f=0u;f<ROUTE_FRAMES;++f){
+        stats.tile_bytes+=frames[f].tile_len;
+        stats.tile_loads+=frames[f].tile_loads;
+        if(frames[f].tile_loads>stats.peak_tile_loads)
+            stats.peak_tile_loads=frames[f].tile_loads;
+    }
+
+    fprintf(manifest,
+            "bundle=%u route=%u->%u canonical_begin=PASS canonical_end=PASS terminal_hash=%016llX\n",
+            (unsigned)bundle,(unsigned)entry_portal,(unsigned)exit_portal,
+            (unsigned long long)fnv64(prev,sizeof(prev)));
+    emit_route(pack,manifest,bundle,entry_portal,exit_portal,frames,&stats);
+    free(maps);
+    free(frames);
 }
 
 int main(int argc,char **argv){
@@ -549,6 +647,7 @@ int main(int argc,char **argv){
     FILE *pack,*manifest;
     uint16_t canonical[TSP_MAP_CELLS];
     uint64_t canonical_hash=0u;
+    uint8_t canonical_ready=0u;
     uint8_t bundle;
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
@@ -556,95 +655,32 @@ int main(int argc,char **argv){
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
-    fwrite("RBP1",1,4,pack);write_u16(pack,1u);fputc(BUNDLE_COUNT,pack);fputc(0,pack);
+    fwrite("RBP2",1,4,pack);
+    write_u16(pack,2u);
+    fputc(BUNDLE_COUNT,pack);
+    fputc(0,pack);
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_manifest.txt",outdir);
     manifest=fopen(path,"w");if(!manifest)die("cannot create room bundle manifest");
-    fprintf(manifest,"Room bundle PoC pack v1\n");
+    fprintf(manifest,"Room bundle PoC pack v2 - independently scheduled portal routes\n");
 
     for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
         World w;
-        FramePack *frames=(FramePack *)calloc(ROUTE_FRAMES,sizeof(FramePack));
-        uint16_t *maps=(uint16_t *)malloc((size_t)ROUTE_FRAMES*TSP_MAP_CELLS*sizeof(uint16_t));
-        uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],replay[TSP_MAP_CELLS];
-        BundleStats stats={0};
-        uint16_t f;
-        if(!frames||!maps)die("bundle frame/map allocation failed");
         make_world(bundle,&w);
-        tsp_host_composite_set_scene(&w.scene);
-
-        /* Independent bundle: no dynamic VRAM history inherited. */
-        tsp_host_composite_reset_cache();
-
-        for(f=0u;f<ROUTE_FRAMES;++f){
-            Pose p=route_pose(f,bundle);
-
-            /* Once back inside the proven safe seam leg, force the exact
-             * canonical cache vocabulary before handing off to another room. */
-            if(f==176u)tsp_host_composite_reset_cache();
-
-            render_pose(&w,&p,cur);
-            capture_tiles(&frames[f]);
-            memcpy(maps+(size_t)f*TSP_MAP_CELLS,cur,sizeof(cur));
-
-            if(f==0u){
-                memcpy(prev,cur,sizeof(prev));
-                memcpy(replay,cur,sizeof(replay));
-                frames[f].patch_len=(uint16_t)build_patch(cur,cur,frames[f].patch,
-                                                          &frames[f].changed,&frames[f].runs);
-                if(bundle==0u){
-                    memcpy(canonical,cur,sizeof(canonical));
-                    canonical_hash=fnv64(canonical,sizeof(canonical));
-                }else if(memcmp(canonical,cur,sizeof(canonical))!=0)
-                    die("bundle initial seam name table != canonical seam");
-            }else{
-                frames[f].patch_len=(uint16_t)build_patch(prev,cur,frames[f].patch,
-                                                          &frames[f].changed,&frames[f].runs);
-                memcpy(replay,prev,sizeof(replay));
-                if(!apply_patch(replay,frames[f].patch,frames[f].patch_len)||
-                   memcmp(replay,cur,sizeof(cur))!=0)
-                    die("bundle patch replay != oracle");
-                memcpy(prev,cur,sizeof(prev));
-            }
-
-            stats.patch_bytes+=frames[f].patch_len;
-            stats.tile_bytes+=frames[f].tile_len;
-            stats.tile_loads+=frames[f].tile_loads;
-            stats.changed_words=(uint16_t)(stats.changed_words+frames[f].changed);
-            if(frames[f].tile_loads>stats.raw_peak_tile_loads)
-                stats.raw_peak_tile_loads=frames[f].tile_loads;
-
-            if((f==0u||f==64u||f==96u||f==176u||f==191u)){
-                snprintf(path,sizeof(path),"%s/bundle%u_frame%u.ppm",outdir,
-                         (unsigned)bundle,(unsigned)f);
-                if(!tsp_host_composite_write_ppm(path))die("screenshot write failed");
-            }
-        }
-
-        if(memcmp(prev,canonical,sizeof(canonical))!=0)
-            die("bundle terminal seam name table != canonical seam");
-
-        stats.scheduled_budget=schedule_bundle_tiles(frames,maps);
-        stats.tile_bytes=0u;
-        stats.tile_loads=0u;
-        stats.peak_tile_loads=0u;
-        for(f=0u;f<ROUTE_FRAMES;++f){
-            stats.tile_bytes+=frames[f].tile_len;
-            stats.tile_loads+=frames[f].tile_loads;
-            if(frames[f].tile_loads>stats.peak_tile_loads)
-                stats.peak_tile_loads=frames[f].tile_loads;
-        }
-
-        fprintf(manifest,"bundle=%u canonical_begin=PASS canonical_end=PASS terminal_hash=%016llX\n",
-                (unsigned)bundle,(unsigned long long)fnv64(prev,sizeof(prev)));
-        emit_bundle(pack,manifest,bundle,frames,canonical,&stats);
-        free(maps);
-        free(frames);
+        fputc((int)bundle,pack);
+        fputc(2,pack);
+        write_u16(pack,0u);
+        bake_route(outdir,pack,manifest,bundle,&w,0u,1u,
+                   canonical,&canonical_hash,&canonical_ready);
+        bake_route(outdir,pack,manifest,bundle,&w,1u,0u,
+                   canonical,&canonical_hash,&canonical_ready);
     }
 
+    if(!canonical_ready)die("canonical seam was never established");
     fprintf(manifest,"canonical_seam_fnv64=%016llX\n",(unsigned long long)canonical_hash);
     fprintf(manifest,"independent_bundle_replay=PASS\n");
     fprintf(manifest,"cross_bundle_canonical_handoff=PASS\n");
+    fprintf(manifest,"bidirectional_portal_routes=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
@@ -656,8 +692,9 @@ int main(int argc,char **argv){
     }
 
     fclose(manifest);fclose(pack);
+    tsp_host_composite_set_scene((const TSPHostCompositeScene *)0);
 
-    printf("ROOM_BUNDLE_POC_PASS bundles=%u frames_per_bundle=%u canonical=%016llX\n",
+    printf("ROOM_BUNDLE_POC_PASS bundles=%u routes_per_bundle=2 frames_per_route=%u canonical=%016llX\n",
            BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash);
     return 0;
 }
