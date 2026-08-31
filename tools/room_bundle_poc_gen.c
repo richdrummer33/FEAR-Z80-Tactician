@@ -20,11 +20,11 @@
 #include "tilesector_polar.h"
 #include "polar_baked_composite.h"
 
-#define BUNDLE_COUNT 2u
+#define BUNDLE_COUNT 3u
 #define ROUTE_FRAMES 192u
-#define MAX_SEGMENTS 24u
+#define MAX_SEGMENTS 40u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
-#define MAX_SCENE_RECTS 4u
+#define MAX_SCENE_RECTS 6u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
@@ -121,12 +121,41 @@ static void finalize_scene(World *w){
     w->scene.segments=w->scene_segments;
     w->scene.segment_count=w->count;
     w->scene.lights=w->scene_lights;
-    w->scene.light_count=1u;
+    w->scene.light_count=(uint8_t)(w->lighting_stage>=TSP_HOST_LIGHT_HARD?1u:0u);
     w->scene.rects=w->scene_rects;
     w->scene.rect_count=w->scene_rect_count;
 }
 static void add_transformed_exit_seg(World *w,double ax,double ay,double bx,double by){
     add_seg(w,152.0-ax,48.0-ay,152.0-bx,48.0-by,0,32,0);
+}
+
+static void transform_point(double x,double y,double tx,double ty,uint8_t rot,
+                            double *ox,double *oy){
+    double rx=x-36.0,ry=y-24.0,nx,ny;
+    switch(rot&3u){
+        case 1u:nx=-ry;ny=rx;break;
+        case 2u:nx=-rx;ny=-ry;break;
+        case 3u:nx=ry;ny=-rx;break;
+        default:nx=rx;ny=ry;break;
+    }
+    *ox=tx+nx;*oy=ty+ny;
+}
+static void add_xform_seg(World *w,double ax,double ay,double bx,double by,
+                          double tx,double ty,uint8_t rot){
+    double x0,y0,x1,y1;
+    transform_point(ax,ay,tx,ty,rot,&x0,&y0);
+    transform_point(bx,by,tx,ty,rot,&x1,&y1);
+    add_seg(w,x0,y0,x1,y1,0,32,0);
+}
+static void add_canonical_seam(World *w,double tx,double ty,uint8_t rot,
+                               double mouth_lo,double mouth_hi){
+    add_xform_seg(w,0,-4,20,-4,tx,ty,rot);
+    add_xform_seg(w,20,-4,20,20,tx,ty,rot);
+    add_xform_seg(w,20,20,28,20,tx,ty,rot);
+    add_xform_seg(w,28,20,36,mouth_lo,tx,ty,rot);
+    add_xform_seg(w,12,4,12,28,tx,ty,rot);
+    add_xform_seg(w,12,28,28,28,tx,ty,rot);
+    add_xform_seg(w,28,28,36,mouth_hi,tx,ty,rot);
 }
 
 /* Shared S-shaped seam plus one room beyond its east aperture.
@@ -140,7 +169,7 @@ static void add_transformed_exit_seg(World *w,double ax,double ay,double bx,doub
  * The route uses only the new/east room. The old side exists only to make the
  * seam geometry complete and symmetric for later predecessor handoff tests.
  */
-static void make_world(uint8_t bundle,World *w){
+static void make_linear_world(uint8_t bundle,World *w){
     double mouth_lo=bundle==0u?12.0:16.0;
     double mouth_hi=bundle==0u?36.0:32.0;
     double room_y0=bundle==0u?-28.0:-4.0;
@@ -206,6 +235,41 @@ static void make_world(uint8_t bundle,World *w){
     finalize_scene(w);
 }
 
+static void make_split_world(World *w){
+    const double mouth_lo=12.0,mouth_hi=36.0;
+    memset(w,0,sizeof(*w));
+
+    /* Portal 0: west entry. Portal 1: north exit. Portal 2: south exit.
+     * All three are exact rigid transforms of the canonical hidden seam. */
+    add_canonical_seam(w,36.0,24.0,0u,mouth_lo,mouth_hi);
+    add_canonical_seam(w,76.0,88.0,3u,mouth_lo,mouth_hi);
+    add_canonical_seam(w,76.0,-40.0,1u,mouth_lo,mouth_hi);
+
+    /* Broad T-room. The two exit mouths are simultaneously visible from much
+     * of the centre, while each successor remains hidden beyond its S-throat. */
+    add_seg(w,36,-40,36,12,0,32,0);
+    add_seg(w,36,36,36,88,0,32,0);
+    add_seg(w,116,-40,116,88,0,32,0);
+    add_seg(w,36,88,64,88,0,32,0);
+    add_seg(w,88,88,116,88,0,32,0);
+    add_seg(w,36,-40,64,-40,0,32,0);
+    add_seg(w,88,-40,116,-40,0,32,0);
+
+    /* Central divider gives the junction a readable silhouette without
+     * preventing both branch mouths being visible from the main floor. */
+    add_seg(w,94,10,94,38,0,32,1);
+
+    add_rect(w,36,-40,116,88,0,32);
+    w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
+    finalize_scene(w);
+}
+
+static void make_world(uint8_t bundle,World *w){
+    if(bundle<2u)make_linear_world(bundle,w);
+    else if(bundle==2u)make_split_world(w);
+    else die("invalid room bundle id");
+}
+
 static uint8_t yaw_lerp(uint8_t a,uint8_t b,double q){
     int d=(int)(int8_t)(b-a);
     int v=(int)a+(int)lround((double)d*q);
@@ -234,6 +298,23 @@ static Pose exit_transform(Pose p){
     p.y=48.0-p.y;
     p.yaw=(uint8_t)(p.yaw+128u);
     return p;
+}
+
+static Pose portal_transform_pose(Pose p,uint8_t portal){
+    double tx,ty,nx,ny;
+    uint8_t rot;
+    if(portal==0u){tx=36.0;ty=24.0;rot=0u;}
+    else if(portal==1u){tx=76.0;ty=88.0;rot=3u;}
+    else if(portal==2u){tx=76.0;ty=-40.0;rot=1u;}
+    else die("invalid split portal");
+    transform_point(p.x,p.y,tx,ty,rot,&nx,&ny);
+    p.x=nx;p.y=ny;p.yaw=(uint8_t)(p.yaw+(uint8_t)(rot*64u));
+    return p;
+}
+static uint8_t yaw_from_vec(double dx,double dy){
+    double a=atan2(dy,dx);
+    int v=(int)lround(a*(256.0/(2.0*PI)));
+    return (uint8_t)v;
 }
 
 static Pose route_pose(uint16_t f,uint8_t bundle){
@@ -274,14 +355,54 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
     return exit_transform(p);
 }
 
+static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal){
+    Pose a,b,p;
+    double q,cx=76.0,cy=24.0;
+    if(entry_portal>2u||exit_portal>2u||entry_portal==exit_portal)
+        die("invalid split route pair");
+
+    if(f<64u)
+        return portal_transform_pose(entry_outbound_pose(f),entry_portal);
+
+    if(f>=128u)
+        return portal_transform_pose(entry_outbound_pose((uint16_t)(191u-f)),exit_portal);
+
+    a=portal_transform_pose(entry_outbound_pose(63u),entry_portal);
+    b=portal_transform_pose(entry_outbound_pose(63u),exit_portal);
+    q=(double)(f-64u)/63.0;
+
+    /* Quadratic arc through the room centre. This keeps the route away from
+     * the walls and gives the camera a chance to expose both branch mouths. */
+    {
+        double u=1.0-q;
+        p.x=u*u*a.x+2.0*u*q*cx+q*q*b.x;
+        p.y=u*u*a.y+2.0*u*q*cy+q*q*b.y;
+        p.z=16.0;
+    }
+    {
+        double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
+        double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
+        int look=(int)lround(sin(q*PI)*32.0);
+        /* Alternate the look offset by route parity so sibling directions are
+         * stressed from opposite sides rather than producing identical rails. */
+        if(((uint8_t)(entry_portal+exit_portal)&1u)==0u)look=-look;
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)look);
+    }
+    return p;
+}
+
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
-    if(entry_portal==0u&&exit_portal==1u)
-        return route_pose(f,bundle);
-    if(entry_portal==1u&&exit_portal==0u)
-        return route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
-    die("invalid room route portal pair");
-    return route_pose(f,bundle);
+    if(bundle<2u){
+        if(entry_portal==0u&&exit_portal==1u)
+            return route_pose(f,bundle);
+        if(entry_portal==1u&&exit_portal==0u)
+            return route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
+        die("invalid linear room route pair");
+    }
+    if(bundle==2u)return split_route_pose(f,entry_portal,exit_portal);
+    die("invalid room bundle route");
+    return route_pose(f,0u);
 }
 
 static int ray_seg(double ox,double oy,double dx,double dy,const Seg *s,double *t_out){
@@ -669,12 +790,22 @@ int main(int argc,char **argv){
         World w;
         make_world(bundle,&w);
         fputc((int)bundle,pack);
-        fputc(2,pack);
-        write_u16(pack,0u);
-        bake_route(outdir,pack,manifest,bundle,&w,0u,1u,
-                   canonical,&canonical_hash,&canonical_ready);
-        bake_route(outdir,pack,manifest,bundle,&w,1u,0u,
-                   canonical,&canonical_hash,&canonical_ready);
+        if(bundle<2u){
+            fputc(2,pack);
+            write_u16(pack,0u);
+            bake_route(outdir,pack,manifest,bundle,&w,0u,1u,
+                       canonical,&canonical_hash,&canonical_ready);
+            bake_route(outdir,pack,manifest,bundle,&w,1u,0u,
+                       canonical,&canonical_hash,&canonical_ready);
+        }else{
+            static const uint8_t pairs[6][2]={{0,1},{1,0},{0,2},{2,0},{1,2},{2,1}};
+            uint8_t r;
+            fputc(6,pack);
+            write_u16(pack,0u);
+            for(r=0u;r<6u;++r)
+                bake_route(outdir,pack,manifest,bundle,&w,pairs[r][0],pairs[r][1],
+                           canonical,&canonical_hash,&canonical_ready);
+        }
     }
 
     if(!canonical_ready)die("canonical seam was never established");
@@ -682,6 +813,7 @@ int main(int argc,char **argv){
     fprintf(manifest,"independent_bundle_replay=PASS\n");
     fprintf(manifest,"cross_bundle_canonical_handoff=PASS\n");
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
+    fprintf(manifest,"three_portal_split_routes=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
@@ -695,7 +827,7 @@ int main(int argc,char **argv){
     fclose(manifest);fclose(pack);
     tsp_host_composite_set_scene((const TSPHostCompositeScene *)0);
 
-    printf("ROOM_BUNDLE_POC_PASS bundles=%u routes_per_bundle=2 frames_per_route=%u canonical=%016llX\n",
+    printf("ROOM_BUNDLE_POC_PASS bundles=%u linear_routes=2 split_routes=6 frames_per_route=%u canonical=%016llX\n",
            BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash);
     return 0;
 }
