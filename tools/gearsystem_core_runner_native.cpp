@@ -27,7 +27,18 @@ int main(int argc,char**argv){
     if(argc<3){fprintf(stderr,"usage: %s rom.gg frames [out.ppm] [dump_addr_hex|-] [dump_len] [vram_addr_hex] [vram_len]\n",argv[0]);return 2;}
     const char* rom=argv[1]; int frames=atoi(argv[2]);
     GearsystemCore core; core.Init(GS_PIXEL_RGBA8888);
-    if(!core.LoadROM(rom)){fprintf(stderr,"LoadROM failed\n");return 3;}
+
+    /* Match the libretro cartridge-loading path exactly. The filename loader
+     * fails to execute this project's 4 MiB generated cartridge correctly,
+     * while LoadROMFromBuffer() is the path libretro uses successfully. */
+    std::ifstream rom_file(rom,std::ios::binary);
+    if(!rom_file){perror("rom");return 3;}
+    std::vector<u8> rom_bytes((std::istreambuf_iterator<char>(rom_file)),{});
+    if(rom_bytes.empty() ||
+       !core.LoadROMFromBuffer(rom_bytes.data(),(int)rom_bytes.size(),nullptr,rom)){
+        fprintf(stderr,"LoadROMFromBuffer failed\n");return 3;
+    }
+    printf("load_mode=buffer rom_bytes=%zu\n",rom_bytes.size());
     GS_RuntimeInfo ri{}; core.GetRuntimeInfo(ri);
     std::vector<u8> fb(GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN*GS_RESOLUTION_MAX_HEIGHT_WITH_OVERSCAN*4);
     std::vector<s16> audio(16384); int samples=0;
