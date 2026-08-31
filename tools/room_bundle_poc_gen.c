@@ -51,6 +51,10 @@ typedef struct Pose {
     double x,y,z;
     uint8_t yaw;
 } Pose;
+typedef struct RenderHit {
+    double t;
+    uint8_t sid;
+} RenderHit;
 typedef struct FramePack {
     uint16_t patch_len;
     uint16_t changed;
@@ -106,6 +110,9 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
     ls->blocks_light=1u;
     ls->light_front_sign=0;
     ls->visual_front_sign=0;
+    ls->z0_q4=(int16_t)lround(z0*16.0);
+    ls->z1_q4=(int16_t)lround(z1*16.0);
+    ls->has_exact_z=1u;
 }
 
 /*
@@ -862,18 +869,39 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
     for(sx=0;sx<160;++sx){
         double rel=atan(((double)sx+0.5-80.0)/80.0);
         double ang=(double)p->yaw*(2.0*PI/256.0)+rel;
-        double dx=cos(ang),dy=sin(ang),best=1e30;
-        int best_sid=-1;
-        uint8_t sid;
+        double dx=cos(ang),dy=sin(ang);
+        RenderHit hit[MAX_SEGMENTS];
+        uint8_t hit_count=0u,sid,i;
+
+        /*
+         * The old PoC kept only the nearest XY segment. That is sufficient for
+         * a single floor-to-ceiling wall, but it cannot represent a window:
+         * upper and lower wall bands can share the same XY line, and farther
+         * geometry must remain visible through the opening.
+         *
+         * Collect every crossing, sort far -> near, then let the semantic
+         * compositor perform ordinary painter overdraw. Near spans replace
+         * only their own screen pixels, so gaps genuinely reveal farther
+         * geometry without adding a runtime Z buffer.
+         */
         for(sid=0u;sid<w->count;++sid){
             double t;
-            if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)&&t<best){
-                best=t;best_sid=(int)sid;
+            if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)){
+                uint8_t pos=hit_count;
+                if(hit_count>=MAX_SEGMENTS)die("room render hit capacity exceeded");
+                while(pos>0u&&hit[pos-1u].t<t){
+                    hit[pos]=hit[pos-1u];
+                    --pos;
+                }
+                hit[pos].t=t;
+                hit[pos].sid=sid;
+                ++hit_count;
             }
         }
-        if(best_sid>=0){
-            const Seg *s=&w->seg[best_sid];
-            double depth=best*cos(rel);
+
+        for(i=0u;i<hit_count;++i){
+            const Seg *s=&w->seg[hit[i].sid];
+            double depth=hit[i].t*cos(rel);
             double top,bottom,inv;
             int it,ib;
             if(depth<0.01)depth=0.01;
@@ -884,7 +912,7 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
             tsp_host_composite_surface((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
                                        (int16_t)it,(int16_t)it,
                                        (int16_t)ib,(int16_t)ib,
-                                       (uint8_t)best_sid,
+                                       hit[i].sid,
                                        shade_for_inv(inv,s->shade_bias),
                                        0u,0u,0u);
         }
