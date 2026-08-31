@@ -24,6 +24,11 @@ typedef struct TSPHostSceneSegment {
     uint8_t blocks_light;
     int8_t light_front_sign;
     int8_t visual_front_sign;
+    /* Optional exact host-bake vertical interval. Static legacy scenes leave
+     * this disabled and continue using the coarse profile-derived height. */
+    int16_t z0_q4;
+    int16_t z1_q4;
+    uint8_t has_exact_z;
 } TSPHostSceneSegment;
 
 typedef struct TSPHostSceneLight {
