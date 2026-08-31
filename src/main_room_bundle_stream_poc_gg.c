@@ -37,6 +37,8 @@ volatile uint8_t g_room_bundle_split_right_asset;
 volatile uint8_t g_room_bundle_stair_child_asset;
 volatile int16_t g_room_bundle_stair_floor_before_q4;
 volatile int16_t g_room_bundle_stair_floor_after_q4;
+volatile uint8_t g_room_bundle_flicker_level;
+volatile uint16_t g_room_bundle_flicker_edges;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -55,6 +57,48 @@ static const palette_color_t k_palettes[32] = {
     RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
     RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
 };
+
+/* Only palette-1 entries 1..4 are animated. Reserved indices 8..12 keep
+ * their ambient colours, so shadow-side pixels inside mixed tiles do not
+ * flicker. Palette 1 is shared with sprites on GG; production sprite art must
+ * therefore avoid these entries or intentionally join the same light group. */
+static const palette_color_t k_lit_bright[4] = {
+    RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
+};
+static const palette_color_t k_lit_dim[4] = {
+    RGB(1,1,3),RGB(2,3,4),RGB(4,5,7),RGB(8,9,11)
+};
+static const palette_color_t k_lit_off[4] = {
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9)
+};
+static uint8_t g_flicker_last_level=0xffu;
+
+static uint8_t creepy_flicker_level(uint16_t frame){
+    /* Authored 192-frame route pattern: a single twitch, a double-twitch,
+     * then a short ragged burst. Each off pulse is intentionally only one
+     * display frame; no PRNG, division or runtime light calculation needed. */
+    if(frame==19u||frame==67u||frame==69u||frame==124u||frame==126u)return 0u;
+    if(frame==20u||frame==70u||frame==123u||frame==125u||frame==127u)return 1u;
+    return 2u;
+}
+
+static void set_lit_palette_level(uint8_t level){
+    const palette_color_t *p;
+    uint8_t i;
+    if(level>2u)level=2u;
+    if(level==g_flicker_last_level)return;
+    p=level==0u?k_lit_off:(level==1u?k_lit_dim:k_lit_bright);
+    for(i=0u;i<4u;++i)set_palette_entry(1u,(uint8_t)(i+1u),p[i]);
+    if(g_flicker_last_level!=0xffu)++g_room_bundle_flicker_edges;
+    g_flicker_last_level=level;
+    g_room_bundle_flicker_level=level;
+}
+
+static void update_room_flicker(uint8_t bundle,uint16_t frame){
+    uint8_t profile=tsp_room_catalog_flicker_profile(bundle);
+    set_lit_palette_level(profile==TSP_ROOM_FLICKER_CREEPY?
+                          creepy_flicker_level(frame):2u);
+}
 
 static void clear_tile(void){
     uint8_t i;
@@ -103,6 +147,7 @@ static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
     for(frame=first_frame;frame<count;++frame){
         tsp_room_bundle_generated_apply_name(bundle,entry,exit_portal,frame);
         vsync();
+        update_room_flicker(bundle,frame);
         tsp_room_bundle_generated_apply_tile(bundle,entry,exit_portal,frame);
         tsp_polar_nt_upload_dirty();
         g_room_bundle_stream_progress=(uint16_t)(progress_base+frame);
@@ -137,6 +182,9 @@ void main(void){
     g_room_bundle_stair_child_asset=0xffu;
     g_room_bundle_stair_floor_before_q4=0;
     g_room_bundle_stair_floor_after_q4=0;
+    g_room_bundle_flicker_level=2u;
+    g_room_bundle_flicker_edges=0u;
+    g_flicker_last_level=0xffu;
 
     tsp_stream_reset(&world,STREAM_SEED,0u);
     root=world.current;
@@ -364,6 +412,10 @@ void main(void){
     play_route(5u,0u,1u,1u,25000u); /* flat quarter-turn */
     play_route(5u,1u,0u,1u,26000u); /* same L in reverse handedness */
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+    if(g_room_bundle_flicker_edges<10u){
+        g_room_bundle_stream_status=0xEE40u;
+        for(;;)vsync();
+    }
 
     g_room_bundle_stream_status=30u;
     g_room_bundle_stream_progress=30000u;
