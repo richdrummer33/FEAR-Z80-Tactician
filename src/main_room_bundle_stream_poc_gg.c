@@ -23,6 +23,7 @@
 #define C_FLOOR 2u
 #define STREAM_SEED UINT32_C(0xC0FFEE42)
 #define SPLIT_STREAM_SEED UINT32_C(0x00000020)
+#define STAIR_STREAM_SEED UINT32_C(0x00000010)
 
 uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_room_bundle_stream_status;
@@ -32,6 +33,9 @@ volatile uint8_t g_room_bundle_root_asset;
 volatile uint8_t g_room_bundle_child_asset;
 volatile uint8_t g_room_bundle_split_left_asset;
 volatile uint8_t g_room_bundle_split_right_asset;
+volatile uint8_t g_room_bundle_stair_child_asset;
+volatile int16_t g_room_bundle_stair_floor_before_q4;
+volatile int16_t g_room_bundle_stair_floor_after_q4;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -112,7 +116,8 @@ void main(void){
     TSPStreamWorld world;
     TSPStreamNodeDesc root,child;
     TSPStreamNodeDesc split,left_child,right_child,left_again;
-    uint8_t root_bundle,child_bundle,left_bundle,right_bundle;
+    TSPStreamNodeDesc stair,stair_child;
+    uint8_t root_bundle,child_bundle,left_bundle,right_bundle,stair_child_bundle;
 
     DISPLAY_OFF;
     __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
@@ -128,6 +133,9 @@ void main(void){
     g_room_bundle_child_asset=0xffu;
     g_room_bundle_split_left_asset=0xffu;
     g_room_bundle_split_right_asset=0xffu;
+    g_room_bundle_stair_child_asset=0xffu;
+    g_room_bundle_stair_floor_before_q4=0;
+    g_room_bundle_stair_floor_after_q4=0;
 
     tsp_stream_reset(&world,STREAM_SEED,0u);
     root=world.current;
@@ -261,6 +269,57 @@ void main(void){
 
     g_room_bundle_stream_status=10u;
     g_room_bundle_stream_progress=15000u;
+
+    /*
+     * Vertical proof. Seed 0x10 deterministically resolves to an UP_RIGHT
+     * quarter-stair root. Bundle 3 is its authored stepped visual module.
+     */
+    tsp_stream_reset(&world,STAIR_STREAM_SEED,1u);
+    stair=world.current;
+    if(stair.module_kind!=TSP_MODULE_STAIR_QUARTER_UP_RIGHT){
+        g_room_bundle_stream_status=0xEE20u;
+        for(;;)vsync();
+    }
+    g_room_bundle_stair_floor_before_q4=stair.logical_floor_q4;
+
+    play_route(3u,0u,1u,1u,16000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    if(!tsp_stream_enter(&world,0u,1u)){
+        g_room_bundle_stream_status=0xEE21u;
+        for(;;)vsync();
+    }
+    stair_child=world.current;
+    g_room_bundle_stair_floor_after_q4=stair_child.logical_floor_q4;
+    if(stair_child.logical_floor_q4!=(int16_t)(stair.logical_floor_q4+TSP_MODULE_STAIR_RISE_Q4)){
+        g_room_bundle_stream_status=0xEE22u;
+        for(;;)vsync();
+    }
+    if(stair_child.rotation!=(uint8_t)((stair.rotation+1u)&3u)){
+        g_room_bundle_stream_status=0xEE23u;
+        for(;;)vsync();
+    }
+
+    /* The raised child reuses an ordinary floor-zero local bake. Its logical
+     * +4 elevation exists only in the world descriptor: the canonical seam
+     * rebases the visual module automatically. */
+    stair_child_bundle=bundle_for_node(&stair_child);
+    g_room_bundle_stair_child_asset=stair_child_bundle;
+    play_route(stair_child_bundle,0u,1u,1u,17000u);
+    play_route(stair_child_bundle,1u,0u,1u,18000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    if(!tsp_stream_back(&world)||!same_node(&world.current,&stair)){
+        g_room_bundle_stream_status=0xEE24u;
+        for(;;)vsync();
+    }
+
+    /* Raised seam -> descend -> original floor-zero canonical seam. */
+    play_route(3u,1u,0u,1u,19000u);
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    g_room_bundle_stream_status=20u;
+    g_room_bundle_stream_progress=22000u;
 
     for(;;)vsync();
 }
