@@ -346,6 +346,10 @@ jobs:
           printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
+          # GitHub's current Ubuntu image no longer guarantees ffmpeg.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
           # Continuous representative gameplay excerpt for human inspection.
           # Record every second hardware video frame; encode as 30 fps MP4.
           mkdir -p build/room-poc-stream/video-frames
