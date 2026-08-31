@@ -102,7 +102,7 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
 
     ls=&w->scene_segments[sid];
     ls->v0=v0;ls->v1=v1;
-    ls->profile=TSP_HOST_PROFILE_FULL;
+    ls->profile=TSP_PROFILE_FULL;
     ls->blocks_light=1u;
     ls->light_front_sign=0;
     ls->visual_front_sign=0;
