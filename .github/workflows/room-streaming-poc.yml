@@ -273,7 +273,17 @@ jobs:
           CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
 
           PROGRESS_ADDR="$(awk '$2=="_g_room_bundle_stream_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          STATUS_ADDR="$(awk '$2=="_g_room_bundle_stream_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          BOOT_ADDR="$(awk '$2=="_g_room_bundle_boot_trace"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           test -n "$PROGRESS_ADDR"
+          test -n "$STATUS_ADDR"
+          test -n "$BOOT_ADDR"
+
+          # One short non-waiting diagnostic pass dumps the complete global
+          # state block. This survives even when normal progress never starts.
+          ./build/libretro_runner "$CORE" "$ROM" 120 \
+            build/room-poc-stream/emulator-boot-debug.ppm "$STATUS_ADDR" 32 \
+            | tee build/room-poc-stream/run-boot-debug.txt
 
           ./build/libretro_runner "$CORE" "$ROM" 1800 \
             build/room-poc-stream/emulator-root-forward.ppm "$PROGRESS_ADDR" 2 96 \
@@ -339,6 +349,8 @@ jobs:
             build/room-poc-stream/bundle-bake.txt \
             build/room-poc-stream/c-gen.txt \
             build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt \
+            build/room-poc-stream/run-boot-debug.txt \
+            build/room-poc-stream/emulator-boot-debug.ppm \
             build/room-poc-stream/run-root-forward.txt \
             build/room-poc-stream/run-child-forward.txt \
             build/room-poc-stream/run-child-reverse.txt \
