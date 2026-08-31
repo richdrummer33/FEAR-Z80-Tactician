@@ -133,8 +133,10 @@ These are accepted lessons from the mature TileSector branches that MUST be chec
 - Do NOT blindly append heavyweight porthole bundles to the current 4 MiB eight-room stream pack. That pack already used about 212 of the packer's 224 generated-bank safety allowance; two complete bidirectional porthole bundles exceeded the deliberate safety cap. The current validation therefore uses a separate porthole-only pack/ROM. Longer-term work should improve bundle deduplication/compression or selectively include authored window rooms.
 - Runtime remains packet replay only: no alpha, no runtime window renderer, no dynamic geometry, and no runtime Z-buffer.
 
-### Emulator validation invariant — libretro RAM view
+### Emulator validation invariant — choose observer by ROM/mode
 
-- In Gearsystem 3.9.16's libretro build used by this project, `retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)` did not mirror the live Z80 C000-DFFF work RAM correctly for the streamed-room validation harness; it repeatedly reported zero while the ROM visibly advanced through all 52,000 captured frames.
-- Treat libretro as framebuffer capture in this harness. For authoritative RAM/symbol assertions use the native Gearsystem runner and `Memory::DebugRetrieve()`.
-- Do not diagnose a ROM/runtime failure solely from the old libretro `RAM addr=... data=0000` output.
+- In Gearsystem 3.9.16's libretro build used by this project, `retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)` did not expose useful live Z80 work-RAM state for the 4 MiB streamed-room harness; it repeatedly reported zero while the ROM visibly advanced through all 52,000 captured frames.
+- The standalone native Gearsystem runner's `Memory::DebugRetrieve()` works for the 1 MiB porthole proof, but that native runner does **not** boot the current 4 MiB streamed ROM correctly: after 52,000 calls its PC and RAM remain zero. Do not call it authoritative for that cartridge image.
+- For the 4 MiB stream, validate execution through Gearsystem libretro framebuffer output. The terminal test ROM now stamps a unique 8x8 X marker only after all routes and the authored flicker-edge self-check pass; CI validates those final pixels instead of scraping RAM.
+- For smaller ROMs that demonstrably boot in the native runner, live symbol/RAM checks through `Memory::DebugRetrieve()` remain useful.
+- Do not diagnose a ROM/runtime failure solely from the old libretro `RAM addr=... data=0000` output, and do not assume two Gearsystem frontends exercise identical cartridge-size paths.
