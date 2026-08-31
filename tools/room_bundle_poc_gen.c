@@ -276,11 +276,12 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
 
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
-    Pose p=route_pose(f,bundle);
-    if(entry_portal==0u&&exit_portal==1u)return p;
-    if(entry_portal==1u&&exit_portal==0u)return exit_transform(p);
+    if(entry_portal==0u&&exit_portal==1u)
+        return route_pose(f,bundle);
+    if(entry_portal==1u&&exit_portal==0u)
+        return route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
     die("invalid room route portal pair");
-    return p;
+    return route_pose(f,bundle);
 }
 
 static int ray_seg(double ox,double oy,double dx,double dy,const Seg *s,double *t_out){
