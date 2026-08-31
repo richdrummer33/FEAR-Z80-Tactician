@@ -17,7 +17,7 @@
 #define C_BLACK 0u
 #define C_CEILING 1u
 #define C_FLOOR 2u
-#define CAPTURE_SCENE_FRAME 96u
+#define CAPTURE_SCENE_FRAME 64u
 #define HOLD_FRAMES 120u
 
 uint16_t g_map[TSP_MAP_CELLS];
