@@ -35,11 +35,17 @@ void tsp_polar_nt_upload_dirty(void);
 
 static uint8_t g_tile[32u];
 
-static const palette_color_t k_palette[16] = {
-    RGB(0,0,0), RGB(1,1,3), RGB(2,2,3), RGB(3,4,6),
-    RGB(6,7,9), RGB(10,11,13), RGB(0,0,0), RGB(0,0,0),
-    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
-    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0)
+/*
+ * Match the mature baked-light semantic palette exactly.
+ * Palette 0 = ambient semantic shades.
+ * Palette 1 = one-step brighter lit transform, with indices 8..12 carrying
+ * ambient-side pixels for mixed shadow-boundary tiles.
+ */
+static const palette_color_t k_palettes[32] = {
+    RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
+    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
+    RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
+    RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
 };
 
 static void clear_tile(void){
@@ -108,7 +114,7 @@ void main(void){
     __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
-    set_bkg_palette(0u,1u,k_palette);
+    set_bkg_palette(0u,2u,k_palettes);
     init_base_tiles();
 
     g_room_bundle_stream_status=0u;
