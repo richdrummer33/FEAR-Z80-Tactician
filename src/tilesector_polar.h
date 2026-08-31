@@ -65,7 +65,11 @@ typedef enum TSPProfile {
     TSP_PROFILE_FULL=0,
     TSP_PROFILE_LINTEL=1,
     TSP_PROFILE_RAISED=2,
-    TSP_PROFILE_RISER=3
+    TSP_PROFILE_RISER=3,
+    /* Host-baked aperture profiles. They deliberately remain ordinary
+     * vertical spans on the GG: no runtime window renderer is introduced. */
+    TSP_PROFILE_WINDOW_SILL=4,
+    TSP_PROFILE_WINDOW_REVEAL=5
 } TSPProfile;
 
 typedef struct TSPState {
