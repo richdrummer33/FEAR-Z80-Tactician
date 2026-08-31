@@ -693,6 +693,42 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
     return exit_transform(p);
 }
 
+static Pose window_route_pose(uint16_t f){
+    Pose p;
+    double q;
+    if(f<64u)return entry_outbound_pose(f);
+    if(f>=128u)
+        return exit_transform(entry_outbound_pose((uint16_t)(191u-f)));
+
+    p.z=16.0;
+    p.y=24.0;
+
+    /* Hold a safe travel rail south of the wall slab and deliberately look
+     * north through the opening. The lateral move from x=76 to x=96 exposes
+     * front/back edge parallax and the recessed jambs, proving wall thickness. */
+    if(f<80u){
+        q=(double)(f-64u)/15.0;
+        p.x=lerp(62.0,76.0,q);
+        p.yaw=yaw_lerp(0u,64u,q);
+        return p;
+    }
+    if(f<96u){
+        p.x=76.0;
+        p.yaw=64u;
+        return p;
+    }
+    if(f<112u){
+        q=(double)(f-96u)/15.0;
+        p.x=lerp(76.0,96.0,q);
+        p.yaw=64u;
+        return p;
+    }
+    q=(double)(f-112u)/15.0;
+    p.x=lerp(96.0,90.0,q);
+    p.yaw=yaw_lerp(64u,128u,q);
+    return p;
+}
+
 static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal){
     Pose a,b,p;
     double q,cx=76.0,cy=24.0;
@@ -783,12 +819,15 @@ static Pose turn_forward_pose(uint16_t f){
 
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
-    if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u){
+    if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u||
+       bundle==8u||bundle==9u){
         Pose p;
         if(entry_portal==0u&&exit_portal==1u)
-            p=route_pose(f,bundle);
+            p=(bundle>=8u)?window_route_pose(f):route_pose(f,bundle);
         else if(entry_portal==1u&&exit_portal==0u)
-            p=route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
+            p=(bundle>=8u)?
+              window_route_pose((uint16_t)(ROUTE_FRAMES-1u-f)):
+              route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
         else{
             die("invalid straight room route pair");
             return route_pose(f,0u);
