@@ -276,11 +276,20 @@ jobs:
           ./build/libretro_runner "$CORE" "$ROM" 8500 \
             build/room-poc-stream/emulator-root-reverse.ppm "$PROGRESS_ADDR" 2 3096 \
             | tee build/room-poc-stream/run-root-reverse.txt
-          ./build/libretro_runner "$CORE" "$ROM" 12000 \
-            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 5000 \
+          ./build/libretro_runner "$CORE" "$ROM" 11000 \
+            build/room-poc-stream/emulator-split-left-child.ppm "$PROGRESS_ADDR" 2 7096 \
+            | tee build/room-poc-stream/run-split-left.txt
+          ./build/libretro_runner "$CORE" "$ROM" 14000 \
+            build/room-poc-stream/emulator-split-sibling-cross.ppm "$PROGRESS_ADDR" 2 9096 \
+            | tee build/room-poc-stream/run-split-sibling.txt
+          ./build/libretro_runner "$CORE" "$ROM" 17000 \
+            build/room-poc-stream/emulator-split-right-child.ppm "$PROGRESS_ADDR" 2 10096 \
+            | tee build/room-poc-stream/run-split-right.txt
+          ./build/libretro_runner "$CORE" "$ROM" 22000 \
+            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 15000 \
             | tee build/room-poc-stream/run-complete.txt
-          grep -q 'data=8813' build/room-poc-stream/run-complete.txt
-          printf 'PASS: deterministic root -> child -> child reverse -> breadcrumb restore -> root reverse completed.\n' \
+          grep -q 'data=983A' build/room-poc-stream/run-complete.txt
+          printf 'PASS: reversible stream + deterministic T-split left/sibling/right traversal completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
       - name: Package runnable streamed-room ROM
@@ -302,11 +311,17 @@ jobs:
             build/room-poc-stream/run-child-forward.txt \
             build/room-poc-stream/run-child-reverse.txt \
             build/room-poc-stream/run-root-reverse.txt \
+            build/room-poc-stream/run-split-left.txt \
+            build/room-poc-stream/run-split-sibling.txt \
+            build/room-poc-stream/run-split-right.txt \
             build/room-poc-stream/run-complete.txt \
             build/room-poc-stream/emulator-root-forward.ppm \
             build/room-poc-stream/emulator-child-forward.ppm \
             build/room-poc-stream/emulator-child-reverse.ppm \
             build/room-poc-stream/emulator-root-reverse.ppm \
+            build/room-poc-stream/emulator-split-left-child.ppm \
+            build/room-poc-stream/emulator-split-sibling-cross.ppm \
+            build/room-poc-stream/emulator-split-right-child.ppm \
             build/room-poc-stream/emulator-final-seam.ppm \
             build/room-poc-stream/host/room_bundle_poc_manifest.txt \
             build/room-poc-stream/host/bundle0_route01_frame0.ppm \
@@ -316,7 +331,11 @@ jobs:
             build/room-poc-stream/host/bundle1_route01_frame0.ppm \
             build/room-poc-stream/host/bundle1_route01_frame96.ppm \
             build/room-poc-stream/host/bundle1_route01_frame191.ppm \
-            build/room-poc-stream/host/bundle1_route10_frame96.ppm; do
+            build/room-poc-stream/host/bundle1_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route02_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route12_frame96.ppm \
+            build/room-poc-stream/host/bundle2_route20_frame96.ppm; do
             [ ! -f "$f" ] || cp "$f" build/room-poc-stream-artifact/
           done
           git rev-parse HEAD > build/room-poc-stream-artifact/COMMIT.txt
