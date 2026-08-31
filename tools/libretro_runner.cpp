@@ -103,6 +103,12 @@ int main(int argc,char **argv){
     const char *core_path=argv[1], *rom_path=argv[2]; unsigned frames=(unsigned)strtoul(argv[3],nullptr,10);
     if(const char *joy=getenv("LIBRETRO_JOYPAD_MASK")) g_joypad_mask=(uint16_t)strtoul(joy,nullptr,0);
     if(const char *after=getenv("LIBRETRO_JOYPAD_AFTER_FRAME")) g_joypad_after_frame=(unsigned)strtoul(after,nullptr,0);
+    const char *record_dir=getenv("LIBRETRO_RECORD_DIR");
+    unsigned record_start=1u,record_end=frames,record_step=1u,recorded=0u;
+    if(const char *v=getenv("LIBRETRO_RECORD_START"))record_start=(unsigned)strtoul(v,nullptr,0);
+    if(const char *v=getenv("LIBRETRO_RECORD_END"))record_end=(unsigned)strtoul(v,nullptr,0);
+    if(const char *v=getenv("LIBRETRO_RECORD_STEP"))record_step=(unsigned)strtoul(v,nullptr,0);
+    if(record_step==0u)record_step=1u;
     const char *ppm=(argc>=5)?argv[4]:nullptr;
     std::ifstream f(rom_path,std::ios::binary); if(!f){perror("rom");return 2;}
     std::vector<uint8_t> rom((std::istreambuf_iterator<char>(f)),{});
@@ -133,13 +139,20 @@ int main(int argc,char **argv){
     unsigned ran=0u;
     for(;ran<frames;++ran){
         retro_run();
+        if(record_dir && g_video_frames>=record_start && g_video_frames<=record_end &&
+           ((g_video_frames-record_start)%record_step)==0u){
+            char path[1024];
+            snprintf(path,sizeof(path),"%s/frame_%06u.ppm",record_dir,g_video_frames);
+            if(!save_ppm(path)){fprintf(stderr,"failed to save record frame %u\n",g_video_frames);return 7;}
+            ++recorded;
+        }
         if(wait_marker){
             if(!ram||ram_size<2u){fprintf(stderr,"system RAM unavailable\n");return 6;}
             uint16_t v=(uint16_t)ram[ram_off]|((uint16_t)ram[(ram_off+1u)%ram_size]<<8);
             if(v>=wait_target){++ran;break;}
         }
     }
-    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
+    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu recorded=%u\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size(),recorded);
     if(ppm){ if(!save_ppm(ppm)){fprintf(stderr,"failed to save ppm\n");return 5;} printf("saved=%s\n",ppm); }
     if(argc>=6){
         unsigned len=(argc>=7)?(unsigned)strtoul(argv[6],nullptr,0):2u;
