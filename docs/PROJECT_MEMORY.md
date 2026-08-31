@@ -118,3 +118,23 @@ These are accepted lessons from the mature TileSector branches that MUST be chec
 - Runtime alpha is not required. Thin bars/grilles can be ordinary baked occluder geometry composed into each camera state.
 - Prefer canonical thin-coverage masks/pattern reuse and final-pattern deduplication. Very thin geometry can alias, shimmer, or multiply tile variants as viewpoint changes, so measure pattern entropy before promoting it to a common architectural motif.
 - Keep hardware sprites as an optional later alternative for rare foreground grille layers, but the default concept is baked geometry with no runtime transparency.
+
+
+### IMPLEMENTED PROOF — thick interior/exterior portholes — Aug 31, 2026
+
+- Thick portholes are now a working host-baked geometry class, not merely a future idea. The proof lives on `experiment/gg-wall-angle-flicker`.
+- Never model a porthole-bearing wall as an infinitely thin line. The current helper builds a real wall slab in XY with front and back wall faces, closed end caps, a low sill span, high lintel span, and recessed side-jamb/reveal faces through the slab depth.
+- Initial vertical aperture is z=8..24 inside ordinary z=0..32 walls. Horizontal top/bottom reveal planes are not separately rasterized in this first 2.5D proof; wall thickness is nevertheless explicit in plan and visibly expressed by front/back parallax plus recessed side jambs.
+- Porthole rooms opt into a host-only multi-surface column compositor: gather every ray/segment crossing, sort far-to-near, and composite all vertical spans. Existing rooms retain the old nearest-surface path. This permits a near sill/lintel/reveal and a farther room/object to coexist in one screen column without any runtime Z-buffer.
+- Interior proof: a freestanding thick divider inside one room has a non-traversable view aperture; farther geometry in the same room is visible through it.
+- Exterior proof: a six-world-unit-thick outer wall looks into an inaccessible exterior lightwell/court with a farther wall and offset masonry depth cue. It suggests space beyond the playable room without making that space traversable.
+- Automated host assertions require (a) farther geometry to own visible pixels through the aperture at the straight-on inspection pose and (b) a recessed reveal/jamb to own visible pixels at an oblique inspection pose. These tests prove both see-through visibility and wall thickness.
+- First measured porthole route costs remain below the existing 48-pattern-upload/VBlank gate. Interior porthole was ~31 scheduled uploads at peak; exterior was ~11 before the final exterior depth-cue tweak. Re-measure after any geometry changes.
+- Do NOT blindly append heavyweight porthole bundles to the current 4 MiB eight-room stream pack. That pack already used about 212 of the packer's 224 generated-bank safety allowance; two complete bidirectional porthole bundles exceeded the deliberate safety cap. The current validation therefore uses a separate porthole-only pack/ROM. Longer-term work should improve bundle deduplication/compression or selectively include authored window rooms.
+- Runtime remains packet replay only: no alpha, no runtime window renderer, no dynamic geometry, and no runtime Z-buffer.
+
+### Emulator validation invariant — libretro RAM view
+
+- In Gearsystem 3.9.16's libretro build used by this project, `retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)` did not mirror the live Z80 C000-DFFF work RAM correctly for the streamed-room validation harness; it repeatedly reported zero while the ROM visibly advanced through all 52,000 captured frames.
+- Treat libretro as framebuffer capture in this harness. For authoritative RAM/symbol assertions use the native Gearsystem runner and `Memory::DebugRetrieve()`.
+- Do not diagnose a ROM/runtime failure solely from the old libretro `RAM addr=... data=0000` output.
