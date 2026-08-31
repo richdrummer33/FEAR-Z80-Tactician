@@ -218,10 +218,18 @@ def emit_dispatch(outdir, bundles, chunks, canonical):
         dispatch_cases_tile.append(
             f"    {kw}(global<{end}u){{tsp_room_bundle_tile_bank{i}((uint16_t)(global-{first}u));return;}}")
 
-    s = f"""/* GENERATED room-bundle PoC dispatcher + canonical seam. */
+    s = f"""/* GENERATED room-bundle PoC dispatcher + canonical seam.
+ *
+ * IMPORTANT: this object is deliberately autobanked. With a large room
+ * catalog the two dispatch chains are ~12-13 KiB; leaving them fixed can push
+ * GBDK's CRAM/VRAM runtime beyond the Sega fixed 0x0000-0x3FFF code window.
+ */
 #include <stdint.h>
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
+
+#pragma bank 255
+BANKREF(room_bundle_poc_dispatch)
 
 {chr(10).join(decl)}
 
@@ -239,8 +247,8 @@ extern uint8_t g_polar_nt_row_max[TSP_ROWS];
 #define ROOM_BUNDLE_COUNT {len(bundles)}u
 #define ROOM_ROUTE_COUNT {len(route_bundle)}u
 
-uint8_t tsp_room_bundle_generated_count(void){{return ROOM_BUNDLE_COUNT;}}
-uint8_t tsp_room_bundle_generated_route_count(void){{return ROOM_ROUTE_COUNT;}}
+uint8_t tsp_room_bundle_generated_count(void) BANKED {{return ROOM_BUNDLE_COUNT;}}
+uint8_t tsp_room_bundle_generated_route_count(void) BANKED {{return ROOM_ROUTE_COUNT;}}
 
 static int16_t find_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal){{
     uint8_t i;
@@ -252,7 +260,7 @@ static int16_t find_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal){{
     return -1;
 }}
 
-uint16_t tsp_room_bundle_generated_frames(uint8_t bundle,uint8_t entry,uint8_t exit_portal){{
+uint16_t tsp_room_bundle_generated_frames(uint8_t bundle,uint8_t entry,uint8_t exit_portal) BANKED {{
     int16_t ri=find_route(bundle,entry,exit_portal);
     if(ri<0)return 0u;
     return k_route_count[(uint8_t)ri];
@@ -267,19 +275,19 @@ static uint16_t global_frame(uint8_t bundle,uint8_t entry,uint8_t exit_portal,ui
     return (uint16_t)(k_route_first[i]+frame);
 }}
 
-void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame){{
+void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame) BANKED {{
     uint16_t global=global_frame(bundle,entry,exit_portal,frame);
     if(global==0xffffu)return;
 {chr(10).join(dispatch_cases_name)}
 }}
 
-void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame){{
+void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame) BANKED {{
     uint16_t global=global_frame(bundle,entry,exit_portal,frame);
     if(global==0xffffu)return;
 {chr(10).join(dispatch_cases_tile)}
 }}
 
-void tsp_room_bundle_generated_load_canonical(void){{
+void tsp_room_bundle_generated_load_canonical(void) BANKED {{
     uint16_t i;
     uint8_t row;
     for(i=0u;i<TSP_MAP_CELLS;++i)g_map[i]=k_canonical_map[i];
@@ -296,12 +304,13 @@ void tsp_room_bundle_generated_load_canonical(void){{
 #include <stdint.h>
 #define ROOM_BUNDLE_POC_COUNT {len(bundles)}u
 #define ROOM_BUNDLE_POC_ROUTE_COUNT {len(route_bundle)}u
-uint8_t tsp_room_bundle_generated_count(void);
-uint8_t tsp_room_bundle_generated_route_count(void);
-uint16_t tsp_room_bundle_generated_frames(uint8_t bundle,uint8_t entry,uint8_t exit_portal);
-void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame);
-void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame);
-void tsp_room_bundle_generated_load_canonical(void);
+#include <gbdk/platform.h>
+uint8_t tsp_room_bundle_generated_count(void) BANKED;
+uint8_t tsp_room_bundle_generated_route_count(void) BANKED;
+uint16_t tsp_room_bundle_generated_frames(uint8_t bundle,uint8_t entry,uint8_t exit_portal) BANKED;
+void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame) BANKED;
+void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame) BANKED;
+void tsp_room_bundle_generated_load_canonical(void) BANKED;
 #endif
 """
     (outdir / "room_bundle_poc_meta.h").write_text(h)
