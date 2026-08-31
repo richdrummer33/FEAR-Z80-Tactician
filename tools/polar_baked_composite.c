@@ -228,6 +228,8 @@ static void profile_z_range(uint8_t profile,double *z0,double *z1){
         case TSP_HOST_PROFILE_RAISED:*z0=4.0;*z1=32.0;break;
         case TSP_HOST_PROFILE_LINTEL:*z0=24.0;*z1=32.0;break;
         case TSP_HOST_PROFILE_RISER:*z0=0.0;*z1=4.0;break;
+        case TSP_HOST_PROFILE_WINDOW_SILL:*z0=0.0;*z1=8.0;break;
+        case TSP_HOST_PROFILE_WINDOW_REVEAL:*z0=8.0;*z1=24.0;break;
         default:*z0=0.0;*z1=32.0;break;
     }
 }
