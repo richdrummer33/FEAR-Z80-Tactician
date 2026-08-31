@@ -31,11 +31,20 @@ jobs:
              -o build/room-poc/test-room-stream
           build/room-poc/test-room-stream | tee build/room-poc/topology-test.txt
 
+          cc -std=c99 -Wall -Wextra -Werror -DTSP_ROOM_STREAM_POC=1 -Isrc \
+             src/tilesector_room_poc.c \
+             src/tilesector_polar_motion.c \
+             tests/test_tilesector_room_poc.c \
+             -o build/room-poc/test-room-local
+          build/room-poc/test-room-local | tee build/room-poc/room-local-test.txt
+
       - name: Upload topology proof
         uses: actions/upload-artifact@v4
         with:
           name: GG-room-stream-topology-proof
-          path: build/room-poc/topology-test.txt
+          path: |
+            build/room-poc/topology-test.txt
+            build/room-poc/room-local-test.txt
           retention-days: 30
 
   four-mib-bank-probe:
