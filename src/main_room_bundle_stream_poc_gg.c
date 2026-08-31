@@ -104,10 +104,10 @@ void main(void){
     play_bundle(0u,1u);
     g_room_bundle_stream_status=1u;
 
-    /* Bundle one frame zero is the exact same canonical seam. Replaying its
-     * canonical tile loads is harmless and makes predecessor-independence
-     * explicit in the runtime trace. */
-    play_bundle(1u,0u);
+    /* Bundle frame zero is the cold/canonical bootstrap. At an ordinary
+     * room-to-room handoff the predecessor has already restored that exact
+     * name-table + dynamic-slot contract, so the successor begins at frame 1. */
+    play_bundle(1u,1u);
     g_room_bundle_stream_status=2u;
     g_room_bundle_stream_progress=2000u;
 
