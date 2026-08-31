@@ -63,24 +63,33 @@ def delta(label: str, old: dict[str, int], new: dict[str, int]) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         print(
-            f"usage: {sys.argv[0]} CONTROL_MANIFEST ANGLE_ONLY_MANIFEST ANGLE_VIEW_MANIFEST",
+            f"usage: {sys.argv[0]} CONTROL_MANIFEST ANGLE_ONLY_MANIFEST "
+            "ANGLE_VIEW_MANIFEST [DITHER16_VIEW_MANIFEST]",
             file=sys.stderr,
         )
         return 2
     control = read_manifest(Path(sys.argv[1]))
     angle = read_manifest(Path(sys.argv[2]))
     angle_view = read_manifest(Path(sys.argv[3]))
-    if len({control["routes"], angle["routes"], angle_view["routes"]}) != 1:
+    datasets = [control, angle, angle_view]
+    dither_view = read_manifest(Path(sys.argv[4])) if len(sys.argv) == 5 else None
+    if dither_view is not None:
+        datasets.append(dither_view)
+    if len({d["routes"] for d in datasets}) != 1:
         raise SystemExit("lighting A/B route count mismatch")
 
     show("control_binary", control)
-    show("angle_only", angle)
-    show("angle_plus_view", angle_view)
-    delta("control_to_angle", control, angle)
-    delta("angle_to_view", angle, angle_view)
-    delta("control_to_angle_view", control, angle_view)
+    show("solid8_angle_only", angle)
+    show("solid8_angle_plus_view", angle_view)
+    delta("control_to_solid8_angle", control, angle)
+    delta("solid8_angle_to_view", angle, angle_view)
+    delta("control_to_solid8_angle_view", control, angle_view)
+    if dither_view is not None:
+        show("dither16_angle_plus_view", dither_view)
+        delta("control_to_dither16_angle_view", control, dither_view)
+        delta("dither16_to_solid8", dither_view, angle_view)
     return 0
 
 
