@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - experiment/gg-streaming-room-poc
+      - experiment/gg-wall-angle-flicker
   pull_request:
     branches:
       - feature/gg-polar-vertical-stairwell
