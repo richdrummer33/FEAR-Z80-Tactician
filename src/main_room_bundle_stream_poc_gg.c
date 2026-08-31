@@ -353,5 +353,20 @@ void main(void){
     g_room_bundle_stream_status=20u;
     g_room_bundle_stream_progress=22000u;
 
+    /*
+     * Final hostile-camera visual tour. The procedural tests above have
+     * already exercised bundles 2,3,4,6,7. Explicitly run the remaining
+     * visual classes so every one of the eight authored modules executes on
+     * the GG, including both directions through the lit L-turn.
+     */
+    play_route(0u,0u,1u,1u,23000u); /* wide portal-shadow chamber */
+    play_route(1u,0u,1u,1u,24000u); /* tight inset/spooky chamber */
+    play_route(5u,0u,1u,1u,25000u); /* flat quarter-turn */
+    play_route(5u,1u,0u,1u,26000u); /* same L in reverse handedness */
+    if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+
+    g_room_bundle_stream_status=30u;
+    g_room_bundle_stream_progress=30000u;
+
     for(;;)vsync();
 }
