@@ -189,13 +189,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/room-poc-stream/host build/room-poc-stream/generated
+          mkdir -p build/room-poc-stream/host build/room-poc-stream/control build/room-poc-stream/generated
           cc -std=c99 -O2 -Wall -Wextra -Werror -Isrc -Itools \
              tools/polar_baked_composite.c \
              tools/room_bundle_poc_gen.c \
              -lm -o build/room-poc-stream/room-bundle-gen
+
+          # Control group: exact same geometry/cameras with the previous
+          # binary ambient/+1 light response.
+          build/room-poc-stream/room-bundle-gen build/room-poc-stream/control --legacy-binary-light \
+             | tee build/room-poc-stream/bundle-bake-control.txt
+
+          # Experiment: 16-step wall-normal response plus subtle view term.
           build/room-poc-stream/room-bundle-gen build/room-poc-stream/host \
              | tee build/room-poc-stream/bundle-bake.txt
+
+          python3 tools/compare_room_lighting_metrics.py \
+             build/room-poc-stream/control/room_bundle_poc_manifest.txt \
+             build/room-poc-stream/host/room_bundle_poc_manifest.txt \
+             | tee build/room-poc-stream/lighting-ab.txt
+
           python3 tools/room_bundle_pack_to_c.py \
              build/room-poc-stream/host/room_bundle_poc.pack \
              build/room-poc-stream/host/room_bundle_poc_canonical.bin \
@@ -337,6 +350,9 @@ jobs:
             build/room-poc-stream/ROM-size.txt \
             build/room-poc-stream/SHA256.txt \
             build/room-poc-stream/bundle-bake.txt \
+            build/room-poc-stream/bundle-bake-control.txt \
+            build/room-poc-stream/lighting-ab.txt \
+            build/room-poc-stream/control/room_bundle_poc_manifest.txt \
             build/room-poc-stream/c-gen.txt \
             build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt \
             build/room-poc-stream/run-root-forward.txt \
