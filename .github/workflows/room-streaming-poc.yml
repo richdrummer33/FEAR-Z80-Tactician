@@ -214,7 +214,11 @@ jobs:
 
           "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/main.o \
             src/main_room_bundle_stream_poc_gg.c
-          OBJS+=(build/room-poc-stream/main.o)
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/world-module.o \
+            src/tilesector_world_module.c
+          "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/world-stream.o \
+            src/tilesector_world_stream_poc.c
+          OBJS+=(build/room-poc-stream/main.o build/room-poc-stream/world-module.o build/room-poc-stream/world-stream.o)
 
           "$LCC" "${FLAGS[@]}" -c -o build/room-poc-stream/ntstate.o \
             src/tilesector_polar_ntstate_gg.s
@@ -260,20 +264,23 @@ jobs:
           PROGRESS_ADDR="$(awk '$2=="_g_room_bundle_stream_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           test -n "$PROGRESS_ADDR"
 
-          ./build/libretro_runner "$CORE" "$ROM" 1200 \
-            build/room-poc-stream/emulator-roomA.ppm "$PROGRESS_ADDR" 2 96 \
-            | tee build/room-poc-stream/run-roomA.txt
-          ./build/libretro_runner "$CORE" "$ROM" 2400 \
-            build/room-poc-stream/emulator-seam-handoff.ppm "$PROGRESS_ADDR" 2 191 \
-            | tee build/room-poc-stream/run-seam.txt
-          ./build/libretro_runner "$CORE" "$ROM" 5000 \
-            build/room-poc-stream/emulator-roomB.ppm "$PROGRESS_ADDR" 2 1096 \
-            | tee build/room-poc-stream/run-roomB.txt
-          ./build/libretro_runner "$CORE" "$ROM" 8000 \
-            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 2000 \
+          ./build/libretro_runner "$CORE" "$ROM" 1800 \
+            build/room-poc-stream/emulator-root-forward.ppm "$PROGRESS_ADDR" 2 96 \
+            | tee build/room-poc-stream/run-root-forward.txt
+          ./build/libretro_runner "$CORE" "$ROM" 3600 \
+            build/room-poc-stream/emulator-child-forward.ppm "$PROGRESS_ADDR" 2 1096 \
+            | tee build/room-poc-stream/run-child-forward.txt
+          ./build/libretro_runner "$CORE" "$ROM" 6000 \
+            build/room-poc-stream/emulator-child-reverse.ppm "$PROGRESS_ADDR" 2 2096 \
+            | tee build/room-poc-stream/run-child-reverse.txt
+          ./build/libretro_runner "$CORE" "$ROM" 8500 \
+            build/room-poc-stream/emulator-root-reverse.ppm "$PROGRESS_ADDR" 2 3096 \
+            | tee build/room-poc-stream/run-root-reverse.txt
+          ./build/libretro_runner "$CORE" "$ROM" 12000 \
+            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 5000 \
             | tee build/room-poc-stream/run-complete.txt
-          grep -q 'data=D007' build/room-poc-stream/run-complete.txt
-          printf 'PASS: bundle 0 -> canonical seam -> bundle 1 -> canonical seam completed.\n' \
+          grep -q 'data=8813' build/room-poc-stream/run-complete.txt
+          printf 'PASS: deterministic root -> child -> child reverse -> breadcrumb restore -> root reverse completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
       - name: Package runnable streamed-room ROM
@@ -291,21 +298,25 @@ jobs:
             build/room-poc-stream/bundle-bake.txt \
             build/room-poc-stream/c-gen.txt \
             build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt \
-            build/room-poc-stream/run-roomA.txt \
-            build/room-poc-stream/run-seam.txt \
-            build/room-poc-stream/run-roomB.txt \
+            build/room-poc-stream/run-root-forward.txt \
+            build/room-poc-stream/run-child-forward.txt \
+            build/room-poc-stream/run-child-reverse.txt \
+            build/room-poc-stream/run-root-reverse.txt \
             build/room-poc-stream/run-complete.txt \
-            build/room-poc-stream/emulator-roomA.ppm \
-            build/room-poc-stream/emulator-seam-handoff.ppm \
-            build/room-poc-stream/emulator-roomB.ppm \
+            build/room-poc-stream/emulator-root-forward.ppm \
+            build/room-poc-stream/emulator-child-forward.ppm \
+            build/room-poc-stream/emulator-child-reverse.ppm \
+            build/room-poc-stream/emulator-root-reverse.ppm \
             build/room-poc-stream/emulator-final-seam.ppm \
             build/room-poc-stream/host/room_bundle_poc_manifest.txt \
-            build/room-poc-stream/host/bundle0_frame0.ppm \
-            build/room-poc-stream/host/bundle0_frame96.ppm \
-            build/room-poc-stream/host/bundle0_frame191.ppm \
-            build/room-poc-stream/host/bundle1_frame0.ppm \
-            build/room-poc-stream/host/bundle1_frame96.ppm \
-            build/room-poc-stream/host/bundle1_frame191.ppm; do
+            build/room-poc-stream/host/bundle0_route01_frame0.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle0_route01_frame191.ppm \
+            build/room-poc-stream/host/bundle0_route10_frame96.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame0.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame96.ppm \
+            build/room-poc-stream/host/bundle1_route01_frame191.ppm \
+            build/room-poc-stream/host/bundle1_route10_frame96.ppm; do
             [ ! -f "$f" ] || cp "$f" build/room-poc-stream-artifact/
           done
           git rev-parse HEAD > build/room-poc-stream-artifact/COMMIT.txt
