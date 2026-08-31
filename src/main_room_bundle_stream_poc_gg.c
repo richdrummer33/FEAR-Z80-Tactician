@@ -16,13 +16,14 @@
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
 #include "tilesector_world_stream_poc.h"
+#include "tilesector_room_catalog_poc.h"
 #include "room_bundle_poc_meta.h"
 
 #define C_BLACK 0u
 #define C_CEILING 1u
 #define C_FLOOR 2u
 #define STREAM_SEED UINT32_C(0xC0FFEE42)
-#define SPLIT_STREAM_SEED UINT32_C(0x00000020)
+#define SPLIT_STREAM_SEED UINT32_C(0x00000023)
 #define STAIR_STREAM_SEED UINT32_C(0x00000010)
 
 uint16_t g_map[TSP_MAP_CELLS];
@@ -91,10 +92,6 @@ static uint8_t same_node(const TSPStreamNodeDesc *a,const TSPStreamNodeDesc *b){
                      a->rotation==b->rotation &&
                      a->logical_floor_q4==b->logical_floor_q4);
 }
-static uint8_t bundle_for_node(const TSPStreamNodeDesc *n){
-    return (uint8_t)(n->asset_variant&1u);
-}
-
 static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
                        uint16_t first_frame,uint16_t progress_base){
     uint16_t frame;
@@ -117,6 +114,10 @@ void main(void){
     TSPStreamNodeDesc root,child;
     TSPStreamNodeDesc split,left_child,right_child,left_again;
     TSPStreamNodeDesc stair,stair_child;
+    TSPRoomCatalogChoice root_choice,child_choice;
+    TSPRoomCatalogChoice split_left_choice,split_right_choice;
+    TSPRoomCatalogChoice left_child_choice,right_child_choice;
+    TSPRoomCatalogChoice stair_choice,stair_child_choice;
     uint8_t root_bundle,child_bundle,left_bundle,right_bundle,stair_child_bundle;
 
     DISPLAY_OFF;
@@ -139,19 +140,25 @@ void main(void){
 
     tsp_stream_reset(&world,STREAM_SEED,0u);
     root=world.current;
-    root_bundle=bundle_for_node(&root);
+    if(!tsp_room_catalog_choose(STREAM_SEED,&root,0u,&root_choice)){
+        g_room_bundle_stream_status=0xEE30u;
+        for(;;)vsync();
+    }
+    root_bundle=root_choice.bundle_id;
     g_room_bundle_root_asset=root_bundle;
 
     tsp_polar_nt_init();
 
-    /* Cold boot uses canonical frame zero from the selected root's forward
-     * route. Normal seam-to-seam transitions begin at frame one. */
-    tsp_room_bundle_generated_apply_tile(root_bundle,0u,1u,0u);
+    /* Cold boot uses canonical frame zero from the selected root route.
+     * Normal seam-to-seam transitions begin at frame one. */
+    tsp_room_bundle_generated_apply_tile(root_bundle,
+                                         root_choice.entry_portal,
+                                         root_choice.exit_portal,0u);
     tsp_room_bundle_generated_load_canonical();
     tsp_polar_nt_upload_dirty();
     DISPLAY_ON;
 
-    play_route(root_bundle,0u,1u,1u,0u);
+    play_route(root_bundle,root_choice.entry_portal,root_choice.exit_portal,1u,0u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     g_room_bundle_stream_status=1u;
 
@@ -160,20 +167,22 @@ void main(void){
         for(;;)vsync();
     }
     child=world.current;
-    child_bundle=bundle_for_node(&child);
+    if(!tsp_room_catalog_choose(STREAM_SEED,&child,0u,&child_choice)){
+        g_room_bundle_stream_status=0xEE31u;
+        for(;;)vsync();
+    }
+    child_bundle=child_choice.bundle_id;
     g_room_bundle_child_asset=child_bundle;
     if(child_bundle==root_bundle){
-        /* This fixed PoC seed is intentionally chosen to exercise both the
-         * tight/inset-lit and wide/portal-shadow bundle classes. */
         g_room_bundle_stream_status=0xEE04u;
         for(;;)vsync();
     }
 
-    play_route(child_bundle,0u,1u,1u,1000u);
+    play_route(child_bundle,child_choice.entry_portal,child_choice.exit_portal,1u,1000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     g_room_bundle_stream_status=2u;
 
-    play_route(child_bundle,1u,0u,1u,2000u);
+    play_route(child_bundle,child_choice.exit_portal,child_choice.entry_portal,1u,2000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     g_room_bundle_stream_status=3u;
 
@@ -183,7 +192,7 @@ void main(void){
     }
     g_room_bundle_stream_status=4u;
 
-    play_route(root_bundle,1u,0u,1u,3000u);
+    play_route(root_bundle,root_choice.exit_portal,root_choice.entry_portal,1u,3000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     g_room_bundle_stream_status=5u;
     g_room_bundle_stream_progress=5000u;
@@ -199,9 +208,15 @@ void main(void){
         g_room_bundle_stream_status=0xEE10u;
         for(;;)vsync();
     }
+    if(!tsp_room_catalog_choose(SPLIT_STREAM_SEED,&split,0u,&split_left_choice)||
+       !tsp_room_catalog_choose(SPLIT_STREAM_SEED,&split,1u,&split_right_choice)||
+       split_left_choice.bundle_id!=2u||split_right_choice.bundle_id!=2u){
+        g_room_bundle_stream_status=0xEE32u;
+        for(;;)vsync();
+    }
 
     /* Enter the split from its parent side and choose left. */
-    play_route(2u,0u,1u,1u,6000u);
+    play_route(2u,split_left_choice.entry_portal,split_left_choice.exit_portal,1u,6000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     if(!tsp_stream_enter(&world,0u,0u)){
@@ -209,11 +224,15 @@ void main(void){
         for(;;)vsync();
     }
     left_child=world.current;
-    left_bundle=bundle_for_node(&left_child);
+    if(!tsp_room_catalog_choose(SPLIT_STREAM_SEED,&left_child,0u,&left_child_choice)){
+        g_room_bundle_stream_status=0xEE33u;
+        for(;;)vsync();
+    }
+    left_bundle=left_child_choice.bundle_id;
     g_room_bundle_split_left_asset=left_bundle;
 
-    play_route(left_bundle,0u,1u,1u,7000u);
-    play_route(left_bundle,1u,0u,1u,8000u);
+    play_route(left_bundle,left_child_choice.entry_portal,left_child_choice.exit_portal,1u,7000u);
+    play_route(left_bundle,left_child_choice.exit_portal,left_child_choice.entry_portal,1u,8000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     if(!tsp_stream_back(&world)||!same_node(&world.current,&split)){
@@ -223,7 +242,7 @@ void main(void){
 
     /* We are visually back at portal 1. Cross the junction directly to the
      * sibling portal; both branch mouths are visible during this route. */
-    play_route(2u,1u,2u,1u,9000u);
+    play_route(2u,split_left_choice.exit_portal,split_right_choice.exit_portal,1u,9000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     if(!tsp_stream_enter(&world,1u,0u)){
@@ -231,15 +250,19 @@ void main(void){
         for(;;)vsync();
     }
     right_child=world.current;
-    right_bundle=bundle_for_node(&right_child);
+    if(!tsp_room_catalog_choose(SPLIT_STREAM_SEED,&right_child,0u,&right_child_choice)){
+        g_room_bundle_stream_status=0xEE34u;
+        for(;;)vsync();
+    }
+    right_bundle=right_child_choice.bundle_id;
     g_room_bundle_split_right_asset=right_bundle;
     if(right_child.key==left_child.key){
         g_room_bundle_stream_status=0xEE14u;
         for(;;)vsync();
     }
 
-    play_route(right_bundle,0u,1u,1u,10000u);
-    play_route(right_bundle,1u,0u,1u,11000u);
+    play_route(right_bundle,right_child_choice.entry_portal,right_child_choice.exit_portal,1u,10000u);
+    play_route(right_bundle,right_child_choice.exit_portal,right_child_choice.entry_portal,1u,11000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     if(!tsp_stream_back(&world)||!same_node(&world.current,&split)){
@@ -248,7 +271,7 @@ void main(void){
     }
 
     /* Return from right branch to the original parent portal. */
-    play_route(2u,2u,0u,1u,12000u);
+    play_route(2u,split_right_choice.exit_portal,split_right_choice.entry_portal,1u,12000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     /* Re-select left after visiting right: deterministic branch identity must
@@ -280,9 +303,14 @@ void main(void){
         g_room_bundle_stream_status=0xEE20u;
         for(;;)vsync();
     }
+    if(!tsp_room_catalog_choose(STAIR_STREAM_SEED,&stair,0u,&stair_choice)||
+       stair_choice.bundle_id!=3u){
+        g_room_bundle_stream_status=0xEE35u;
+        for(;;)vsync();
+    }
     g_room_bundle_stair_floor_before_q4=stair.logical_floor_q4;
 
-    play_route(3u,0u,1u,1u,16000u);
+    play_route(3u,stair_choice.entry_portal,stair_choice.exit_portal,1u,16000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     if(!tsp_stream_enter(&world,0u,1u)){
@@ -303,10 +331,14 @@ void main(void){
     /* The raised child reuses an ordinary floor-zero local bake. Its logical
      * +4 elevation exists only in the world descriptor: the canonical seam
      * rebases the visual module automatically. */
-    stair_child_bundle=bundle_for_node(&stair_child);
+    if(!tsp_room_catalog_choose(STAIR_STREAM_SEED,&stair_child,0u,&stair_child_choice)){
+        g_room_bundle_stream_status=0xEE36u;
+        for(;;)vsync();
+    }
+    stair_child_bundle=stair_child_choice.bundle_id;
     g_room_bundle_stair_child_asset=stair_child_bundle;
-    play_route(stair_child_bundle,0u,1u,1u,17000u);
-    play_route(stair_child_bundle,1u,0u,1u,18000u);
+    play_route(stair_child_bundle,stair_child_choice.entry_portal,stair_child_choice.exit_portal,1u,17000u);
+    play_route(stair_child_bundle,stair_child_choice.exit_portal,stair_child_choice.entry_portal,1u,18000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     if(!tsp_stream_back(&world)||!same_node(&world.current,&stair)){
@@ -315,7 +347,7 @@ void main(void){
     }
 
     /* Raised seam -> descend -> original floor-zero canonical seam. */
-    play_route(3u,1u,0u,1u,19000u);
+    play_route(3u,stair_choice.exit_portal,stair_choice.entry_portal,1u,19000u);
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
 
     g_room_bundle_stream_status=20u;
