@@ -200,7 +200,7 @@ jobs:
             build/flicker/flicker-video-run.txt \
             build/flicker/flicker-video-final.ppm \
             build/flicker/video-size.txt \
-            build/flicker/host/bundle0_route01_frame96.ppm \
+            build/flicker/host/bundle0_route01_frame64.ppm \
             build/flicker/host/room_bundle_poc_manifest.txt; do
             [ ! -f "$f" ] || cp "$f" build/flicker-artifact/
           done
