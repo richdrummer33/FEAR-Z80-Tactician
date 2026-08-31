@@ -1,0 +1,134 @@
+name: GG streamed-room PoC
+
+on:
+  push:
+    branches:
+      - experiment/gg-streaming-room-poc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  topology:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build deterministic topology proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc
+          cc -std=c99 -Wall -Wextra -Werror -Isrc \
+             src/tilesector_world_module.c \
+             src/tilesector_world_stream_poc.c \
+             tests/test_tilesector_world_stream_poc.c \
+             -o build/room-poc/test-room-stream
+          build/room-poc/test-room-stream | tee build/room-poc/topology-test.txt
+
+      - name: Upload topology proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-room-stream-topology-proof
+          path: build/room-poc/topology-test.txt
+          retention-days: 30
+
+  four-mib-bank-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 256-bank / 4 MiB Game Gear sentinel ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          CFLAGS=(-mz80:gg -debug -Wl-j -Isrc)
+          SRCS=(
+            src/main_room_poc_bank_probe_gg.c
+            src/room_poc_bank_004.c
+            src/room_poc_bank_063.c
+            src/room_poc_bank_064.c
+            src/room_poc_bank_127.c
+            src/room_poc_bank_191.c
+            src/room_poc_bank_254.c
+          )
+          OBJS=()
+          for src in "${SRCS[@]}"; do
+            obj="build/room-poc/$(basename "${src%.c}").o"
+            "$LCC" "${CFLAGS[@]}" -c -o "$obj" "$src"
+            OBJS+=("$obj")
+          done
+          "$LCC" "${CFLAGS[@]}" -Wm-yo256 -Wm-yS \
+            -o build/room-poc/GG-Room-4MiB-Bank-Probe.gg "${OBJS[@]}"
+
+          test "$(wc -c < build/room-poc/GG-Room-4MiB-Bank-Probe.gg)" -eq 4194304
+          wc -c build/room-poc/GG-Room-4MiB-Bank-Probe.gg | tee build/room-poc/ROM-size.txt
+          sha256sum build/room-poc/GG-Room-4MiB-Bank-Probe.gg | tee build/room-poc/SHA256.txt
+
+      - name: Build Gearsystem runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Execute every low/high-bank sentinel in Gearsystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/room-poc/GG-Room-4MiB-Bank-Probe.gg
+          SYM=build/room-poc/GG-Room-4MiB-Bank-Probe.sym
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          STATUS_ADDR="$(awk '$2=="_g_room_poc_bank_probe_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATUS_ADDR"
+          ./build/libretro_runner "$CORE" "$ROM" 180 \
+            build/room-poc/bank-probe.ppm "$STATUS_ADDR" 2 1 \
+            | tee build/room-poc/bank-probe-run.txt
+
+          # status=1 and all six sentinel bits=0x3F -> little-endian bytes 01 3F.
+          grep -q 'data=013F' build/room-poc/bank-probe-run.txt
+          printf 'PASS: banks 4,63,64,127,191,254 executed and returned their own bank IDs.\n' \
+            | tee build/room-poc/BANK-PROBE-PASS.txt
+
+      - name: Package runnable ROM
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-poc-artifact
+          for f in \
+            build/room-poc/GG-Room-4MiB-Bank-Probe.gg \
+            build/room-poc/GG-Room-4MiB-Bank-Probe.sym \
+            build/room-poc/GG-Room-4MiB-Bank-Probe.map \
+            build/room-poc/bank-probe.ppm \
+            build/room-poc/bank-probe-run.txt \
+            build/room-poc/BANK-PROBE-PASS.txt \
+            build/room-poc/ROM-size.txt \
+            build/room-poc/SHA256.txt; do
+            [ ! -f "$f" ] || cp "$f" build/room-poc-artifact/
+          done
+          git rev-parse HEAD > build/room-poc-artifact/COMMIT.txt
+
+      - name: Upload runnable 4 MiB bank-probe ROM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-room-stream-4MiB-bank-probe
+          path: build/room-poc-artifact/*
+          if-no-files-found: warn
+          retention-days: 30
