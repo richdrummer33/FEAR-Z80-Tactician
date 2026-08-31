@@ -20,7 +20,7 @@
 #include "tilesector_polar.h"
 #include "polar_baked_composite.h"
 
-#define BUNDLE_COUNT 8u
+#define BUNDLE_COUNT 10u
 #define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
@@ -48,6 +48,9 @@ typedef struct World {
     uint8_t scene_vertex_count;
     uint8_t scene_rect_count;
     uint8_t lighting_stage;
+    /* Window/porthole bundles need multiple depth layers in one screen
+     * column. Keep the legacy nearest-surface bake untouched elsewhere. */
+    uint8_t multi_surface;
 } World;
 typedef struct Pose {
     double x,y,z;
@@ -83,8 +86,8 @@ static void die(const char *msg){
     fprintf(stderr,"fatal: %s\n",msg);
     exit(2);
 }
-static void add_seg(World *w,double ax,double ay,double bx,double by,
-                    double z0,double z1,int8_t bias){
+static void add_seg_profile(World *w,double ax,double ay,double bx,double by,
+                            double z0,double z1,int8_t bias,uint8_t profile){
     Seg *s;
     TSPHostSceneSegment *ls;
     uint8_t sid=w->count;
@@ -104,10 +107,14 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
 
     ls=&w->scene_segments[sid];
     ls->v0=v0;ls->v1=v1;
-    ls->profile=TSP_PROFILE_FULL;
+    ls->profile=profile;
     ls->blocks_light=1u;
     ls->light_front_sign=0;
     ls->visual_front_sign=0;
+}
+static void add_seg(World *w,double ax,double ay,double bx,double by,
+                    double z0,double z1,int8_t bias){
+    add_seg_profile(w,ax,ay,bx,by,z0,z1,bias,TSP_PROFILE_FULL);
 }
 static void add_rect(World *w,int16_t x0,int16_t y0,int16_t x1,int16_t y1,
                      int16_t floor_z,int16_t ceiling_z){
