@@ -343,9 +343,13 @@ jobs:
             | tee build/room-poc-stream/run-complete.txt
 
           # Authoritative Z80 RAM proof through native Gearsystem memory.
-          ./build/gearsystem_core_runner "$ROM" 52000 - C392 20 \
+          # Resolve the linked symbol every build; never freeze a WRAM address
+          # into the harness again.
+          STATUS_ADDR="$(awk '$2=="_g_room_bundle_stream_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATUS_ADDR"
+          ./build/gearsystem_core_runner "$ROM" 52000 - "$STATUS_ADDR" 20 \
             | tee build/room-poc-stream/native-final-state.txt
-          grep -q 'DUMP\[C392..C3A5\]=1E0030751DB2' \
+          grep -q '=1E0030751DB2' \
             build/room-poc-stream/native-final-state.txt
           printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
