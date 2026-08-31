@@ -1,0 +1,426 @@
+/*
+ * Host-only independent room-bundle baker.
+ *
+ * This deliberately keeps the current heavyweight exact-output philosophy:
+ * every camera frame is rasterized on the host, reduced to an exact GG name
+ * table plus explicit 32-byte tile-pattern loads, and delta-patched against
+ * the preceding frame. The experiment is about composability, NOT ROM size.
+ *
+ * Two different authored rooms share one canonical S-shaped seam. Each bundle
+ * starts from a freshly reset simulated VRAM cache, explores its room, returns
+ * into the mathematically safe seam leg, resets the dynamic cache there, and
+ * must finish with the exact same canonical name-table words as it started.
+ */
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "tilesector_polar.h"
+#include "polar_baked_composite.h"
+
+#define BUNDLE_COUNT 2u
+#define ROUTE_FRAMES 160u
+#define MAX_SEGMENTS 16u
+#define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
+#define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
+#define PI 3.14159265358979323846
+
+typedef struct V2 { double x,y; } V2;
+typedef struct Seg {
+    V2 a,b;
+    double z0,z1;
+    int8_t shade_bias;
+} Seg;
+typedef struct World {
+    Seg seg[MAX_SEGMENTS];
+    uint8_t count;
+} World;
+typedef struct Pose {
+    double x,y,z;
+    uint8_t yaw;
+} Pose;
+typedef struct FramePack {
+    uint16_t patch_len;
+    uint16_t changed;
+    uint16_t runs;
+    uint16_t tile_len;
+    uint16_t tile_loads;
+    uint8_t patch[PATCH_MAX];
+    uint8_t tile[TILEPATCH_MAX];
+} FramePack;
+typedef struct BundleStats {
+    uint32_t patch_bytes;
+    uint32_t tile_bytes;
+    uint32_t tile_loads;
+    uint16_t peak_tile_loads;
+    uint16_t changed_words;
+} BundleStats;
+
+static void die(const char *msg){
+    fprintf(stderr,"fatal: %s\n",msg);
+    exit(2);
+}
+static void add_seg(World *w,double ax,double ay,double bx,double by,
+                    double z0,double z1,int8_t bias){
+    Seg *s;
+    if(w->count>=MAX_SEGMENTS)die("too many room PoC segments");
+    s=&w->seg[w->count++];
+    s->a.x=ax;s->a.y=ay;s->b.x=bx;s->b.y=by;
+    s->z0=z0;s->z1=z1;s->shade_bias=bias;
+}
+
+/* Shared S-shaped seam plus one room beyond its east aperture.
+ *
+ * seam:
+ *   old aperture x=0, y=-4..4
+ *   inner wall x=12, y=4..28
+ *   inner wall x=20, y=-4..20
+ *   new aperture x=36, y=20..28
+ *
+ * The route uses only the new/east room. The old side exists only to make the
+ * seam geometry complete and symmetric for later predecessor handoff tests.
+ */
+static void make_world(uint8_t bundle,World *w){
+    memset(w,0,sizeof(*w));
+
+    /* S-throat walls. */
+    add_seg(w,0,-4,20,-4,0,32,0);
+    add_seg(w,20,-4,20,20,0,32,0);
+    add_seg(w,12,4,12,28,0,32,0);
+    add_seg(w,12,28,36,28,0,32,0);
+
+    /* Room left wall, split around doorway y=20..28. */
+    add_seg(w,36,4,36,20,0,32,0);
+    add_seg(w,36,28,36,60,0,32,0);
+
+    if(bundle==0u){
+        /* Broad simple room. */
+        add_seg(w,36,4,92,4,0,32,0);
+        add_seg(w,92,4,92,60,0,32,0);
+        add_seg(w,92,60,36,60,0,32,0);
+    }else{
+        /* Distinct deeper room with a dog-leg/pillar-like inner occluder. */
+        add_seg(w,36,4,104,4,0,32,0);
+        add_seg(w,104,4,104,68,0,32,0);
+        add_seg(w,104,68,36,68,0,32,0);
+        add_seg(w,36,68,36,60,0,32,0);
+        add_seg(w,66,34,78,34,0,32,1);
+        add_seg(w,78,34,78,48,0,32,1);
+    }
+}
+
+static uint8_t yaw_lerp(uint8_t a,uint8_t b,double q){
+    int d=(int)(int8_t)(b-a);
+    int v=(int)a+(int)lround((double)d*q);
+    return (uint8_t)v;
+}
+static double lerp(double a,double b,double q){return a+(b-a)*q;}
+
+static Pose route_pose(uint16_t f,uint8_t bundle){
+    Pose p;
+    double q;
+    (void)bundle;
+    p.z=16.0;
+
+    /* 0..15: canonical safe leg, then approach the reveal boundary. */
+    if(f<16u){
+        q=(double)f/15.0;
+        p.x=16.0;p.y=lerp(12.0,16.0,q);p.yaw=64u;return p;
+    }
+    /* 16..31: round second corner while continuing north. */
+    if(f<32u){
+        q=(double)(f-16u)/15.0;
+        p.x=16.0;p.y=lerp(16.0,24.0,q);p.yaw=yaw_lerp(64u,0u,q);return p;
+    }
+    /* 32..63: enter room. */
+    if(f<64u){
+        q=(double)(f-32u)/31.0;
+        p.x=lerp(16.0,62.0,q);p.y=24.0;p.yaw=0u;return p;
+    }
+    /* 64..79: deliberate look-around. */
+    if(f<80u){
+        q=(double)(f-64u)/15.0;
+        p.x=62.0;p.y=24.0;p.yaw=yaw_lerp(0u,32u,q);return p;
+    }
+    /* 80..95: swing across the opposite side. */
+    if(f<96u){
+        q=(double)(f-80u)/15.0;
+        p.x=62.0;p.y=24.0;p.yaw=yaw_lerp(32u,224u,q);return p;
+    }
+    /* 96..111: turn back toward doorway. */
+    if(f<112u){
+        q=(double)(f-96u)/15.0;
+        p.x=62.0;p.y=24.0;p.yaw=yaw_lerp(224u,128u,q);return p;
+    }
+    /* 112..135: return west. */
+    if(f<136u){
+        q=(double)(f-112u)/23.0;
+        p.x=lerp(62.0,16.0,q);p.y=24.0;p.yaw=128u;return p;
+    }
+    /* 136..147: turn south down the central leg. */
+    if(f<148u){
+        q=(double)(f-136u)/11.0;
+        p.x=16.0;p.y=lerp(24.0,16.0,q);p.yaw=yaw_lerp(128u,192u,q);return p;
+    }
+    /* 148..159: canonical safe leg endpoint. */
+    q=(double)(f-148u)/11.0;
+    p.x=16.0;p.y=lerp(16.0,12.0,q);p.yaw=yaw_lerp(192u,64u,q);
+    return p;
+}
+
+static int ray_seg(double ox,double oy,double dx,double dy,const Seg *s,double *t_out){
+    double sx=s->b.x-s->a.x,sy=s->b.y-s->a.y;
+    double den=dx*sy-dy*sx,qx,qy,t,u;
+    if(fabs(den)<1e-10)return 0;
+    qx=s->a.x-ox;qy=s->a.y-oy;
+    t=(qx*sy-qy*sx)/den;
+    u=(qx*dy-qy*dx)/den;
+    if(t<=1e-6||u<-1e-8||u>1.0+1e-8)return 0;
+    *t_out=t;return 1;
+}
+static uint8_t shade_for_inv(double inv,int8_t bias){
+    int s=inv>=82.0?2:(inv>=46.0?1:0);
+    s+=bias;if(s<0)s=0;if(s>2)s=2;return (uint8_t)s;
+}
+static int iround(double v){return (int)floor(v+0.5);}
+
+static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]){
+    int sx;
+    TSPState cam;
+    memset(&cam,0,sizeof(cam));
+    cam.x_q4=(int16_t)lround(p->x*16.0);
+    cam.y_q4=(int16_t)lround(p->y*16.0);
+    cam.z_q4=(int16_t)lround(p->z*16.0);
+    cam.yaw=p->yaw;
+
+    tsp_host_composite_set_lighting(TSP_HOST_LIGHT_BASELINE,&cam);
+    tsp_host_composite_begin_frame();
+
+    for(sx=0;sx<160;++sx){
+        double rel=atan(((double)sx+0.5-80.0)/80.0);
+        double ang=(double)p->yaw*(2.0*PI/256.0)+rel;
+        double dx=cos(ang),dy=sin(ang),best=1e30;
+        int best_sid=-1;
+        uint8_t sid;
+        for(sid=0u;sid<w->count;++sid){
+            double t;
+            if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)&&t<best){
+                best=t;best_sid=(int)sid;
+            }
+        }
+        if(best_sid>=0){
+            const Seg *s=&w->seg[best_sid];
+            double depth=best*cos(rel);
+            double top,bottom,inv;
+            int it,ib;
+            if(depth<0.01)depth=0.01;
+            top=72.0-(s->z1-p->z)*80.0/depth;
+            bottom=72.0-(s->z0-p->z)*80.0/depth;
+            inv=2560.0/depth;if(inv>255.0)inv=255.0;
+            it=iround(top);ib=iround(bottom);
+            tsp_host_composite_surface((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
+                                       (int16_t)it,(int16_t)it,
+                                       (int16_t)ib,(int16_t)ib,
+                                       (uint8_t)(200+best_sid),
+                                       shade_for_inv(inv,s->shade_bias),
+                                       0u,0u,0u);
+        }
+    }
+    tsp_host_composite_export(out);
+}
+
+static size_t build_patch(const uint16_t *a,const uint16_t *b,uint8_t *dst,
+                          uint16_t *changed_out,uint16_t *runs_out){
+    size_t p=2u;
+    uint16_t changed=0u,runs=0u;
+    uint8_t row;
+    for(row=0u;row<TSP_ROWS;++row){
+        uint8_t x=0u;
+        uint16_t base=(uint16_t)row*TSP_COLS;
+        while(x<TSP_COLS){
+            uint8_t start,count,c;
+            while(x<TSP_COLS&&a[base+x]==b[base+x])++x;
+            if(x>=TSP_COLS)break;
+            start=x;
+            while(x<TSP_COLS&&a[base+x]!=b[base+x])++x;
+            count=(uint8_t)(x-start);
+            if(p+3u+(size_t)count*2u>PATCH_MAX)die("patch overflow");
+            dst[p++]=row;dst[p++]=start;dst[p++]=count;
+            for(c=0u;c<count;++c){
+                uint16_t v=b[base+(uint16_t)start+c];
+                dst[p++]=(uint8_t)v;dst[p++]=(uint8_t)(v>>8);
+            }
+            changed=(uint16_t)(changed+count);++runs;
+        }
+    }
+    dst[0]=(uint8_t)runs;dst[1]=(uint8_t)(runs>>8);
+    *changed_out=changed;*runs_out=runs;
+    return p;
+}
+static int apply_patch(uint16_t *map,const uint8_t *src,size_t len){
+    size_t p=2u;
+    uint16_t n,i;
+    if(len<2u)return 0;
+    n=(uint16_t)src[0]|((uint16_t)src[1]<<8);
+    for(i=0u;i<n;++i){
+        uint8_t row,x,count,c;
+        uint16_t base;
+        if(p+3u>len)return 0;
+        row=src[p++];x=src[p++];count=src[p++];
+        if(row>=TSP_ROWS||!count||(uint16_t)x+count>TSP_COLS)return 0;
+        if(p+(size_t)count*2u>len)return 0;
+        base=(uint16_t)row*TSP_COLS+x;
+        for(c=0u;c<count;++c){
+            map[base+c]=(uint16_t)src[p]|((uint16_t)src[p+1u]<<8);
+            p+=2u;
+        }
+    }
+    return p==len;
+}
+static void capture_tiles(FramePack *fp){
+    uint16_t n=tsp_host_composite_frame_load_count(),i;
+    const TSPHostTileLoad *loads=tsp_host_composite_frame_loads();
+    size_t p=2u;
+    fp->tile_loads=n;
+    fp->tile[p?0:0]=(uint8_t)n;
+    fp->tile[1]=(uint8_t)(n>>8);
+    for(i=0u;i<n;++i){
+        if(p+2u+TSP_HOST_TILE_BYTES>TILEPATCH_MAX)die("tilepatch overflow");
+        fp->tile[p++]=(uint8_t)loads[i].slot;
+        fp->tile[p++]=(uint8_t)(loads[i].slot>>8);
+        memcpy(fp->tile+p,loads[i].bytes,TSP_HOST_TILE_BYTES);
+        p+=TSP_HOST_TILE_BYTES;
+    }
+    fp->tile_len=(uint16_t)p;
+}
+
+static uint64_t fnv64(const void *data,size_t n){
+    const uint8_t *p=(const uint8_t *)data;
+    uint64_t h=UINT64_C(1469598103934665603);
+    size_t i;
+    for(i=0u;i<n;++i){h^=p[i];h*=UINT64_C(1099511628211);}
+    return h;
+}
+
+static void write_u16(FILE *f,uint16_t v){fputc((int)(v&255u),f);fputc((int)(v>>8),f);}
+static void write_u32(FILE *f,uint32_t v){write_u16(f,(uint16_t)v);write_u16(f,(uint16_t)(v>>16));}
+
+static void emit_bundle(FILE *pack,FILE *manifest,uint8_t bundle,
+                        FramePack frames[ROUTE_FRAMES],
+                        const uint16_t canonical[TSP_MAP_CELLS],
+                        BundleStats *stats){
+    uint16_t i;
+    fprintf(manifest,"bundle=%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu peak_tile_loads=%u changed_words=%u\n",
+            (unsigned)bundle,(unsigned)ROUTE_FRAMES,
+            (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
+            (unsigned long)stats->tile_loads,(unsigned)stats->peak_tile_loads,
+            (unsigned)stats->changed_words);
+
+    fputc((int)bundle,pack);fputc(1,pack);
+    write_u16(pack,ROUTE_FRAMES);
+    write_u32(pack,stats->patch_bytes);
+    write_u32(pack,stats->tile_bytes);
+    for(i=0u;i<ROUTE_FRAMES;++i){
+        write_u16(pack,frames[i].patch_len);
+        write_u16(pack,frames[i].tile_len);
+        fwrite(frames[i].patch,1,frames[i].patch_len,pack);
+        fwrite(frames[i].tile,1,frames[i].tile_len,pack);
+    }
+    (void)canonical;
+}
+
+int main(int argc,char **argv){
+    const char *outdir;
+    char path[512];
+    FILE *pack,*manifest;
+    uint16_t canonical[TSP_MAP_CELLS];
+    uint64_t canonical_hash=0u;
+    uint8_t bundle;
+
+    if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
+    outdir=argv[1];
+
+    snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
+    pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
+    fwrite("RBP1",1,4,pack);write_u16(pack,1u);fputc(BUNDLE_COUNT,pack);fputc(0,pack);
+
+    snprintf(path,sizeof(path),"%s/room_bundle_poc_manifest.txt",outdir);
+    manifest=fopen(path,"w");if(!manifest)die("cannot create room bundle manifest");
+    fprintf(manifest,"Room bundle PoC pack v1\n");
+
+    for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
+        World w;
+        FramePack *frames=(FramePack *)calloc(ROUTE_FRAMES,sizeof(FramePack));
+        uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],replay[TSP_MAP_CELLS];
+        BundleStats stats={0u,0u,0u,0u,0u};
+        uint16_t f;
+        if(!frames)die("frame allocation failed");
+        make_world(bundle,&w);
+
+        /* Independent bundle: no dynamic VRAM history inherited. */
+        tsp_host_composite_reset_cache();
+
+        for(f=0u;f<ROUTE_FRAMES;++f){
+            Pose p=route_pose(f,bundle);
+
+            /* Once back inside the proven safe seam leg, force the exact
+             * canonical cache vocabulary before handing off to another room. */
+            if(f==148u)tsp_host_composite_reset_cache();
+
+            render_pose(&w,&p,cur);
+            capture_tiles(&frames[f]);
+
+            if(f==0u){
+                memcpy(prev,cur,sizeof(prev));
+                memcpy(replay,cur,sizeof(replay));
+                frames[f].patch_len=(uint16_t)build_patch(cur,cur,frames[f].patch,
+                                                          &frames[f].changed,&frames[f].runs);
+                if(bundle==0u){
+                    memcpy(canonical,cur,sizeof(canonical));
+                    canonical_hash=fnv64(canonical,sizeof(canonical));
+                }else if(memcmp(canonical,cur,sizeof(canonical))!=0)
+                    die("bundle initial seam name table != canonical seam");
+            }else{
+                frames[f].patch_len=(uint16_t)build_patch(prev,cur,frames[f].patch,
+                                                          &frames[f].changed,&frames[f].runs);
+                memcpy(replay,prev,sizeof(replay));
+                if(!apply_patch(replay,frames[f].patch,frames[f].patch_len)||
+                   memcmp(replay,cur,sizeof(cur))!=0)
+                    die("bundle patch replay != oracle");
+                memcpy(prev,cur,sizeof(prev));
+            }
+
+            stats.patch_bytes+=frames[f].patch_len;
+            stats.tile_bytes+=frames[f].tile_len;
+            stats.tile_loads+=frames[f].tile_loads;
+            stats.changed_words=(uint16_t)(stats.changed_words+frames[f].changed);
+            if(frames[f].tile_loads>stats.peak_tile_loads)
+                stats.peak_tile_loads=frames[f].tile_loads;
+
+            if((f==0u||f==64u||f==96u||f==148u||f==159u)){
+                snprintf(path,sizeof(path),"%s/bundle%u_frame%u.ppm",outdir,
+                         (unsigned)bundle,(unsigned)f);
+                if(!tsp_host_composite_write_ppm(path))die("screenshot write failed");
+            }
+        }
+
+        if(memcmp(prev,canonical,sizeof(canonical))!=0)
+            die("bundle terminal seam name table != canonical seam");
+
+        fprintf(manifest,"bundle=%u canonical_begin=PASS canonical_end=PASS terminal_hash=%016llX\n",
+                (unsigned)bundle,(unsigned long long)fnv64(prev,sizeof(prev)));
+        emit_bundle(pack,manifest,bundle,frames,canonical,&stats);
+        free(frames);
+    }
+
+    fprintf(manifest,"canonical_seam_fnv64=%016llX\n",(unsigned long long)canonical_hash);
+    fprintf(manifest,"independent_bundle_replay=PASS\n");
+    fprintf(manifest,"cross_bundle_canonical_handoff=PASS\n");
+    fclose(manifest);fclose(pack);
+
+    printf("ROOM_BUNDLE_POC_PASS bundles=%u frames_per_bundle=%u canonical=%016llX\n",
+           BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash);
+    return 0;
+}
