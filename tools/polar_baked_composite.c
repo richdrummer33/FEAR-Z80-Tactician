@@ -70,6 +70,7 @@ static uint8_t g_camera_yaw;
  * camera/wall projection is resolved here, then only final 8x8 patterns and
  * name-table words are baked for replay. */
 static uint8_t g_projective_tex[128][64];
+static uint8_t g_projective_bright_row[128];
 static uint8_t g_projective_tex_ready;
 
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
@@ -429,6 +430,17 @@ static void load_projective_texture(void){
     }
     fclose(f);
     if(count!=64*128)die("projective wall texture must contain exactly 64x128 class pixels");
+    {
+        int y,x;
+        for(y=0;y<128;++y){
+            int bright=0;
+            for(x=0;x<64;++x)if(g_projective_tex[y][x]>=3u)++bright;
+            /* Collapse horizontal source detail in the bright machinery rails
+             * to one row semantic. V remains truly projected, so these bands
+             * still shear/compress with the wall instead of following tiles. */
+            g_projective_bright_row[y]=(uint8_t)(bright>=24);
+        }
+    }
     g_projective_tex_ready=1u;
 }
 static int mirror_repeat8(int u){
@@ -437,12 +449,11 @@ static int mirror_repeat8(int u){
     return q<8?q:15-q;
 }
 static uint8_t projective_material_semantic(uint8_t cls,int vi){
-    /* Entropy-controlled material vocabulary: the source still decides the
-     * bright machinery/rail class and the lower grille, but ordinary body
-     * pixels collapse to one oxide colour. Lighting supplies the secondary
-     * brightness structure without multiplying texture patterns. */
-    if(!cls&&vi>=92)return SEM_BLACK;
-    if(cls>=3u)return MAT_MORTAR;
+    /* V-only bright rails are the first shipping LOD. Keep U detail only in
+     * the authored lower grille, where it contributes a strong structural read.
+     * Everything else is one oxide body colour plus the independent lighting. */
+    if(vi>=92&&cls==0u)return SEM_BLACK;
+    if(g_projective_bright_row[vi])return MAT_MORTAR;
     return SEM_MID;
 }
 static uint8_t wall_projective_material_sample(uint8_t sid,int sx,int sy,uint8_t fallback){
@@ -469,11 +480,11 @@ static uint8_t wall_projective_material_sample(uint8_t sid,int sx,int sy,uint8_t
     ui=(int)floor((u+1.0)/2.0)*2;
     ui=mirror_repeat8(ui);
 
-    /* Exact world-Z V first, THEN an 8-source-pixel material-space bucket.
-     * Full wall height z=0..32 maps to rows 0..127, so this is about two world
-     * units vertically. Raised/lintel/riser profiles crop the same material;
-     * nothing is stretched to the local screen tile or profile height. */
-    vi=(int)floor((wz*127.0/TSP_CEILING_Z)+0.5);
+    /* Source row zero is the TOP of the authored wall image. Exact world Z is
+     * therefore inverted into V: ceiling z=32 -> row 0, floor z=0 -> row 127.
+     * Quantization happens only after this projected/world-space coordinate is
+     * known. Raised/lintel/riser profiles crop this same absolute material. */
+    vi=(int)floor(((TSP_CEILING_Z-wz)*127.0/TSP_CEILING_Z)+0.5);
     if(vi<0)vi=0;else if(vi>127)vi=127;
     vi=((vi+4)/8)*8;
     if(vi>127)vi=127;
