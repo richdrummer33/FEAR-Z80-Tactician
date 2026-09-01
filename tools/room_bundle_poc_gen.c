@@ -23,15 +23,31 @@
 
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
 #include "generated/doomguy_mesh.inc"
+#ifdef ROOM_BUNDLE_DOOMGUY_SEAMS
+#include "generated/doomguy_seams.inc"
+#endif
 #ifndef ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS
 #define ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS 1
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY
 #define ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY 1
 #endif
+#ifndef ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS
+#define ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS 0
+#endif
 #endif
 
-#define BUNDLE_COUNT 12u
+#ifdef ROOM_BUNDLE_BONSAI_GENERATED
+#include "generated/bonsai_mesh.inc"
+#ifdef ROOM_BUNDLE_BONSAI_SEAMS
+#include "generated/bonsai_seams.inc"
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_SEAM_COMPONENTS
+#define ROOM_BUNDLE_BONSAI_SEAM_COMPONENTS 0
+#endif
+#endif
+
+#define BUNDLE_COUNT 13u
 #define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
@@ -700,7 +716,9 @@ static void add_showcase_shell(World *w){
 
 static void add_doomguy_proxy_mesh(RMBScene *m){
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
-    RMBTransform t=rmb_transform(78.0,24.0,3.0,0,0,0,1,1,1);
+    /* Fixed art-direction scale: 135% of the original 19-unit normalization.
+     * Plinth height is NOT part of this scale. */
+    RMBTransform t=rmb_transform(78.0,24.0,3.0,0,0,0,1.35,1.35,1.35);
     uint8_t visual=rmb_new_object(m,RMB_OUTLINE_NONE);
     uint8_t lighting=rmb_new_object(m,RMB_OUTLINE_NONE);
     uint8_t shadow=rmb_new_object(m,RMB_OUTLINE_NONE);
@@ -730,6 +748,25 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
     rmb_add_indexed_mesh_q8(m,shadow,&t,
                             doomguy_shadow_xyz_q8,DOOMGUY_SHADOW_VERTEX_COUNT,
                             doomguy_shadow_indices,DOOMGUY_SHADOW_TRIANGLE_COUNT,0);
+#ifdef ROOM_BUNDLE_DOOMGUY_SEAMS
+    {
+        uint8_t si;
+        for(si=0u;si<DOOMGUY_SEAM_LAYER_COUNT;++si){
+            const RMBGeneratedSeamLayer *sl=&doomguy_seam_layers[si];
+            uint8_t seam;
+            if(sl->rank>(uint8_t)ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS)continue;
+            seam=rmb_new_object(m,RMB_OUTLINE_NONE);
+            rmb_set_object_flags(m,seam,1u,0u);
+            rmb_set_object_shade_levels(m,seam,3u);
+            rmb_set_object_overlay_target(m,seam,visual);
+            rmb_set_object_overlay_dither(m,seam,sl->quarters);
+            /* -2 forces the existing darkest semantic endpoint regardless of
+             * face/light angle; ordered coverage supplies 25/50/75% falloff. */
+            rmb_add_indexed_mesh_q8(m,seam,&t,sl->xyz,sl->vertex_count,
+                                    sl->idx,sl->triangle_count,-2);
+        }
+    }
+#endif
 #else
 
     RMBTransform t;
@@ -802,6 +839,69 @@ static void make_doomguy_hero_chamber(World *w){
     w->scene_lights[0].y_q4=(int16_t)(-96*16);
     w->scene_lights[0].height_q4=(int16_t)(18*16);
     w->scene_lights[0].radius_world=220u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_HARD;
+    finalize_scene(w);
+}
+
+static void add_bonsai_generated_mesh(RMBScene *m){
+#ifdef ROOM_BUNDLE_BONSAI_GENERATED
+    RMBTransform t=rmb_transform(78.0,24.0,0.0,0,0,0,1,1,1);
+    uint8_t visual=rmb_new_object(m,RMB_OUTLINE_NONE);
+    uint8_t lighting=rmb_new_object(m,RMB_OUTLINE_NONE);
+    uint8_t shadow=rmb_new_object(m,RMB_OUTLINE_NONE);
+
+    rmb_set_object_flags(m,visual,1u,0u);
+    rmb_set_object_shade_levels(m,visual,1u);
+    rmb_add_indexed_mesh_q8(m,visual,&t,
+                            bonsai_visual_xyz_q8,BONSAI_VISUAL_VERTEX_COUNT,
+                            bonsai_visual_indices,BONSAI_VISUAL_TRIANGLE_COUNT,0);
+
+    rmb_set_object_flags(m,lighting,1u,0u);
+    rmb_set_object_shade_levels(m,lighting,3u);
+    rmb_set_object_overlay_target(m,lighting,visual);
+    rmb_add_indexed_mesh_q8(m,lighting,&t,
+                            bonsai_lighting_xyz_q8,BONSAI_LIGHTING_VERTEX_COUNT,
+                            bonsai_lighting_indices,BONSAI_LIGHTING_TRIANGLE_COUNT,0);
+
+    rmb_set_object_flags(m,shadow,0u,1u);
+    rmb_add_indexed_mesh_q8(m,shadow,&t,
+                            bonsai_shadow_xyz_q8,BONSAI_SHADOW_VERTEX_COUNT,
+                            bonsai_shadow_indices,BONSAI_SHADOW_TRIANGLE_COUNT,0);
+#ifdef ROOM_BUNDLE_BONSAI_SEAMS
+    {
+        uint8_t si;
+        for(si=0u;si<BONSAI_SEAM_LAYER_COUNT;++si){
+            const RMBGeneratedSeamLayer *sl=&bonsai_seam_layers[si];
+            uint8_t seam;
+            if(sl->rank>(uint8_t)ROOM_BUNDLE_BONSAI_SEAM_COMPONENTS)continue;
+            seam=rmb_new_object(m,RMB_OUTLINE_NONE);
+            rmb_set_object_flags(m,seam,1u,0u);
+            rmb_set_object_shade_levels(m,seam,3u);
+            rmb_set_object_overlay_target(m,seam,visual);
+            rmb_set_object_overlay_dither(m,seam,sl->quarters);
+            rmb_add_indexed_mesh_q8(m,seam,&t,sl->xyz,sl->vertex_count,
+                                    sl->idx,sl->triangle_count,-2);
+        }
+    }
+#endif
+#else
+    (void)m;
+#endif
+}
+
+static void make_bonsai_hero_chamber(World *w){
+    init_world(w);
+    add_showcase_shell(w);
+    add_bonsai_generated_mesh(&w->mesh);
+
+    /* Deliberately impossible-scale test: generated asset height is 64 world
+     * units, exactly 2x the nominal 32-unit room ceiling. Ceiling is semantic
+     * background, not an occluding mesh, so the canopy may extend through it. */
+    w->scene_lights[0].x_q4=(int16_t)(78<<4);
+    w->scene_lights[0].y_q4=(int16_t)(24<<4);
+    w->scene_lights[0].height_q4=(int16_t)(78<<4);
+    w->scene_lights[0].radius_world=180u;
     w->scene_lights[0].intensity=255u;
     w->lighting_stage=TSP_HOST_LIGHT_HARD;
     finalize_scene(w);
@@ -964,6 +1064,7 @@ static void make_world(uint8_t bundle,World *w){
     else if(bundle==9u)make_curved_showcase_world(w);
     else if(bundle==10u)make_prop_showcase_world(w);
     else if(bundle==11u)make_doomguy_hero_chamber(w);
+    else if(bundle==12u)make_bonsai_hero_chamber(w);
     else die("invalid room bundle id");
 }
 
@@ -1044,9 +1145,26 @@ static Pose showcase_detail_pose(uint8_t bundle,uint16_t f){
     if(bundle==9u){tx=80.0;ty=30.0;rx=24.0;ry=27.0;}
     else if(bundle==10u){tx=80.0;ty=28.0;tz=14.0;rx=21.0;ry=26.0;}
     else if(bundle==11u){tx=78.0;ty=24.0;tz=15.0;rx=22.0;ry=27.0;}
+    else if(bundle==12u){tx=78.0;ty=24.0;tz=16.0;rx=34.0;ry=52.0;}
     /* A deliberately interior ellipse: all review frames remain inside the
      * showcase room instead of occasionally filming the outside of a wall. */
     p.x=tx+rx*cos(a);p.y=ty+ry*sin(a);p.z=tz;
+    p.yaw=yaw_from_vec(tx-p.x,ty-p.y);
+    return p;
+}
+
+static Pose bonsai_detail_pose(uint16_t f){
+    Pose p;
+    const double tx=78.0,ty=24.0;
+    if(f<60u){
+        double q=(double)f/59.0;
+        double a=(125.0-250.0*q)*(PI/180.0);
+        p.x=tx+18.0*cos(a);p.y=ty+20.0*sin(a);p.z=12.0;
+    }else{
+        double q=(double)(f-60u)/59.0;
+        double a=(180.0-360.0*q)*(PI/180.0);
+        p.x=tx+34.0*cos(a);p.y=ty+52.0*sin(a);p.z=16.0;
+    }
     p.yaw=yaw_from_vec(tx-p.x,ty-p.y);
     return p;
 }
@@ -1077,6 +1195,7 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
     else if(bundle==9u)inspect_y=72.0; /* curved primitive gallery */
     else if(bundle==10u)inspect_y=70.0; /* toppled furniture */
     else if(bundle==11u)inspect_y=70.0; /* Doomguy hero chamber */
+    else if(bundle==12u)inspect_y=70.0; /* impossible-scale bonsai */
 
     /* 0..63: canonical entry seam -> inside room. */
     if(f<64u)return entry_outbound_pose(f);
@@ -1218,7 +1337,7 @@ static Pose turn_forward_pose(uint16_t f){
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
     if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u||
-       bundle==8u||bundle==9u||bundle==10u||bundle==11u){
+       bundle==8u||bundle==9u||bundle==10u||bundle==11u||bundle==12u){
         Pose p;
         if(entry_portal==0u&&exit_portal==1u)
             p=route_pose(f,bundle);
@@ -1675,12 +1794,13 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
          * artifacts without changing the normal room-bundle bake output. */
         if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
            entry_portal==0u&&exit_portal==1u&&
-           (bundle==4u||bundle==7u||bundle==8u||bundle==9u||bundle==10u||bundle==11u)){
+           (bundle==4u||bundle==7u||bundle==8u||bundle==9u||bundle==10u||bundle==11u||bundle==12u)){
             const char *tag=bundle==4u?"gallery-window":
                             (bundle==7u?"solid-pillars":
                             (bundle==8u?"statue-showcase":
                             (bundle==9u?"curved-showcase":
-                            (bundle==10u?"prop-showcase":"doomguy-proxy"))));
+                            (bundle==10u?"prop-showcase":
+                            (bundle==11u?"doomguy-proxy":"bonsai-giant")))));
             snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
                      outdir,tag,(unsigned)f);
             if(!tsp_host_composite_write_ppm(path))
@@ -1707,13 +1827,14 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
     }
 
     if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
-       entry_portal==0u&&exit_portal==1u&&bundle>=8u&&bundle<=11u){
+       entry_portal==0u&&exit_portal==1u&&bundle>=8u&&bundle<=12u){
         uint16_t rf;
         const char *tag=bundle==8u?"statue-detail":
                         (bundle==9u?"curved-detail":
-                        (bundle==10u?"prop-detail":"doomguy-detail"));
+                        (bundle==10u?"prop-detail":
+                        (bundle==11u?"doomguy-detail":"bonsai-detail")));
         for(rf=0u;rf<120u;++rf){
-            Pose rp=showcase_detail_pose(bundle,rf);
+            Pose rp=bundle==12u?bonsai_detail_pose(rf):showcase_detail_pose(bundle,rf);
             render_pose(w,&rp,cur);
             snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
                      outdir,tag,(unsigned)rf);
@@ -1842,8 +1963,9 @@ int main(int argc,char **argv){
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
-    if(only_bundle<0)fprintf(manifest,"twelve_module_catalog=PASS\n");
+    if(only_bundle<0)fprintf(manifest,"thirteen_module_catalog=PASS\n");
     if(only_bundle==11||only_bundle<0)fprintf(manifest,"doomguy_hero_chamber=PASS\n");
+    if(only_bundle==12||only_bundle<0)fprintf(manifest,"bonsai_giant_chamber=PASS\n");
     fprintf(manifest,"mesh_shadow_occlusion=PASS\n");
     fprintf(manifest,"host_mesh_raster=PASS\n");
     fprintf(manifest,"silent_internal_mesh_edges=PASS\n");
