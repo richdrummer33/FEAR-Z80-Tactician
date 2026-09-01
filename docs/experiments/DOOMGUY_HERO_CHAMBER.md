@@ -1,6 +1,6 @@
 # Doomguy Hero Chamber
 
-Status: host geometry/light proof green; real GLB import pending.
+Status: host geometry/light proof green; compressed-GLB import path implemented and CI-proven; exact user Doomguy binary still pending sandbox mount.
 
 ## Asset normalization target
 
@@ -84,3 +84,76 @@ retained triangle count.
 A Japanese-tree GLB was also supplied for a later organic-shape stress test.
 Reported metadata is approximately 5,589 triangles / 3,697 vertices, one mesh,
 one material, no textures, with bounds about 0.891 x 1.000 x 0.611.
+
+
+## GLB import architecture
+
+The continuation branch `experiment/gg-doomguy-glb-import` adds an actual
+host-side source-mesh pipeline rather than teaching the room generator about
+glTF directly.
+
+`tools/glb_rmb/convert.mjs`:
+
+1. reads ordinary, `EXT_meshopt_compression`, or Draco GLB data;
+2. applies node/world transforms;
+3. discards bake-irrelevant attributes such as normals/UVs/material channels;
+4. welds the geometry;
+5. derives two independently simplified meshes from the same normalized master;
+6. recenters X/Y, places the source minimum Z at zero, and scales to the
+   requested world height;
+7. emits signed-Q8 positions plus uint16 triangle indices as a generated C
+   include for the existing host baker.
+
+The default Doomguy command targets roughly 1,800 visual triangles and 350
+shadow triangles. These are starting points, not visual-quality policy; the
+actual promotion decision is still tile vocabulary / VBlank churn plus visual
+inspection.
+
+The room-mesh layer now distinguishes object roles:
+
+- visible + non-shadow-casting: the richer imported statue image;
+- invisible + shadow-casting: the cheap silhouette proxy;
+- visible + shadow-casting: normal procedural/world mesh objects.
+
+This avoids paying exact high-resolution triangle intersection cost for every
+light-visibility query while keeping visual and cast-shadow registration derived
+from the same source master.
+
+Imported objects with no requested outline also skip edge-adjacency construction
+entirely. This is important for hero meshes: internal tessellation is supposed
+to be visually silent, and building an unused edge vocabulary was quadratic
+host-side bookkeeping with no GG benefit.
+
+The procedural Doomguy remains behind the default compile path. Defining
+`ROOM_BUNDLE_DOOMGUY_GENERATED` switches bundle 11 to the generated visual +
+shadow arrays. That leaves the already-proven 47/48 proxy chamber as an exact
+A/B control rather than replacing the control while the real asset is tuned.
+
+## Import verification
+
+CI now creates a meshopt-compressed synthetic GLB and proves the complete path:
+
+- compressed GLB decode: PASS
+- simplification + Q8 C emission: PASS
+- generated visual/shadow symbol contract: PASS
+- compile with `ROOM_BUNDLE_DOOMGUY_GENERATED`: PASS
+- bundle-11 bake through generated indexed meshes: PASS
+- mesh shadow callback/self-test through the imported path: PASS
+
+The normal procedural-control build remains warning-clean and its sanitizer
+proof still reports the established 47-upload/VBlank chamber result.
+
+### Current evidence boundary
+
+The user supplied a ZIP containing the real Doomguy and secondary organic GLB,
+but the current execution sandbox did not mount the declared
+`/mnt/data/GlbModels.zip` path and the corresponding File Library view exposes
+only the pasted transcript, not the ZIP bytes. Therefore this branch does **not**
+claim the real Doomguy has yet been decoded, simplified, oriented, rendered, or
+measured.
+
+Once the binary mount is available, the remaining experiment is intentionally
+small: run the converter on the real source, inspect inferred orientation/bounds,
+compile the generated include, tune visual/shadow triangle targets against
+appearance and the real 48-upload ceiling, then capture the existing route and
+detail-orbit proof.
