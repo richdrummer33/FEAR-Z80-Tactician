@@ -67,7 +67,8 @@ jobs:
               tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
               -lm -o "$out/room_bundle_poc_gen"
 
-            ROOM_BUNDLE_ONLY=11 "$out/room_bundle_poc_gen" "$out"
+            ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 \
+              "$out/room_bundle_poc_gen" "$out"
 
             manifest="$out/room_bundle_poc_manifest.txt"
             grep -q '^doomguy_hero_chamber=PASS$' "$manifest"
