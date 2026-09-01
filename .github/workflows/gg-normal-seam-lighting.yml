@@ -99,9 +99,18 @@ jobs:
           # still choose the lowest-budget row so media/proof is never skipped.
           awk -F '\t' -v cap="$GG_UPLOAD_CEILING" 'NR>1&&$6<=cap{if($3>bs||($3==bs&&$2>bl)){bs=$3;bl=$2;line=$0}}END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-SEAMS.tsv
           awk -F '\t' -v cap="$GG_UPLOAD_CEILING" 'NR>1&&$6<=cap{if($2>bl||($2==bl&&$3>bs)){bl=$2;bs=$3;line=$0}}END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-LIGHTING.tsv
-          for f in SELECTED-SEAMS SELECTED-LIGHTING; do
-            if [ ! -s "build/normal-seam/$f.tsv" ]; then awk -F '\t' 'NR==2||$6<best{best=$6;line=$0}END{print line}' "$summary" > "build/normal-seam/$f.tsv"; fi
-          done
+          # Fixed 135% art scale currently pushes even the flat control
+          # slightly above 48. If no strict-cap winner exists, still capture
+          # useful representatives instead of two identical flat controls:
+          # seam-heavy = most seams within +1 upload of the flat minimum;
+          # light-heavy = cheapest positive lighting proxy.
+          if [ ! -s build/normal-seam/SELECTED-SEAMS.tsv ]; then
+            base=$(awk -F '\t' 'NR>1&&$1==0&&$3==0{print $6;exit}' "$summary")
+            awk -F '\t' -v lim=$((base+1)) 'NR>1&&$1==0&&$6<=lim{if($3>best){best=$3;line=$0}}END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-SEAMS.tsv
+          fi
+          if [ ! -s build/normal-seam/SELECTED-LIGHTING.tsv ]; then
+            awk -F '\t' 'NR>1&&$1>0{if(!line||$6<best||($6==best&&$2>bl)){best=$6;bl=$2;line=$0}}END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-LIGHTING.tsv
+          fi
           cat "$summary"
           echo "seam-heavy: $(cat build/normal-seam/SELECTED-SEAMS.tsv)"
           echo "light-heavy: $(cat build/normal-seam/SELECTED-LIGHTING.tsv)"
