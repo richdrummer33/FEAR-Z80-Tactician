@@ -21,6 +21,10 @@
 #include "polar_baked_composite.h"
 #include "room_mesh_bake.h"
 
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+#include "generated/doomguy_mesh.inc"
+#endif
+
 #define BUNDLE_COUNT 12u
 #define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 64u
@@ -689,6 +693,26 @@ static void add_showcase_shell(World *w){
 
 
 static void add_doomguy_proxy_mesh(RMBScene *m){
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+    RMBTransform t=rmb_transform(78.0,24.0,3.0,0,0,0,1,1,1);
+    uint8_t visual=rmb_new_object(m,RMB_OUTLINE_NONE);
+    uint8_t shadow=rmb_new_object(m,RMB_OUTLINE_NONE);
+
+    /* The high-detail hero is allowed to affect the picture but deliberately
+     * does not participate in light visibility. A separately simplified,
+     * invisible proxy owns cast shadows. Both came from the same normalized
+     * GLB master, so their silhouettes remain registered. */
+    rmb_set_object_flags(m,visual,1u,0u);
+    rmb_add_indexed_mesh_q8(m,visual,&t,
+                            doomguy_visual_xyz_q8,DOOMGUY_VISUAL_VERTEX_COUNT,
+                            doomguy_visual_indices,DOOMGUY_VISUAL_TRIANGLE_COUNT,0);
+
+    rmb_set_object_flags(m,shadow,0u,1u);
+    rmb_add_indexed_mesh_q8(m,shadow,&t,
+                            doomguy_shadow_xyz_q8,DOOMGUY_SHADOW_VERTEX_COUNT,
+                            doomguy_shadow_indices,DOOMGUY_SHADOW_TRIANGLE_COUNT,0);
+#else
+
     RMBTransform t;
     uint8_t body=rmb_new_object(m,RMB_OUTLINE_NONE);
     uint8_t limb=rmb_new_object(m,RMB_OUTLINE_NONE);
@@ -716,8 +740,9 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
     /* Raised weapon-shaped mass is important for the eventual shadow proxy. */
     t=rmb_transform(82.0,31.0,17.0,-24,8,-18,1,1,1);
     rmb_add_box(m,gear,&t,0.9,0.9,5.8,0);
-}
 
+#endif
+}
 static void make_doomguy_hero_chamber(World *w){
     RMBTransform t;
     uint8_t plinth;
