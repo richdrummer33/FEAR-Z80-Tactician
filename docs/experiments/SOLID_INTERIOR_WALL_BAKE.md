@@ -106,6 +106,6 @@ The emitted manifest gains:
 - `solid_interior_wall_expansion=PASS`
 - `window_vertical_reveal_generation=PASS`
 
-Full host bake, pack replay, ROM build, emulator screenshots and runtime verification are still
-required before promoting this branch. GitHub currently reports no CI workflow/status for the
-branch.
+Full host bake, pack replay, screenshot/video proof and runtime verification remain promotion
+gates. Draft PR validation now runs the host baker under ASan/UBSan, captures complete gallery
+window and pillar review sequences, and packages PNG/MP4 proof artifacts.
