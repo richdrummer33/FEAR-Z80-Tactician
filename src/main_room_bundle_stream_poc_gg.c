@@ -38,6 +38,8 @@ volatile uint8_t g_room_bundle_split_right_asset;
 volatile uint8_t g_room_bundle_stair_child_asset;
 volatile int16_t g_room_bundle_stair_floor_before_q4;
 volatile int16_t g_room_bundle_stair_floor_after_q4;
+volatile uint8_t g_room_bundle_flicker_level;
+volatile uint16_t g_room_bundle_flicker_edges;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -45,45 +47,98 @@ void tsp_polar_nt_upload_dirty(void);
 static uint8_t g_tile[32u];
 
 /*
- * Match the mature baked-light semantic palette exactly.
- * Palette 0 = ambient semantic shades.
- * Palette 1 = one-step brighter lit transform, with indices 8..12 carrying
- * ambient-side pixels for mixed shadow-boundary tiles.
+ * Palette 0 keeps the ordinary ambient semantic shades.
+ *
+ * Palette 1 is the solid wall-light contract:
+ *   0      black
+ *   1..2   lit ceiling/floor
+ *   3..10  eight true wall brightness colours
+ *   11..12 ambient ceiling/floor inside mixed light tiles
+ *   13..15 ambient FAR/MID/NEAR wall colours inside mixed light tiles
+ *
+ * This lets a mixed edge tile alter only wall pixels while adjacent
+ * floor/ceiling and cast-shadow pixels retain their exact ambient colour.
  */
 static const palette_color_t k_palettes[32] = {
     RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
     RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
-    RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
+
+    RGB(0,0,0),
+    RGB(2,2,3),RGB(3,4,6),
+    RGB(3,4,6),RGB(4,5,7),RGB(6,7,9),RGB(8,9,11),
+    RGB(10,11,13),RGB(11,12,14),RGB(13,14,15),RGB(15,15,15),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
 };
 
-static void clear_tile(void){
-    uint8_t i;
-    for(i=0u;i<32u;++i)g_tile[i]=0u;
+/* Animate only palette-1 entries 1..10. Entries 11..15 are the ambient side
+ * of mixed tiles and therefore never pulse. Palette 1 is shared with sprites
+ * on GG, so production sprite art must avoid these animated entries unless it
+ * intentionally belongs to the same light group. */
+/* Full palette-1 snapshots for the two non-bright flicker states.
+ * Writing one 32-byte palette snapshot is both simpler and safer than ten
+ * separate CRAM helper calls. Entries 11..15 are deliberately invariant. */
+static const palette_color_t k_lit_dim[16] = {
+    RGB(0,0,0),
+    RGB(1,1,3),RGB(2,3,4),
+    RGB(2,3,5),RGB(3,4,6),RGB(4,5,7),RGB(5,6,8),
+    RGB(6,7,9),RGB(8,9,11),RGB(10,11,13),RGB(11,12,14),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
+};
+static const palette_color_t k_lit_off[16] = {
+    RGB(0,0,0),
+    RGB(1,1,3),RGB(2,2,3),
+    RGB(3,4,6),RGB(3,4,6),RGB(4,5,7),RGB(4,5,7),
+    RGB(6,7,9),RGB(6,7,9),RGB(8,9,11),RGB(8,9,11),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13)
+};
+static uint8_t g_flicker_last_level=0xffu;
+
+static uint8_t creepy_flicker_level(uint16_t frame){
+    /* Authored 192-frame route pattern: a single twitch, a double-twitch,
+     * then a short ragged burst. Each off pulse is intentionally only one
+     * display frame; no PRNG, division or runtime light calculation needed. */
+    if(frame==19u||frame==67u||frame==69u||frame==124u||frame==126u)return 0u;
+    if(frame==20u||frame==70u||frame==123u||frame==125u||frame==127u)return 1u;
+    return 2u;
 }
-static void paint_pixel(uint8_t x,uint8_t y,uint8_t color){
-    uint8_t p,bit=(uint8_t)(0x80u>>x);
-    uint8_t *row=g_tile+(uint16_t)y*4u;
-    for(p=0u;p<4u;++p)
-        if(color&(uint8_t)(1u<<p))row[p]|=bit;
+
+static void set_lit_palette_level(uint8_t level){
+    const palette_color_t *p;
+    if(level>2u)level=2u;
+    if(level==g_flicker_last_level)return;
+    p=level==0u?k_lit_off:
+      (level==1u?k_lit_dim:&k_palettes[16]);
+    /* One complete palette write: 16 colours = 32 CRAM bytes on Game Gear.
+     * This occurs only at an authored pulse edge, never every display frame. */
+    set_palette(1u,1u,p);
+    if(g_flicker_last_level!=0xffu)++g_room_bundle_flicker_edges;
+    g_flicker_last_level=level;
+    g_room_bundle_flicker_level=level;
 }
-static void emit_solid(uint16_t id,uint8_t color){
-    uint8_t x,y;
-    clear_tile();
-    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)paint_pixel(x,y,color);
-    set_bkg_4bpp_data(id,1u,g_tile);
+
+static void update_room_flicker(uint8_t profile,uint16_t frame){
+    set_lit_palette_level(profile==TSP_ROOM_FLICKER_CREEPY?
+                          creepy_flicker_level(frame):2u);
 }
-static void emit_horizon(void){
-    uint8_t x,y;
-    clear_tile();
-    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)
-        paint_pixel(x,y,y==0u?C_BLACK:C_FLOOR);
-    set_bkg_4bpp_data(TSP_TILE_HORIZON,1u,g_tile);
-}
-static void init_base_tiles(void){
-    emit_solid(TSP_TILE_CEILING,C_CEILING);
-    emit_solid(TSP_TILE_FLOOR,C_FLOOR);
-    emit_horizon();
+
+/*
+ * Framebuffer-visible completion oracle for the four-megabyte stream ROM.
+ * Every CRAM entry becomes the same impossible-to-confuse magenta only after
+ * every route and the authored flicker-edge self-check have completed.
+ * This avoids depending on any debugger RAM API or name-table crop detail.
+ */
+static const palette_color_t k_success_palettes[32] = {
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),
+    RGB(15,0,15),RGB(15,0,15),RGB(15,0,15),RGB(15,0,15)
+};
+static void stamp_success_marker(void){
+    set_bkg_palette(0u,2u,k_success_palettes);
 }
 
 static uint8_t same_node(const TSPStreamNodeDesc *a,const TSPStreamNodeDesc *b){
@@ -97,6 +152,8 @@ static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
                        uint16_t first_frame,uint16_t progress_base){
     uint16_t frame;
     uint16_t count=tsp_room_bundle_generated_frames(bundle,entry,exit_portal);
+    /* Presentation metadata is resolved once outside packet replay. */
+    uint8_t flicker_profile=tsp_room_catalog_flicker_profile(bundle);
     if(!count){
         g_room_bundle_stream_status=0xEE01u;
         return;
@@ -104,6 +161,7 @@ static void play_route(uint8_t bundle,uint8_t entry,uint8_t exit_portal,
     for(frame=first_frame;frame<count;++frame){
         tsp_room_bundle_generated_apply_name(bundle,entry,exit_portal,frame);
         vsync();
+        update_room_flicker(flicker_profile,frame);
         tsp_room_bundle_generated_apply_tile(bundle,entry,exit_portal,frame);
         tsp_polar_nt_upload_dirty();
         g_room_bundle_stream_progress=(uint16_t)(progress_base+frame);
@@ -145,6 +203,9 @@ void main(void){
     g_room_bundle_stair_child_asset=0xffu;
     g_room_bundle_stair_floor_before_q4=0;
     g_room_bundle_stair_floor_after_q4=0;
+    g_room_bundle_flicker_level=2u;
+    g_room_bundle_flicker_edges=0u;
+    g_flicker_last_level=2u;
 
     tsp_stream_reset(&world,STREAM_SEED,0u);
     root=world.current;
@@ -374,9 +435,14 @@ void main(void){
     play_route(5u,0u,1u,1u,25000u); /* flat quarter-turn */
     play_route(5u,1u,0u,1u,26000u); /* same L in reverse handedness */
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
+    if(g_room_bundle_flicker_edges<10u){
+        g_room_bundle_stream_status=0xEE40u;
+        for(;;)vsync();
+    }
 
     g_room_bundle_stream_status=30u;
     g_room_bundle_stream_progress=30000u;
+    stamp_success_marker();
 
     for(;;)vsync();
 }
