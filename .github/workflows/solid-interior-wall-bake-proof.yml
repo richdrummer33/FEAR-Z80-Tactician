@@ -70,6 +70,12 @@ jobs:
             -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
             build/solid-wall-review/solid-pillars-proof.mp4
 
+          ffmpeg -y -framerate 30 \
+            -i build/solid-wall-review/review-window-detail-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/solid-wall-review/window-detail-proof.mp4
+
       - name: Export inspection PNGs
         run: |
           for spec in \
@@ -78,7 +84,11 @@ jobs:
             "gallery-window 096 oblique-b" \
             "gallery-window 112 lookback" \
             "solid-pillars 080 pillars-oblique" \
-            "solid-pillars 112 pillars-lookback"; do
+            "solid-pillars 112 pillars-lookback" \
+            "window-detail 000 window-detail-left" \
+            "window-detail 032 window-detail-left-oblique" \
+            "window-detail 064 window-detail-right-oblique" \
+            "window-detail 095 window-detail-right"; do
             set -- $spec
             tag="$1"; frame="$2"; label="$3"
             ffmpeg -y -loglevel error \
