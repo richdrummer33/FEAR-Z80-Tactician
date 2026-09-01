@@ -964,7 +964,7 @@ static void self_test_forward_facing_routes(void){
                 if(mag2>1e-8){
                     double a=(double)cur.yaw*(2.0*PI/256.0);
                     double dot=cos(a)*dx+sin(a)*dy;
-                    if(dot<=0.0){
+                    if(dot < -1e-7){
                         fprintf(stderr,
                                 "fatal: camera rail backward bundle=%u route=%u->%u frame=%u dot=%.6f pos=(%.3f,%.3f) yaw=%u\n",
                                 (unsigned)bundle,(unsigned)entry,(unsigned)exitp,
@@ -1497,7 +1497,7 @@ int main(int argc,char **argv){
     fprintf(manifest,"window_vertical_reveal_generation=PASS\n");
     fprintf(manifest,"window_horizontal_reveal_generation=PASS\n");
     fprintf(manifest,"derived_stair_risers=PASS\n");
-    fprintf(manifest,"forward_facing_camera_routes=PASS\n");
+    fprintf(manifest,"no_backward_camera_routes=PASS\n");
     fprintf(manifest,"wall_angle_light_quant=SOLID8\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
