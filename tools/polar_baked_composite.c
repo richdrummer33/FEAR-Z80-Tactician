@@ -90,6 +90,7 @@ static uint16_t g_peak_loads;
 static uint32_t g_total_loads;
 
 static void die(const char *msg){fprintf(stderr,"fatal: %s\n",msg);exit(2);}
+static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x);
 
 static uint64_t fnv64(const uint8_t *p){
     uint64_t h=UINT64_C(1469598103934665603);
