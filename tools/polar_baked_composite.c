@@ -328,7 +328,8 @@ static uint8_t wall_angle_light_level(uint8_t sid){
     if(llen<1e-10)return 15u;
     lx/=llen;ly/=llen;
     ndotl=nx*lx+ny*ly;
-    if(ndotl<0.0)ndotl=0.0;if(ndotl>1.0)ndotl=1.0;
+    if(ndotl<0.0)ndotl=0.0;
+    if(ndotl>1.0)ndotl=1.0;
     value=15.0*ndotl*((double)light.intensity/255.0);
     if(light.view_term_strength&&ndotl>0.0){
         double vx=cx-mx,vy=cy-my,vlen=sqrt(vx*vx+vy*vy);
@@ -338,7 +339,8 @@ static uint8_t wall_angle_light_level(uint8_t sid){
             if(rv>0.0)value+=rv*ndotl*(double)light.view_term_strength;
         }
     }
-    if(value<0.0)value=0.0;if(value>15.0)value=15.0;
+    if(value<0.0)value=0.0;
+    if(value>15.0)value=15.0;
     return (uint8_t)floor(value+0.5);
 }
 
