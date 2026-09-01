@@ -69,23 +69,35 @@ The branch converts representative interior architecture:
 The original pillar footprints are preserved by using 12-world-unit thickness on the existing
 14-world-unit centerlines.
 
-## Current limitation: horizontal surfaces
+## Horizontal surfaces - implemented for local wall reveals
 
-The room-bundle baker is still fundamentally a vertical-wall raycaster. The solid-wall helper
-therefore closes vertical sides/end caps, but it does not yet emit horizontal top surfaces,
-window sills, window-lintel undersides, or table/platform tops.
+The host compositor now has an optional per-pixel camera-forward depth buffer used only by the
+room-bundle baker. Ordinary Polar callers keep their existing painter behavior.
 
-A full-height wall that meets the authored floor and ceiling is visually enclosed by those
-existing planes. A low wall/table or a fully physical window reveal is not yet a mathematically
-closed 3D manifold until horizontal local surface spans are added.
+The solid-window helper emits two horizontal quads in addition to its vertical faces:
 
-## Stairs
+- sill top at the opening's lower Z
+- lintel underside at the opening's upper Z
 
-The same philosophy is directly applicable to stairs. The current stair and step bundles
-manually author riser segments between floor-height bands. A later host preprocessing pass can
-compare adjacent floor regions and automatically emit a vertical riser wherever neighboring
-floor heights differ. This should remove the current hand-authored riser list without changing
-the RBP2 runtime format.
+Vertical wall spans and horizontal quads therefore compete by exact host-side depth before the
+final semantic pixels are canonicalized into Game Gear tiles. This remains entirely offline;
+no Z buffer or polygon state is added to GG WRAM.
+
+The next generalization is to expose this horizontal-quad path as an ordinary authoring
+primitive for low-wall caps, tables, platforms, beams and similar architecture.
+
+## Stairs - risers now derived from floor regions
+
+The quarter-stair bundle no longer hand-authors its riser list. A host preprocessing helper
+compares adjacent floor rectangles and emits a vertical face wherever their floor heights differ.
+
+This derived five risers, not the four in the old manual list. The extra face is real: the old
+geometry omitted the z=1 -> z=2 face where the stair turns onto the height-two landing. The
+derived topology therefore closes an existing geometry hole rather than merely rewriting the
+same four segments.
+
+The authored floor regions remain the source of truth; the generated riser faces disappear into
+the same RBP2 bake as every other static surface.
 
 ## Runtime invariants
 
@@ -93,19 +105,34 @@ No wall thickness, opening geometry, normals, or new Z structure is added to Gam
 The output is still exact room-bundle name-table patches plus scheduled 32-byte tile-pattern
 loads. The runtime continues to replay pre-baked RBP2 packets.
 
-## Verification hooks
+## Verification - green host bake
 
-The room-bundle generator now performs early geometry assertions:
+The room-bundle generator performs early geometry assertions:
 
 - one isolated solid line expands to four vertical faces
 - the test through-window expands to the expected vertical face count
 - a generated jamb spans the authored wall thickness
+- the window emits sill + lintel horizontal quads
+- neighboring floor-height regions derive the expected riser topology
 
-The emitted manifest gains:
+Final host proof passed under both ordinary warning-clean compilation and ASan/UBSan. The full
+multi-room bake also passes exact patch replay, canonical seam begin/end, bidirectional routes,
+three-portal split routes and quarter-stair height rebasing.
+
+Manifest proof markers:
 
 - `solid_interior_wall_expansion=PASS`
 - `window_vertical_reveal_generation=PASS`
+- `window_horizontal_reveal_generation=PASS`
+- `derived_stair_risers=PASS`
 
-Full host bake, pack replay, screenshot/video proof and runtime verification remain promotion
-gates. Draft PR validation now runs the host baker under ASan/UBSan, captures complete gallery
-window and pillar review sequences, and packages PNG/MP4 proof artifacts.
+Measured runtime-stream impact:
+
+- gallery/window route 0->1: scheduled tile budget remains 20 uploads/VBlank. Adding sill +
+  lintel changed total scheduled tile loads only from 2,123 to 2,126 across 192 frames; patch
+  bytes and changed-name-word count remained unchanged.
+- stair route 0->1: the newly closed fifth riser raises total tile loads from 4,411 to 4,541 and
+  patch bytes from 38,397 to 38,702, but the scheduled peak/budget remains 40 uploads/VBlank.
+
+CI also emits normal traversal videos plus a dedicated 96-frame close orbit around the solid
+window so the jambs, sill and lintel can be inspected at oblique views.
