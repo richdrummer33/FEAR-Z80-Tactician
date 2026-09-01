@@ -1,0 +1,119 @@
+name: Solid interior wall bake proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-solid-interior-wall-bake
+  pull_request:
+    branches:
+      - experiment/gg-streaming-room-poc
+      - experiment/gg-solid-interior-wall-bake
+  workflow_dispatch:
+
+jobs:
+  host-bake-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install video encoder
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Build baker with warnings
+        run: |
+          mkdir -p build
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c \
+            -lm -o build/room_bundle_poc_gen
+
+      - name: Build sanitizer baker
+        run: |
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c \
+            -lm -o build/room_bundle_poc_gen_san
+
+      - name: Full sanitizer bake
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p build/solid-wall-sanitize
+          build/room_bundle_poc_gen_san build/solid-wall-sanitize
+          grep -q '^solid_interior_wall_expansion=PASS$' build/solid-wall-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^window_vertical_reveal_generation=PASS$' build/solid-wall-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^independent_bundle_replay=PASS$' build/solid-wall-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^cross_bundle_canonical_handoff=PASS$' build/solid-wall-sanitize/room_bundle_poc_manifest.txt
+
+      - name: Capture geometry review bake
+        env:
+          ROOM_BUNDLE_CAPTURE_REVIEW: "1"
+        run: |
+          mkdir -p build/solid-wall-review
+          build/room_bundle_poc_gen build/solid-wall-review
+          cp build/solid-wall-review/room_bundle_poc_manifest.txt build/solid-wall-review/PROOF-MANIFEST.txt
+
+      - name: Encode review videos
+        run: |
+          ffmpeg -y -framerate 30 \
+            -i build/solid-wall-review/review-gallery-window-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/solid-wall-review/gallery-window-proof.mp4
+
+          ffmpeg -y -framerate 30 \
+            -i build/solid-wall-review/review-solid-pillars-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/solid-wall-review/solid-pillars-proof.mp4
+
+          ffmpeg -y -framerate 30 \
+            -i build/solid-wall-review/review-window-detail-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/solid-wall-review/window-detail-proof.mp4
+
+      - name: Export inspection PNGs
+        run: |
+          for spec in \
+            "gallery-window 064 entry" \
+            "gallery-window 080 oblique-a" \
+            "gallery-window 096 oblique-b" \
+            "gallery-window 112 lookback" \
+            "solid-pillars 080 pillars-oblique" \
+            "solid-pillars 112 pillars-lookback" \
+            "window-detail 000 window-detail-left" \
+            "window-detail 032 window-detail-left-oblique" \
+            "window-detail 064 window-detail-right-oblique" \
+            "window-detail 095 window-detail-right"; do
+            set -- $spec
+            tag="$1"; frame="$2"; label="$3"
+            ffmpeg -y -loglevel error \
+              -i "build/solid-wall-review/review-${tag}-${frame}.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              "build/solid-wall-review/proof-${label}.png"
+          done
+
+      - name: Record branch and commit
+        run: |
+          {
+            echo "branch=experiment/gg-solid-interior-wall-bake"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "generated_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > build/solid-wall-review/BUILD-INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: solid-interior-wall-bake-proof
+          path: |
+            build/solid-wall-review/*.png
+            build/solid-wall-review/*.mp4
+            build/solid-wall-review/PROOF-MANIFEST.txt
+            build/solid-wall-review/BUILD-INFO.txt
+            build/solid-wall-review/bundle4_route01_frame*.ppm
+            build/solid-wall-review/bundle7_route01_frame*.ppm
+          if-no-files-found: error
+          retention-days: 30

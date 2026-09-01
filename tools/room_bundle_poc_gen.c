@@ -25,6 +25,7 @@
 #define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
 #define MAX_SCENE_RECTS 12u
+#define MAX_HSURFS 32u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
@@ -35,9 +36,16 @@ typedef struct Seg {
     double z0,z1;
     int8_t shade_bias;
 } Seg;
+typedef struct HSurf {
+    V2 p[4];
+    double z;
+    int8_t shade_bias;
+} HSurf;
 typedef struct World {
     Seg seg[MAX_SEGMENTS];
     uint8_t count;
+    HSurf hsurf[MAX_HSURFS];
+    uint8_t hsurf_count;
     TSPHostSceneVertex scene_vertices[MAX_SCENE_VERTICES];
     TSPHostSceneSegment scene_segments[MAX_SEGMENTS];
     TSPHostSceneLight scene_lights[1];
@@ -51,6 +59,10 @@ typedef struct Pose {
     double x,y,z;
     uint8_t yaw;
 } Pose;
+typedef struct RenderHit {
+    double t;
+    uint8_t sid;
+} RenderHit;
 typedef struct FramePack {
     uint16_t patch_len;
     uint16_t changed;
@@ -96,8 +108,14 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
 
     w->scene_vertices[v0].x=(int16_t)lround(ax);
     w->scene_vertices[v0].y=(int16_t)lround(ay);
+    w->scene_vertices[v0].x_q4=(int16_t)lround(ax*16.0);
+    w->scene_vertices[v0].y_q4=(int16_t)lround(ay*16.0);
+    w->scene_vertices[v0].has_exact_q4=1u;
     w->scene_vertices[v1].x=(int16_t)lround(bx);
     w->scene_vertices[v1].y=(int16_t)lround(by);
+    w->scene_vertices[v1].x_q4=(int16_t)lround(bx*16.0);
+    w->scene_vertices[v1].y_q4=(int16_t)lround(by*16.0);
+    w->scene_vertices[v1].has_exact_q4=1u;
     w->scene_vertex_count=(uint8_t)(v1+1u);
 
     ls=&w->scene_segments[sid];
@@ -106,7 +124,152 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
     ls->blocks_light=1u;
     ls->light_front_sign=0;
     ls->visual_front_sign=0;
+    ls->z0_q4=(int16_t)lround(z0*16.0);
+    ls->z1_q4=(int16_t)lround(z1*16.0);
+    ls->has_exact_z=1u;
 }
+
+static void add_hsurf_quad(World *w,V2 a,V2 b,V2 c,V2 d,
+                           double z,int8_t bias){
+    HSurf *s;
+    if(w->hsurf_count>=MAX_HSURFS)die("too many horizontal room surfaces");
+    s=&w->hsurf[w->hsurf_count++];
+    s->p[0]=a;s->p[1]=b;s->p[2]=c;s->p[3]=d;
+    s->z=z;s->shade_bias=bias;
+}
+
+/*
+ * Host-only volumetric wall authoring.
+ *
+ * The legacy room PoC stores every vertical face as an infinitely thin Seg.
+ * That is still the right representation for room/perimeter boundaries, but
+ * it is a poor authoring primitive for free-standing interior walls: authors
+ * otherwise have to draw both broad sides plus every exposed end/reveal by
+ * hand. These helpers keep the runtime format unchanged and expand one
+ * centerline into the exposed vertical faces of a rectangular wall prism.
+ *
+ * Full-height solids are therefore closed laterally by construction. Horizontal
+ * cap/reveal planes (table tops, window sills/lintels) are deliberately not
+ * emitted here because the current room baker is a vertical-wall ray caster.
+ */
+#define SOLID_WALL_DEFAULT_THICKNESS 1.0
+
+static V2 v2_lerp(V2 a,V2 b,double q){
+    V2 p;
+    p.x=a.x+(b.x-a.x)*q;
+    p.y=a.y+(b.y-a.y)*q;
+    return p;
+}
+
+static void wall_offsets(double ax,double ay,double bx,double by,double thickness,
+                         V2 *a_left,V2 *a_right,V2 *b_left,V2 *b_right,
+                         double *length_out){
+    double dx=bx-ax,dy=by-ay,len=sqrt(dx*dx+dy*dy);
+    double nx,ny,h;
+    if(len<=1e-9)die("solid wall line has zero length");
+    if(thickness<=0.0)die("solid wall thickness must be positive");
+    nx=-dy/len;
+    ny= dx/len;
+    h=thickness*0.5;
+    a_left->x=ax+nx*h; a_left->y=ay+ny*h;
+    a_right->x=ax-nx*h;a_right->y=ay-ny*h;
+    b_left->x=bx+nx*h; b_left->y=by+ny*h;
+    b_right->x=bx-nx*h;b_right->y=by-ny*h;
+    if(length_out)*length_out=len;
+}
+
+static void add_solid_wall_line_caps(World *w,
+                                     double ax,double ay,double bx,double by,
+                                     double thickness,double z0,double z1,
+                                     int8_t bias,uint8_t cap_a,uint8_t cap_b){
+    V2 al,ar,bl,br;
+    wall_offsets(ax,ay,bx,by,thickness,&al,&ar,&bl,&br,(double *)0);
+
+    /* The two broad faces plus only the physically exposed end caps. */
+    add_seg(w,al.x,al.y,bl.x,bl.y,z0,z1,bias);
+    add_seg(w,br.x,br.y,ar.x,ar.y,z0,z1,bias);
+    if(cap_a)add_seg(w,ar.x,ar.y,al.x,al.y,z0,z1,bias);
+    if(cap_b)add_seg(w,bl.x,bl.y,br.x,br.y,z0,z1,bias);
+}
+
+static void add_solid_wall_line(World *w,
+                                double ax,double ay,double bx,double by,
+                                double thickness,double z0,double z1,
+                                int8_t bias){
+    add_solid_wall_line_caps(w,ax,ay,bx,by,thickness,z0,z1,bias,1u,1u);
+}
+
+/*
+ * A rectangular window cut through a solid wall. open_from/open_to are world
+ * distances measured along the authored centerline from A toward B.
+ *
+ * The broad front/back faces are split above, below and beside the opening,
+ * and the two vertical jamb/reveal faces across wall thickness are generated
+ * automatically. The sill and lintel underside are emitted as horizontal
+ * quads too, completing the visible four-sided reveal of the opening.
+ */
+static void add_solid_window_line_caps(World *w,
+                                       double ax,double ay,double bx,double by,
+                                       double thickness,
+                                       double open_from,double open_to,
+                                       double open_z0,double open_z1,
+                                       double z0,double z1,int8_t bias,
+                                       uint8_t cap_a,uint8_t cap_b){
+    V2 al,ar,bl,br,l0,l1,r0,r1;
+    double len,u0,u1;
+    wall_offsets(ax,ay,bx,by,thickness,&al,&ar,&bl,&br,&len);
+    if(open_from<=0.0||open_to>=len||open_from>=open_to)
+        die("window opening must lie strictly inside wall endpoints");
+    if(open_z0<=z0||open_z1>=z1||open_z0>=open_z1)
+        die("window vertical opening must lie strictly inside wall height");
+
+    u0=open_from/len;
+    u1=open_to/len;
+    l0=v2_lerp(al,bl,u0);l1=v2_lerp(al,bl,u1);
+    r0=v2_lerp(ar,br,u0);r1=v2_lerp(ar,br,u1);
+
+    /* Left/broad side. */
+    add_seg(w,al.x,al.y,l0.x,l0.y,z0,z1,bias);
+    add_seg(w,l0.x,l0.y,l1.x,l1.y,z0,open_z0,bias);
+    add_seg(w,l0.x,l0.y,l1.x,l1.y,open_z1,z1,bias);
+    add_seg(w,l1.x,l1.y,bl.x,bl.y,z0,z1,bias);
+
+    /* Right/broad side, reverse winding for outward consistency. */
+    add_seg(w,br.x,br.y,r1.x,r1.y,z0,z1,bias);
+    add_seg(w,r1.x,r1.y,r0.x,r0.y,z0,open_z0,bias);
+    add_seg(w,r1.x,r1.y,r0.x,r0.y,open_z1,z1,bias);
+    add_seg(w,r0.x,r0.y,ar.x,ar.y,z0,z1,bias);
+
+    /* Physical wall ends. */
+    if(cap_a)add_seg(w,ar.x,ar.y,al.x,al.y,z0,z1,bias);
+    if(cap_b)add_seg(w,bl.x,bl.y,br.x,br.y,z0,z1,bias);
+
+    /* The part the old thin-segment model could not infer: window jambs. */
+    add_seg(w,r0.x,r0.y,l0.x,l0.y,open_z0,open_z1,bias);
+    add_seg(w,l1.x,l1.y,r1.x,r1.y,open_z0,open_z1,bias);
+
+    /* Horizontal reveal planes: sill top and lintel underside. They are
+     * double-sided host surfaces; visibility is resolved solely by depth. */
+    add_hsurf_quad(w,l0,l1,r1,r0,open_z0,bias);
+    add_hsurf_quad(w,r0,r1,l1,l0,open_z1,bias);
+}
+
+static void self_test_solid_wall_geometry(void){
+    World w;
+    memset(&w,0,sizeof(w));
+    add_solid_wall_line(&w,0.0,0.0,10.0,0.0,1.0,0.0,32.0,0);
+    if(w.count!=4u)die("solid wall self-test: expected four vertical faces");
+
+    memset(&w,0,sizeof(w));
+    add_solid_window_line_caps(&w,0.0,0.0,10.0,0.0,1.0,
+                               2.0,8.0,10.0,22.0,0.0,32.0,0,1u,1u);
+    if(w.count!=12u)die("solid window self-test: expected 12 vertical faces");
+    if(w.hsurf_count!=2u)die("solid window self-test: expected sill + lintel planes");
+    if(fabs(w.seg[10].a.y-w.seg[10].b.y-1.0)>1e-8 &&
+       fabs(w.seg[10].b.y-w.seg[10].a.y-1.0)>1e-8)
+        die("solid window self-test: jamb does not span wall thickness");
+}
+
 static void add_rect(World *w,int16_t x0,int16_t y0,int16_t x1,int16_t y1,
                      int16_t floor_z,int16_t ceiling_z){
     TSPHostSceneRect *r;
@@ -114,6 +277,56 @@ static void add_rect(World *w,int16_t x0,int16_t y0,int16_t x1,int16_t y1,
     r=&w->scene_rects[w->scene_rect_count++];
     r->x0=x0;r->y0=y0;r->x1=x1;r->y1=y1;
     r->floor_z=floor_z;r->ceiling_z=ceiling_z;
+}
+
+/* Derive vertical step/riser faces from adjacent axis-aligned floor regions.
+ * Rect bounds are inclusive; neighboring regions therefore meet when one
+ * maximum + 1 equals the other's minimum. Only floor-height differences emit
+ * geometry. Ceiling differences can later use the same pattern for bulkheads. */
+static uint8_t add_risers_from_rects(World *w,uint8_t first,uint8_t count,int8_t bias){
+    uint8_t i,j,added=0u;
+    if((uint16_t)first+count>w->scene_rect_count)
+        die("riser derivation rectangle range invalid");
+    for(i=first;i<(uint8_t)(first+count);++i){
+        const TSPHostSceneRect *a=&w->scene_rects[i];
+        for(j=(uint8_t)(i+1u);j<(uint8_t)(first+count);++j){
+            const TSPHostSceneRect *b=&w->scene_rects[j];
+            int16_t z0,z1;
+            if(a->floor_z==b->floor_z)continue;
+            z0=a->floor_z<b->floor_z?a->floor_z:b->floor_z;
+            z1=a->floor_z>b->floor_z?a->floor_z:b->floor_z;
+
+            if(a->x1+1==b->x0||b->x1+1==a->x0){
+                int16_t x=(a->x1+1==b->x0)?b->x0:a->x0;
+                int16_t y0=a->y0>b->y0?a->y0:b->y0;
+                int16_t y1=a->y1<b->y1?a->y1:b->y1;
+                if(y0<=y1){
+                    add_seg(w,x,y0,x,y1,z0,z1,bias);
+                    ++added;
+                }
+            }else if(a->y1+1==b->y0||b->y1+1==a->y0){
+                int16_t y=(a->y1+1==b->y0)?b->y0:a->y0;
+                int16_t x0=a->x0>b->x0?a->x0:b->x0;
+                int16_t x1=a->x1<b->x1?a->x1:b->x1;
+                if(x0<=x1){
+                    add_seg(w,x0,y,x1,y,z0,z1,bias);
+                    ++added;
+                }
+            }
+        }
+    }
+    return added;
+}
+
+static void self_test_derived_riser(void){
+    World w;
+    memset(&w,0,sizeof(w));
+    add_rect(&w,0,0,7,7,0,32);
+    add_rect(&w,8,0,15,7,3,35);
+    if(add_risers_from_rects(&w,0u,2u,1)!=1u)
+        die("derived riser self-test: expected one shared height edge");
+    if(w.count!=1u||w.seg[0].z0!=0.0||w.seg[0].z1!=3.0)
+        die("derived riser self-test: incorrect vertical range");
 }
 static void finalize_scene(World *w){
     w->scene.vertices=w->scene_vertices;
@@ -245,7 +458,7 @@ static void make_linear_world(uint8_t bundle,World *w){
          * Light escaping around its ends should form a curious asymmetric pool
          * while the deeper occluder contributes a strong vertical shadow cut. */
         add_seg(w,68,8,84,8,0,32,0);
-        add_seg(w,94,18,94,38,0,32,1);
+        add_solid_wall_line(w,94,18,94,38,SOLID_WALL_DEFAULT_THICKNESS,0,32,1);
         w->scene_lights[0].x_q4=(int16_t)(76<<4);
         w->scene_lights[0].y_q4=(int16_t)(0<<4);
         w->scene_lights[0].height_q4=(uint8_t)(8<<4);
@@ -279,7 +492,7 @@ static void make_split_world(World *w){
 
     /* Central divider gives the junction a readable silhouette without
      * preventing both branch mouths being visible from the main floor. */
-    add_seg(w,94,10,94,38,0,32,1);
+    add_solid_wall_line(w,94,10,94,38,SOLID_WALL_DEFAULT_THICKNESS,0,32,1);
 
     add_rect(w,36,-40,116,88,0,32);
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
@@ -311,19 +524,22 @@ static void make_stair_world(World *w){
     add_seg(w,56,64,56,80,4,36,0);
     add_seg(w,36,36,56,36,0,32,0);
 
-    /* Actual vertical riser faces. */
-    add_seg(w,56,12,56,36,0,1,1);
-    add_seg(w,72,12,72,36,1,2,1);
-    add_seg(w,56,52,96,52,2,3,1);
-    add_seg(w,56,64,96,64,3,4,1);
-
-    /* Horizontal receivers: non-overlapping bands with matched ceiling shift. */
-    add_rect(w,36,12,55,36,0,32);
-    add_rect(w,56,12,71,36,1,33);
-    add_rect(w,72,12,96,36,2,34);
-    add_rect(w,56,37,96,51,2,34);
-    add_rect(w,56,52,96,63,3,35);
-    add_rect(w,56,64,96,80,4,36);
+    /* Horizontal receivers: non-overlapping bands with matched ceiling shift.
+     * The vertical risers are derived from these floor discontinuities below. */
+    {
+        uint8_t floor_first=w->scene_rect_count;
+        add_rect(w,36,12,55,36,0,32);
+        add_rect(w,56,12,71,36,1,33);
+        add_rect(w,72,12,96,36,2,34);
+        add_rect(w,56,37,96,51,2,34);
+        add_rect(w,56,52,96,63,3,35);
+        add_rect(w,56,64,96,80,4,36);
+        /* Five shared height discontinuities are implied. The old manual
+         * geometry listed only four and omitted the z=1 -> z=2 turn/landing
+         * face; deriving from the floor regions closes that hole. */
+        if(add_risers_from_rects(w,floor_first,6u,1)!=5u)
+            die("stair world did not derive five expected risers");
+    }
 
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
     finalize_scene(w);
@@ -341,8 +557,15 @@ static void make_gallery_world(World *w){
     add_seg(w,116,96,36,96,0,32,0);
 
     /* Sparse architectural fins leave the centre broad and open. */
-    add_seg(w,68,-48,68,-18,0,32,1);
-    add_seg(w,90,66,90,96,0,32,1);
+    /* Wall zero is attached to the north perimeter and carries a real
+     * through-window. The baker now derives both thickness faces plus the two
+     * vertical window reveals from this one centerline declaration. */
+    add_solid_window_line_caps(w,68,-48,68,-18,SOLID_WALL_DEFAULT_THICKNESS,
+                               8.0,20.0,10.0,22.0,0,32,1,0u,1u);
+    /* Wall one terminates into the south perimeter, so its buried cap is
+     * intentionally omitted. */
+    add_solid_wall_line_caps(w,90,66,90,96,SOLID_WALL_DEFAULT_THICKNESS,
+                             0,32,1,1u,0u);
 
     add_rect(w,36,-48,116,96,0,32);
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
@@ -366,7 +589,7 @@ static void make_turn_world(World *w){
     add_seg(w,36,36,36,40,0,32,0);
 
     /* Short corner baffle gives the inset light a deliberate shadow edge. */
-    add_seg(w,80,48,92,48,0,32,1);
+    add_solid_wall_line(w,80,48,92,48,SOLID_WALL_DEFAULT_THICKNESS,0,32,1);
 
     add_rect(w,36,8,96,40,0,32);
     add_rect(w,60,40,96,80,0,32);
@@ -421,16 +644,10 @@ static void make_pillar_world(World *w){
     add_seg(w,36,-40,116,-40,0,32,0);
     add_seg(w,116,88,36,88,0,32,0);
 
-    /* Two compact full-height pillars, offset away from the travel rail. */
-    add_seg(w,64,2,76,2,0,32,1);
-    add_seg(w,76,2,76,16,0,32,1);
-    add_seg(w,76,16,64,16,0,32,1);
-    add_seg(w,64,16,64,2,0,32,1);
-
-    add_seg(w,90,44,102,44,0,32,1);
-    add_seg(w,102,44,102,58,0,32,1);
-    add_seg(w,102,58,90,58,0,32,1);
-    add_seg(w,90,58,90,44,0,32,1);
+    /* Two compact full-height pillars. Each is now authored as ONE centerline
+     * plus thickness; the baker derives the four enclosed vertical sides. */
+    add_solid_wall_line(w,70,2,70,16,12.0,0,32,1);
+    add_solid_wall_line(w,96,44,96,58,12.0,0,32,1);
 
     add_rect(w,36,-40,116,88,0,32);
 
@@ -522,6 +739,19 @@ static uint8_t yaw_from_vec(double dx,double dy){
     double a=atan2(dy,dx);
     int v=(int)lround(a*(256.0/(2.0*PI)));
     return (uint8_t)v;
+}
+
+static Pose window_detail_pose(uint16_t f){
+    Pose p;
+    double q=(double)f/95.0;
+    double deg=50.0-100.0*q;
+    double a=deg*(PI/180.0);
+    const double tx=68.0,ty=-34.0,r=16.0;
+    p.x=tx+r*cos(a);
+    p.y=ty+r*sin(a);
+    p.z=16.0;
+    p.yaw=yaw_from_vec(tx-p.x,ty-p.y);
+    return p;
 }
 
 static Pose route_pose(uint16_t f,uint8_t bundle){
@@ -719,6 +949,51 @@ static uint8_t shade_for_inv(double inv,int8_t bias){
 }
 static int iround(double v){return (int)floor(v+0.5);}
 
+static int point_in_hsurf(const HSurf *s,double x,double y){
+    uint8_t i,j;
+    int inside=0;
+    for(i=0u,j=3u;i<4u;j=i++){
+        double ax=s->p[j].x,ay=s->p[j].y;
+        double bx=s->p[i].x,by=s->p[i].y;
+        double dx=bx-ax,dy=by-ay,px=x-ax,py=y-ay;
+        double cross=px*dy-py*dx;
+        double dot=px*dx+py*dy,len2=dx*dx+dy*dy;
+        if(fabs(cross)<1e-8&&dot>=-1e-8&&dot<=len2+1e-8)return 1;
+        if(((ay>y)!=(by>y))&&x<(bx-ax)*(y-ay)/(by-ay)+ax)inside=!inside;
+    }
+    return inside;
+}
+
+static void render_horizontal_column(const World *w,const Pose *p,int sx){
+    double yaw=(double)p->yaw*(2.0*PI/256.0);
+    double fx=cos(yaw),fy=sin(yaw),rx=-fy,ry=fx;
+    double lateral=((double)sx+0.5-80.0)/80.0;
+    double dx=fx+rx*lateral,dy=fy+ry*lateral;
+    int sy;
+    for(sy=0;sy<144;++sy){
+        double vz=-(((double)sy+0.5)-72.0)/80.0;
+        uint8_t hi;
+        if(fabs(vz)<1e-12)continue;
+        for(hi=0u;hi<w->hsurf_count;++hi){
+            const HSurf *s=&w->hsurf[hi];
+            double depth=(s->z-p->z)/vz;
+            double wx,wy;
+            int shade;
+            if(depth<=1e-6)continue;
+            wx=p->x+dx*depth;
+            wy=p->y+dy*depth;
+            if(!point_in_hsurf(s,wx,wy))continue;
+            shade=depth<=31.0?2:(depth<=55.0?1:0);
+            shade+=s->shade_bias;
+            if(shade<0)shade=0;if(shade>2)shade=2;
+            /* 0xfe marks a host-only horizontal receiver. Current point-light
+             * pass simply leaves such local caps ambient; geometry is exact. */
+            tsp_host_composite_pixel_depth((uint8_t)sx,(uint8_t)sy,0xfeu,
+                                           (uint8_t)shade,0u,depth);
+        }
+    }
+}
+
 static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]){
     int sx;
     TSPState cam;
@@ -734,18 +1009,39 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
     for(sx=0;sx<160;++sx){
         double rel=atan(((double)sx+0.5-80.0)/80.0);
         double ang=(double)p->yaw*(2.0*PI/256.0)+rel;
-        double dx=cos(ang),dy=sin(ang),best=1e30;
-        int best_sid=-1;
-        uint8_t sid;
+        double dx=cos(ang),dy=sin(ang);
+        RenderHit hit[MAX_SEGMENTS];
+        uint8_t hit_count=0u,sid,i;
+
+        /*
+         * The old PoC kept only the nearest XY segment. That is sufficient for
+         * a single floor-to-ceiling wall, but it cannot represent a window:
+         * upper and lower wall bands can share the same XY line, and farther
+         * geometry must remain visible through the opening.
+         *
+         * Collect every crossing, sort far -> near, then let the semantic
+         * compositor perform ordinary painter overdraw. Near spans replace
+         * only their own screen pixels, so gaps genuinely reveal farther
+         * geometry without adding a runtime Z buffer.
+         */
         for(sid=0u;sid<w->count;++sid){
             double t;
-            if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)&&t<best){
-                best=t;best_sid=(int)sid;
+            if(ray_seg(p->x,p->y,dx,dy,&w->seg[sid],&t)){
+                uint8_t pos=hit_count;
+                if(hit_count>=MAX_SEGMENTS)die("room render hit capacity exceeded");
+                while(pos>0u&&hit[pos-1u].t<t){
+                    hit[pos]=hit[pos-1u];
+                    --pos;
+                }
+                hit[pos].t=t;
+                hit[pos].sid=sid;
+                ++hit_count;
             }
         }
-        if(best_sid>=0){
-            const Seg *s=&w->seg[best_sid];
-            double depth=best*cos(rel);
+
+        for(i=0u;i<hit_count;++i){
+            const Seg *s=&w->seg[hit[i].sid];
+            double depth=hit[i].t*cos(rel);
             double top,bottom,inv;
             int it,ib;
             if(depth<0.01)depth=0.01;
@@ -753,13 +1049,14 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
             bottom=72.0-(s->z0-p->z)*80.0/depth;
             inv=2560.0/depth;if(inv>255.0)inv=255.0;
             it=iround(top);ib=iround(bottom);
-            tsp_host_composite_surface((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
-                                       (int16_t)it,(int16_t)it,
-                                       (int16_t)ib,(int16_t)ib,
-                                       (uint8_t)best_sid,
-                                       shade_for_inv(inv,s->shade_bias),
-                                       0u,0u,0u);
+            tsp_host_composite_surface_depth((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
+                                             (int16_t)it,(int16_t)it,
+                                             (int16_t)ib,(int16_t)ib,
+                                             hit[i].sid,
+                                             shade_for_inv(inv,s->shade_bias),
+                                             0u,0u,0u,depth);
         }
+        render_horizontal_column(w,p,sx);
     }
     tsp_host_composite_export(out);
 }
@@ -1036,10 +1333,37 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                      (unsigned)exit_portal,(unsigned)f);
             if(!tsp_host_composite_write_ppm(path))die("route screenshot write failed");
         }
+
+        /* Review mode emits complete frame sequences for the two geometry
+         * stress rooms. CI turns these into downloadable MP4 + PNG proof
+         * artifacts without changing the normal room-bundle bake output. */
+        if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
+           entry_portal==0u&&exit_portal==1u&&(bundle==4u||bundle==7u)){
+            const char *tag=bundle==4u?"gallery-window":"solid-pillars";
+            snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
+                     outdir,tag,(unsigned)f);
+            if(!tsp_host_composite_write_ppm(path))
+                die("review frame write failed");
+        }
     }
 
     if(memcmp(prev,canonical,sizeof(prev))!=0)
         die("route terminal seam name table != canonical seam");
+
+    /* Dedicated visual microscope for the new solid window. This is outside
+     * the serialized route and therefore cannot affect runtime bundle data. */
+    if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
+       bundle==4u&&entry_portal==0u&&exit_portal==1u){
+        uint16_t rf;
+        for(rf=0u;rf<96u;++rf){
+            Pose rp=window_detail_pose(rf);
+            render_pose(w,&rp,cur);
+            snprintf(path,sizeof(path),"%s/review-window-detail-%03u.ppm",
+                     outdir,(unsigned)rf);
+            if(!tsp_host_composite_write_ppm(path))
+                die("window detail review frame write failed");
+        }
+    }
 
     stats.scheduled_budget=schedule_bundle_tiles(frames,maps);
     stats.tile_bytes=0u;
@@ -1072,6 +1396,11 @@ int main(int argc,char **argv){
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
     outdir=argv[1];
+
+    /* Fail before a multi-thousand-frame bake if the authoring expansion ever
+     * stops producing the promised closed vertical wall/window topology. */
+    self_test_solid_wall_geometry();
+    self_test_derived_riser();
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
@@ -1114,6 +1443,10 @@ int main(int argc,char **argv){
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
     fprintf(manifest,"eight_module_catalog=PASS\n");
+    fprintf(manifest,"solid_interior_wall_expansion=PASS\n");
+    fprintf(manifest,"window_vertical_reveal_generation=PASS\n");
+    fprintf(manifest,"window_horizontal_reveal_generation=PASS\n");
+    fprintf(manifest,"derived_stair_risers=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {

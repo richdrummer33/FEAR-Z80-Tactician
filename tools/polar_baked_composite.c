@@ -60,6 +60,9 @@ static uint8_t g_lit[TSP_MAP_CELLS][PIXELS];
  * authored one-sided wall/profile backfaces. Quantization and penumbra retain
  * their compact reusable vocabulary; this mask is an absolute final clamp. */
 static uint8_t g_lightable[TSP_MAP_CELLS][PIXELS];
+/* Host-only geometric depth. Normal Polar callers keep their established
+ * painter ordering; room-bundle depth-tested APIs opt into this buffer. */
+static double g_depth[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -144,6 +147,22 @@ static int scene_vertex(uint8_t id,TSPHostSceneVertex *out){
     }else{
         out->x=k_tsp_host_world_vertices[id].x;
         out->y=k_tsp_host_world_vertices[id].y;
+        out->x_q4=0;
+        out->y_q4=0;
+        out->has_exact_q4=0u;
+    }
+    return 1;
+}
+
+static int scene_vertex_world(uint8_t id,double *x,double *y){
+    TSPHostSceneVertex v;
+    if(!x||!y||!scene_vertex(id,&v))return 0;
+    if(v.has_exact_q4){
+        *x=(double)v.x_q4/16.0;
+        *y=(double)v.y_q4/16.0;
+    }else{
+        *x=(double)v.x;
+        *y=(double)v.y;
     }
     return 1;
 }
@@ -157,6 +176,9 @@ static int scene_segment(uint8_t id,TSPHostSceneSegment *out){
         out->blocks_light=s->blocks_light;
         out->light_front_sign=s->light_front_sign;
         out->visual_front_sign=s->visual_front_sign;
+        out->z0_q4=0;
+        out->z1_q4=0;
+        out->has_exact_z=0u;
     }
     return 1;
 }
@@ -211,14 +233,23 @@ static void profile_z_range(uint8_t profile,double *z0,double *z1){
     }
 }
 
+static void segment_z_range(const TSPHostSceneSegment *s,double *z0,double *z1){
+    if(s&&s->has_exact_z){
+        *z0=(double)s->z0_q4/16.0;
+        *z1=(double)s->z1_q4/16.0;
+    }else{
+        profile_z_range(s?s->profile:TSP_PROFILE_FULL,z0,z1);
+    }
+}
+
 /* Signed position against the segment's directed right-hand normal (dy,-dx). */
 static double segment_right_side(const TSPHostSceneSegment *s,double x,double y){
-    TSPHostSceneVertex a,b;
-    double dx,dy;
-    if(!scene_vertex(s->v0,&a)||!scene_vertex(s->v1,&b))return 0.0;
-    dx=(double)b.x-(double)a.x;
-    dy=(double)b.y-(double)a.y;
-    return (x-(double)a.x)*dy-(y-(double)a.y)*dx;
+    double ax,ay,bx,by,dx,dy;
+    if(!scene_vertex_world(s->v0,&ax,&ay)||!scene_vertex_world(s->v1,&bx,&by))
+        return 0.0;
+    dx=bx-ax;
+    dy=by-ay;
+    return (x-ax)*dy-(y-ay)*dx;
 }
 static int point_on_signed_front(const TSPHostSceneSegment *s,int8_t sign,double x,double y){
     double q;
@@ -262,15 +293,14 @@ static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
     if(dx*dx+dy*dy<1e-10)return 1;
     for(sid=0u;sid<scene_segment_count();++sid){
         TSPHostSceneSegment s;
-        TSPHostSceneVertex a,b;
-        double t,u,z0,z1,zhit;
+        double ax,ay,bx,by,t,u,z0,z1,zhit;
         if(!scene_segment(sid,&s)||!s.blocks_light||(int)sid==receiver_sid)continue;
-        if(!scene_vertex(s.v0,&a)||!scene_vertex(s.v1,&b))continue;
-        if(!ray_segment_params(lx,ly,dx,dy,(double)a.x,(double)a.y,
-                               (double)b.x,(double)b.y,&t,&u))continue;
+        if(!scene_vertex_world(s.v0,&ax,&ay)||!scene_vertex_world(s.v1,&bx,&by))
+            continue;
+        if(!ray_segment_params(lx,ly,dx,dy,ax,ay,bx,by,&t,&u))continue;
         if(t<=1e-7||t>=1.0-1e-7||u<-1e-7||u>1.0+1e-7)continue;
         zhit=lz+t*(wz-lz);
-        profile_z_range(s.profile,&z0,&z1);
+        segment_z_range(&s,&z0,&z1);
         if(zhit>=z0-1e-7&&zhit<=z1+1e-7)return 0;
     }
     return 1;
@@ -386,20 +416,20 @@ static int background_world_receiver(int sx,int sy,double *wx,double *wy,double 
 /* Recover full XYZ of a visible wall/profile pixel. */
 static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,double *wz){
     TSPHostSceneSegment s;
-    TSPHostSceneVertex a,b;
-    double fx,fy,rx,ry,lateral,dx,dy,t,u,z0,z1;
+    double ax,ay,bx,by,fx,fy,rx,ry,lateral,dx,dy,t,u,z0,z1;
     double cx=(double)g_camera_x_q4/16.0,cy=(double)g_camera_y_q4/16.0;
     double py=(double)sy+0.5;
-    if(!scene_segment(sid,&s)||!scene_vertex(s.v0,&a)||!scene_vertex(s.v1,&b))return 0;
+    if(!scene_segment(sid,&s)||
+       !scene_vertex_world(s.v0,&ax,&ay)||!scene_vertex_world(s.v1,&bx,&by))
+        return 0;
     camera_basis(&fx,&fy,&rx,&ry);
     lateral=(((double)sx+0.5)-80.0)/TSP_FOCAL_PX;
     dx=fx+rx*lateral;dy=fy+ry*lateral;
-    if(!ray_segment_params(cx,cy,dx,dy,(double)a.x,(double)a.y,
-                           (double)b.x,(double)b.y,&t,&u))return 0;
+    if(!ray_segment_params(cx,cy,dx,dy,ax,ay,bx,by,&t,&u))return 0;
     if(t<=1e-7||u<-1e-5||u>1.0+1e-5)return 0;
     *wx=cx+dx*t;*wy=cy+dy*t;
     *wz=camera_z_world()-((py-TSP_HORIZON_PX)/TSP_FOCAL_PX)*t;
-    profile_z_range(s.profile,&z0,&z1);
+    segment_z_range(&s,&z0,&z1);
     if(*wz<z0)*wz=z0;
     if(*wz>z1)*wz=z1;
     return 1;
@@ -629,9 +659,14 @@ void tsp_host_composite_reset_cache(void){
 void tsp_host_composite_begin_frame(void){
     uint8_t row,col;
     ensure_init();
+    uint16_t di;
     memset(g_owner,0xff,sizeof(g_owner));
     memset(g_lit,0,sizeof(g_lit));
     memset(g_lightable,1,sizeof(g_lightable));
+    for(di=0u;di<TSP_MAP_CELLS;++di){
+        uint8_t pi;
+        for(pi=0u;pi<PIXELS;++pi)g_depth[di][pi]=1e30;
+    }
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
         if(row<9u)tile_fill(p,SEM_CEILING);
@@ -654,10 +689,11 @@ static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x){
     return (int16_t)(a+q);
 }
 
-void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
-                                int16_t tl,int16_t tr,int16_t bl,int16_t br,
-                                uint8_t sid,uint8_t shade,uint8_t border,
-                                uint8_t ao_left,uint8_t ao_right){
+static void composite_surface_impl(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                   int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                   uint8_t sid,uint8_t shade,uint8_t border,
+                                   uint8_t ao_left,uint8_t ao_right,
+                                   uint8_t depth_test,double depth){
     uint8_t sx,color=shade_sem(shade);
     uint16_t coarse_x=(uint16_t)col*8u;
     if(col>=TSP_COLS||clip_x0>clip_x1||clip_x1>159u)die("surface raster bounds invalid");
@@ -681,6 +717,7 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t *dst=g_cells[cell];
             uint8_t *own=g_owner[cell];
             uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
+            if(depth_test&&depth>=g_depth[cell][pi]-1e-9)continue;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
             if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
@@ -697,8 +734,44 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             }
             dst[pi]=black?SEM_BLACK:pixel;
             own[pi]=sid;
+            if(depth_test)g_depth[cell][pi]=depth;
         }
     }
+}
+
+void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                uint8_t sid,uint8_t shade,uint8_t border,
+                                uint8_t ao_left,uint8_t ao_right){
+    composite_surface_impl(col,clip_x0,clip_x1,tl,tr,bl,br,sid,shade,border,
+                           ao_left,ao_right,0u,0.0);
+}
+
+void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                      int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                      uint8_t sid,uint8_t shade,uint8_t border,
+                                      uint8_t ao_left,uint8_t ao_right,
+                                      double depth){
+    if(depth<=0.0)return;
+    composite_surface_impl(col,clip_x0,clip_x1,tl,tr,bl,br,sid,shade,border,
+                           ao_left,ao_right,1u,depth);
+}
+
+void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
+                                    uint8_t shade,uint8_t black,double depth){
+    uint8_t row,col,px,py;
+    uint16_t cell,pi;
+    if(sx>=160u||sy>=144u||depth<=0.0)return;
+    row=(uint8_t)(sy>>3);
+    col=(uint8_t)(sx>>3);
+    px=(uint8_t)(sx&7u);
+    py=(uint8_t)(sy&7u);
+    cell=(uint16_t)row*TSP_COLS+col;
+    pi=(uint16_t)py*8u+px;
+    if(depth>=g_depth[cell][pi]-1e-9)return;
+    g_cells[cell][pi]=black?SEM_BLACK:shade_sem(shade);
+    g_owner[cell][pi]=sid;
+    g_depth[cell][pi]=depth;
 }
 
 static void flip_pattern(const uint8_t src[PIXELS],uint8_t dst[PIXELS],uint8_t fx,uint8_t fy){
