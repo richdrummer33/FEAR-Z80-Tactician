@@ -33,6 +33,8 @@
 #define MAX_BANK_STREAM 10000u
 #define MAX_TILEPATCH_BANKS 48u
 #define MAX_TILEPATCH_BANK_STREAM 14000u
+/* One bank-local dictionary can never usefully exceed the 16 KiB ROM window. */
+#define TILEPATCH_DICT_MAX 512u
 /* Palette-only and literal spans may alternate within a row. Worst case is
  * one 3-byte header plus one 16-bit literal per cell, plus the u16 run count. */
 #define PATCH_SCRATCH_MAX (2u + TSP_MAP_CELLS * 5u)
@@ -391,6 +393,34 @@ static uint64_t fnv64(const void *data,size_t n){
     for(i=0;i<n;++i){h^=p[i];h*=UINT64_C(1099511628211);}
     return h;
 }
+
+static int tile_dict_find(const uint8_t *dict,uint16_t count,const uint8_t pat[TSP_HOST_TILE_BYTES]){
+    uint16_t i;
+    for(i=0u;i<count;++i)
+        if(memcmp(dict+(size_t)i*TSP_HOST_TILE_BYTES,pat,TSP_HOST_TILE_BYTES)==0)return (int)i;
+    return -1;
+}
+static uint16_t tile_dict_add(uint8_t *dict,uint16_t *count,const uint8_t pat[TSP_HOST_TILE_BYTES]){
+    int q=tile_dict_find(dict,*count,pat);
+    if(q>=0)return (uint16_t)q;
+    if(*count>=TILEPATCH_DICT_MAX)die("tilepatch dictionary capacity exceeded");
+    memcpy(dict+(size_t)(*count)*TSP_HOST_TILE_BYTES,pat,TSP_HOST_TILE_BYTES);
+    return (*count)++;
+}
+/* Add one scheduled patch to an in-progress bank dictionary and return the
+ * compressed bank payload size: compact refs + unique 32-byte patterns.
+ * The caller may restore dict_count if this candidate crosses the bank cap. */
+static uint32_t tilepatch_bank_try_add(const TilePatch *tp,uint8_t *dict,uint16_t *dict_count,
+                                       uint32_t compact_bytes){
+    const uint8_t *p=tp->bytes+2u;
+    uint16_t n=tilepatch_loads(tp),i;
+    for(i=0u;i<n;++i){
+        p+=2u; /* hardware slot */
+        (void)tile_dict_add(dict,dict_count,p);
+        p+=TSP_HOST_TILE_BYTES;
+    }
+    return compact_bytes+2u+(uint32_t)n*4u+(uint32_t)(*dict_count)*TSP_HOST_TILE_BYTES;
+}
 static void emit_u8_array(FILE *f,const char *name,const uint8_t *v,uint32_t n){
     uint32_t i;
     fprintf(f,"static const uint8_t %s[%u] = {\n",name,n?n:1u);
@@ -520,24 +550,39 @@ static void emit_manifest(const char *dir,const Patch *patches,const Bank banks[
 static void emit_tilepatch_bank(const char *dir,unsigned bank,const TilePatch *tp,const Bank *b){
     char name[128],path[512];FILE *f;
     uint16_t *off=(uint16_t *)malloc((size_t)(b->count+1u)*sizeof(uint16_t));
-    uint8_t *data=(uint8_t *)malloc(b->bytes?b->bytes:1u);
-    uint32_t pos=0u;uint16_t i;
-    if(!off||!data)die("out of memory emitting tilepatch bank");
+    uint8_t *data=(uint8_t *)malloc(MAX_TILEPATCH_BANK_STREAM?MAX_TILEPATCH_BANK_STREAM:1u);
+    uint8_t *dict=(uint8_t *)malloc((size_t)TILEPATCH_DICT_MAX*TSP_HOST_TILE_BYTES);
+    uint32_t pos=0u;uint16_t dict_count=0u,i;
+    if(!off||!data||!dict)die("out of memory emitting dictionary tilepatch bank");
     off[0]=0u;
     for(i=0u;i<b->count;++i){
-        const TilePatch *p=&tp[b->first+i];
-        if(pos+p->len>65535u)die("tilepatch bank offset overflow");
-        memcpy(data+pos,p->bytes,p->len);pos+=p->len;off[i+1u]=(uint16_t)pos;
+        const TilePatch *patch=&tp[b->first+i];
+        const uint8_t *p=patch->bytes+2u;
+        uint16_t n=tilepatch_loads(patch),q;
+        uint32_t need=2u+(uint32_t)n*4u;
+        if(pos+need>MAX_TILEPATCH_BANK_STREAM)die("compressed tilepatch data overflow");
+        data[pos++]=(uint8_t)n;data[pos++]=(uint8_t)(n>>8);
+        for(q=0u;q<n;++q){
+            uint16_t slot=(uint16_t)p[0]|((uint16_t)p[1]<<8);p+=2u;
+            uint16_t pat=tile_dict_add(dict,&dict_count,p);p+=TSP_HOST_TILE_BYTES;
+            data[pos++]=(uint8_t)slot;data[pos++]=(uint8_t)(slot>>8);
+            data[pos++]=(uint8_t)pat;data[pos++]=(uint8_t)(pat>>8);
+        }
+        off[i+1u]=(uint16_t)pos;
     }
+    if(pos+(uint32_t)dict_count*TSP_HOST_TILE_BYTES>MAX_TILEPATCH_BANK_STREAM)
+        die("compressed tilepatch dictionary bank exceeds stream cap");
+
     snprintf(name,sizeof(name),"polar_demo_tilepatch_bank%u.c",bank);
     path_join(path,sizeof(path),dir,name);f=fopen(path,"w");
     if(!f)die("cannot write tilepatch bank");
     fprintf(f,
-      "/* GENERATED baked composite tile-pattern update bank %u. */\n"
+      "/* GENERATED bank-local dictionary tile-pattern update bank %u. */\n"
       "#include <stdint.h>\n#include <gbdk/platform.h>\n"
       "#pragma bank 255\nBANKREF(polar_demo_tilepatch_bank%u)\n\n",
       bank,bank);
     emit_u16_array(f,"k_off",off,(uint32_t)b->count+1u);
+    emit_u8_array(f,"k_pattern_dict",dict,(uint32_t)dict_count*TSP_HOST_TILE_BYTES);
     emit_u8_array(f,"k_data",data,pos);
     fprintf(f,
       "#define PATCHS_IN_BANK %uu\n"
@@ -547,11 +592,12 @@ static void emit_tilepatch_bank(const char *dir,unsigned bank,const TilePatch *t
       "    p=&k_data[k_off[local]]; n=(uint16_t)*p++; n|=(uint16_t)*p++<<8;\n"
       "    for(i=0u;i<n;++i){\n"
       "        uint16_t slot=(uint16_t)*p++; slot|=(uint16_t)*p++<<8;\n"
-      "        set_bkg_4bpp_data(slot,1u,p); p+=32u;\n"
+      "        uint16_t pat=(uint16_t)*p++; pat|=(uint16_t)*p++<<8;\n"
+      "        set_bkg_4bpp_data(slot,1u,&k_pattern_dict[(uint16_t)(pat*32u)]);\n"
       "    }\n"
       "}\n",
       b->count,bank);
-    fclose(f);free(off);free(data);
+    fclose(f);free(off);free(data);free(dict);
 }
 static void emit_tilepatch_dispatch(const char *dir,const Bank *banks,unsigned bank_count){
     char path[512];FILE *f;unsigned i;
@@ -586,7 +632,7 @@ int main(int argc,char **argv){
     unsigned bank_count=0u,tilebank_count=0u,tile_vblank_budget=0u;
     PolarExploreCursor explore;
 
-    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|hard|point|texture]\n",argv[0]);return 2;}
+    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|hard|point|texture|projective]\n",argv[0]);return 2;}
     if(!tilepatches||!all_maps)die("out of memory allocating bake tables");
     dir=argv[1];
     if(argc==3){g_lighting_name=argv[2];g_lighting_stage=parse_lighting_stage(argv[2]);}
@@ -686,14 +732,23 @@ int main(int argc,char **argv){
     memset(tilebanks,0,sizeof(tilebanks));
     for(i=0u;i<PATCH_COUNT;){
         Bank *b;
+        uint8_t *dict;
+        uint16_t dict_count=0u;
+        uint32_t compact_bytes=0u;
         if(tilebank_count>=MAX_TILEPATCH_BANKS)die("tilepatches exceed generated bank budget");
         b=&tilebanks[tilebank_count];b->first=i;
+        dict=(uint8_t *)malloc((size_t)TILEPATCH_DICT_MAX*TSP_HOST_TILE_BYTES);
+        if(!dict)die("out of memory packing tilepatch dictionary bank");
         while(i<PATCH_COUNT){
-            uint32_t next=b->bytes+tilepatches[i].len;
-            if(b->count&&next>MAX_TILEPATCH_BANK_STREAM)break;
-            if(next>MAX_TILEPATCH_BANK_STREAM)die("single tilepatch exceeds bank stream cap");
-            b->bytes=next;++b->count;++i;
+            uint16_t old_dict_count=dict_count;
+            uint32_t total=tilepatch_bank_try_add(&tilepatches[i],dict,&dict_count,compact_bytes);
+            if(b->count&&total>MAX_TILEPATCH_BANK_STREAM){dict_count=old_dict_count;break;}
+            if(total>MAX_TILEPATCH_BANK_STREAM)die("single compressed tilepatch exceeds bank stream cap");
+            compact_bytes+=2u+(uint32_t)tilepatch_loads(&tilepatches[i])*4u;
+            b->bytes=compact_bytes+(uint32_t)dict_count*TSP_HOST_TILE_BYTES;
+            ++b->count;++i;
         }
+        free(dict);
         ++tilebank_count;
     }
     for(i=0u;i<MAX_TILEPATCH_BANKS;++i){
