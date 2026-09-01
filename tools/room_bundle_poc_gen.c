@@ -18,9 +18,9 @@
 #include <string.h>
 
 #include "tilesector_polar.h"
-#include "polar_baked_composite.h"
+#include "polar_baked_composite.h"\n#include "room_mesh_bake.h"
 
-#define BUNDLE_COUNT 8u
+#define BUNDLE_COUNT 11u
 #define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
@@ -51,6 +51,7 @@ typedef struct World {
     TSPHostSceneLight scene_lights[1];
     TSPHostSceneRect scene_rects[MAX_SCENE_RECTS];
     TSPHostCompositeScene scene;
+    RMBScene mesh;
     uint8_t scene_vertex_count;
     uint8_t scene_rect_count;
     uint8_t lighting_stage;
@@ -328,6 +329,11 @@ static void self_test_derived_riser(void){
     if(w.count!=1u||w.seg[0].z0!=0.0||w.seg[0].z1!=3.0)
         die("derived riser self-test: incorrect vertical range");
 }
+static void init_world(World *w){
+    init_world(w);
+    rmb_scene_init(&w->mesh);
+}
+
 static void finalize_scene(World *w){
     w->scene.vertices=w->scene_vertices;
     w->scene.vertex_count=w->scene_vertex_count;
@@ -410,7 +416,7 @@ static void make_linear_world(uint8_t bundle,World *w){
     double room_y0=bundle==0u?-28.0:-4.0;
     double room_y1=bundle==0u?76.0:52.0;
 
-    memset(w,0,sizeof(*w));
+    init_world(w);
 
     /* Canonical inner S-throat remains narrow. Only the final hidden leg
      * flares toward the room. This preserves the seam serialization proof
@@ -472,7 +478,7 @@ static void make_linear_world(uint8_t bundle,World *w){
 
 static void make_split_world(World *w){
     const double mouth_lo=12.0,mouth_hi=36.0;
-    memset(w,0,sizeof(*w));
+    init_world(w);
 
     /* Portal 0: west entry. Portal 1: north exit. Portal 2: south exit.
      * All three are exact rigid transforms of the canonical hidden seam. */
@@ -500,7 +506,7 @@ static void make_split_world(World *w){
 }
 
 static void make_stair_world(World *w){
-    memset(w,0,sizeof(*w));
+    init_world(w);
 
     /* Entry floor zero, exit floor +4 after a clockwise quarter turn. */
     add_canonical_seam_z(w,36.0,24.0,0u,12.0,36.0,0.0);
@@ -546,7 +552,7 @@ static void make_stair_world(World *w){
 }
 
 static void make_gallery_world(World *w){
-    memset(w,0,sizeof(*w));
+    init_world(w);
     add_two_portal_seams(w,8.0,40.0);
 
     add_seg(w,36,-48,36,8,0,32,0);
@@ -573,7 +579,7 @@ static void make_gallery_world(World *w){
 }
 
 static void make_turn_world(World *w){
-    memset(w,0,sizeof(*w));
+    init_world(w);
 
     /* West entry, north exit: a genuine flat quarter-turn module. */
     add_canonical_seam(w,36.0,24.0,0u,12.0,36.0);
@@ -608,7 +614,7 @@ static void make_step_world(World *w){
     static const int16_t x1[5]={51,67,83,99,116};
     static const int16_t z[5]={0,2,4,2,0};
     uint8_t i;
-    memset(w,0,sizeof(*w));
+    init_world(w);
     add_two_portal_seams(w,12.0,36.0);
 
     /* End walls around the wide entry/exit mouths. */
@@ -634,7 +640,7 @@ static void make_step_world(World *w){
 }
 
 static void make_pillar_world(World *w){
-    memset(w,0,sizeof(*w));
+    init_world(w);
     add_two_portal_seams(w,8.0,40.0);
 
     add_seg(w,36,-40,36,8,0,32,0);
@@ -661,6 +667,162 @@ static void make_pillar_world(World *w){
     finalize_scene(w);
 }
 
+static void add_showcase_shell(World *w){
+    add_two_portal_seams(w,8.0,40.0);
+    add_seg(w,36,-40,36,8,0,32,0);
+    add_seg(w,36,40,36,88,0,32,0);
+    add_seg(w,116,-40,116,8,0,32,0);
+    add_seg(w,116,40,116,88,0,32,0);
+    add_seg(w,36,-40,116,-40,0,32,0);
+    add_seg(w,116,88,36,88,0,32,0);
+    add_rect(w,36,-40,116,88,0,32);
+}
+
+static void make_statue_showcase_world(World *w){
+    RMBTransform t;
+    uint8_t plinth,torso,head,limbs,sword;
+    init_world(w);
+    add_showcase_shell(w);
+
+    /* Four old-fashioned solid architectural pillars remain scene segments,
+     * so the existing baked point-light pass can cast long room shadows. */
+    add_solid_wall_line(w,58,-4,58,4,8.0,0,32,1);
+    add_solid_wall_line(w,98,-4,98,4,8.0,0,32,1);
+    add_solid_wall_line(w,58,48,58,56,8.0,0,32,1);
+    add_solid_wall_line(w,98,48,98,56,8.0,0,32,1);
+
+    plinth=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    torso=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
+    head=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    limbs=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
+    sword=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+
+    t=rmb_transform(78,24,3,0,0,8,1,1,1);
+    rmb_add_box(&w->mesh,plinth,&t,8.5,7.0,3.0,0);
+
+    t=rmb_transform(78,24,14,0,0,8,1,1,1);
+    rmb_add_box(&w->mesh,torso,&t,3.5,5.0,6.0,0);
+    t=rmb_transform(78,24,23.5,0,0,8,1,1,1);
+    rmb_add_uv_sphere(&w->mesh,head,&t,3.7,6u,12u,0);
+
+    t=rmb_transform(78,20.8,8.5,0,0,8,1,1,1);
+    rmb_add_box(&w->mesh,limbs,&t,2.0,1.7,5.5,0);
+    t=rmb_transform(78,27.2,8.5,0,0,8,1,1,1);
+    rmb_add_box(&w->mesh,limbs,&t,2.0,1.7,5.5,0);
+
+    t=rmb_transform(78,17.6,16.0,58,0,8,1,1,1);
+    rmb_add_cylinder(&w->mesh,limbs,&t,1.5,9.0,8u,0,1u);
+    t=rmb_transform(78,30.4,16.0,-58,0,8,1,1,1);
+    rmb_add_cylinder(&w->mesh,limbs,&t,1.5,9.0,8u,0,1u);
+
+    /* Ridiculous ceremonial sword, because this is a research branch. */
+    t=rmb_transform(79.5,33.5,13.5,-18,8,10,1,1,1);
+    rmb_add_box(&w->mesh,sword,&t,0.65,0.65,9.5,1);
+
+    w->scene_lights[0].x_q4=(int16_t)(48<<4);
+    w->scene_lights[0].y_q4=(int16_t)(70<<4);
+    w->scene_lights[0].height_q4=(uint8_t)(11<<4);
+    w->scene_lights[0].radius_world=124u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    finalize_scene(w);
+}
+
+static void make_curved_showcase_world(World *w){
+    RMBTransform t;
+    uint8_t cyl,sphere,platform,dome;
+    init_world(w);
+    add_showcase_shell(w);
+
+    cyl=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    sphere=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    platform=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    dome=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+
+    /* Intentionally no polygon-edge ink on any curved primitive. */
+    t=rmb_transform(60,8,16,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,cyl,&t,7.0,32.0,20u,0,1u);
+
+    t=rmb_transform(80,48,6.5,0,0,0,1,1,1);
+    rmb_add_uv_sphere(&w->mesh,sphere,&t,6.5,8u,18u,0);
+
+    t=rmb_transform(98,18,3.0,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,platform,&t,11.0,6.0,24u,0,1u);
+
+    t=rmb_transform(99,56,0.0,0,0,0,1,1,1);
+    rmb_add_dome(&w->mesh,dome,&t,8.5,6u,20u,0,1u);
+
+    w->scene_lights[0].x_q4=(int16_t)(74<<4);
+    w->scene_lights[0].y_q4=(int16_t)(76<<4);
+    w->scene_lights[0].height_q4=(uint8_t)(15<<4);
+    w->scene_lights[0].radius_world=120u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    finalize_scene(w);
+}
+
+static void add_table_mesh(RMBScene *m){
+    RMBTransform parent,child,t;
+    uint8_t obj=rmb_new_object(m,RMB_OUTLINE_SILHOUETTE_CREASE);
+    static const double lx[4]={-7.0,7.0,-7.0,7.0};
+    static const double ly[4]={-4.0,-4.0,4.0,4.0};
+    uint8_t i;
+
+    parent=rmb_transform(78,23,9.0,68,17,27,1,1,1);
+    child=rmb_transform(0,0,0,0,0,0,1,1,1);
+    t=rmb_compose(&parent,&child);
+    rmb_add_box(m,obj,&t,9.0,6.0,1.0,0);
+
+    for(i=0u;i<4u;++i){
+        child=rmb_transform(lx[i],ly[i],-4.5,0,0,0,1,1,1);
+        t=rmb_compose(&parent,&child);
+        rmb_add_box(m,obj,&t,0.85,0.85,3.8,0);
+    }
+}
+
+static void add_shelf_mesh(RMBScene *m){
+    RMBTransform parent,child,t;
+    uint8_t obj=rmb_new_object(m,RMB_OUTLINE_SILHOUETTE_CREASE);
+    uint8_t i;
+    parent=rmb_transform(97,57,10,0,0,-24,1,1,1);
+
+    child=rmb_transform(0,0,0,0,0,0,1,1,1);
+    t=rmb_compose(&parent,&child);
+    rmb_add_box(m,obj,&t,0.7,6.5,10.0,0);
+
+    child=rmb_transform(0,6.0,0,0,0,0,1,1,1);
+    t=rmb_compose(&parent,&child);
+    rmb_add_box(m,obj,&t,4.5,0.7,10.0,0);
+    child=rmb_transform(0,-6.0,0,0,0,0,1,1,1);
+    t=rmb_compose(&parent,&child);
+    rmb_add_box(m,obj,&t,4.5,0.7,10.0,0);
+
+    for(i=0u;i<4u;++i){
+        child=rmb_transform(0,0,-7.5+5.0*(double)i,0,0,0,1,1,1);
+        t=rmb_compose(&parent,&child);
+        rmb_add_box(m,obj,&t,4.5,6.0,0.55,0);
+    }
+}
+
+static void make_prop_showcase_world(World *w){
+    init_world(w);
+    add_showcase_shell(w);
+    add_table_mesh(&w->mesh);
+    add_shelf_mesh(&w->mesh);
+
+    /* A low solid divider gives the room one conventional architectural
+     * shadow caster while the mesh props exercise arbitrary 3D rotation. */
+    add_solid_wall_line(w,106,-4,106,12,2.0,0,18,1);
+
+    w->scene_lights[0].x_q4=(int16_t)(50<<4);
+    w->scene_lights[0].y_q4=(int16_t)(64<<4);
+    w->scene_lights[0].height_q4=(uint8_t)(10<<4);
+    w->scene_lights[0].radius_world=120u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    finalize_scene(w);
+}
+
 static void make_world(uint8_t bundle,World *w){
     if(bundle<2u)make_linear_world(bundle,w);
     else if(bundle==2u)make_split_world(w);
@@ -669,6 +831,9 @@ static void make_world(uint8_t bundle,World *w){
     else if(bundle==5u)make_turn_world(w);
     else if(bundle==6u)make_step_world(w);
     else if(bundle==7u)make_pillar_world(w);
+    else if(bundle==8u)make_statue_showcase_world(w);
+    else if(bundle==9u)make_curved_showcase_world(w);
+    else if(bundle==10u)make_prop_showcase_world(w);
     else die("invalid room bundle id");
 }
 
@@ -741,6 +906,18 @@ static uint8_t yaw_from_vec(double dx,double dy){
     return (uint8_t)v;
 }
 
+static Pose showcase_detail_pose(uint8_t bundle,uint16_t f){
+    Pose p;
+    double tx=78.0,ty=24.0,tz=16.0,r=34.0;
+    double q=(double)f/119.0;
+    double a=(145.0-290.0*q)*(PI/180.0);
+    if(bundle==9u){tx=80.0;ty=30.0;r=38.0;}
+    else if(bundle==10u){tx=80.0;ty=28.0;tz=14.0;r=34.0;}
+    p.x=tx+r*cos(a);p.y=ty+r*sin(a);p.z=tz;
+    p.yaw=yaw_from_vec(tx-p.x,ty-p.y);
+    return p;
+}
+
 static Pose window_detail_pose(uint16_t f){
     Pose p;
     double q=(double)f/95.0;
@@ -763,6 +940,9 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
     else if(bundle==4u)inspect_y=54.0; /* broad gallery */
     else if(bundle==6u)inspect_y=44.0; /* stepped room */
     else if(bundle==7u)inspect_y=70.0; /* sweep around both pillars */
+    else if(bundle==8u)inspect_y=68.0; /* statue + four shadow pillars */
+    else if(bundle==9u)inspect_y=72.0; /* curved primitive gallery */
+    else if(bundle==10u)inspect_y=70.0; /* toppled furniture */
 
     /* 0..63: canonical entry seam -> inside room. */
     if(f<64u)return entry_outbound_pose(f);
@@ -903,7 +1083,8 @@ static Pose turn_forward_pose(uint16_t f){
 
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
-    if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u){
+    if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u||
+       bundle==8u||bundle==9u||bundle==10u){
         Pose p;
         if(entry_portal==0u&&exit_portal==1u)
             p=route_pose(f,bundle);
@@ -1057,6 +1238,17 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
                                              0u,0u,0u,depth);
         }
         render_horizontal_column(w,p,sx);
+    }
+    if(w->mesh.triangle_count){
+        RMBLight ml;
+        memset(&ml,0,sizeof(ml));
+        if(w->lighting_stage>=TSP_HOST_LIGHT_HARD&&w->scene.light_count){
+            ml.x=(double)w->scene_lights[0].x_q4/16.0;
+            ml.y=(double)w->scene_lights[0].y_q4/16.0;
+            ml.z=(double)w->scene_lights[0].height_q4/16.0;
+            ml.enabled=1u;
+        }
+        rmb_render(&w->mesh,p->x,p->y,p->z,p->yaw,&ml);
     }
     tsp_host_composite_export(out);
 }
@@ -1338,8 +1530,12 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
          * stress rooms. CI turns these into downloadable MP4 + PNG proof
          * artifacts without changing the normal room-bundle bake output. */
         if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
-           entry_portal==0u&&exit_portal==1u&&(bundle==4u||bundle==7u)){
-            const char *tag=bundle==4u?"gallery-window":"solid-pillars";
+           entry_portal==0u&&exit_portal==1u&&
+           (bundle==4u||bundle==7u||bundle==8u||bundle==9u||bundle==10u)){
+            const char *tag=bundle==4u?"gallery-window":
+                            (bundle==7u?"solid-pillars":
+                            (bundle==8u?"statue-showcase":
+                            (bundle==9u?"curved-showcase":"prop-showcase")));
             snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
                      outdir,tag,(unsigned)f);
             if(!tsp_host_composite_write_ppm(path))
@@ -1362,6 +1558,21 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                      outdir,(unsigned)rf);
             if(!tsp_host_composite_write_ppm(path))
                 die("window detail review frame write failed");
+        }
+    }
+
+    if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
+       entry_portal==0u&&exit_portal==1u&&bundle>=8u&&bundle<=10u){
+        uint16_t rf;
+        const char *tag=bundle==8u?"statue-detail":
+                        (bundle==9u?"curved-detail":"prop-detail");
+        for(rf=0u;rf<120u;++rf){
+            Pose rp=showcase_detail_pose(bundle,rf);
+            render_pose(w,&rp,cur);
+            snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
+                     outdir,tag,(unsigned)rf);
+            if(!tsp_host_composite_write_ppm(path))
+                die("showcase detail review frame write failed");
         }
     }
 
@@ -1401,6 +1612,16 @@ int main(int argc,char **argv){
      * stops producing the promised closed vertical wall/window topology. */
     self_test_solid_wall_geometry();
     self_test_derived_riser();
+    {
+        RMBScene m;
+        RMBTransform t=rmb_transform(0,0,0,0,0,37,1,1,1);
+        uint8_t o;
+        rmb_scene_init(&m);
+        o=rmb_new_object(&m,RMB_OUTLINE_SILHOUETTE);
+        rmb_add_box(&m,o,&t,1,2,3,0);
+        if(m.vertex_count!=8u||m.triangle_count!=12u||m.edge_count!=18u)
+            die("mesh authoring self-test failed");
+    }
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
