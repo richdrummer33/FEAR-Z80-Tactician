@@ -99,13 +99,28 @@ static void init_base_tiles(void){
     emit_horizon();
 }
 
-/* One frame of the baked route. Identical ordering to the proof ROM: apply the
- * name patch, wait for VBlank, then upload tile data and dirty name words. */
+/*
+ * One frame of the baked route. Ordering matches the proof ROM: apply the name
+ * patch, wait for VBlank, then upload tile data and dirty name words.
+ *
+ * This room needs far more tile uploads per frame than a Game Gear VBlank can
+ * carry, so at full speed the uploads spill into active display and tear. The
+ * scheduler reports the minimum feasible uploads per route frame: 51 for the
+ * unshaded shell and 138 with full shading, against roughly 48 sustainable.
+ * That is a property of the content, not a setting -- schedule_bundle_tiles()
+ * already searches for the smallest budget that meets every deadline.
+ *
+ * In manual step mode the camera only advances on a keypress, so the display
+ * can simply be blanked for that one upload and the frame arrives intact. This
+ * is why stepping, not auto playback, is the mode to inspect the statue in.
+ */
 static void show_frame(uint8_t entry,uint8_t exit_portal,uint16_t frame){
     tsp_room_bundle_generated_apply_name(HERO_BUNDLE,entry,exit_portal,frame);
     vsync();
+    if(g_hero_view_mode)DISPLAY_OFF;
     tsp_room_bundle_generated_apply_tile(HERO_BUNDLE,entry,exit_portal,frame);
     tsp_polar_nt_upload_dirty();
+    if(g_hero_view_mode)DISPLAY_ON;
     g_hero_view_frame=frame;
 }
 

@@ -353,3 +353,46 @@ Built with GBDK 4.5.0 and run in Gearsystem 3.9.16:
 - boot trace reaches `0xD005`, meaning startup completed through `DISPLAY_ON`
 - after 240 video frames `g_hero_view_frame` = 72, so playback is advancing
   rather than frozen — the specific failure mode being guarded against
+
+### Measured on hardware: the chamber exceeds VBlank upload bandwidth
+
+Running the viewer ROM in Gearsystem shows **tile corruption during camera
+motion** — torn black blocks across the statue. It is not a shading bug and not
+a cache bug. `schedule_bundle_tiles()` searches for the smallest tile-upload
+budget per route frame that still meets every deadline, and reports:
+
+| hero shading | min uploads / route frame |
+|---|---|
+| none (flat shell) | 51 |
+| 2-stop ramp + consolidation, no crease/dither | 79 |
+| 3-stop ramp + static bake | 99 |
+| full 5-stop ramp + crease + dither | 138 |
+
+A Game Gear VBlank sustains roughly 48. So **the unshaded chamber was already
+over budget at 51**, which is why the default scheduler cap of 48 refuses to
+bake it, and why the flat control ROM also tears — just far less. Shading makes
+an existing overrun 1.5x to 2.7x worse.
+
+This is a property of the content, not a setting: the budget is derived, not
+chosen. No shading configuration measured gets near 48, so this cannot be tuned
+away at the shading layer. Blanking the display during the upload confirms how
+severe it is — in auto playback the screen is off for most of every frame.
+
+Consequences and options, in rough order of value:
+
+1. **Upload fewer changed tiles per frame.** The camera moves far per route
+   frame, so almost the whole screen changes. A slower authored camera over more
+   route frames spreads the same content across more VBlanks and is the cheapest
+   real fix.
+2. **Chunk one route frame's tile patch across several VBlanks.** The runtime
+   currently applies a whole frame's tile list in one call; splitting it would
+   let the existing scheduler budget actually be honoured. This needs a range
+   argument on the generated bank uploader.
+3. **The compiled state-transition/patch architecture in PROJECT_MEMORY** is
+   precisely the answer to this class of problem and should absorb it.
+4. Manual step mode is usable now: the camera only advances on a keypress, so
+   the viewer blanks the display for that single upload and the resulting frame
+   is intact.
+
+The host bake, the seam, and the shading are all correct; what is over budget is
+how much of the screen this room changes per frame.
