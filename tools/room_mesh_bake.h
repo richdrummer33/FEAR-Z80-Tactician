@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-#define RMB_MAX_VERTICES 768u
-#define RMB_MAX_TRIANGLES 1400u
-#define RMB_MAX_EDGES 2200u
+#define RMB_MAX_VERTICES 4096u
+#define RMB_MAX_TRIANGLES 8192u
+#define RMB_MAX_EDGES 4096u
 #define RMB_MAX_OBJECTS 32u
 
 enum {
@@ -36,6 +36,8 @@ typedef struct RMBEdge {
 
 typedef struct RMBObject {
     uint8_t outline_mode;
+    uint8_t visible;
+    uint8_t casts_shadow;
 } RMBObject;
 
 typedef struct RMBScene {
@@ -59,6 +61,8 @@ typedef struct RMBLight {
 
 void rmb_scene_init(RMBScene *s);
 uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode);
+void rmb_set_object_flags(RMBScene *s,uint8_t object_id,
+                          uint8_t visible,uint8_t casts_shadow);
 RMBTransform rmb_transform(double tx,double ty,double tz,
                            double rx_deg,double ry_deg,double rz_deg,
                            double sx,double sy,double sz);
@@ -66,6 +70,15 @@ RMBTransform rmb_compose(const RMBTransform *parent,const RMBTransform *child);
 
 void rmb_add_box(RMBScene *s,uint8_t object_id,const RMBTransform *xf,
                  double hx,double hy,double hz,int8_t shade_bias);
+
+/* Compact imported-mesh path. xyz_q8 stores interleaved signed Q8 local
+ * coordinates (x,y,z); indices stores triangle triplets. The transform is
+ * applied after Q8 decode. This is host-only authoring data. */
+void rmb_add_indexed_mesh_q8(RMBScene *s,uint8_t object_id,
+                             const RMBTransform *xf,
+                             const int16_t *xyz_q8,uint16_t vertex_count,
+                             const uint16_t *indices,uint16_t triangle_count,
+                             int8_t shade_bias);
 void rmb_add_cylinder(RMBScene *s,uint8_t object_id,const RMBTransform *xf,
                       double radius,double height,uint8_t sides,
                       int8_t shade_bias,uint8_t caps);
