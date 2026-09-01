@@ -755,8 +755,8 @@ static void make_doomguy_hero_chamber(World *w){
      * encloses the 13.3x12.1x19 normalized hero proxy and magnifies its
      * silhouette to nearly room height on the south wall. */
     w->scene_lights[0].x_q4=(int16_t)(62<<4);
-    w->scene_lights[0].y_q4=(int16_t)(-96<<4);
-    w->scene_lights[0].height_q4=(uint8_t)(18<<4);
+    w->scene_lights[0].y_q4=(int16_t)(-96*16);
+    w->scene_lights[0].height_q4=(int16_t)(18*16);
     w->scene_lights[0].radius_world=220u;
     w->scene_lights[0].intensity=255u;
     w->lighting_stage=TSP_HOST_LIGHT_HARD;
