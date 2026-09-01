@@ -71,6 +71,8 @@ static uint8_t g_camera_yaw;
  * name-table words are baked for replay. */
 static uint8_t g_projective_tex[128][64];
 static uint8_t g_projective_bright_row[128];
+static uint8_t g_projective_band_start[8],g_projective_band_end[8];
+static uint8_t g_projective_band_count;
 static uint8_t g_projective_tex_ready;
 
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
@@ -440,58 +442,76 @@ static void load_projective_texture(void){
              * still shear/compress with the wall instead of following tiles. */
             g_projective_bright_row[y]=(uint8_t)(bright>=24);
         }
+        g_projective_band_count=0u;
+        for(y=0;y<128;){
+            int start;
+            while(y<128&&!g_projective_bright_row[y])++y;
+            if(y>=128)break;
+            start=y;
+            while(y<128&&g_projective_bright_row[y])++y;
+            if(g_projective_band_count<8u){
+                g_projective_band_start[g_projective_band_count]=(uint8_t)start;
+                g_projective_band_end[g_projective_band_count]=(uint8_t)(y-1);
+                ++g_projective_band_count;
+            }
+        }
     }
     g_projective_tex_ready=1u;
 }
-static int mirror_repeat8(int u){
-    int q=u%16;
-    if(q<0)q+=16;
-    return q<8?q:15-q;
+static int16_t projective_snap_y(int16_t y){
+    /* Quantize only AFTER the correct projected screen coordinate exists.
+     * Two-pixel absolute screen buckets drastically reduce near-identical
+     * pattern masks while keeping the material boundary an angled line. */
+    if(y>=0)return (int16_t)(((y+1)/2)*2);
+    return (int16_t)-((((-y)+1)/2)*2);
 }
-static uint8_t projective_material_semantic(uint8_t cls,int vi){
-    /* Diagnostic minimum: only true projected horizontal material rails.
-     * Ignore all U-axis source detail so we can measure the irreducible cost of
-     * a moving perspective-warped material boundary under the lighting stack. */
-    (void)cls;
-    if(g_projective_bright_row[vi])return MAT_MORTAR;
-    return SEM_MID;
+static int16_t projective_y_for_world_z(int16_t top,int16_t bot,
+                                        double z0,double z1,double z){
+    double f,q;
+    if(z1-z0<1e-9)return top;
+    f=(z1-z)/(z1-z0);
+    if(f<0.0)f=0.0;else if(f>1.0)f=1.0;
+    q=(double)top+f*(double)(bot-top);
+    return (int16_t)floor(q+0.5);
 }
-static uint8_t wall_projective_material_sample(uint8_t sid,int sx,int sy,uint8_t fallback){
+static uint8_t projective_band_pixel(uint8_t sid,uint8_t local,int16_t y,
+                                     int16_t tl,int16_t tr,int16_t bl,int16_t br){
     const TSPHostWorldSegment *seg;
-    const TSPHostWorldVertex *a,*b;
-    double wx,wy,wz,dx,dy,len,u;
-    int ui,vi;
-    uint8_t cls;
-    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return fallback;
-    if(!wall_world_point(sid,sx,sy,&wx,&wy,&wz))return fallback;
+    double z0,z1;
+    uint8_t b;
+    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return SEM_MID;
     seg=&k_tsp_host_world_segments[sid];
-    a=&k_tsp_host_world_vertices[seg->v0];
-    b=&k_tsp_host_world_vertices[seg->v1];
-    dx=(double)b->x-(double)a->x;
-    dy=(double)b->y-(double)a->y;
-    len=sqrt(dx*dx+dy*dy);
-    if(len<1e-9)return fallback;
-
-    /* Exact projected/world U first, THEN a 2-source-texel wall-space bucket.
-     * This cannot create screen-aligned texture blocks: the bucket boundary is
-     * attached to physical distance along the wall and therefore projects at
-     * whatever angle/perspective the wall demands. */
-    u=((wx-(double)a->x)*dx+(wy-(double)a->y)*dy)/len;
-    ui=(int)floor((u+1.0)/2.0)*2;
-    ui=mirror_repeat8(ui);
-
-    /* Source row zero is the TOP of the authored wall image. Exact world Z is
-     * therefore inverted into V: ceiling z=32 -> row 0, floor z=0 -> row 127.
-     * Quantization happens only after this projected/world-space coordinate is
-     * known. Raised/lintel/riser profiles crop this same absolute material. */
-    vi=(int)floor(((TSP_CEILING_Z-wz)*127.0/TSP_CEILING_Z)+0.5);
-    if(vi<0)vi=0;else if(vi>127)vi=127;
-    vi=((vi+4)/8)*8;
-    if(vi>127)vi=127;
-
+    profile_z_range(seg->profile,&z0,&z1);
     load_projective_texture();
-    cls=g_projective_tex[vi][ui];
-    return projective_material_semantic(cls,vi);
+
+    for(b=0u;b<g_projective_band_count;++b){
+        /* Source row zero is wall top (z=32), row 127 is floor (z=0).
+         * First calculate the exact world heights represented by the authored
+         * band, then project those heights through the real wall top/bottom. */
+        double zh=TSP_CEILING_Z*
+                  (127.0-(double)g_projective_band_start[b])/127.0;
+        double zl=TSP_CEILING_Z*
+                  (127.0-(double)(g_projective_band_end[b]+1u))/127.0;
+        int16_t l0,r0,l1,r1,yt,yb;
+        if(zh<=z0||zl>=z1)continue;
+        if(zh>z1)zh=z1;
+        if(zl<z0)zl=z0;
+
+        l0=projective_y_for_world_z(tl,bl,z0,z1,zh);
+        r0=projective_y_for_world_z(tr,br,z0,z1,zh);
+        l1=projective_y_for_world_z(tl,bl,z0,z1,zl);
+        r1=projective_y_for_world_z(tr,br,z0,z1,zl);
+
+        /* This is the reuse knob: snap the ALREADY-PROJECTED line endpoints,
+         * never U/V or wall ownership. The line still crosses the 8px column
+         * diagonally and terminates at the exact arbitrary wall silhouette. */
+        l0=projective_snap_y(l0);r0=projective_snap_y(r0);
+        l1=projective_snap_y(l1);r1=projective_snap_y(r1);
+        yt=lerp_edge7(l0,r0,local);
+        yb=lerp_edge7(l1,r1,local);
+        if(y>=yt&&y<yb)return MAT_MORTAR;
+    }
+    return SEM_MID;
 }
 
 static uint8_t lit_semantic(uint8_t v){
@@ -768,10 +788,10 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
             if(!black&&g_lighting_stage==TSP_HOST_LIGHT_PROJECTIVE){
-                /* Exact wall ownership already exists at this pixel. Sample
-                 * material from true world/projective coordinates; do not let
-                 * the 8x8 display grid influence U, V, phase, scale or bounds. */
-                pixel=wall_projective_material_sample(sid,sx,y,SEM_MID);
+                /* The authored rail heights are projected first, then their
+                 * screen-line endpoints are gently quantized for pattern reuse.
+                 * Wall ownership and the arbitrary sloped silhouette remain exact. */
+                pixel=projective_band_pixel(sid,local,y,tl,tr,bl,br);
             }else if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE){
                 /* Cheap control path: all textured wall geometry first receives
                  * one common base material. A post-pass promotes only completely
