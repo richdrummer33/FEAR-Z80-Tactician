@@ -1,0 +1,170 @@
+name: Doomguy shade fidelity sweep
+
+on:
+  push:
+    branches:
+      - experiment/gg-doomguy-glb-import
+    paths:
+      - "assets/gg-hero/**"
+      - "tools/glb_rmb/**"
+      - "tools/room_mesh_bake.*"
+      - "tools/room_bundle_poc_gen.c"
+      - ".github/workflows/doomguy-shade-sweep.yml"
+  workflow_dispatch:
+
+jobs:
+  shade-sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+      SHADOW_TRIS: "200"
+      GG_UPLOAD_CEILING: "48"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GLB preprocessing dependencies
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Sweep shade levels and visual fidelity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/doomguy-shade-sweep tools/generated
+          cases="3:80 3:120 3:160 3:200 2:200 2:400 2:600 2:900 2:1500 2:2400 1:400 1:900 1:1500 1:2400 1:3600 1:5200"
+          summary=build/doomguy-shade-sweep/SHADE-SWEEP.tsv
+          printf "shade_levels\ttarget_visual\ttarget_shadow\tactual_visual\tactual_shadow\tbudget_0to1\tbudget_1to0\tmax_budget\tpatch_0to1\tpatch_1to0\ttileloads_0to1\ttileloads_1to0\n" > "$summary"
+
+          for spec in $cases; do
+            shade=${spec%%:*}
+            vis=${spec##*:}
+            out="build/doomguy-shade-sweep/l${shade}-v${vis}"
+            mkdir -p "$out"
+            echo "=== shade $shade / visual $vis / shadow $SHADOW_TRIS ==="
+
+            node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+              --name doomguy --height 19 --up z \
+              --visual-tris "$vis" --shadow-tris "$SHADOW_TRIS" \
+              | tee "$out/IMPORT.json"
+
+            cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+              -DROOM_BUNDLE_DOOMGUY_GENERATED \
+              -DROOM_BUNDLE_DOOMGUY_SHADE_LEVELS="$shade" \
+              -Isrc -Itools \
+              tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+              -lm -o "$out/room_bundle_poc_gen"
+
+            ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 \
+              "$out/room_bundle_poc_gen" "$out"
+
+            manifest="$out/room_bundle_poc_manifest.txt"
+            grep -q '^doomguy_hero_chamber=PASS$' "$manifest"
+            grep -q '^independent_bundle_replay=PASS$' "$manifest"
+            line01=$(grep '^bundle=11 route=0->1 frames=' "$manifest")
+            line10=$(grep '^bundle=11 route=1->0 frames=' "$manifest")
+
+            field() {
+              local line="$1" key="$2"
+              printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^${key}=//p"
+            }
+
+            b01=$(field "$line01" scheduled_budget)
+            b10=$(field "$line10" scheduled_budget)
+            p01=$(field "$line01" patch_bytes)
+            p10=$(field "$line10" patch_bytes)
+            t01=$(field "$line01" tile_loads)
+            t10=$(field "$line10" tile_loads)
+            maxb=$(( b01 > b10 ? b01 : b10 ))
+            actual_vis=$(node -e "const j=require('./$out/IMPORT.json'); console.log(j.visual.triangles)")
+            actual_shadow=$(node -e "const j=require('./$out/IMPORT.json'); console.log(j.shadow.triangles)")
+
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+              "$shade" "$vis" "$SHADOW_TRIS" "$actual_vis" "$actual_shadow" \
+              "$b01" "$b10" "$maxb" "$p01" "$p10" "$t01" "$t10" | tee -a "$summary"
+          done
+
+          cat "$summary"
+
+          for shade in 3 2 1; do
+            best=$(awk -F '\t' -v shade="$shade" -v cap="$GG_UPLOAD_CEILING" '
+              NR>1 && $1==shade && $8<=cap {
+                if($2>bestv){bestv=$2; bestshadow=$3}
+              }
+              END{if(bestv) printf "%d %d\n",bestv,bestshadow}
+            ' "$summary")
+            if [ -n "$best" ]; then
+              set -- $best
+              echo "$1" > "build/doomguy-shade-sweep/BEST-L${shade}-VISUAL.txt"
+              echo "$2" > "build/doomguy-shade-sweep/BEST-L${shade}-SHADOW.txt"
+            fi
+          done
+
+      - name: Build and capture best safe candidate per shade level
+        shell: bash
+        run: |
+          set -euo pipefail
+          for shade in 3 2 1; do
+            vf="build/doomguy-shade-sweep/BEST-L${shade}-VISUAL.txt"
+            sf="build/doomguy-shade-sweep/BEST-L${shade}-SHADOW.txt"
+            [ -f "$vf" ] || continue
+            vis=$(cat "$vf")
+            shadow=$(cat "$sf")
+            out="build/doomguy-shade-sweep/proof-l${shade}"
+            mkdir -p "$out"
+
+            node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+              --name doomguy --height 19 --up z \
+              --visual-tris "$vis" --shadow-tris "$shadow" \
+              > "$out/IMPORT.json"
+
+            cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+              -DROOM_BUNDLE_DOOMGUY_GENERATED \
+              -DROOM_BUNDLE_DOOMGUY_SHADE_LEVELS="$shade" \
+              -Isrc -Itools \
+              tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+              -lm -o "$out/room_bundle_poc_gen"
+
+            ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_CAPTURE_REVIEW=1 \
+              "$out/room_bundle_poc_gen" "$out"
+            grep -q '^doomguy_hero_chamber=PASS$' "$out/room_bundle_poc_manifest.txt"
+          done
+
+      - name: Install video encoder
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Export comparison media
+        shell: bash
+        run: |
+          set -euo pipefail
+          for shade in 3 2 1; do
+            out="build/doomguy-shade-sweep/proof-l${shade}"
+            [ -d "$out" ] || continue
+            ffmpeg -y -loglevel error -framerate 30 \
+              -i "$out/review-doomguy-detail-%03d.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+              "$out/doomguy-shade-l${shade}-orbit.mp4"
+
+            for spec in "000 left" "040 oblique-a" "060 frontish" "080 oblique-b" "119 right"; do
+              set -- $spec
+              ffmpeg -y -loglevel error \
+                -i "$out/review-doomguy-detail-$1.ppm" \
+                -vf "scale=640:576:flags=neighbor" \
+                "$out/doomguy-shade-l${shade}-$2.png"
+            done
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-shade-fidelity-proof
+          path: |
+            build/doomguy-shade-sweep/SHADE-SWEEP.tsv
+            build/doomguy-shade-sweep/BEST-*.txt
+            build/doomguy-shade-sweep/proof-l*/*.png
+            build/doomguy-shade-sweep/proof-l*/*.mp4
+            build/doomguy-shade-sweep/proof-l*/IMPORT.json
+            build/doomguy-shade-sweep/proof-l*/room_bundle_poc_manifest.txt
+          if-no-files-found: error
+          retention-days: 30
