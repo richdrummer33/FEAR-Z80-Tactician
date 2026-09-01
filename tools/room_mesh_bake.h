@@ -3,10 +3,10 @@
 
 #include <stdint.h>
 
-#define RMB_MAX_VERTICES 8192u
-#define RMB_MAX_TRIANGLES 12288u
+#define RMB_MAX_VERTICES 16384u
+#define RMB_MAX_TRIANGLES 20000u
 #define RMB_MAX_EDGES 4096u
-#define RMB_MAX_OBJECTS 32u
+#define RMB_MAX_OBJECTS 48u
 
 enum {
     RMB_OUTLINE_NONE = 0u,
@@ -40,6 +40,9 @@ typedef struct RMBObject {
     uint8_t casts_shadow;
     uint8_t shade_levels;
     uint8_t overlay_target_object;
+    /* Ordered screen-space coverage for clipped overlays:
+     * 4=solid (default), 3=75%, 2=50%, 1=25%. */
+    uint8_t overlay_dither_quarters;
 } RMBObject;
 
 typedef struct RMBScene {
@@ -68,6 +71,8 @@ void rmb_set_object_flags(RMBScene *s,uint8_t object_id,
 void rmb_set_object_shade_levels(RMBScene *s,uint8_t object_id,uint8_t levels);
 void rmb_set_object_overlay_target(RMBScene *s,uint8_t object_id,
                                    uint8_t target_object_id);
+void rmb_set_object_overlay_dither(RMBScene *s,uint8_t object_id,
+                                   uint8_t quarters);
 RMBTransform rmb_transform(double tx,double ty,double tz,
                            double rx_deg,double ry_deg,double rz_deg,
                            double sx,double sy,double sz);
