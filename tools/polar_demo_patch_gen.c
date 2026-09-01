@@ -32,7 +32,7 @@
 #define MAX_BANKS 32u
 #define MAX_BANK_STREAM 10000u
 #define MAX_TILEPATCH_BANKS 48u
-#define MAX_TILEPATCH_BANK_STREAM 14000u
+#define MAX_TILEPATCH_BANK_STREAM 15000u
 /* One bank-local dictionary can never usefully exceed the 16 KiB ROM window. */
 #define TILEPATCH_DICT_MAX 512u
 /* Palette-only and literal spans may alternate within a row. Worst case is
