@@ -201,7 +201,7 @@ jobs:
           grep -q 'solid_interior_wall_expansion=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
           grep -q 'window_horizontal_reveal_generation=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
           grep -q 'derived_stair_risers=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
-          grep -q 'forward_facing_camera_routes=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
+          grep -q 'no_backward_camera_routes=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
           grep -q 'wall_angle_light_quant=SOLID8' build/room-poc-stream/host/room_bundle_poc_manifest.txt
           python3 tools/room_bundle_pack_to_c.py \
              build/room-poc-stream/host/room_bundle_poc.pack \
