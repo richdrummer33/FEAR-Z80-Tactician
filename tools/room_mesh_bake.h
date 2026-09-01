@@ -39,6 +39,7 @@ typedef struct RMBObject {
     uint8_t visible;
     uint8_t casts_shadow;
     uint8_t shade_levels;
+    uint8_t overlay_target_object;
 } RMBObject;
 
 typedef struct RMBScene {
@@ -65,6 +66,8 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode);
 void rmb_set_object_flags(RMBScene *s,uint8_t object_id,
                           uint8_t visible,uint8_t casts_shadow);
 void rmb_set_object_shade_levels(RMBScene *s,uint8_t object_id,uint8_t levels);
+void rmb_set_object_overlay_target(RMBScene *s,uint8_t object_id,
+                                   uint8_t target_object_id);
 RMBTransform rmb_transform(double tx,double ty,double tz,
                            double rx_deg,double ry_deg,double rz_deg,
                            double sx,double sy,double sz);
