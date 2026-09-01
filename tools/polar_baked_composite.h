@@ -42,6 +42,9 @@ typedef struct TSPHostSceneLight {
     uint8_t height_q4;
     uint8_t radius_world;
     uint8_t intensity;
+    /* Host-only baked wall response; never reaches the GG runtime. */
+    uint8_t wall_angle_response;
+    uint8_t view_term_strength;
 } TSPHostSceneLight;
 
 /* Horizontal receiver volume. x/y bounds are inclusive for host ray tests.
@@ -79,6 +82,14 @@ enum {
 /* Select one host-bake presentation layer and provide the exact camera state.
  * This API is host-only; the Game Gear runtime never sees a light record. */
 void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera);
+
+/* Host-bake wall response controls. */
+void tsp_host_composite_set_wall_angle_mode(uint8_t enabled);
+enum {
+    TSP_HOST_LIGHT_QUANT_DITHER16=0u,
+    TSP_HOST_LIGHT_QUANT_SOLID8=1u
+};
+void tsp_host_composite_set_wall_quant_mode(uint8_t mode);
 
 /* Optional room-local host scene. NULL restores the original static Polar
  * lighting scene. This never exists on the Game Gear runtime path. */
