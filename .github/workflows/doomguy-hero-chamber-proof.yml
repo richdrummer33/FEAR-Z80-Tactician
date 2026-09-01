@@ -33,6 +33,165 @@ jobs:
           grep -q 'FIXTURE_VISUAL_VERTEX_COUNT' /tmp/rmb-fixture.inc
           grep -q 'FIXTURE_SHADOW_TRIANGLE_COUNT' /tmp/rmb-fixture.inc
 
+          # Exercise the exact Doomguy include contract as well.
+          mkdir -p ../generated
+          node convert.mjs /tmp/rmb-fixture.glb ../generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z --visual-tris 8 --shadow-tris 4 \
+            > /tmp/doomguy-fixture-stats.json
+          cd ../..
+          mkdir -p build
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -DROOM_BUNDLE_DOOMGUY_GENERATED \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen_import_fixture
+          ROOM_BUNDLE_ONLY=11 build/room_bundle_poc_gen_import_fixture build/doomguy-import-fixture
+          grep -q '^doomguy_hero_chamber=PASS
+        run: |
+          mkdir -p build
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen
+
+      - name: Build sanitizer host baker
+        run: |
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen_san
+
+      - name: Isolated hero chamber sanitizer bake
+        env:
+          ROOM_BUNDLE_ONLY: "11"
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p build/doomguy-sanitize
+          build/room_bundle_poc_gen_san build/doomguy-sanitize
+          grep -q '^doomguy_hero_chamber=PASS$' build/doomguy-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^mesh_shadow_occlusion=PASS$' build/doomguy-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^independent_bundle_replay=PASS$' build/doomguy-sanitize/room_bundle_poc_manifest.txt
+
+      - name: Capture chamber proof
+        env:
+          ROOM_BUNDLE_ONLY: "11"
+          ROOM_BUNDLE_CAPTURE_REVIEW: "1"
+        run: |
+          mkdir -p build/doomguy-review
+          build/room_bundle_poc_gen build/doomguy-review
+          cp build/doomguy-review/room_bundle_poc_manifest.txt build/doomguy-review/PROOF-MANIFEST.txt
+          grep '^bundle=11 route=0->1 frames=' build/doomguy-review/PROOF-MANIFEST.txt > build/doomguy-review/DOOMGUY-STATS.txt
+          grep '^bundle=11 route=1->0 frames=' build/doomguy-review/PROOF-MANIFEST.txt >> build/doomguy-review/DOOMGUY-STATS.txt
+
+      - name: Encode videos
+        run: |
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/doomguy-review/review-doomguy-proxy-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/doomguy-review/doomguy-hero-chamber-route.mp4
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/doomguy-review/review-doomguy-detail-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/doomguy-review/doomguy-hero-chamber-detail.mp4
+
+      - name: Export stills
+        run: |
+          for spec in "doomguy-detail 000 left" "doomguy-detail 040 oblique-a" "doomguy-detail 080 oblique-b" "doomguy-detail 119 right" "doomguy-proxy 080 route-oblique" "doomguy-proxy 112 route-lookback"; do
+            set -- $spec
+            ffmpeg -y -loglevel error \
+              -i "build/doomguy-review/review-$1-$2.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              "build/doomguy-review/doomguy-$3.png"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-hero-chamber-proof
+          path: |
+            build/doomguy-review/*.png
+            build/doomguy-review/*.mp4
+            build/doomguy-review/PROOF-MANIFEST.txt
+            build/doomguy-review/DOOMGUY-STATS.txt
+          if-no-files-found: error
+          retention-days: 30
+ build/doomguy-import-fixture/room_bundle_poc_manifest.txt
+          grep -q '^mesh_shadow_occlusion=PASS
+        run: |
+          mkdir -p build
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen
+
+      - name: Build sanitizer host baker
+        run: |
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen_san
+
+      - name: Isolated hero chamber sanitizer bake
+        env:
+          ROOM_BUNDLE_ONLY: "11"
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p build/doomguy-sanitize
+          build/room_bundle_poc_gen_san build/doomguy-sanitize
+          grep -q '^doomguy_hero_chamber=PASS$' build/doomguy-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^mesh_shadow_occlusion=PASS$' build/doomguy-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^independent_bundle_replay=PASS$' build/doomguy-sanitize/room_bundle_poc_manifest.txt
+
+      - name: Capture chamber proof
+        env:
+          ROOM_BUNDLE_ONLY: "11"
+          ROOM_BUNDLE_CAPTURE_REVIEW: "1"
+        run: |
+          mkdir -p build/doomguy-review
+          build/room_bundle_poc_gen build/doomguy-review
+          cp build/doomguy-review/room_bundle_poc_manifest.txt build/doomguy-review/PROOF-MANIFEST.txt
+          grep '^bundle=11 route=0->1 frames=' build/doomguy-review/PROOF-MANIFEST.txt > build/doomguy-review/DOOMGUY-STATS.txt
+          grep '^bundle=11 route=1->0 frames=' build/doomguy-review/PROOF-MANIFEST.txt >> build/doomguy-review/DOOMGUY-STATS.txt
+
+      - name: Encode videos
+        run: |
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/doomguy-review/review-doomguy-proxy-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/doomguy-review/doomguy-hero-chamber-route.mp4
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/doomguy-review/review-doomguy-detail-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/doomguy-review/doomguy-hero-chamber-detail.mp4
+
+      - name: Export stills
+        run: |
+          for spec in "doomguy-detail 000 left" "doomguy-detail 040 oblique-a" "doomguy-detail 080 oblique-b" "doomguy-detail 119 right" "doomguy-proxy 080 route-oblique" "doomguy-proxy 112 route-lookback"; do
+            set -- $spec
+            ffmpeg -y -loglevel error \
+              -i "build/doomguy-review/review-$1-$2.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              "build/doomguy-review/doomguy-$3.png"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-hero-chamber-proof
+          path: |
+            build/doomguy-review/*.png
+            build/doomguy-review/*.mp4
+            build/doomguy-review/PROOF-MANIFEST.txt
+            build/doomguy-review/DOOMGUY-STATS.txt
+          if-no-files-found: error
+          retention-days: 30
+ build/doomguy-import-fixture/room_bundle_poc_manifest.txt
+
       - name: Build host baker
         run: |
           mkdir -p build
