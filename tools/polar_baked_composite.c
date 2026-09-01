@@ -449,10 +449,10 @@ static int mirror_repeat8(int u){
     return q<8?q:15-q;
 }
 static uint8_t projective_material_semantic(uint8_t cls,int vi){
-    /* V-only bright rails are the first shipping LOD. Keep U detail only in
-     * the authored lower grille, where it contributes a strong structural read.
-     * Everything else is one oxide body colour plus the independent lighting. */
-    if(vi>=92&&cls==0u)return SEM_BLACK;
+    /* Diagnostic minimum: only true projected horizontal material rails.
+     * Ignore all U-axis source detail so we can measure the irreducible cost of
+     * a moving perspective-warped material boundary under the lighting stack. */
+    (void)cls;
     if(g_projective_bright_row[vi])return MAT_MORTAR;
     return SEM_MID;
 }
