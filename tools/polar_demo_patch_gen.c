@@ -402,6 +402,74 @@ static uint64_t fnv64(const void *data,size_t n){
     for(i=0;i<n;++i){h^=p[i];h*=UINT64_C(1099511628211);}
     return h;
 }
+
+typedef struct CompactLoad {
+    uint16_t slot;
+    uint16_t pattern;
+} CompactLoad;
+
+static void pattern_dict_init(PatternDict *d,uint32_t cap){
+    uint32_t n=1u,i;
+    if(!cap)cap=1u;
+    while(n<cap*2u)n<<=1;
+    d->bytes=(uint8_t *)malloc((size_t)cap*TSP_HOST_TILE_BYTES);
+    d->table=(int32_t *)malloc((size_t)n*sizeof(int32_t));
+    if(!d->bytes||!d->table)die("out of memory allocating global pattern dictionary");
+    for(i=0u;i<n;++i)d->table[i]=-1;
+    d->count=0u;d->cap=cap;d->table_size=n;
+}
+static uint16_t pattern_dict_id(PatternDict *d,const uint8_t pat[TSP_HOST_TILE_BYTES]){
+    uint64_t h=fnv64(pat,TSP_HOST_TILE_BYTES);
+    uint32_t pos=(uint32_t)h&(d->table_size-1u);
+    for(;;){
+        int32_t q=d->table[pos];
+        if(q<0){
+            uint32_t id=d->count++;
+            if(id>=d->cap||id>65535u)die("global pattern dictionary capacity exceeded");
+            memcpy(d->bytes+(size_t)id*TSP_HOST_TILE_BYTES,pat,TSP_HOST_TILE_BYTES);
+            d->table[pos]=(int32_t)id;
+            return (uint16_t)id;
+        }
+        if(memcmp(d->bytes+(size_t)(uint32_t)q*TSP_HOST_TILE_BYTES,
+                  pat,TSP_HOST_TILE_BYTES)==0)return (uint16_t)q;
+        pos=(pos+1u)&(d->table_size-1u);
+    }
+}
+static int compact_load_cmp(const void *a,const void *b){
+    const CompactLoad *x=(const CompactLoad *)a,*y=(const CompactLoad *)b;
+    if(x->pattern<y->pattern)return -1;
+    if(x->pattern>y->pattern)return 1;
+    if(x->slot<y->slot)return -1;
+    if(x->slot>y->slot)return 1;
+    return 0;
+}
+static void compact_tilepatch_patterns(TilePatch *tp,PatternDict *dict){
+    uint16_t t;
+    for(t=0u;t<PATCH_COUNT;++t){
+        const uint8_t *src=tp[t].bytes+2u;
+        uint16_t n=tilepatch_loads(&tp[t]),i;
+        CompactLoad *loads=(CompactLoad *)malloc((size_t)(n?n:1u)*sizeof(CompactLoad));
+        size_t len=2u+(size_t)n*4u,p=2u;
+        uint8_t *dst=(uint8_t *)malloc(len?len:1u);
+        if(!loads||!dst)die("out of memory compacting global pattern references");
+        for(i=0u;i<n;++i){
+            loads[i].slot=(uint16_t)src[0]|((uint16_t)src[1]<<8);src+=2u;
+            loads[i].pattern=pattern_dict_id(dict,src);src+=TSP_HOST_TILE_BYTES;
+        }
+        if(n>1u)qsort(loads,n,sizeof(CompactLoad),compact_load_cmp);
+        dst[0]=(uint8_t)n;dst[1]=(uint8_t)(n>>8);
+        for(i=0u;i<n;++i){
+            dst[p++]=(uint8_t)loads[i].slot;dst[p++]=(uint8_t)(loads[i].slot>>8);
+            dst[p++]=(uint8_t)loads[i].pattern;dst[p++]=(uint8_t)(loads[i].pattern>>8);
+        }
+        if(p!=len)die("compact tilepatch length mismatch");
+        free(tp[t].bytes);free(loads);
+        tp[t].bytes=dst;tp[t].len=(uint16_t)len;tp[t].loads=n;
+    }
+}
+static void pattern_dict_free(PatternDict *d){
+    free(d->bytes);free(d->table);memset(d,0,sizeof(*d));
+}
 static void emit_u8_array(FILE *f,const char *name,const uint8_t *v,uint32_t n){
     uint32_t i;
     fprintf(f,"static const uint8_t %s[%u] = {\n",name,n?n:1u);
