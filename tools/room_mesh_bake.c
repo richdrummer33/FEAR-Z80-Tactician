@@ -295,7 +295,10 @@ static void raster_triangle(const RMBScene *s,const RMBTriangle *t,
     miny=fmin(pa.y,fmin(pb.y,pc.y));maxy=fmax(pa.y,fmax(pb.y,pc.y));
     x0=(int)floor(minx);x1=(int)ceil(maxx);
     y0=(int)floor(miny);y1=(int)ceil(maxy);
-    if(x0<0)x0=0;\n    if(y0<0)y0=0;\n    if(x1>159)x1=159;\n    if(y1>143)y1=143;
+    if(x0<0)x0=0;
+    if(y0<0)y0=0;
+    if(x1>159)x1=159;
+    if(y1>143)y1=143;
     if(x0>x1||y0>y1)return;
     shade=face_shade(n,ctr,light,t->shade_bias);
     for(y=y0;y<=y1;++y)for(x=x0;x<=x1;++x){
