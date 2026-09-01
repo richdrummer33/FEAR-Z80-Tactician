@@ -701,12 +701,6 @@ static Pose entry_outbound_pose(uint16_t f){
     p.x=lerp(16.0,62.0,q);p.y=24.0;p.yaw=0u;return p;
 }
 
-static Pose exit_transform(Pose p){
-    p.x=152.0-p.x;
-    p.y=48.0-p.y;
-    p.yaw=(uint8_t)(p.yaw+128u);
-    return p;
-}
 /* Same rigid seam transform, but for a camera travelling OUT through the
  * portal. The route parameter is already reversed, so applying another
  * 180-degree yaw made the old review rail literally look backward while
@@ -920,9 +914,10 @@ static Pose route_pose_portals(uint16_t f,uint8_t bundle,
         Pose p;
         if(entry_portal==0u&&exit_portal==1u)
             p=route_pose(f,bundle);
-        else if(entry_portal==1u&&exit_portal==0u)
-            p=route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle); p.yaw=(uint8_t)(p.yaw+128u);
-        else{
+        else if(entry_portal==1u&&exit_portal==0u){
+            p=route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
+            p.yaw=(uint8_t)(p.yaw+128u);
+        }else{
             die("invalid straight room route pair");
             return route_pose(f,0u);
         }
@@ -1029,7 +1024,8 @@ static void render_horizontal_column(const World *w,const Pose *p,int sx){
             if(!point_in_hsurf(s,wx,wy))continue;
             shade=depth<=31.0?2:(depth<=55.0?1:0);
             shade+=s->shade_bias;
-            if(shade<0)shade=0;if(shade>2)shade=2;
+            if(shade<0)shade=0;
+            if(shade>2)shade=2;
             /* 0xfe marks a host-only horizontal receiver. Current point-light
              * pass simply leaves such local caps ambient; geometry is exact. */
             tsp_host_composite_pixel_depth((uint8_t)sx,(uint8_t)sy,0xfeu,
