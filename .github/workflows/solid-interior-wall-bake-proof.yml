@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - experiment/gg-streaming-room-poc
+      - experiment/gg-solid-interior-wall-bake
   workflow_dispatch:
 
 jobs:
