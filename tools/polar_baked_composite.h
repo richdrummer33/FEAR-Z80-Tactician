@@ -39,7 +39,7 @@ typedef struct TSPHostSceneSegment {
 typedef struct TSPHostSceneLight {
     int16_t x_q4;
     int16_t y_q4;
-    uint8_t height_q4;
+    int16_t height_q4;
     uint8_t radius_world;
     uint8_t intensity;
 } TSPHostSceneLight;
