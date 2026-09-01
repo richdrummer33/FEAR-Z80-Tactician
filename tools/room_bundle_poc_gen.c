@@ -1627,7 +1627,7 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                             (bundle==7u?"solid-pillars":
                             (bundle==8u?"statue-showcase":
                             (bundle==9u?"curved-showcase":
-                            (bundle==10u?"prop-showcase":"doomguy-proxy")))));
+                            (bundle==10u?"prop-showcase":"doomguy-proxy"))));
             snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
                      outdir,tag,(unsigned)f);
             if(!tsp_host_composite_write_ppm(path))
