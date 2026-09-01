@@ -63,6 +63,8 @@ static uint8_t g_lightable[TSP_MAP_CELLS][PIXELS];
 /* Host-only geometric depth. Normal Polar callers keep their established
  * painter ordering; room-bundle depth-tested APIs opt into this buffer. */
 static double g_depth[TSP_MAP_CELLS][PIXELS];
+/* Separate nearest-depth buffer for clipped coarse lighting overlays. */
+static double g_overlay_depth[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -669,7 +671,10 @@ void tsp_host_composite_begin_frame(void){
     memset(g_lightable,1,sizeof(g_lightable));
     for(di=0u;di<TSP_MAP_CELLS;++di){
         uint8_t pi;
-        for(pi=0u;pi<PIXELS;++pi)g_depth[di][pi]=1e30;
+        for(pi=0u;pi<PIXELS;++pi){
+            g_depth[di][pi]=1e30;
+            g_overlay_depth[di][pi]=1e30;
+        }
     }
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
@@ -776,6 +781,25 @@ void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
     g_cells[cell][pi]=black?SEM_BLACK:shade_sem(shade);
     g_owner[cell][pi]=sid;
     g_depth[cell][pi]=depth;
+}
+
+void tsp_host_composite_pixel_overlay_depth(uint8_t sx,uint8_t sy,
+                                            uint8_t target_sid,
+                                            uint8_t shade,uint8_t black,
+                                            double depth){
+    uint8_t row,col,px,py;
+    uint16_t cell,pi;
+    if(sx>=160u||sy>=144u||depth<=0.0)return;
+    row=(uint8_t)(sy>>3);
+    col=(uint8_t)(sx>>3);
+    px=(uint8_t)(sx&7u);
+    py=(uint8_t)(sy&7u);
+    cell=(uint16_t)row*TSP_COLS+col;
+    pi=(uint16_t)py*8u+px;
+    if(g_owner[cell][pi]!=target_sid)return;
+    if(depth>=g_overlay_depth[cell][pi]-1e-9)return;
+    g_cells[cell][pi]=black?SEM_BLACK:shade_sem(shade);
+    g_overlay_depth[cell][pi]=depth;
 }
 
 static void flip_pattern(const uint8_t src[PIXELS],uint8_t dst[PIXELS],uint8_t fx,uint8_t fy){
