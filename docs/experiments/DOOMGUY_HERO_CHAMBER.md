@@ -396,3 +396,40 @@ Consequences and options, in rough order of value:
 
 The host bake, the seam, and the shading are all correct; what is over budget is
 how much of the screen this room changes per frame.
+
+## Traversal cost probe: what one player step actually costs
+
+`ROOM_BUNDLE_STEP_PROBE=<bundle>` renders one pose, then poses offset by a
+translation or a rotation, and reports how much of the 360-word name table
+changes. This measures the thing a route bake cannot: the cost of a *player*
+step rather than a frame of a fast authored camera.
+
+From x=78, y=60, yaw=192, name-table words changed out of 360:
+
+| step | gallery (4) | pillars (7) | Doomguy (11) |
+|---|---|---|---|
+| 0.25 units forward | 4 | 36 | 54 |
+| 1 unit forward | **13** | 54 | **100** |
+| 8 units forward | 35 | 114 | 157 |
+| 1/256 turn (1.4 deg) | **51** | 85 | **134** |
+| 16/256 turn (22.5 deg) | — | — | 213 |
+
+Three things fall out of this, and they govern any traversable-room plan:
+
+1. **Rotation costs more than translation, everywhere.** In the plain gallery a
+   1.4-degree turn changes 51 words while a whole unit of walking changes 13.
+   Turning shifts every column of the screen; walking mostly rescales what is
+   already there. Rotation is also nearly flat with step size — 1/256 of a turn
+   costs 354 bytes against 530 for 16/256 — so smooth turning costs roughly an
+   order of magnitude more than coarse turning for the same arc.
+
+2. **Cost barely falls as steps get smaller.** Halving a step does not halve the
+   delta; there is a floor. Finer sampling therefore buys smoothness at almost
+   linear extra storage, which is the opposite of what a naive grid bake assumes.
+
+3. **The hero mesh, not the room, is what is expensive.** A plain room costs 13
+   words per unit walked; the same step in the Doomguy chamber costs 100. The
+   statue has high detail density across perspective angles, so its projection
+   keeps changing under motion where a flat wall does not. This is consistent
+   with the earlier result that a simple full-room bake fitted comfortably in
+   early cartridge budgets — it is the statue that breaks that, not the method.

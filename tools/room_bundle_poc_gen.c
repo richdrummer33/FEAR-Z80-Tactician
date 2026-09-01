@@ -2053,6 +2053,54 @@ int main(int argc,char **argv){
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
+    /*
+     * Traversal cost probe. Answers the question a route bake cannot: how much
+     * of the screen actually changes for ONE step of a walking player, as
+     * opposed to one frame of a fast authored camera. The route moves about
+     * 2.75 world units per frame; a player on a 1-unit grid moves far less, and
+     * delta cost is driven by how much changed, not by how far the world is.
+     */
+    if(getenv("ROOM_BUNDLE_STEP_PROBE")){
+        static const double steps[]={0.25,0.5,1.0,2.0,4.0,8.0};
+        static const uint8_t yaws[]={1u,2u,4u,8u,16u};
+        World w;
+        Pose base,q;
+        uint16_t a_map[TSP_MAP_CELLS],b_map[TSP_MAP_CELLS];
+        uint8_t buf[PATCH_MAX];
+        uint16_t changed,runs;
+        size_t n;
+        unsigned i;
+
+        {   int pb=atoi(getenv("ROOM_BUNDLE_STEP_PROBE"));
+            if(pb<0||pb>=(int)BUNDLE_COUNT)pb=11;
+            make_world((uint8_t)pb,&w);
+            fprintf(stderr,"\n[probe bundle %d]\n",pb);
+        }
+        base.x=78.0;base.y=60.0;base.z=16.0;base.yaw=192u;
+        render_pose(&w,&base,a_map);
+
+        fprintf(stderr,"\nSTEP PROBE (bundle 11, one step from x=78 y=60 yaw=192)\n");
+        fprintf(stderr,"  translation:\n");
+        for(i=0u;i<sizeof(steps)/sizeof(steps[0]);++i){
+            q=base;q.y=base.y-steps[i];
+            render_pose(&w,&q,b_map);
+            n=build_patch(a_map,b_map,buf,&changed,&runs);
+            fprintf(stderr,"    %5.2f units forward -> %4u/%u words changed, "
+                    "%4u patch bytes\n",steps[i],(unsigned)changed,
+                    (unsigned)TSP_MAP_CELLS,(unsigned)n);
+        }
+        fprintf(stderr,"  rotation:\n");
+        for(i=0u;i<sizeof(yaws)/sizeof(yaws[0]);++i){
+            q=base;q.yaw=(uint8_t)(base.yaw+yaws[i]);
+            render_pose(&w,&q,b_map);
+            n=build_patch(a_map,b_map,buf,&changed,&runs);
+            fprintf(stderr,"    %2u/256 turn      -> %4u/%u words changed, "
+                    "%4u patch bytes\n",(unsigned)yaws[i],(unsigned)changed,
+                    (unsigned)TSP_MAP_CELLS,(unsigned)n);
+        }
+        fprintf(stderr,"\n");
+    }
+
     if(only_bundle<0)fprintf(manifest,"thirteen_module_catalog=PASS\n");
     if(only_bundle==11||only_bundle<0)fprintf(manifest,"doomguy_hero_chamber=PASS\n");
     if(only_bundle==12||only_bundle<0)fprintf(manifest,"bonsai_giant_chamber=PASS\n");
