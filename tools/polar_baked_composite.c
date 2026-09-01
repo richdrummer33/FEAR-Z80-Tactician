@@ -303,6 +303,10 @@ static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
         segment_z_range(&s,&z0,&z1);
         if(zhit>=z0-1e-7&&zhit<=z1+1e-7)return 0;
     }
+    if(g_scene_override&&g_scene_override->extra_occluder&&
+       g_scene_override->extra_occluder(g_scene_override->extra_occluder_user,
+                                        lx,ly,lz,wx,wy,wz))
+        return 0;
     return 1;
 }
 
