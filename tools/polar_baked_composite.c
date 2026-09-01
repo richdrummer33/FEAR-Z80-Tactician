@@ -60,6 +60,9 @@ static uint8_t g_lit[TSP_MAP_CELLS][PIXELS];
  * authored one-sided wall/profile backfaces. Quantization and penumbra retain
  * their compact reusable vocabulary; this mask is an absolute final clamp. */
 static uint8_t g_lightable[TSP_MAP_CELLS][PIXELS];
+/* Host-only geometric depth. Normal Polar callers keep their established
+ * painter ordering; room-bundle depth-tested APIs opt into this buffer. */
+static double g_depth[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -656,9 +659,14 @@ void tsp_host_composite_reset_cache(void){
 void tsp_host_composite_begin_frame(void){
     uint8_t row,col;
     ensure_init();
+    uint16_t di;
     memset(g_owner,0xff,sizeof(g_owner));
     memset(g_lit,0,sizeof(g_lit));
     memset(g_lightable,1,sizeof(g_lightable));
+    for(di=0u;di<TSP_MAP_CELLS;++di){
+        uint8_t pi;
+        for(pi=0u;pi<PIXELS;++pi)g_depth[di][pi]=1e30;
+    }
     for(row=0u;row<TSP_ROWS;++row)for(col=0u;col<TSP_COLS;++col){
         uint8_t *p=g_cells[(uint16_t)row*TSP_COLS+col];
         if(row<9u)tile_fill(p,SEM_CEILING);
@@ -681,10 +689,11 @@ static int16_t lerp_edge7(int16_t a,int16_t b,uint8_t x){
     return (int16_t)(a+q);
 }
 
-void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
-                                int16_t tl,int16_t tr,int16_t bl,int16_t br,
-                                uint8_t sid,uint8_t shade,uint8_t border,
-                                uint8_t ao_left,uint8_t ao_right){
+static void composite_surface_impl(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                   int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                   uint8_t sid,uint8_t shade,uint8_t border,
+                                   uint8_t ao_left,uint8_t ao_right,
+                                   uint8_t depth_test,double depth){
     uint8_t sx,color=shade_sem(shade);
     uint16_t coarse_x=(uint16_t)col*8u;
     if(col>=TSP_COLS||clip_x0>clip_x1||clip_x1>159u)die("surface raster bounds invalid");
@@ -708,6 +717,7 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t *dst=g_cells[cell];
             uint8_t *own=g_owner[cell];
             uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
+            if(depth_test&&depth>=g_depth[cell][pi]-1e-9)continue;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
             if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
@@ -724,8 +734,44 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             }
             dst[pi]=black?SEM_BLACK:pixel;
             own[pi]=sid;
+            if(depth_test)g_depth[cell][pi]=depth;
         }
     }
+}
+
+void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                uint8_t sid,uint8_t shade,uint8_t border,
+                                uint8_t ao_left,uint8_t ao_right){
+    composite_surface_impl(col,clip_x0,clip_x1,tl,tr,bl,br,sid,shade,border,
+                           ao_left,ao_right,0u,0.0);
+}
+
+void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                      int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                      uint8_t sid,uint8_t shade,uint8_t border,
+                                      uint8_t ao_left,uint8_t ao_right,
+                                      double depth){
+    if(depth<=0.0)return;
+    composite_surface_impl(col,clip_x0,clip_x1,tl,tr,bl,br,sid,shade,border,
+                           ao_left,ao_right,1u,depth);
+}
+
+void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
+                                    uint8_t shade,uint8_t black,double depth){
+    uint8_t row,col,px,py;
+    uint16_t cell,pi;
+    if(sx>=160u||sy>=144u||depth<=0.0)return;
+    row=(uint8_t)(sy>>3);
+    col=(uint8_t)(sx>>3);
+    px=(uint8_t)(sx&7u);
+    py=(uint8_t)(sy&7u);
+    cell=(uint16_t)row*TSP_COLS+col;
+    pi=(uint16_t)py*8u+px;
+    if(depth>=g_depth[cell][pi]-1e-9)return;
+    g_cells[cell][pi]=black?SEM_BLACK:shade_sem(shade);
+    g_owner[cell][pi]=sid;
+    g_depth[cell][pi]=depth;
 }
 
 static void flip_pattern(const uint8_t src[PIXELS],uint8_t dst[PIXELS],uint8_t fx,uint8_t fy){
