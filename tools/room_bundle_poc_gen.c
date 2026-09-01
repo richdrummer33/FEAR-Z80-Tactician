@@ -692,11 +692,11 @@ static void make_statue_showcase_world(World *w){
     add_solid_wall_line(w,58,48,58,56,8.0,0,32,1);
     add_solid_wall_line(w,98,48,98,56,8.0,0,32,1);
 
-    plinth=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
-    torso=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
+    plinth=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    torso=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
     head=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    limbs=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
-    sword=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    limbs=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    sword=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
 
     t=rmb_transform(78,24,3,0,0,8,1,1,1);
     rmb_add_box(&w->mesh,plinth,&t,8.5,7.0,3.0,0);
@@ -764,7 +764,7 @@ static void make_curved_showcase_world(World *w){
 
 static void add_table_mesh(RMBScene *m){
     RMBTransform parent,child,t;
-    uint8_t obj=rmb_new_object(m,RMB_OUTLINE_SILHOUETTE_CREASE);
+    uint8_t obj=rmb_new_object(m,RMB_OUTLINE_NONE);
     static const double lx[4]={-7.0,7.0,-7.0,7.0};
     static const double ly[4]={-4.0,-4.0,4.0,4.0};
     uint8_t i;
@@ -783,7 +783,7 @@ static void add_table_mesh(RMBScene *m){
 
 static void add_shelf_mesh(RMBScene *m){
     RMBTransform parent,child,t;
-    uint8_t obj=rmb_new_object(m,RMB_OUTLINE_SILHOUETTE_CREASE);
+    uint8_t obj=rmb_new_object(m,RMB_OUTLINE_NONE);
     uint8_t i;
     parent=rmb_transform(97,57,10,0,0,-24,1,1,1);
 
@@ -1366,7 +1366,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     }
     if(j!=job_count)die("bundle tile scheduler job count mismatch");
 
-    for(budget=1u;budget<=96u&&!chosen;++budget){
+    for(budget=1u;budget<=48u&&!chosen;++budget){
         uint32_t done=0u;
         for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
         for(t=1u;t<ROUTE_FRAMES;++t){
@@ -1393,7 +1393,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
         }
         if(done==job_count)chosen=budget;
     }
-    if(!chosen)die("diagnostic bundle tile scheduler needs more than 96 uploads/VBlank");
+    if(!chosen)die("bundle tile scheduler needs more than 48 uploads/VBlank");
 
     for(t=1u;t<ROUTE_FRAMES;++t){
         uint16_t n=0u;
@@ -1619,7 +1619,7 @@ int main(int argc,char **argv){
         RMBTransform t=rmb_transform(0,0,0,0,0,37,1,1,1);
         uint8_t o;
         rmb_scene_init(&m);
-        o=rmb_new_object(&m,RMB_OUTLINE_SILHOUETTE);
+        o=rmb_new_object(&m,RMB_OUTLINE_NONE);
         rmb_add_box(&m,o,&t,1,2,3,0);
         if(m.vertex_count!=8u||m.triangle_count!=12u||m.edge_count!=18u)
             die("mesh authoring self-test failed");
