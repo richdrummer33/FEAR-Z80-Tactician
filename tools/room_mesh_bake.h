@@ -47,6 +47,9 @@ typedef struct RMBScene {
     uint16_t triangle_count;
     uint16_t edge_count;
     uint8_t object_count;
+    RMBVec3 bounds_min;
+    RMBVec3 bounds_max;
+    uint8_t bounds_valid;
 } RMBScene;
 
 typedef struct RMBLight {
