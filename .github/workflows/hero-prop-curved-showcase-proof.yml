@@ -1,0 +1,124 @@
+name: Hero prop curved geometry proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-hero-prop-curved-showcase
+  pull_request:
+    branches:
+      - experiment/gg-hero-prop-curved-showcase
+  workflow_dispatch:
+
+jobs:
+  host-showcase-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install video encoder
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Build baker with warnings
+        run: |
+          mkdir -p build
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen
+
+      - name: Build sanitizer baker
+        run: |
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen_san
+
+      - name: Full sanitizer bake
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          mkdir -p build/showcase-sanitize
+          build/room_bundle_poc_gen_san build/showcase-sanitize
+          grep -q '^independent_bundle_replay=PASS$' build/showcase-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^cross_bundle_canonical_handoff=PASS$' build/showcase-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^eleven_module_catalog=PASS$' build/showcase-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^host_mesh_raster=PASS$' build/showcase-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^silent_internal_mesh_edges=PASS$' build/showcase-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^arbitrary_mesh_transform=PASS$' build/showcase-sanitize/room_bundle_poc_manifest.txt
+
+      - name: Capture showcase bake
+        env:
+          ROOM_BUNDLE_CAPTURE_REVIEW: "1"
+        run: |
+          mkdir -p build/showcase-review
+          build/room_bundle_poc_gen build/showcase-review
+          cp build/showcase-review/room_bundle_poc_manifest.txt build/showcase-review/PROOF-MANIFEST.txt
+          grep '^bundle=8 route=0->1 frames=' build/showcase-review/PROOF-MANIFEST.txt > build/showcase-review/SHOWCASE-STATS.txt
+          grep '^bundle=9 route=0->1 frames=' build/showcase-review/PROOF-MANIFEST.txt >> build/showcase-review/SHOWCASE-STATS.txt
+          grep '^bundle=10 route=0->1 frames=' build/showcase-review/PROOF-MANIFEST.txt >> build/showcase-review/SHOWCASE-STATS.txt
+
+      - name: Encode showcase videos
+        run: |
+          for tag in statue-showcase curved-showcase prop-showcase; do
+            ffmpeg -y -loglevel error -framerate 30 \
+              -i "build/showcase-review/review-${tag}-%03d.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+              "build/showcase-review/${tag}-route.mp4"
+          done
+          for tag in statue-detail curved-detail prop-detail; do
+            ffmpeg -y -loglevel error -framerate 30 \
+              -i "build/showcase-review/review-${tag}-%03d.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+              "build/showcase-review/${tag}.mp4"
+          done
+
+      - name: Export inspection PNGs
+        run: |
+          for spec in \
+            "statue-detail 000 statue-left" \
+            "statue-detail 040 statue-oblique-a" \
+            "statue-detail 080 statue-oblique-b" \
+            "statue-detail 119 statue-right" \
+            "curved-detail 000 curved-left" \
+            "curved-detail 040 curved-oblique-a" \
+            "curved-detail 080 curved-oblique-b" \
+            "curved-detail 119 curved-right" \
+            "prop-detail 000 prop-left" \
+            "prop-detail 040 prop-oblique-a" \
+            "prop-detail 080 prop-oblique-b" \
+            "prop-detail 119 prop-right"; do
+            set -- $spec
+            tag="$1"; frame="$2"; label="$3"
+            ffmpeg -y -loglevel error \
+              -i "build/showcase-review/review-${tag}-${frame}.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              "build/showcase-review/proof-${label}.png"
+          done
+
+      - name: Record branch and commit
+        run: |
+          {
+            echo "branch=experiment/gg-hero-prop-curved-showcase"
+            echo "commit=$(git rev-parse HEAD)"
+            echo "generated_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > build/showcase-review/BUILD-INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-prop-curved-showcase-proof
+          path: |
+            build/showcase-review/*.png
+            build/showcase-review/*.mp4
+            build/showcase-review/PROOF-MANIFEST.txt
+            build/showcase-review/SHOWCASE-STATS.txt
+            build/showcase-review/BUILD-INFO.txt
+            build/showcase-review/bundle8_route01_frame*.ppm
+            build/showcase-review/bundle9_route01_frame*.ppm
+            build/showcase-review/bundle10_route01_frame*.ppm
+          if-no-files-found: error
+          retention-days: 30
