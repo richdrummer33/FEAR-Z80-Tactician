@@ -601,7 +601,7 @@ static void emit_tilepatch_bank(const char *dir,unsigned bank,const TilePatch *t
     uint16_t *off=(uint16_t *)malloc((size_t)(b->count+1u)*sizeof(uint16_t));
     uint8_t *data=(uint8_t *)malloc(b->bytes?b->bytes:1u);
     uint32_t pos=0u;uint16_t i;
-    if(!off||!data)die("out of memory emitting tilepatch bank");
+    if(!off||!data)die("out of memory emitting compact tilepatch bank");
     off[0]=0u;
     for(i=0u;i<b->count;++i){
         const TilePatch *p=&tp[b->first+i];
@@ -612,41 +612,113 @@ static void emit_tilepatch_bank(const char *dir,unsigned bank,const TilePatch *t
     path_join(path,sizeof(path),dir,name);f=fopen(path,"w");
     if(!f)die("cannot write tilepatch bank");
     fprintf(f,
-      "/* GENERATED baked composite tile-pattern update bank %u. */\n"
+      "/* GENERATED compact slot + global-pattern-reference bank %u. */\n"
       "#include <stdint.h>\n#include <gbdk/platform.h>\n"
-      "#pragma bank 255\nBANKREF(polar_demo_tilepatch_bank%u)\n\n",
-      bank,bank);
+      "#pragma bank 255\nBANKREF(polar_demo_tilepatch_bank%u)\n\n"
+      "extern uint16_t g_polar_tile_slots[%uu];\n"
+      "extern uint16_t g_polar_pattern_ids[%uu];\n\n",
+      bank,bank,TILEPATCH_STAGE_MAX,TILEPATCH_STAGE_MAX);
     emit_u16_array(f,"k_off",off,(uint32_t)b->count+1u);
     emit_u8_array(f,"k_data",data,pos);
     fprintf(f,
       "#define PATCHS_IN_BANK %uu\n"
-      "void tsp_polar_demo_tilepatch_bank%u(uint16_t local) BANKED {\n"
-      "    const uint8_t *p; uint16_t n,i;\n"
-      "    if(local>=PATCHS_IN_BANK)return;\n"
+      "uint8_t tsp_polar_demo_tilepatch_bank%u(uint16_t local,uint16_t start) BANKED {\n"
+      "    const uint8_t *p; uint16_t n; uint8_t i,count;\n"
+      "    if(local>=PATCHS_IN_BANK)return 0u;\n"
       "    p=&k_data[k_off[local]]; n=(uint16_t)*p++; n|=(uint16_t)*p++<<8;\n"
-      "    for(i=0u;i<n;++i){\n"
-      "        uint16_t slot=(uint16_t)*p++; slot|=(uint16_t)*p++<<8;\n"
-      "        set_bkg_4bpp_data(slot,1u,p); p+=32u;\n"
+      "    if(start>=n)return 0u; p+=(uint16_t)(start*4u);\n"
+      "    count=(uint8_t)(((uint16_t)(n-start)>%uu)?%uu:(uint16_t)(n-start));\n"
+      "    for(i=0u;i<count;++i){\n"
+      "        g_polar_tile_slots[i]=(uint16_t)*p++; g_polar_tile_slots[i]|=(uint16_t)*p++<<8;\n"
+      "        g_polar_pattern_ids[i]=(uint16_t)*p++; g_polar_pattern_ids[i]|=(uint16_t)*p++<<8;\n"
       "    }\n"
+      "    return count;\n"
       "}\n",
-      b->count,bank);
+      b->count,bank,TILEPATCH_STAGE_MAX,TILEPATCH_STAGE_MAX);
     fclose(f);free(off);free(data);
 }
 static void emit_tilepatch_dispatch(const char *dir,const Bank *banks,unsigned bank_count){
     char path[512];FILE *f;unsigned i;
     path_join(path,sizeof(path),dir,"polar_demo_tilepatch_dispatch.c");f=fopen(path,"w");
     if(!f)die("cannot write tilepatch dispatcher");
-    fprintf(f,"/* GENERATED baked composite tilepatch dispatcher. */\n"
-              "#include <stdint.h>\n#include <gbdk/platform.h>\n\n");
+    fprintf(f,"/* GENERATED compact tilepatch staging dispatcher. */\n"
+              "#include <stdint.h>\n#include <gbdk/platform.h>\n\n"
+              "void tsp_polar_demo_pattern_upload_staged(uint8_t count);\n");
     for(i=0u;i<MAX_TILEPATCH_BANKS;++i)
-        fprintf(f,"void tsp_polar_demo_tilepatch_bank%u(uint16_t local) BANKED;\n",i);
-    fprintf(f,"\nvoid tsp_polar_demo_tilepatch_apply(uint16_t patch){\n");
+        fprintf(f,"uint8_t tsp_polar_demo_tilepatch_bank%u(uint16_t local,uint16_t start) BANKED;\n",i);
+    fprintf(f,"\nstatic uint8_t load_chunk(uint16_t patch,uint16_t start){\n");
     for(i=0u;i<bank_count;++i){
-        uint16_t end=(uint16_t)(banks[i].first+banks[i].count);
-        fprintf(f,"    %s(patch<%uu){tsp_polar_demo_tilepatch_bank%u((uint16_t)(patch-%uu));return;}\n",
-                i?"else if":"if",end,i,banks[i].first);
+        uint16_t bend=(uint16_t)(banks[i].first+banks[i].count);
+        fprintf(f,"    %s(patch<%uu)return tsp_polar_demo_tilepatch_bank%u((uint16_t)(patch-%uu),start);\n",
+                i?"else if":"if",bend,i,banks[i].first);
     }
-    fprintf(f,"}\n");fclose(f);
+    fprintf(f,
+      "    return 0u;\n"
+      "}\n"
+      "void tsp_polar_demo_tilepatch_apply(uint16_t patch){\n"
+      "    uint16_t start=0u; uint8_t n;\n"
+      "    for(;;){\n"
+      "        n=load_chunk(patch,start); if(!n)return;\n"
+      "        tsp_polar_demo_pattern_upload_staged(n);\n"
+      "        start=(uint16_t)(start+n);\n"
+      "        if(n<%uu)return;\n"
+      "    }\n"
+      "}\n",TILEPATCH_STAGE_MAX);
+    fclose(f);
+}
+static void emit_pattern_bank(const char *dir,unsigned bank,const PatternDict *dict,const Bank *b){
+    char name[128],path[512];FILE *f;
+    const uint8_t *src=dict->bytes+(size_t)b->first*TSP_HOST_TILE_BYTES;
+    uint32_t bytes=(uint32_t)b->count*TSP_HOST_TILE_BYTES;
+    snprintf(name,sizeof(name),"polar_demo_pattern_bank%u.c",bank);
+    path_join(path,sizeof(path),dir,name);f=fopen(path,"w");
+    if(!f)die("cannot write pattern dictionary bank");
+    fprintf(f,
+      "/* GENERATED global baked-pattern dictionary bank %u. */\n"
+      "#include <stdint.h>\n#include <gbdk/platform.h>\n"
+      "#pragma bank 255\nBANKREF(polar_demo_pattern_bank%u)\n\n"
+      "extern uint16_t g_polar_tile_slots[%uu];\n"
+      "extern uint16_t g_polar_pattern_ids[%uu];\n\n",
+      bank,bank,TILEPATCH_STAGE_MAX,TILEPATCH_STAGE_MAX);
+    emit_u8_array(f,"k_patterns",src,bytes);
+    fprintf(f,
+      "void tsp_polar_demo_pattern_bank%u(uint8_t start,uint8_t count) BANKED {\n"
+      "    uint8_t i;\n"
+      "    for(i=start;i<(uint8_t)(start+count);++i){\n"
+      "        uint16_t local=(uint16_t)(g_polar_pattern_ids[i]-%uu);\n"
+      "        set_bkg_4bpp_data(g_polar_tile_slots[i],1u,&k_patterns[(uint16_t)(local<<5)]);\n"
+      "    }\n"
+      "}\n",bank,b->first);
+    fclose(f);
+}
+static void emit_pattern_dispatch(const char *dir,const Bank *banks,unsigned bank_count){
+    char path[512];FILE *f;unsigned i;
+    path_join(path,sizeof(path),dir,"polar_demo_pattern_dispatch.c");f=fopen(path,"w");
+    if(!f)die("cannot write pattern dictionary dispatcher");
+    fprintf(f,
+      "/* GENERATED global pattern dictionary dispatcher + 192-byte staging RAM. */\n"
+      "#include <stdint.h>\n#include <gbdk/platform.h>\n\n"
+      "uint16_t g_polar_tile_slots[%uu];\n"
+      "uint16_t g_polar_pattern_ids[%uu];\n\n",
+      TILEPATCH_STAGE_MAX,TILEPATCH_STAGE_MAX);
+    for(i=0u;i<MAX_PATTERN_BANKS;++i)
+        fprintf(f,"void tsp_polar_demo_pattern_bank%u(uint8_t start,uint8_t count) BANKED;\n",i);
+    fprintf(f,"\nvoid tsp_polar_demo_pattern_upload_staged(uint8_t count){\n"
+              "    uint8_t i=0u,j; uint16_t p;\n"
+              "    while(i<count){ p=g_polar_pattern_ids[i]; j=(uint8_t)(i+1u);\n");
+    for(i=0u;i<bank_count;++i){
+        uint16_t bend=(uint16_t)(banks[i].first+banks[i].count);
+        fprintf(f,
+          "        %s(p<%uu){ while(j<count&&g_polar_pattern_ids[j]<%uu)++j; "
+          "tsp_polar_demo_pattern_bank%u(i,(uint8_t)(j-i)); }\n",
+          i?"else if":"if",bend,bend,i);
+    }
+    fprintf(f,
+      "        else return;\n"
+      "        i=j;\n"
+      "    }\n"
+      "}\n");
+    fclose(f);
 }
 
 int main(int argc,char **argv){
