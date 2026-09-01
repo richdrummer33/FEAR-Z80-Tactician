@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - experiment/gg-streaming-room-poc
+      - integration/gg-stream-solid-flicker-validation
   pull_request:
     branches:
       - feature/gg-polar-vertical-stairwell
@@ -194,8 +195,14 @@ jobs:
              tools/polar_baked_composite.c \
              tools/room_bundle_poc_gen.c \
              -lm -o build/room-poc-stream/room-bundle-gen
-          build/room-poc-stream/room-bundle-gen build/room-poc-stream/host \
+          ROOM_BUNDLE_CAPTURE_REVIEW=1 \
+            build/room-poc-stream/room-bundle-gen build/room-poc-stream/host \
              | tee build/room-poc-stream/bundle-bake.txt
+          grep -q 'solid_interior_wall_expansion=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
+          grep -q 'window_horizontal_reveal_generation=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
+          grep -q 'derived_stair_risers=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
+          grep -q 'forward_facing_camera_routes=PASS' build/room-poc-stream/host/room_bundle_poc_manifest.txt
+          grep -q 'wall_angle_light_quant=SOLID8' build/room-poc-stream/host/room_bundle_poc_manifest.txt
           python3 tools/room_bundle_pack_to_c.py \
              build/room-poc-stream/host/room_bundle_poc.pack \
              build/room-poc-stream/host/room_bundle_poc_canonical.bin \
@@ -287,9 +294,13 @@ jobs:
           PROGRESS_ADDR="$(awk '$2=="_g_room_bundle_stream_progress"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           STATUS_ADDR="$(awk '$2=="_g_room_bundle_stream_status"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           BOOT_ADDR="$(awk '$2=="_g_room_bundle_boot_trace"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          LEVEL_ADDR="$(awk '$2=="_g_room_bundle_flicker_level"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          EDGES_ADDR="$(awk '$2=="_g_room_bundle_flicker_edges"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           test -n "$PROGRESS_ADDR"
           test -n "$STATUS_ADDR"
           test -n "$BOOT_ADDR"
+          test -n "$LEVEL_ADDR"
+          test -n "$EDGES_ADDR"
 
           # One short non-waiting diagnostic pass dumps the complete global
           # state block. This survives even when normal progress never starts.
@@ -327,35 +338,46 @@ jobs:
           ./build/libretro_runner "$CORE" "$ROM" 29000 \
             build/room-poc-stream/emulator-stair-descent.ppm "$PROGRESS_ADDR" 2 19096 \
             | tee build/room-poc-stream/run-stair-descent.txt
-          ./build/libretro_runner "$CORE" "$ROM" 33000 \
-            build/room-poc-stream/emulator-wide-shadow-tour.ppm "$PROGRESS_ADDR" 2 23096 \
-            | tee build/room-poc-stream/run-wide-shadow.txt
-          ./build/libretro_runner "$CORE" "$ROM" 37000 \
-            build/room-poc-stream/emulator-spooky-tour.ppm "$PROGRESS_ADDR" 2 24096 \
-            | tee build/room-poc-stream/run-spooky.txt
-          ./build/libretro_runner "$CORE" "$ROM" 41000 \
-            build/room-poc-stream/emulator-turn-forward.ppm "$PROGRESS_ADDR" 2 25096 \
-            | tee build/room-poc-stream/run-turn-forward.txt
-          ./build/libretro_runner "$CORE" "$ROM" 45000 \
-            build/room-poc-stream/emulator-turn-reverse.ppm "$PROGRESS_ADDR" 2 26096 \
-            | tee build/room-poc-stream/run-turn-reverse.txt
-          ./build/libretro_runner "$CORE" "$ROM" 52000 \
-            build/room-poc-stream/emulator-final-seam.ppm "$PROGRESS_ADDR" 2 30000 \
-            | tee build/room-poc-stream/run-complete.txt
-          grep -q 'data=3075' build/room-poc-stream/run-complete.txt
-          printf 'PASS: procedural reverse/split/stair proof + all-eight hostile-camera tour completed.\n' \
-            | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
+          # Human-review tour: every room is now traversed forward only.
+          ./build/libretro_runner "$CORE" "$ROM" 36000             build/room-poc-stream/emulator-wide-shadow-tour.ppm "$PROGRESS_ADDR" 2 23096             | tee build/room-poc-stream/run-wide-shadow.txt
+          ./build/libretro_runner "$CORE" "$ROM" 40000             build/room-poc-stream/emulator-spooky-tour.ppm "$PROGRESS_ADDR" 2 24096             | tee build/room-poc-stream/run-spooky.txt
+          ./build/libretro_runner "$CORE" "$ROM" 44000             build/room-poc-stream/emulator-split-review.ppm "$PROGRESS_ADDR" 2 25096             | tee build/room-poc-stream/run-split-review.txt
+          ./build/libretro_runner "$CORE" "$ROM" 46000             build/room-poc-stream/emulator-stair-review.ppm "$PROGRESS_ADDR" 2 26096             | tee build/room-poc-stream/run-stair-review.txt
+          ./build/libretro_runner "$CORE" "$ROM" 48000             build/room-poc-stream/emulator-gallery-window.ppm "$PROGRESS_ADDR" 2 27096             | tee build/room-poc-stream/run-gallery-window.txt
+          ./build/libretro_runner "$CORE" "$ROM" 50000             build/room-poc-stream/emulator-turn-review.ppm "$PROGRESS_ADDR" 2 28096             | tee build/room-poc-stream/run-turn-review.txt
+          ./build/libretro_runner "$CORE" "$ROM" 51000             build/room-poc-stream/emulator-step-review.ppm "$PROGRESS_ADDR" 2 29096             | tee build/room-poc-stream/run-step-review.txt
+          ./build/libretro_runner "$CORE" "$ROM" 52000             build/room-poc-stream/emulator-pillar-review.ppm "$PROGRESS_ADDR" 2 30096             | tee build/room-poc-stream/run-pillar-review.txt
+          ./build/libretro_runner "$CORE" "$ROM" 54000             build/room-poc-stream/emulator-final-success.ppm "$PROGRESS_ADDR" 2 32000             | tee build/room-poc-stream/run-complete.txt
+          grep -q 'data=007D' build/room-poc-stream/run-complete.txt
+
+          # Exact live flicker phases from the production streamed ROM.
+          for spec in "24018 normal 02" "24019 off 00" "24020 dim 01" "24021 restored 02"; do
+            set -- $spec
+            GS_WAIT_ADDR="$PROGRESS_ADDR" GS_WAIT_U16_GE="$1"               ./build/gearsystem_core_runner "$ROM" 32000                 "build/room-poc-stream/runtime-flicker-$2.ppm" "$LEVEL_ADDR" 1                 | tee "build/room-poc-stream/runtime-flicker-$2.txt"
+            grep -q "DUMP.*=$3" "build/room-poc-stream/runtime-flicker-$2.txt"
+          done
+          ./build/gearsystem_core_runner "$ROM" 36000 - "$EDGES_ADDR" 2             | tee build/room-poc-stream/runtime-flicker-edges.txt
+          EDGE_HEX="$(sed -n 's/.*DUMP\[[^]]*\]=//p' build/room-poc-stream/runtime-flicker-edges.txt | tail -1)"
+          EDGE_LO="${EDGE_HEX:0:2}"; EDGE_HI="${EDGE_HEX:2:2}"
+          EDGE_COUNT=$((16#${EDGE_HI}${EDGE_LO}))
+          echo "runtime_flicker_edges=${EDGE_COUNT}" | tee build/room-poc-stream/runtime-flicker-summary.txt
+          test "$EDGE_COUNT" -ge 10
+
+          printf 'PASS: reverse/split/stair regression proofs + solid geometry + flicker + eight-room forward review completed.\n'             | tee build/room-poc-stream/TWO-ROOM-STREAM-PASS.txt
 
           # GitHub's current Ubuntu image no longer guarantees ffmpeg.
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
 
-          # Continuous representative gameplay excerpt for human inspection.
-          # Record every second hardware video frame; encode as 30 fps MP4.
+          # Record ONLY the final human-review tour. The emulator still executes
+          # all regression proofs first, but progress-gated capture excludes them.
           mkdir -p build/room-poc-stream/video-frames
           LIBRETRO_CAPTURE_DIR=build/room-poc-stream/video-frames \
           LIBRETRO_CAPTURE_EVERY=2 \
-            ./build/libretro_runner "$CORE" "$ROM" 1200 \
+          LIBRETRO_CAPTURE_RAM16_ADDR="$PROGRESS_ADDR" \
+          LIBRETRO_CAPTURE_RAM16_MIN=23000 \
+          LIBRETRO_CAPTURE_RAM16_MAX=30200 \
+            ./build/libretro_runner "$CORE" "$ROM" 54000 \
               build/room-poc-stream/video-last-frame.ppm \
               | tee build/room-poc-stream/run-video.txt
           ffmpeg -y -loglevel error -framerate 30 \
@@ -397,9 +419,23 @@ jobs:
             build/room-poc-stream/run-stair-descent.txt \
             build/room-poc-stream/run-wide-shadow.txt \
             build/room-poc-stream/run-spooky.txt \
-            build/room-poc-stream/run-turn-forward.txt \
-            build/room-poc-stream/run-turn-reverse.txt \
+            build/room-poc-stream/run-split-review.txt \
+            build/room-poc-stream/run-stair-review.txt \
+            build/room-poc-stream/run-gallery-window.txt \
+            build/room-poc-stream/run-turn-review.txt \
+            build/room-poc-stream/run-step-review.txt \
+            build/room-poc-stream/run-pillar-review.txt \
             build/room-poc-stream/run-complete.txt \
+            build/room-poc-stream/runtime-flicker-normal.ppm \
+            build/room-poc-stream/runtime-flicker-off.ppm \
+            build/room-poc-stream/runtime-flicker-dim.ppm \
+            build/room-poc-stream/runtime-flicker-restored.ppm \
+            build/room-poc-stream/runtime-flicker-normal.txt \
+            build/room-poc-stream/runtime-flicker-off.txt \
+            build/room-poc-stream/runtime-flicker-dim.txt \
+            build/room-poc-stream/runtime-flicker-restored.txt \
+            build/room-poc-stream/runtime-flicker-edges.txt \
+            build/room-poc-stream/runtime-flicker-summary.txt \
             build/room-poc-stream/emulator-root-forward.ppm \
             build/room-poc-stream/emulator-child-forward.ppm \
             build/room-poc-stream/emulator-child-reverse.ppm \
@@ -412,9 +448,13 @@ jobs:
             build/room-poc-stream/emulator-stair-descent.ppm \
             build/room-poc-stream/emulator-wide-shadow-tour.ppm \
             build/room-poc-stream/emulator-spooky-tour.ppm \
-            build/room-poc-stream/emulator-turn-forward.ppm \
-            build/room-poc-stream/emulator-turn-reverse.ppm \
-            build/room-poc-stream/emulator-final-seam.ppm \
+            build/room-poc-stream/emulator-split-review.ppm \
+            build/room-poc-stream/emulator-stair-review.ppm \
+            build/room-poc-stream/emulator-gallery-window.ppm \
+            build/room-poc-stream/emulator-turn-review.ppm \
+            build/room-poc-stream/emulator-step-review.ppm \
+            build/room-poc-stream/emulator-pillar-review.ppm \
+            build/room-poc-stream/emulator-final-success.ppm \
             build/room-poc-stream/host/room_bundle_poc_manifest.txt \
             build/room-poc-stream/host/bundle0_route01_frame0.ppm \
             build/room-poc-stream/host/bundle0_route01_frame96.ppm \
@@ -442,7 +482,10 @@ jobs:
             build/room-poc-stream/host/bundle1_route01_frame80.ppm \
             build/room-poc-stream/host/bundle5_route01_frame80.ppm \
             build/room-poc-stream/host/bundle5_route01_frame112.ppm \
-            build/room-poc-stream/host/bundle7_route01_frame80.ppm; do
+            build/room-poc-stream/host/bundle7_route01_frame80.ppm \
+            build/room-poc-stream/host/review-window-detail-024.ppm \
+            build/room-poc-stream/host/review-window-detail-048.ppm \
+            build/room-poc-stream/host/review-window-detail-072.ppm; do
             [ ! -f "$f" ] || cp "$f" build/room-poc-stream-artifact/
           done
           git rev-parse HEAD > build/room-poc-stream-artifact/COMMIT.txt
