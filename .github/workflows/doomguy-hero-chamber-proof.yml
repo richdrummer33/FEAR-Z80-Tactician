@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - experiment/gg-doomguy-hero-chamber
+      - experiment/gg-doomguy-glb-import
   pull_request:
     branches:
       - experiment/gg-doomguy-hero-chamber
+      - experiment/gg-doomguy-glb-import
   workflow_dispatch:
 
 jobs:
@@ -18,6 +20,18 @@ jobs:
 
       - name: Install video encoder
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Validate compressed GLB preprocessing
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+          node make_fixture.mjs /tmp/rmb-fixture.glb
+          node convert.mjs /tmp/rmb-fixture.glb /tmp/rmb-fixture.inc \
+            --name fixture --height 19 --up z --visual-tris 8 --shadow-tris 4 \
+            > /tmp/rmb-fixture-stats.json
+          grep -q '"source"' /tmp/rmb-fixture-stats.json
+          grep -q 'FIXTURE_VISUAL_VERTEX_COUNT' /tmp/rmb-fixture.inc
+          grep -q 'FIXTURE_SHADOW_TRIANGLE_COUNT' /tmp/rmb-fixture.inc
 
       - name: Build host baker
         run: |
