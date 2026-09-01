@@ -946,6 +946,37 @@ static Pose route_pose_portals(uint16_t f,uint8_t bundle,
     return route_pose(f,0u);
 }
 
+/* Mechanical regression guard for the review rail: whenever the camera is
+ * translating, its forward vector must have a positive projection on motion.
+ * This catches the exact old failure mode: moving through a portal while
+ * looking 180 degrees back into the room. */
+static void self_test_forward_facing_routes(void){
+    static const uint8_t split_pairs[6][2]={{0,1},{1,0},{0,2},{2,0},{1,2},{2,1}};
+    uint8_t bundle,ri;
+    for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
+        uint8_t routes=(bundle==2u)?6u:2u;
+        for(ri=0u;ri<routes;++ri){
+            uint8_t entry,exitp;
+            uint16_t f;
+            Pose prev;
+            if(bundle==2u){entry=split_pairs[ri][0];exitp=split_pairs[ri][1];}
+            else {entry=(uint8_t)(ri?1u:0u);exitp=(uint8_t)(ri?0u:1u);}
+            prev=route_pose_portals(0u,bundle,entry,exitp);
+            for(f=1u;f<ROUTE_FRAMES;++f){
+                Pose cur=route_pose_portals(f,bundle,entry,exitp);
+                double dx=cur.x-prev.x,dy=cur.y-prev.y;
+                double mag2=dx*dx+dy*dy;
+                if(mag2>1e-8){
+                    double a=(double)cur.yaw*(2.0*PI/256.0);
+                    double dot=cos(a)*dx+sin(a)*dy;
+                    if(dot<=0.0)die("camera rail moves backward relative to view");
+                }
+                prev=cur;
+            }
+        }
+    }
+}
+
 static int ray_seg(double ox,double oy,double dx,double dy,const Seg *s,double *t_out){
     double sx=s->b.x-s->a.x,sy=s->b.y-s->a.y;
     double den=dx*sy-dy*sx,qx,qy,t,u;
@@ -1417,6 +1448,7 @@ int main(int argc,char **argv){
      * stops producing the promised closed vertical wall/window topology. */
     self_test_solid_wall_geometry();
     self_test_derived_riser();
+    self_test_forward_facing_routes();
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
@@ -1463,6 +1495,8 @@ int main(int argc,char **argv){
     fprintf(manifest,"window_vertical_reveal_generation=PASS\n");
     fprintf(manifest,"window_horizontal_reveal_generation=PASS\n");
     fprintf(manifest,"derived_stair_risers=PASS\n");
+    fprintf(manifest,"forward_facing_camera_routes=PASS\n");
+    fprintf(manifest,"wall_angle_light_quant=SOLID8\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
