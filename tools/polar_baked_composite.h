@@ -56,6 +56,10 @@ typedef struct TSPHostSceneRect {
     int16_t ceiling_z;
 } TSPHostSceneRect;
 
+typedef int (*TSPHostExtraOccluderFn)(const void *user,
+                                      double lx,double ly,double lz,
+                                      double wx,double wy,double wz);
+
 typedef struct TSPHostCompositeScene {
     const TSPHostSceneVertex *vertices;
     uint8_t vertex_count;
@@ -65,6 +69,11 @@ typedef struct TSPHostCompositeScene {
     uint8_t light_count;
     const TSPHostSceneRect *rects;
     uint8_t rect_count;
+    /* Optional host-only arbitrary 3D occluder. Used by imported/static mesh
+     * props so the existing floor/wall light bake can see mesh-cast shadows.
+     * Nothing here exists in the GG runtime representation. */
+    TSPHostExtraOccluderFn extra_occluder;
+    const void *extra_occluder_user;
 } TSPHostCompositeScene;
 
 enum {
