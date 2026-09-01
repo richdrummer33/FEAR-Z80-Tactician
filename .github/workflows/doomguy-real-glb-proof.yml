@@ -1,0 +1,217 @@
+name: Doomguy real GLB proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-doomguy-glb-import
+    paths:
+      - "assets/gg-hero/**"
+      - "tools/glb_rmb/**"
+      - "tools/room_mesh_bake.*"
+      - "tools/room_bundle_poc_gen.c"
+      - ".github/workflows/doomguy-real-glb-proof.yml"
+  workflow_dispatch:
+
+jobs:
+  real-doomguy-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+      PRISM: assets/gg-hero/Purple-Prism-single-notex.glb
+      SHADOW_TRIS: "350"
+      GG_UPLOAD_CEILING: "48"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify committed GLB masters
+        run: |
+          test -s "$ASSET"
+          test -s "$PRISM"
+          mkdir -p build/doomguy-real-sweep tools/generated
+          sha256sum "$ASSET" "$PRISM" | tee build/doomguy-real-sweep/ASSET-SHA256.txt
+          stat -c '%n %s bytes' "$ASSET" "$PRISM" | tee build/doomguy-real-sweep/ASSET-SIZES.txt
+
+      - name: Install GLB preprocessing dependencies
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Inspect secondary prism asset
+        run: |
+          node tools/glb_rmb/convert.mjs "$PRISM" /tmp/prism_mesh.inc \
+            --name prism --height 19 --up z --visual-tris 1000 --shadow-tris 200 \
+            | tee build/doomguy-real-sweep/PRISM-IMPORT.json
+
+      - name: Sweep Doomguy visual fidelity against GG upload budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          targets="900 1500 2400 3600 5200 7000"
+          summary=build/doomguy-real-sweep/SWEEP.tsv
+          printf "target_visual\tactual_visual\tactual_shadow\tbudget_0to1\tbudget_1to0\tmax_budget\tpatch_0to1\tpatch_1to0\ttileloads_0to1\ttileloads_1to0\n" > "$summary"
+
+          for vis in $targets; do
+            echo "=== visual target $vis / shadow target $SHADOW_TRIS ==="
+            out="build/doomguy-real-sweep/v${vis}"
+            mkdir -p "$out"
+
+            node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+              --name doomguy --height 19 --up z \
+              --visual-tris "$vis" --shadow-tris "$SHADOW_TRIS" \
+              | tee "$out/IMPORT.json"
+
+            cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+              -DROOM_BUNDLE_DOOMGUY_GENERATED \
+              -Isrc -Itools \
+              tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+              -lm -o "$out/room_bundle_poc_gen"
+
+            ROOM_BUNDLE_ONLY=11 "$out/room_bundle_poc_gen" "$out"
+
+            manifest="$out/room_bundle_poc_manifest.txt"
+            grep -q '^doomguy_hero_chamber=PASS$' "$manifest"
+            grep -q '^mesh_shadow_occlusion=PASS$' "$manifest"
+            grep -q '^independent_bundle_replay=PASS$' "$manifest"
+
+            line01=$(grep '^bundle=11 route=0->1 frames=' "$manifest")
+            line10=$(grep '^bundle=11 route=1->0 frames=' "$manifest")
+
+            field() {
+              local line="$1" key="$2"
+              printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^${key}=//p"
+            }
+
+            b01=$(field "$line01" scheduled_budget)
+            b10=$(field "$line10" scheduled_budget)
+            p01=$(field "$line01" patch_bytes)
+            p10=$(field "$line10" patch_bytes)
+            t01=$(field "$line01" tile_loads)
+            t10=$(field "$line10" tile_loads)
+            maxb=$(( b01 > b10 ? b01 : b10 ))
+
+            actual_vis=$(node -e "const j=require('./$out/IMPORT.json'); console.log(j.visual.triangles)")
+            actual_shadow=$(node -e "const j=require('./$out/IMPORT.json'); console.log(j.shadow.triangles)")
+
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+              "$vis" "$actual_vis" "$actual_shadow" "$b01" "$b10" "$maxb" \
+              "$p01" "$p10" "$t01" "$t10" | tee -a "$summary"
+          done
+
+          cat "$summary"
+
+          selected=$(awk -F '\t' -v cap="$GG_UPLOAD_CEILING" \
+            'NR>1 && $6<=cap {v=$1} END{print v+0}' "$summary")
+          if [ "$selected" -eq 0 ]; then
+            selected=$(awk -F '\t' 'NR==2{print $1}' "$summary")
+            echo "WARNING: no candidate met the upload ceiling; selecting lowest target $selected for proof" >&2
+          fi
+
+          echo "$selected" | tee build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt
+
+      - name: Build selected real Doomguy bake
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=$(cat build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt)
+          mkdir -p build/doomguy-real-selected build/doomguy-real-sanitize
+
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris "$selected" --shadow-tris "$SHADOW_TRIS" \
+            | tee build/doomguy-real-selected/IMPORT.json
+
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen_real
+
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/room_bundle_poc_gen_real_san
+
+          ROOM_BUNDLE_ONLY=11 \
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            build/room_bundle_poc_gen_real_san build/doomguy-real-sanitize
+
+          grep -q '^doomguy_hero_chamber=PASS$' build/doomguy-real-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^mesh_shadow_occlusion=PASS$' build/doomguy-real-sanitize/room_bundle_poc_manifest.txt
+          grep -q '^independent_bundle_replay=PASS$' build/doomguy-real-sanitize/room_bundle_poc_manifest.txt
+
+      - name: Capture selected real Doomguy chamber
+        env:
+          ROOM_BUNDLE_ONLY: "11"
+          ROOM_BUNDLE_CAPTURE_REVIEW: "1"
+        run: |
+          mkdir -p build/doomguy-real-review
+          build/room_bundle_poc_gen_real build/doomguy-real-review
+          cp build/doomguy-real-review/room_bundle_poc_manifest.txt build/doomguy-real-review/PROOF-MANIFEST.txt
+          grep '^bundle=11 route=0->1 frames=' build/doomguy-real-review/PROOF-MANIFEST.txt > build/doomguy-real-review/DOOMGUY-REAL-STATS.txt
+          grep '^bundle=11 route=1->0 frames=' build/doomguy-real-review/PROOF-MANIFEST.txt >> build/doomguy-real-review/DOOMGUY-REAL-STATS.txt
+
+      - name: Install video encoder
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Encode real Doomguy proof videos
+        run: |
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/doomguy-real-review/review-doomguy-proxy-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/doomguy-real-review/doomguy-real-chamber-route.mp4
+
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i build/doomguy-real-review/review-doomguy-detail-%03d.ppm \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            build/doomguy-real-review/doomguy-real-detail-orbit.mp4
+
+      - name: Export real Doomguy stills
+        run: |
+          for spec in \
+            "doomguy-detail 000 left" \
+            "doomguy-detail 020 quarter-left" \
+            "doomguy-detail 040 oblique-a" \
+            "doomguy-detail 060 frontish" \
+            "doomguy-detail 080 oblique-b" \
+            "doomguy-detail 100 quarter-right" \
+            "doomguy-detail 119 right" \
+            "doomguy-proxy 080 route-oblique" \
+            "doomguy-proxy 112 route-lookback"; do
+            set -- $spec
+            ffmpeg -y -loglevel error \
+              -i "build/doomguy-real-review/review-$1-$2.ppm" \
+              -vf "scale=640:576:flags=neighbor" \
+              "build/doomguy-real-review/doomguy-real-$3.png"
+          done
+
+      - name: Summarize selected proof
+        run: |
+          {
+            echo "selected_visual_target=$(cat build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt)"
+            echo "shadow_target=$SHADOW_TRIS"
+            cat build/doomguy-real-review/DOOMGUY-REAL-STATS.txt
+          } | tee build/doomguy-real-review/SELECTED-PROOF.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-real-glb-proof
+          path: |
+            build/doomguy-real-review/*.png
+            build/doomguy-real-review/*.mp4
+            build/doomguy-real-review/*.txt
+            build/doomguy-real-selected/IMPORT.json
+            build/doomguy-real-sanitize/room_bundle_poc_manifest.txt
+            build/doomguy-real-sweep/SWEEP.tsv
+            build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt
+            build/doomguy-real-sweep/ASSET-SHA256.txt
+            build/doomguy-real-sweep/ASSET-SIZES.txt
+            build/doomguy-real-sweep/PRISM-IMPORT.json
+            build/doomguy-real-sweep/v*/IMPORT.json
+          if-no-files-found: error
+          retention-days: 30
