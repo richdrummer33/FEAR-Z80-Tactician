@@ -25,6 +25,7 @@
 #define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
 #define MAX_SCENE_RECTS 12u
+#define MAX_HSURFS 32u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
@@ -35,9 +36,16 @@ typedef struct Seg {
     double z0,z1;
     int8_t shade_bias;
 } Seg;
+typedef struct HSurf {
+    V2 p[4];
+    double z;
+    int8_t shade_bias;
+} HSurf;
 typedef struct World {
     Seg seg[MAX_SEGMENTS];
     uint8_t count;
+    HSurf hsurf[MAX_HSURFS];
+    uint8_t hsurf_count;
     TSPHostSceneVertex scene_vertices[MAX_SCENE_VERTICES];
     TSPHostSceneSegment scene_segments[MAX_SEGMENTS];
     TSPHostSceneLight scene_lights[1];
@@ -121,6 +129,15 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
     ls->has_exact_z=1u;
 }
 
+static void add_hsurf_quad(World *w,V2 a,V2 b,V2 c,V2 d,
+                           double z,int8_t bias){
+    HSurf *s;
+    if(w->hsurf_count>=MAX_HSURFS)die("too many horizontal room surfaces");
+    s=&w->hsurf[w->hsurf_count++];
+    s->p[0]=a;s->p[1]=b;s->p[2]=c;s->p[3]=d;
+    s->z=z;s->shade_bias=bias;
+}
+
 /*
  * Host-only volumetric wall authoring.
  *
@@ -188,8 +205,8 @@ static void add_solid_wall_line(World *w,
  *
  * The broad front/back faces are split above, below and beside the opening,
  * and the two vertical jamb/reveal faces across wall thickness are generated
- * automatically. Horizontal sill/lintel reveal planes are outside the current
- * vertical-wall baker and remain a separate horizontal-surface feature.
+ * automatically. The sill and lintel underside are emitted as horizontal
+ * quads too, completing the visible four-sided reveal of the opening.
  */
 static void add_solid_window_line_caps(World *w,
                                        double ax,double ay,double bx,double by,
@@ -230,6 +247,11 @@ static void add_solid_window_line_caps(World *w,
     /* The part the old thin-segment model could not infer: window jambs. */
     add_seg(w,r0.x,r0.y,l0.x,l0.y,open_z0,open_z1,bias);
     add_seg(w,l1.x,l1.y,r1.x,r1.y,open_z0,open_z1,bias);
+
+    /* Horizontal reveal planes: sill top and lintel underside. They are
+     * double-sided host surfaces; visibility is resolved solely by depth. */
+    add_hsurf_quad(w,l0,l1,r1,r0,open_z0,bias);
+    add_hsurf_quad(w,r0,r1,l1,l0,open_z1,bias);
 }
 
 static void self_test_solid_wall_geometry(void){
@@ -242,6 +264,7 @@ static void self_test_solid_wall_geometry(void){
     add_solid_window_line_caps(&w,0.0,0.0,10.0,0.0,1.0,
                                2.0,8.0,10.0,22.0,0.0,32.0,0,1u,1u);
     if(w.count!=12u)die("solid window self-test: expected 12 vertical faces");
+    if(w.hsurf_count!=2u)die("solid window self-test: expected sill + lintel planes");
     if(fabs(w.seg[10].a.y-w.seg[10].b.y-1.0)>1e-8 &&
        fabs(w.seg[10].b.y-w.seg[10].a.y-1.0)>1e-8)
         die("solid window self-test: jamb does not span wall thickness");
@@ -860,6 +883,51 @@ static uint8_t shade_for_inv(double inv,int8_t bias){
 }
 static int iround(double v){return (int)floor(v+0.5);}
 
+static int point_in_hsurf(const HSurf *s,double x,double y){
+    uint8_t i,j;
+    int inside=0;
+    for(i=0u,j=3u;i<4u;j=i++){
+        double ax=s->p[j].x,ay=s->p[j].y;
+        double bx=s->p[i].x,by=s->p[i].y;
+        double dx=bx-ax,dy=by-ay,px=x-ax,py=y-ay;
+        double cross=px*dy-py*dx;
+        double dot=px*dx+py*dy,len2=dx*dx+dy*dy;
+        if(fabs(cross)<1e-8&&dot>=-1e-8&&dot<=len2+1e-8)return 1;
+        if(((ay>y)!=(by>y))&&x<(bx-ax)*(y-ay)/(by-ay)+ax)inside=!inside;
+    }
+    return inside;
+}
+
+static void render_horizontal_column(const World *w,const Pose *p,int sx){
+    double yaw=(double)p->yaw*(2.0*PI/256.0);
+    double fx=cos(yaw),fy=sin(yaw),rx=-fy,ry=fx;
+    double lateral=((double)sx+0.5-80.0)/80.0;
+    double dx=fx+rx*lateral,dy=fy+ry*lateral;
+    int sy;
+    for(sy=0;sy<144;++sy){
+        double vz=-(((double)sy+0.5)-72.0)/80.0;
+        uint8_t hi;
+        if(fabs(vz)<1e-12)continue;
+        for(hi=0u;hi<w->hsurf_count;++hi){
+            const HSurf *s=&w->hsurf[hi];
+            double depth=(s->z-p->z)/vz;
+            double wx,wy;
+            int shade;
+            if(depth<=1e-6)continue;
+            wx=p->x+dx*depth;
+            wy=p->y+dy*depth;
+            if(!point_in_hsurf(s,wx,wy))continue;
+            shade=depth<=31.0?2:(depth<=55.0?1:0);
+            shade+=s->shade_bias;
+            if(shade<0)shade=0;if(shade>2)shade=2;
+            /* 0xfe marks a host-only horizontal receiver. Current point-light
+             * pass simply leaves such local caps ambient; geometry is exact. */
+            tsp_host_composite_pixel_depth((uint8_t)sx,(uint8_t)sy,0xfeu,
+                                           (uint8_t)shade,0u,depth);
+        }
+    }
+}
+
 static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]){
     int sx;
     TSPState cam;
@@ -915,13 +983,14 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
             bottom=72.0-(s->z0-p->z)*80.0/depth;
             inv=2560.0/depth;if(inv>255.0)inv=255.0;
             it=iround(top);ib=iround(bottom);
-            tsp_host_composite_surface((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
-                                       (int16_t)it,(int16_t)it,
-                                       (int16_t)ib,(int16_t)ib,
-                                       hit[i].sid,
-                                       shade_for_inv(inv,s->shade_bias),
-                                       0u,0u,0u);
+            tsp_host_composite_surface_depth((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
+                                             (int16_t)it,(int16_t)it,
+                                             (int16_t)ib,(int16_t)ib,
+                                             hit[i].sid,
+                                             shade_for_inv(inv,s->shade_bias),
+                                             0u,0u,0u,depth);
         }
+        render_horizontal_column(w,p,sx);
     }
     tsp_host_composite_export(out);
 }
@@ -1294,6 +1363,7 @@ int main(int argc,char **argv){
     fprintf(manifest,"eight_module_catalog=PASS\n");
     fprintf(manifest,"solid_interior_wall_expansion=PASS\n");
     fprintf(manifest,"window_vertical_reveal_generation=PASS\n");
+    fprintf(manifest,"window_horizontal_reveal_generation=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
