@@ -300,8 +300,14 @@ out+=`#define ${macro}_SEAM_COMPONENT_COUNT ${comps.length}u\n`;
 out+=`#ifndef RMB_GENERATED_SEAM_LAYER_DEFINED\n#define RMB_GENERATED_SEAM_LAYER_DEFINED 1\ntypedef struct RMBGeneratedSeamLayer { uint8_t rank,quarters; const int16_t *xyz; uint16_t vertex_count; const uint16_t *idx; uint16_t triangle_count; } RMBGeneratedSeamLayer;\n#endif\n`;
 for(let i=0;i<layers.length;i++){const l=layers[i],nme=`${name}_seam_l${i}`;out+=carr('int16_t',nme+'_xyz_q8',l.xyz)+carr('uint16_t',nme+'_indices',l.idx);}
 out+=`static const RMBGeneratedSeamLayer ${name}_seam_layers[] = {\n`;
-for(let i=0;i<layers.length;i++){const l=layers[i],nme=`${name}_seam_l${i}`;out+=`  {${l.rank}u,${l.quarters}u,${nme}_xyz_q8,${l.verts}u,${nme}_indices,${l.tris}u},\n`;}
-out+=`};\n#define ${macro}_SEAM_LAYER_COUNT ((uint8_t)(sizeof(${name}_seam_layers)/sizeof(${name}_seam_layers[0])))\n`;
+if(layers.length){
+  for(let i=0;i<layers.length;i++){const l=layers[i],nme=`${name}_seam_l${i}`;out+=`  {${l.rank}u,${l.quarters}u,${nme}_xyz_q8,${l.verts}u,${nme}_indices,${l.tris}u},\n`;}
+}else{
+  /* ISO C has no zero-length arrays. Emit one inert descriptor while keeping
+   * the public count at zero so generic consumers compile warning-clean. */
+  out+=`  {0u,4u,(const int16_t *)0,0u,(const uint16_t *)0,0u},\n`;
+}
+out+=`};\n#define ${macro}_SEAM_LAYER_COUNT ${layers.length}u\n`;
 await fs.mkdir(path.dirname(output),{recursive:true});await fs.writeFile(output,out);
 const stats={source:{vertices:n,triangles:src.triCount},visual:{vertices:vis.xyz.length,triangles:vis.triCount},shadow:{triangles:shadow.triCount},
  thresholds:{highConcavity:high,lowConcavity:low,seedAnisotropy:anSeed,lowAnisotropy:anLow},
