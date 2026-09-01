@@ -1448,7 +1448,16 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     TileJob *jobs;
     int16_t last_use[512];
     uint16_t t,i;
-    uint16_t chosen=0u,budget;
+    uint16_t chosen=0u,budget,max_budget=48u;
+    const char *max_env=getenv("ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS");
+
+    if(max_env&&*max_env){
+        char *end=(char *)0;
+        long v=strtol(max_env,&end,10);
+        if(!end||*end||v<1||v>512)
+            die("ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS must be 1..512");
+        max_budget=(uint16_t)v;
+    }
 
     for(t=1u;t<ROUTE_FRAMES;++t)job_count+=frame_tile_loads(&frames[t]);
     jobs=(TileJob *)malloc((job_count?job_count:1u)*sizeof(TileJob));
@@ -1480,7 +1489,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     }
     if(j!=job_count)die("bundle tile scheduler job count mismatch");
 
-    for(budget=1u;budget<=48u&&!chosen;++budget){
+    for(budget=1u;budget<=max_budget&&!chosen;++budget){
         uint32_t done=0u;
         for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
         for(t=1u;t<ROUTE_FRAMES;++t){
@@ -1507,7 +1516,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
         }
         if(done==job_count)chosen=budget;
     }
-    if(!chosen)die("bundle tile scheduler needs more than 48 uploads/VBlank");
+    if(!chosen)die("bundle tile scheduler exceeds configured upload search limit");
 
     for(t=1u;t<ROUTE_FRAMES;++t){
         uint16_t n=0u;
