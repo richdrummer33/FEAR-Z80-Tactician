@@ -76,4 +76,8 @@ void rmb_add_dome(RMBScene *s,uint8_t object_id,const RMBTransform *xf,
 void rmb_render(const RMBScene *s,double cam_x,double cam_y,double cam_z,
                 uint8_t yaw,const RMBLight *light);
 
+int rmb_segment_occluded(const RMBScene *s,
+                         double lx,double ly,double lz,
+                         double wx,double wy,double wz);
+
 #endif
