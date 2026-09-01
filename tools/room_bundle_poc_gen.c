@@ -1718,7 +1718,7 @@ int main(int argc,char **argv){
         RMBTransform t=rmb_transform(0,0,0,0,0,37,1,1,1);
         uint8_t o;
         rmb_scene_init(&m);
-        o=rmb_new_object(&m,RMB_OUTLINE_NONE);
+        o=rmb_new_object(&m,RMB_OUTLINE_SILHOUETTE);
         rmb_add_box(&m,o,&t,1,2,3,0);
         if(m.vertex_count!=8u||m.triangle_count!=12u||m.edge_count!=18u)
             die("mesh authoring self-test failed");
@@ -1726,6 +1726,12 @@ int main(int argc,char **argv){
             die("mesh shadow self-test: through-box ray should block");
         if(rmb_segment_occluded(&m,-4,6,0,4,6,0))
             die("mesh shadow self-test: outside-box ray should pass");
+        rmb_set_object_flags(&m,o,1u,0u);
+        if(rmb_segment_occluded(&m,-4,0,0,4,0,0))
+            die("mesh flags self-test: non-caster should not block");
+        rmb_set_object_flags(&m,o,0u,1u);
+        if(!rmb_segment_occluded(&m,-4,0,0,4,0,0))
+            die("mesh flags self-test: shadow-only caster should block");
     }
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
