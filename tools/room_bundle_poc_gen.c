@@ -1697,9 +1697,17 @@ int main(int argc,char **argv){
     uint64_t canonical_hash=0u;
     uint8_t canonical_ready=0u;
     uint8_t bundle;
+    int only_bundle=-1;
+    uint8_t output_bundle_count=BUNDLE_COUNT;
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
     outdir=argv[1];
+    if(getenv("ROOM_BUNDLE_ONLY")){
+        only_bundle=atoi(getenv("ROOM_BUNDLE_ONLY"));
+        if(only_bundle<0||only_bundle>=(int)BUNDLE_COUNT)
+            die("ROOM_BUNDLE_ONLY outside catalog");
+        output_bundle_count=1u;
+    }
 
     /* Fail before a multi-thousand-frame bake if the authoring expansion ever
      * stops producing the promised closed vertical wall/window topology. */
@@ -1714,13 +1722,17 @@ int main(int argc,char **argv){
         rmb_add_box(&m,o,&t,1,2,3,0);
         if(m.vertex_count!=8u||m.triangle_count!=12u||m.edge_count!=18u)
             die("mesh authoring self-test failed");
+        if(!rmb_segment_occluded(&m,-4,0,0,4,0,0))
+            die("mesh shadow self-test: through-box ray should block");
+        if(rmb_segment_occluded(&m,-4,6,0,4,6,0))
+            die("mesh shadow self-test: outside-box ray should pass");
     }
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
     fwrite("RBP2",1,4,pack);
     write_u16(pack,2u);
-    fputc(BUNDLE_COUNT,pack);
+    fputc(output_bundle_count,pack);
     fputc(0,pack);
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_manifest.txt",outdir);
@@ -1729,6 +1741,7 @@ int main(int argc,char **argv){
 
     for(bundle=0u;bundle<BUNDLE_COUNT;++bundle){
         World w;
+        if(only_bundle>=0&&bundle!=(uint8_t)only_bundle)continue;
         make_world(bundle,&w);
         fputc((int)bundle,pack);
         if(bundle==2u){
@@ -1756,7 +1769,9 @@ int main(int argc,char **argv){
     fprintf(manifest,"bidirectional_portal_routes=PASS\n");
     fprintf(manifest,"three_portal_split_routes=PASS\n");
     fprintf(manifest,"quarter_stair_height_rebase_routes=PASS\n");
-    fprintf(manifest,"eleven_module_catalog=PASS\n");
+    if(only_bundle<0)fprintf(manifest,"twelve_module_catalog=PASS\n");
+    if(only_bundle==11||only_bundle<0)fprintf(manifest,"doomguy_hero_chamber=PASS\n");
+    fprintf(manifest,"mesh_shadow_occlusion=PASS\n");
     fprintf(manifest,"host_mesh_raster=PASS\n");
     fprintf(manifest,"silent_internal_mesh_edges=PASS\n");
     fprintf(manifest,"arbitrary_mesh_transform=PASS\n");
@@ -1778,6 +1793,6 @@ int main(int argc,char **argv){
     tsp_host_composite_set_scene((const TSPHostCompositeScene *)0);
 
     printf("ROOM_BUNDLE_POC_PASS bundles=%u ordinary_routes=2 split_routes=6 stair_routes=2 frames_per_route=%u canonical=%016llX\n",
-           BUNDLE_COUNT,ROUTE_FRAMES,(unsigned long long)canonical_hash);
+           (unsigned)output_bundle_count,ROUTE_FRAMES,(unsigned long long)canonical_hash);
     return 0;
 }
