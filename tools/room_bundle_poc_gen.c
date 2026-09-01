@@ -748,7 +748,7 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
     rmb_add_indexed_mesh_q8(m,shadow,&t,
                             doomguy_shadow_xyz_q8,DOOMGUY_SHADOW_VERTEX_COUNT,
                             doomguy_shadow_indices,DOOMGUY_SHADOW_TRIANGLE_COUNT,0);
-#ifdef ROOM_BUNDLE_DOOMGUY_SEAMS
+#if defined(ROOM_BUNDLE_DOOMGUY_SEAMS) && DOOMGUY_SEAM_LAYER_COUNT > 0
     {
         uint8_t si;
         for(si=0u;si<DOOMGUY_SEAM_LAYER_COUNT;++si){
@@ -868,7 +868,7 @@ static void add_bonsai_generated_mesh(RMBScene *m){
     rmb_add_indexed_mesh_q8(m,shadow,&t,
                             bonsai_shadow_xyz_q8,BONSAI_SHADOW_VERTEX_COUNT,
                             bonsai_shadow_indices,BONSAI_SHADOW_TRIANGLE_COUNT,0);
-#ifdef ROOM_BUNDLE_BONSAI_SEAMS
+#if defined(ROOM_BUNDLE_BONSAI_SEAMS) && BONSAI_SEAM_LAYER_COUNT > 0
     {
         uint8_t si;
         for(si=0u;si<BONSAI_SEAM_LAYER_COUNT;++si){
