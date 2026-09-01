@@ -1733,6 +1733,20 @@ int main(int argc,char **argv){
         if(!rmb_segment_occluded(&m,-4,0,0,4,0,0))
             die("mesh flags self-test: shadow-only caster should block");
     }
+    {
+        static const int16_t q8_xyz[12]={
+            -256,-256,0, 256,-256,0, 0,256,0, 0,0,512
+        };
+        static const uint16_t idx[12]={0,2,1,0,1,3,1,2,3,2,0,3};
+        RMBScene m;
+        RMBTransform t=rmb_transform(0,0,0,0,0,0,1,1,1);
+        uint8_t o;
+        rmb_scene_init(&m);
+        o=rmb_new_object(&m,RMB_OUTLINE_NONE);
+        rmb_add_indexed_mesh_q8(&m,o,&t,q8_xyz,4u,idx,4u,0);
+        if(m.vertex_count!=4u||m.triangle_count!=4u||m.edge_count!=0u)
+            die("indexed mesh ingestion self-test failed");
+    }
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
