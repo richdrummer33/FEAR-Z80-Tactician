@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define RMB_MAX_VERTICES 4096u
-#define RMB_MAX_TRIANGLES 8192u
+#define RMB_MAX_VERTICES 8192u
+#define RMB_MAX_TRIANGLES 12288u
 #define RMB_MAX_EDGES 4096u
 #define RMB_MAX_OBJECTS 32u
 
