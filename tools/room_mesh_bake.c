@@ -41,6 +41,7 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     s->objects[id].casts_shadow=1u;
     s->objects[id].shade_levels=3u;
     s->objects[id].overlay_target_object=0xffu;
+    s->objects[id].overlay_dither_quarters=4u;
     s->object_count=(uint8_t)(id+1u);
     return id;
 }
@@ -64,6 +65,13 @@ void rmb_set_object_overlay_target(RMBScene *s,uint8_t object_id,
         rmb_fail("invalid mesh overlay object id");
     if(object_id==target_object_id)rmb_fail("mesh overlay cannot target itself");
     s->objects[object_id].overlay_target_object=target_object_id;
+}
+
+void rmb_set_object_overlay_dither(RMBScene *s,uint8_t object_id,
+                                   uint8_t quarters){
+    if(object_id>=s->object_count)rmb_fail("invalid mesh dither object id");
+    if(quarters<1u||quarters>4u)rmb_fail("mesh overlay dither must be 1..4");
+    s->objects[object_id].overlay_dither_quarters=quarters;
 }
 
 static RMBVec3 rotate_xyz(RMBVec3 p,double rx,double ry,double rz){
@@ -393,7 +401,12 @@ static void raster_triangle(const RMBScene *s,const RMBTriangle *t,
         if(inv<=1e-12)continue;
         d=1.0/inv;
         if(s->objects[t->object_id].overlay_target_object!=0xffu){
-            uint8_t target=(uint8_t)(0x80u+
+            static const uint8_t bayer2[4]={0u,2u,3u,1u};
+            uint8_t q=s->objects[t->object_id].overlay_dither_quarters;
+            uint8_t threshold=bayer2[((uint8_t)y&1u)*2u+((uint8_t)x&1u)];
+            uint8_t target;
+            if(q<4u&&threshold>=q)continue;
+            target=(uint8_t)(0x80u+
                 (s->objects[t->object_id].overlay_target_object&0x3fu));
             tsp_host_composite_pixel_overlay_depth((uint8_t)x,(uint8_t)y,
                                                     target,shade,0u,d);
