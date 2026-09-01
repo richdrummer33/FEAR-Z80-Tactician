@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - experiment/gg-solid-interior-wall-bake
+  pull_request:
+    branches:
+      - experiment/gg-streaming-room-poc
   workflow_dispatch:
 
 jobs:
