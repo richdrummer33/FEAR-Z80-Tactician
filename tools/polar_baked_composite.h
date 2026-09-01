@@ -13,8 +13,13 @@ typedef struct TSPHostTileLoad {
 } TSPHostTileLoad;
 
 typedef struct TSPHostSceneVertex {
+    /* Whole-unit fallback preserves the original static lighting scene. */
     int16_t x;
     int16_t y;
+    /* Room-bundle overrides may retain exact 1/16-world-unit coordinates. */
+    int16_t x_q4;
+    int16_t y_q4;
+    uint8_t has_exact_q4;
 } TSPHostSceneVertex;
 
 typedef struct TSPHostSceneSegment {
@@ -24,6 +29,11 @@ typedef struct TSPHostSceneSegment {
     uint8_t blocks_light;
     int8_t light_front_sign;
     int8_t visual_front_sign;
+    /* Optional exact host-bake vertical interval. Static legacy scenes leave
+     * this disabled and continue using the coarse profile-derived height. */
+    int16_t z0_q4;
+    int16_t z1_q4;
+    uint8_t has_exact_z;
 } TSPHostSceneSegment;
 
 typedef struct TSPHostSceneLight {
@@ -92,6 +102,17 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 int16_t tl,int16_t tr,int16_t bl,int16_t br,
                                 uint8_t sid,uint8_t shade,uint8_t border,
                                 uint8_t ao_left,uint8_t ao_right);
+
+/* Room-bundle host baker only: depth-tested equivalents used when several
+ * vertical/horizontal surfaces can occupy one screen ray. Depth is camera-
+ * forward world distance. These APIs do not exist on the GG runtime path. */
+void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+                                      int16_t tl,int16_t tr,int16_t bl,int16_t br,
+                                      uint8_t sid,uint8_t shade,uint8_t border,
+                                      uint8_t ao_left,uint8_t ao_right,
+                                      double depth);
+void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
+                                    uint8_t shade,uint8_t black,double depth);
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
 uint16_t tsp_host_composite_frame_load_count(void);
