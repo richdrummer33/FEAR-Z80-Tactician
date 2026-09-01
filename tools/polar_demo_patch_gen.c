@@ -33,6 +33,9 @@
 #define MAX_BANK_STREAM 10000u
 #define MAX_TILEPATCH_BANKS 48u
 #define MAX_TILEPATCH_BANK_STREAM 14000u
+#define MAX_PATTERN_BANKS 24u
+#define MAX_PATTERN_BANK_STREAM 13600u
+#define TILEPATCH_STAGE_MAX 48u
 /* Palette-only and literal spans may alternate within a row. Worst case is
  * one 3-byte header plus one 16-bit literal per cell, plus the u16 run count. */
 #define PATCH_SCRATCH_MAX (2u + TSP_MAP_CELLS * 5u)
@@ -63,6 +66,14 @@ typedef struct Bank {
     uint16_t count;
     uint32_t bytes;
 } Bank;
+
+typedef struct PatternDict {
+    uint8_t *bytes;
+    int32_t *table;
+    uint32_t count;
+    uint32_t cap;
+    uint32_t table_size;
+} PatternDict;
 
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static const char *g_lighting_name="baseline";
