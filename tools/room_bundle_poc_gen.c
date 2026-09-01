@@ -1366,7 +1366,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     }
     if(j!=job_count)die("bundle tile scheduler job count mismatch");
 
-    for(budget=1u;budget<=48u&&!chosen;++budget){
+    for(budget=1u;budget<=96u&&!chosen;++budget){
         uint32_t done=0u;
         for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
         for(t=1u;t<ROUTE_FRAMES;++t){
@@ -1393,7 +1393,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
         }
         if(done==job_count)chosen=budget;
     }
-    if(!chosen)die("bundle tile scheduler needs more than 48 uploads/VBlank");
+    if(!chosen)die("diagnostic bundle tile scheduler needs more than 96 uploads/VBlank");
 
     for(t=1u;t<ROUTE_FRAMES;++t){
         uint16_t n=0u;
