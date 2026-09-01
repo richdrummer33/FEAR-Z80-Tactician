@@ -121,6 +121,35 @@ static void update_room_flicker(uint8_t profile,uint16_t frame){
                           creepy_flicker_level(frame):2u);
 }
 
+static void clear_tile(void){
+    uint8_t i;
+    for(i=0u;i<32u;++i)g_tile[i]=0u;
+}
+static void paint_pixel(uint8_t x,uint8_t y,uint8_t color){
+    uint8_t p,bit=(uint8_t)(0x80u>>x);
+    uint8_t *row=g_tile+(uint16_t)y*4u;
+    for(p=0u;p<4u;++p)
+        if(color&(uint8_t)(1u<<p))row[p]|=bit;
+}
+static void emit_solid(uint16_t id,uint8_t color){
+    uint8_t x,y;
+    clear_tile();
+    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)paint_pixel(x,y,color);
+    set_bkg_4bpp_data(id,1u,g_tile);
+}
+static void emit_horizon(void){
+    uint8_t x,y;
+    clear_tile();
+    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)
+        paint_pixel(x,y,y==0u?C_BLACK:C_FLOOR);
+    set_bkg_4bpp_data(TSP_TILE_HORIZON,1u,g_tile);
+}
+static void init_base_tiles(void){
+    emit_solid(TSP_TILE_CEILING,C_CEILING);
+    emit_solid(TSP_TILE_FLOOR,C_FLOOR);
+    emit_horizon();
+}
+
 /*
  * Framebuffer-visible completion oracle for the four-megabyte stream ROM.
  * Every CRAM entry becomes the same impossible-to-confuse magenta only after
