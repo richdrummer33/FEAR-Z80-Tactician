@@ -19,8 +19,11 @@ enum {
     TSP_HOST_LIGHT_HARD = 2u,
     /* Same hard cast plus one-sided ordered-dither penumbra. */
     TSP_HOST_LIGHT_POINT = 3u,
-    /* World-space wall material texture, then the same point-light stack. */
-    TSP_HOST_LIGHT_TEXTURE = 4u
+    /* Coarse world-space material classification, then the same point-light stack. */
+    TSP_HOST_LIGHT_TEXTURE = 4u,
+    /* True per-pixel world/projective material sampling. The 8x8 grid is only
+     * allowed after the final projected pixels exist. */
+    TSP_HOST_LIGHT_PROJECTIVE = 5u
 };
 
 /* Select one host-bake presentation layer and provide the exact camera state.
