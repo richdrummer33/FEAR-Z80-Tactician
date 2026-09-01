@@ -122,6 +122,13 @@ void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x
                                       double depth);
 void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
                                     uint8_t shade,uint8_t black,double depth);
+/* Host-only clipped lighting overlay. Writes only where target_sid is already
+ * the visible owner, and independently depth-tests multiple overlay facets.
+ * The base owner's geometric depth/identity are preserved. */
+void tsp_host_composite_pixel_overlay_depth(uint8_t sx,uint8_t sy,
+                                            uint8_t target_sid,
+                                            uint8_t shade,uint8_t black,
+                                            double depth);
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
 uint16_t tsp_host_composite_frame_load_count(void);
