@@ -39,6 +39,7 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     s->objects[id].outline_mode=outline_mode;
     s->objects[id].visible=1u;
     s->objects[id].casts_shadow=1u;
+    s->objects[id].shade_levels=3u;
     s->object_count=(uint8_t)(id+1u);
     return id;
 }
@@ -48,6 +49,12 @@ void rmb_set_object_flags(RMBScene *s,uint8_t object_id,
     if(object_id>=s->object_count)rmb_fail("invalid mesh object id");
     s->objects[object_id].visible=(uint8_t)(visible?1u:0u);
     s->objects[object_id].casts_shadow=(uint8_t)(casts_shadow?1u:0u);
+}
+
+void rmb_set_object_shade_levels(RMBScene *s,uint8_t object_id,uint8_t levels){
+    if(object_id>=s->object_count)rmb_fail("invalid mesh object id");
+    if(levels<1u||levels>3u)rmb_fail("mesh shade levels must be 1..3");
+    s->objects[object_id].shade_levels=levels;
 }
 
 static RMBVec3 rotate_xyz(RMBVec3 p,double rx,double ry,double rz){
@@ -361,6 +368,11 @@ static void raster_triangle(const RMBScene *s,const RMBTriangle *t,
     if(y1>143)y1=143;
     if(x0>x1||y0>y1)return;
     shade=face_shade(n,ctr,light,t->shade_bias);
+    {
+        uint8_t levels=s->objects[t->object_id].shade_levels;
+        if(levels==1u)shade=1u;
+        else if(levels==2u)shade=(uint8_t)(shade?2u:0u);
+    }
     for(y=y0;y<=y1;++y)for(x=x0;x<=x1;++x){
         double px=(double)x+0.5,py=(double)y+0.5;
         double w0=edge2(pb.x,pb.y,pc.x,pc.y,px,py)/area;
