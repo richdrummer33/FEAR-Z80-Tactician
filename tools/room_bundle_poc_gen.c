@@ -1198,6 +1198,18 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                      (unsigned)exit_portal,(unsigned)f);
             if(!tsp_host_composite_write_ppm(path))die("route screenshot write failed");
         }
+
+        /* Review mode emits complete frame sequences for the two geometry
+         * stress rooms. CI turns these into downloadable MP4 + PNG proof
+         * artifacts without changing the normal room-bundle bake output. */
+        if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
+           entry_portal==0u&&exit_portal==1u&&(bundle==4u||bundle==7u)){
+            const char *tag=bundle==4u?"gallery-window":"solid-pillars";
+            snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
+                     outdir,tag,(unsigned)f);
+            if(!tsp_host_composite_write_ppm(path))
+                die("review frame write failed");
+        }
     }
 
     if(memcmp(prev,canonical,sizeof(prev))!=0)
