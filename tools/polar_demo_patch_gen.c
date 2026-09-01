@@ -73,7 +73,8 @@ static uint8_t parse_lighting_stage(const char *s){
     if(!strcmp(s,"hard"))return TSP_HOST_LIGHT_HARD;
     if(!strcmp(s,"point"))return TSP_HOST_LIGHT_POINT;
     if(!strcmp(s,"texture"))return TSP_HOST_LIGHT_TEXTURE;
-    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|hard|point|texture)\n",s);
+    if(!strcmp(s,"projective"))return TSP_HOST_LIGHT_PROJECTIVE;
+    fprintf(stderr,"unknown lighting stage '%s' (expected baseline|ao|hard|point|texture|projective)\n",s);
     exit(2);
 }
 static int capture_frame(uint16_t frame){
