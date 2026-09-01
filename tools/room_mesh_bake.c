@@ -37,8 +37,17 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     uint8_t id=s->object_count;
     if(id>=RMB_MAX_OBJECTS)rmb_fail("too many mesh objects");
     s->objects[id].outline_mode=outline_mode;
+    s->objects[id].visible=1u;
+    s->objects[id].casts_shadow=1u;
     s->object_count=(uint8_t)(id+1u);
     return id;
+}
+
+void rmb_set_object_flags(RMBScene *s,uint8_t object_id,
+                          uint8_t visible,uint8_t casts_shadow){
+    if(object_id>=s->object_count)rmb_fail("invalid mesh object id");
+    s->objects[object_id].visible=(uint8_t)(visible?1u:0u);
+    s->objects[object_id].casts_shadow=(uint8_t)(casts_shadow?1u:0u);
 }
 
 static RMBVec3 rotate_xyz(RMBVec3 p,double rx,double ry,double rz){
@@ -127,9 +136,15 @@ static void add_triangle(RMBScene *s,uint8_t obj,uint16_t a,uint16_t b,uint16_t 
     t=&s->triangles[id];
     t->v[0]=a;t->v[1]=b;t->v[2]=c;t->object_id=obj;t->shade_bias=bias;
     s->triangle_count=(uint16_t)(id+1u);
-    add_edge_ref(s,a,b,(int16_t)id,obj);
-    add_edge_ref(s,b,c,(int16_t)id,obj);
-    add_edge_ref(s,c,a,(int16_t)id,obj);
+    /* Edge adjacency exists only for objects that actually request outline
+     * rendering. Imported hero meshes intentionally use silent polygon edges;
+     * skipping adjacency here avoids both O(E^2) edge insertion and a large
+     * useless edge vocabulary. */
+    if(s->objects[obj].outline_mode!=RMB_OUTLINE_NONE){
+        add_edge_ref(s,a,b,(int16_t)id,obj);
+        add_edge_ref(s,b,c,(int16_t)id,obj);
+        add_edge_ref(s,c,a,(int16_t)id,obj);
+    }
 }
 
 void rmb_add_box(RMBScene *s,uint8_t obj,const RMBTransform *xf,
@@ -149,6 +164,38 @@ void rmb_add_box(RMBScene *s,uint8_t obj,const RMBTransform *xf,
         v[i]=add_vertex(s,apply_xf(xf,p));
     }
     for(i=0u;i<12u;++i)add_triangle(s,obj,v[f[i][0]],v[f[i][1]],v[f[i][2]],bias);
+}
+
+void rmb_add_indexed_mesh_q8(RMBScene *s,uint8_t obj,const RMBTransform *xf,
+                             const int16_t *xyz_q8,uint16_t vertex_count,
+                             const uint16_t *indices,uint16_t triangle_count,
+                             int8_t bias){
+    uint16_t base,i;
+    uint32_t t;
+    if(obj>=s->object_count)rmb_fail("invalid indexed-mesh object id");
+    if(!xyz_q8||!indices||!vertex_count||!triangle_count)
+        rmb_fail("invalid indexed-mesh buffers");
+    if((uint32_t)s->vertex_count+vertex_count>RMB_MAX_VERTICES)
+        rmb_fail("indexed mesh exceeds vertex capacity");
+    if((uint32_t)s->triangle_count+triangle_count>RMB_MAX_TRIANGLES)
+        rmb_fail("indexed mesh exceeds triangle capacity");
+
+    base=s->vertex_count;
+    for(i=0u;i<vertex_count;++i){
+        RMBVec3 p={
+            (double)xyz_q8[(uint32_t)i*3u+0u]/256.0,
+            (double)xyz_q8[(uint32_t)i*3u+1u]/256.0,
+            (double)xyz_q8[(uint32_t)i*3u+2u]/256.0
+        };
+        (void)add_vertex(s,apply_xf(xf,p));
+    }
+    for(t=0u;t<(uint32_t)triangle_count;++t){
+        uint16_t a=indices[t*3u+0u],b=indices[t*3u+1u],d=indices[t*3u+2u];
+        if(a>=vertex_count||b>=vertex_count||d>=vertex_count)
+            rmb_fail("indexed mesh index out of range");
+        add_triangle(s,obj,(uint16_t)(base+a),(uint16_t)(base+b),
+                     (uint16_t)(base+d),bias);
+    }
 }
 
 void rmb_add_cylinder(RMBScene *s,uint8_t obj,const RMBTransform *xf,
@@ -400,6 +447,7 @@ int rmb_segment_occluded(const RMBScene *s,
     if(!s||!s->triangle_count||!segment_aabb_hit(s,o,d))return 0;
     for(i=0u;i<s->triangle_count;++i){
         const RMBTriangle *t=&s->triangles[i];
+        if(!s->objects[t->object_id].casts_shadow)continue;
         if(segment_triangle_hit(o,d,
                                 s->vertices[t->v[0]],
                                 s->vertices[t->v[1]],
@@ -419,6 +467,8 @@ void rmb_render(const RMBScene *s,double cx,double cy,double cz,
     for(i=0u;i<s->triangle_count;++i){
         const RMBTriangle *t=&s->triangles[i];
         uint8_t owner=(uint8_t)(0x80u+(t->object_id&0x3fu));
+        front[i]=0u;
+        if(!s->objects[t->object_id].visible)continue;
         front[i]=tri_front(s,t,cam);
         if(front[i])raster_triangle(s,t,cx,cy,cz,yaw,light,owner);
     }
@@ -427,7 +477,7 @@ void rmb_render(const RMBScene *s,double cx,double cy,double cz,
         const RMBEdge *e=&s->edges[i];
         uint8_t mode=s->objects[e->object_id].outline_mode;
         uint8_t silhouette=0u,crease=0u,owner;
-        if(mode==RMB_OUTLINE_NONE)continue;
+        if(!s->objects[e->object_id].visible||mode==RMB_OUTLINE_NONE)continue;
         if(e->tri0>=0){
             uint8_t f0=front[(uint16_t)e->tri0];
             if(e->tri1<0)silhouette=f0;
