@@ -1166,7 +1166,7 @@ static void render_horizontal_column(const World *w,const Pose *p,int sx){
             if(!point_in_hsurf(s,wx,wy))continue;
             shade=depth<=31.0?2:(depth<=55.0?1:0);
             shade+=s->shade_bias;
-            if(shade<0)shade=0;if(shade>2)shade=2;
+            if(shade<0)shade=0;\n            if(shade>2)shade=2;
             /* 0xfe marks a host-only horizontal receiver. Current point-light
              * pass simply leaves such local caps ambient; geometry is exact. */
             tsp_host_composite_pixel_depth((uint8_t)sx,(uint8_t)sy,0xfeu,
