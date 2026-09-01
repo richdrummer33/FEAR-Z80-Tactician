@@ -331,7 +331,7 @@ static void self_test_derived_riser(void){
         die("derived riser self-test: incorrect vertical range");
 }
 static void init_world(World *w){
-    init_world(w);
+    memset(w,0,sizeof(*w));
     rmb_scene_init(&w->mesh);
 }
 
