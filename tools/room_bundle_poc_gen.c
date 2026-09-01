@@ -278,6 +278,56 @@ static void add_rect(World *w,int16_t x0,int16_t y0,int16_t x1,int16_t y1,
     r->x0=x0;r->y0=y0;r->x1=x1;r->y1=y1;
     r->floor_z=floor_z;r->ceiling_z=ceiling_z;
 }
+
+/* Derive vertical step/riser faces from adjacent axis-aligned floor regions.
+ * Rect bounds are inclusive; neighboring regions therefore meet when one
+ * maximum + 1 equals the other's minimum. Only floor-height differences emit
+ * geometry. Ceiling differences can later use the same pattern for bulkheads. */
+static uint8_t add_risers_from_rects(World *w,uint8_t first,uint8_t count,int8_t bias){
+    uint8_t i,j,added=0u;
+    if((uint16_t)first+count>w->scene_rect_count)
+        die("riser derivation rectangle range invalid");
+    for(i=first;i<(uint8_t)(first+count);++i){
+        const TSPHostSceneRect *a=&w->scene_rects[i];
+        for(j=(uint8_t)(i+1u);j<(uint8_t)(first+count);++j){
+            const TSPHostSceneRect *b=&w->scene_rects[j];
+            int16_t z0,z1;
+            if(a->floor_z==b->floor_z)continue;
+            z0=a->floor_z<b->floor_z?a->floor_z:b->floor_z;
+            z1=a->floor_z>b->floor_z?a->floor_z:b->floor_z;
+
+            if(a->x1+1==b->x0||b->x1+1==a->x0){
+                int16_t x=(a->x1+1==b->x0)?b->x0:a->x0;
+                int16_t y0=a->y0>b->y0?a->y0:b->y0;
+                int16_t y1=a->y1<b->y1?a->y1:b->y1;
+                if(y0<=y1){
+                    add_seg(w,x,y0,x,y1,z0,z1,bias);
+                    ++added;
+                }
+            }else if(a->y1+1==b->y0||b->y1+1==a->y0){
+                int16_t y=(a->y1+1==b->y0)?b->y0:a->y0;
+                int16_t x0=a->x0>b->x0?a->x0:b->x0;
+                int16_t x1=a->x1<b->x1?a->x1:b->x1;
+                if(x0<=x1){
+                    add_seg(w,x0,y,x1,y,z0,z1,bias);
+                    ++added;
+                }
+            }
+        }
+    }
+    return added;
+}
+
+static void self_test_derived_riser(void){
+    World w;
+    memset(&w,0,sizeof(w));
+    add_rect(&w,0,0,7,7,0,32);
+    add_rect(&w,8,0,15,7,3,35);
+    if(add_risers_from_rects(&w,0u,2u,1)!=1u)
+        die("derived riser self-test: expected one shared height edge");
+    if(w.count!=1u||w.seg[0].z0!=0.0||w.seg[0].z1!=3.0)
+        die("derived riser self-test: incorrect vertical range");
+}
 static void finalize_scene(World *w){
     w->scene.vertices=w->scene_vertices;
     w->scene.vertex_count=w->scene_vertex_count;
@@ -474,19 +524,19 @@ static void make_stair_world(World *w){
     add_seg(w,56,64,56,80,4,36,0);
     add_seg(w,36,36,56,36,0,32,0);
 
-    /* Actual vertical riser faces. */
-    add_seg(w,56,12,56,36,0,1,1);
-    add_seg(w,72,12,72,36,1,2,1);
-    add_seg(w,56,52,96,52,2,3,1);
-    add_seg(w,56,64,96,64,3,4,1);
-
-    /* Horizontal receivers: non-overlapping bands with matched ceiling shift. */
-    add_rect(w,36,12,55,36,0,32);
-    add_rect(w,56,12,71,36,1,33);
-    add_rect(w,72,12,96,36,2,34);
-    add_rect(w,56,37,96,51,2,34);
-    add_rect(w,56,52,96,63,3,35);
-    add_rect(w,56,64,96,80,4,36);
+    /* Horizontal receivers: non-overlapping bands with matched ceiling shift.
+     * The vertical risers are derived from these floor discontinuities below. */
+    {
+        uint8_t floor_first=w->scene_rect_count;
+        add_rect(w,36,12,55,36,0,32);
+        add_rect(w,56,12,71,36,1,33);
+        add_rect(w,72,12,96,36,2,34);
+        add_rect(w,56,37,96,51,2,34);
+        add_rect(w,56,52,96,63,3,35);
+        add_rect(w,56,64,96,80,4,36);
+        if(add_risers_from_rects(w,floor_first,6u,1)!=4u)
+            die("stair world did not derive four expected risers");
+    }
 
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
     finalize_scene(w);
@@ -1319,6 +1369,7 @@ int main(int argc,char **argv){
     /* Fail before a multi-thousand-frame bake if the authoring expansion ever
      * stops producing the promised closed vertical wall/window topology. */
     self_test_solid_wall_geometry();
+    self_test_derived_riser();
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
@@ -1364,6 +1415,7 @@ int main(int argc,char **argv){
     fprintf(manifest,"solid_interior_wall_expansion=PASS\n");
     fprintf(manifest,"window_vertical_reveal_generation=PASS\n");
     fprintf(manifest,"window_horizontal_reveal_generation=PASS\n");
+    fprintf(manifest,"derived_stair_risers=PASS\n");
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc_canonical.bin",outdir);
     {
