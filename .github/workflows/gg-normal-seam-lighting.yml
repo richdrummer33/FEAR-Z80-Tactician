@@ -19,64 +19,90 @@ jobs:
       - name: Install GLB tooling
         run: cd tools/glb_rmb && npm install --no-audit --no-fund
 
-      - name: Extract source-mesh seams
-        run: |
-          mkdir -p build/normal-seam tools/generated
-          node tools/glb_rmb/analyze_seams.mjs "$DOOMGUY" tools/generated/doomguy_seams.inc \
-            --name doomguy --height 19 --up z --visual-tris 5200 --shadow-tris 200 \
-            --max-components 12 --model-scale 1.35 --model-offset 78,24,3 \
-            --light-world 62,-96,18 | tee build/normal-seam/DOOMGUY-SEAMS.json
-          node tools/glb_rmb/analyze_seams.mjs "$BONSAI" tools/generated/bonsai_seams.inc \
-            --name bonsai --height 64 --up z --visual-tris 5200 --shadow-tris 200 \
-            --max-components 12 --model-scale 1 --model-offset 78,24,0 \
-            --light-world 78,24,78 | tee build/normal-seam/BONSAI-SEAMS.json
-
-      - name: Batch Doomguy lighting/seam budget sweep
+      - name: Find highest-detail safe 135-percent Doomguy shell
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p build/normal-seam tools/generated
+          summary=build/normal-seam/VISUAL-BASELINE.tsv
+          printf "visual_target\tactual_visual\tbudget_0to1\tbudget_1to0\tmax_budget\tchanged_0to1\tchanged_1to0\tpatch_0to1\tpatch_1to0\ttileloads_0to1\ttileloads_1to0\n" > "$summary"
+          for target in 5200 4600 4000 3400 2800 2200; do
+            out="build/normal-seam/base-v$target"; mkdir -p "$out"
+            node tools/glb_rmb/convert.mjs "$DOOMGUY" tools/generated/doomguy_mesh.inc \
+              --name doomguy --height 19 --up z --visual-tris "$target" --lighting-tris 8 --shadow-tris 200 \
+              > "$out/import.json"
+            actual=$(node -e "const j=require('./$out/import.json');console.log(j.visual.triangles)")
+            cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
+              -DROOM_BUNDLE_DOOMGUY_GENERATED -DROOM_BUNDLE_DOOMGUY_SHADE_LEVELS=1 -DROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY=0 \
+              -Isrc -Itools tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c -lm -o "$out/gen"
+            ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 "$out/gen" "$out"
+            m="$out/room_bundle_poc_manifest.txt"; a=$(grep '^bundle=11 route=0->1 frames=' "$m"); b=$(grep '^bundle=11 route=1->0 frames=' "$m")
+            field(){ printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
+            b01=$(field "$a" scheduled_budget); b10=$(field "$b" scheduled_budget); maxb=$(( b01>b10?b01:b10 ))
+            c01=$(field "$a" changed_words); c10=$(field "$b" changed_words)
+            p01=$(field "$a" patch_bytes); p10=$(field "$b" patch_bytes)
+            t01=$(field "$a" tile_loads); t10=$(field "$b" tile_loads)
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$target" "$actual" "$b01" "$b10" "$maxb" "$c01" "$c10" "$p01" "$p10" "$t01" "$t10" | tee -a "$summary"
+          done
+          awk -F '\t' -v cap="$GG_UPLOAD_CEILING" 'NR>1&&$5<=cap{if($2>best){best=$2;line=$0}}END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-VISUAL.tsv
+          if [ ! -s build/normal-seam/SELECTED-VISUAL.tsv ]; then
+            awk -F '\t' 'NR==2||$5<best{best=$5;line=$0}END{print line}' "$summary" > build/normal-seam/SELECTED-VISUAL.tsv
+          fi
+          cut -f1 build/normal-seam/SELECTED-VISUAL.tsv > build/normal-seam/SELECTED-VISUAL-TARGET.txt
+          cat "$summary"
+          echo "selected visual: $(cat build/normal-seam/SELECTED-VISUAL.tsv)"
+
+      - name: Extract source-mesh seams at selected shell density
+        shell: bash
+        run: |
+          set -euo pipefail
+          visual=$(cat build/normal-seam/SELECTED-VISUAL-TARGET.txt)
+          node tools/glb_rmb/analyze_seams.mjs "$DOOMGUY" tools/generated/doomguy_seams.inc \
+            --name doomguy --height 19 --up z --visual-tris "$visual" --shadow-tris 200 \
+            --max-components 12 --model-scale 1.35 --model-offset 78,24,3 --light-world 62,-96,18 \
+            | tee build/normal-seam/DOOMGUY-SEAMS.json
+          node tools/glb_rmb/analyze_seams.mjs "$BONSAI" tools/generated/bonsai_seams.inc \
+            --name bonsai --height 64 --up z --visual-tris 5200 --shadow-tris 200 \
+            --max-components 12 --model-scale 1 --model-offset 78,24,0 --light-world 78,24,78 \
+            | tee build/normal-seam/BONSAI-SEAMS.json
+
+      - name: Batch lighting versus seam competition
+        shell: bash
+        run: |
+          set -euo pipefail
+          visual=$(cat build/normal-seam/SELECTED-VISUAL-TARGET.txt)
           summary=build/normal-seam/SWEEP.tsv
           printf "lighting_target\tactual_lighting\tseam_components\tbudget_0to1\tbudget_1to0\tmax_budget\tchanged_0to1\tchanged_1to0\tpatch_0to1\tpatch_1to0\ttileloads_0to1\ttileloads_1to0\n" > "$summary"
           for lighting in 0 8 12 20; do
-            genlight=$lighting
-            if [ "$genlight" -eq 0 ]; then genlight=8; fi
+            genlight=$lighting; if [ "$genlight" -eq 0 ]; then genlight=8; fi
             node tools/glb_rmb/convert.mjs "$DOOMGUY" tools/generated/doomguy_mesh.inc \
-              --name doomguy --height 19 --up z --visual-tris 5200 \
-              --lighting-tris "$genlight" --shadow-tris 200 \
+              --name doomguy --height 19 --up z --visual-tris "$visual" --lighting-tris "$genlight" --shadow-tris 200 \
               > "build/normal-seam/import-l$lighting.json"
             actual=$(node -e "const j=require('./build/normal-seam/import-l$lighting.json');console.log(j.lighting.triangles)")
-            for seams in 0 1 2 4 6; do
-              out="build/normal-seam/l$lighting-s$seams"
-              mkdir -p "$out"
+            for seams in 0 1 2 4; do
+              out="build/normal-seam/l$lighting-s$seams"; mkdir -p "$out"
               defs="-DROOM_BUNDLE_DOOMGUY_GENERATED -DROOM_BUNDLE_DOOMGUY_SHADE_LEVELS=1 -DROOM_BUNDLE_DOOMGUY_SEAMS -DROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS=$seams"
-              if [ "$lighting" -eq 0 ]; then
-                defs="$defs -DROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY=0"
-              else
-                defs="$defs -DROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY=1"
-              fi
+              if [ "$lighting" -eq 0 ]; then defs="$defs -DROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY=0"; else defs="$defs -DROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY=1"; fi
               cc -std=c99 -O2 -Wall -Wextra -Wpedantic $defs -Isrc -Itools \
-                tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
-                -lm -o "$out/gen"
+                tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c -lm -o "$out/gen"
               ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 "$out/gen" "$out"
-              m="$out/room_bundle_poc_manifest.txt"
-              a=$(grep '^bundle=11 route=0->1 frames=' "$m")
-              b=$(grep '^bundle=11 route=1->0 frames=' "$m")
+              m="$out/room_bundle_poc_manifest.txt"; a=$(grep '^bundle=11 route=0->1 frames=' "$m"); b=$(grep '^bundle=11 route=1->0 frames=' "$m")
               field(){ printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
-              b01=$(field "$a" scheduled_budget); b10=$(field "$b" scheduled_budget)
+              b01=$(field "$a" scheduled_budget); b10=$(field "$b" scheduled_budget); maxb=$(( b01>b10?b01:b10 ))
               c01=$(field "$a" changed_words); c10=$(field "$b" changed_words)
               p01=$(field "$a" patch_bytes); p10=$(field "$b" patch_bytes)
               t01=$(field "$a" tile_loads); t10=$(field "$b" tile_loads)
-              maxb=$(( b01 > b10 ? b01 : b10 ))
-              printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "$lighting" "$actual" "$seams" "$b01" "$b10" "$maxb" \
-                "$c01" "$c10" "$p01" "$p10" "$t01" "$t10" | tee -a "$summary"
+              printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$lighting" "$actual" "$seams" "$b01" "$b10" "$maxb" "$c01" "$c10" "$p01" "$p10" "$t01" "$t10" | tee -a "$summary"
             done
           done
+          # Select two numerical extremes under the real cap. If none survive,
+          # still choose the lowest-budget row so media/proof is never skipped.
+          awk -F '\t' -v cap="$GG_UPLOAD_CEILING" 'NR>1&&$6<=cap{if($3>bs||($3==bs&&$2>bl)){bs=$3;bl=$2;line=$0}}END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-SEAMS.tsv
+          awk -F '\t' -v cap="$GG_UPLOAD_CEILING" 'NR>1&&$6<=cap{if($2>bl||($2==bl&&$3>bs)){bl=$2;bs=$3;line=$0}}END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-LIGHTING.tsv
+          for f in SELECTED-SEAMS SELECTED-LIGHTING; do
+            if [ ! -s "build/normal-seam/$f.tsv" ]; then awk -F '\t' 'NR==2||$6<best{best=$6;line=$0}END{print line}' "$summary" > "build/normal-seam/$f.tsv"; fi
+          done
           cat "$summary"
-          awk -F '\t' -v cap="$GG_UPLOAD_CEILING" 'NR>1 && $6<=cap {if($3>bs || ($3==bs && $2>bl)){bs=$3;bl=$2;line=$0}} END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-SEAMS.tsv
-          awk -F '\t' -v cap="$GG_UPLOAD_CEILING" 'NR>1 && $6<=cap {if($2>bl || ($2==bl && $3>bs)){bl=$2;bs=$3;line=$0}} END{if(line)print line}' "$summary" > build/normal-seam/SELECTED-LIGHTING.tsv
-          test -s build/normal-seam/SELECTED-SEAMS.tsv
-          test -s build/normal-seam/SELECTED-LIGHTING.tsv
           echo "seam-heavy: $(cat build/normal-seam/SELECTED-SEAMS.tsv)"
           echo "light-heavy: $(cat build/normal-seam/SELECTED-LIGHTING.tsv)"
 
@@ -84,43 +110,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          visual=$(cat build/normal-seam/SELECTED-VISUAL-TARGET.txt)
           for kind in SEAMS LIGHTING; do
-            line=$(cat "build/normal-seam/SELECTED-$kind.tsv")
-            lighting=$(printf '%s\n' "$line" | cut -f1)
-            seams=$(printf '%s\n' "$line" | cut -f3)
+            line=$(cat "build/normal-seam/SELECTED-$kind.tsv"); lighting=$(printf '%s\n' "$line"|cut -f1); seams=$(printf '%s\n' "$line"|cut -f3)
             genlight=$lighting; if [ "$genlight" -eq 0 ]; then genlight=8; fi
-            node tools/glb_rmb/convert.mjs "$DOOMGUY" tools/generated/doomguy_mesh.inc \
-              --name doomguy --height 19 --up z --visual-tris 5200 \
-              --lighting-tris "$genlight" --shadow-tris 200 > /tmp/import.json
-            lowkind=$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')
-            out="build/normal-seam/proof-doomguy-$lowkind"
-            mkdir -p "$out"
+            node tools/glb_rmb/convert.mjs "$DOOMGUY" tools/generated/doomguy_mesh.inc --name doomguy --height 19 --up z --visual-tris "$visual" --lighting-tris "$genlight" --shadow-tris 200 >/tmp/import.json
+            lowkind=$(printf '%s' "$kind"|tr '[:upper:]' '[:lower:]'); out="build/normal-seam/proof-doomguy-$lowkind"; mkdir -p "$out"
             defs="-DROOM_BUNDLE_DOOMGUY_GENERATED -DROOM_BUNDLE_DOOMGUY_SHADE_LEVELS=1 -DROOM_BUNDLE_DOOMGUY_SEAMS -DROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS=$seams"
             if [ "$lighting" -eq 0 ]; then defs="$defs -DROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY=0"; else defs="$defs -DROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY=1"; fi
-            cc -std=c99 -O2 -Wall -Wextra -Wpedantic $defs -Isrc -Itools \
-              tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
-              -lm -o "$out/gen"
+            cc -std=c99 -O2 -Wall -Wextra -Wpedantic $defs -Isrc -Itools tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c -lm -o "$out/gen"
             ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 ROOM_BUNDLE_CAPTURE_REVIEW=1 "$out/gen" "$out"
           done
 
-      - name: Bake giant bonsai with inherited seam-heavy settings
+      - name: Bake giant bonsai from selected Doomguy settings
         shell: bash
         run: |
           set -euo pipefail
-          line=$(cat build/normal-seam/SELECTED-SEAMS.tsv)
-          lighting=$(printf '%s\n' "$line" | cut -f1)
-          seams=$(printf '%s\n' "$line" | cut -f3)
+          line=$(cat build/normal-seam/SELECTED-SEAMS.tsv); lighting=$(printf '%s\n' "$line"|cut -f1); seams=$(printf '%s\n' "$line"|cut -f3)
           genlight=$lighting; if [ "$genlight" -eq 0 ]; then genlight=8; fi
-          node tools/glb_rmb/convert.mjs "$BONSAI" tools/generated/bonsai_mesh.inc \
-            --name bonsai --height 64 --up z --visual-tris 5200 \
-            --lighting-tris "$genlight" --shadow-tris 200 \
-            > build/normal-seam/BONSAI-IMPORT.json
-          out=build/normal-seam/proof-bonsai
-          mkdir -p "$out"
-          defs="-DROOM_BUNDLE_BONSAI_GENERATED -DROOM_BUNDLE_BONSAI_SEAMS -DROOM_BUNDLE_BONSAI_SEAM_COMPONENTS=$seams"
-          cc -std=c99 -O2 -Wall -Wextra -Wpedantic $defs -Isrc -Itools \
-            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
-            -lm -o "$out/gen"
+          node tools/glb_rmb/convert.mjs "$BONSAI" tools/generated/bonsai_mesh.inc --name bonsai --height 64 --up z --visual-tris 5200 --lighting-tris "$genlight" --shadow-tris 200 > build/normal-seam/BONSAI-IMPORT.json
+          out=build/normal-seam/proof-bonsai; mkdir -p "$out"
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -DROOM_BUNDLE_BONSAI_GENERATED -DROOM_BUNDLE_BONSAI_SEAMS -DROOM_BUNDLE_BONSAI_SEAM_COMPONENTS=$seams \
+            -Isrc -Itools tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c -lm -o "$out/gen"
           ROOM_BUNDLE_ONLY=12 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 ROOM_BUNDLE_CAPTURE_REVIEW=1 "$out/gen" "$out"
 
       - name: Install video encoder
@@ -131,12 +142,10 @@ jobs:
         run: |
           set -euo pipefail
           for d in build/normal-seam/proof-doomguy-seams build/normal-seam/proof-doomguy-lighting; do
-            test -f "$d/review-doomguy-detail-000.ppm"
             ffmpeg -y -framerate 30 -i "$d/review-doomguy-detail-%03d.ppm" -c:v libx264 -pix_fmt yuv420p "$d/detail.mp4"
             ffmpeg -y -i "$d/review-doomguy-detail-060.ppm" "$d/detail-mid.png"
           done
           d=build/normal-seam/proof-bonsai
-          test -f "$d/review-bonsai-detail-000.ppm"
           ffmpeg -y -framerate 30 -i "$d/review-bonsai-detail-%03d.ppm" -c:v libx264 -pix_fmt yuv420p "$d/detail.mp4"
           ffmpeg -y -i "$d/review-bonsai-detail-030.ppm" "$d/base-close.png"
           ffmpeg -y -i "$d/review-bonsai-detail-090.ppm" "$d/outer-orbit.png"
@@ -146,10 +155,10 @@ jobs:
         with:
           name: normal-seam-lighting-and-bonsai-proof
           path: |
-            build/normal-seam/SWEEP.tsv
-            build/normal-seam/SELECTED-*.tsv
+            build/normal-seam/*.tsv
+            build/normal-seam/*.txt
             build/normal-seam/*SEAMS.json
-            build/normal-seam/*IMPORT.json
+            build/normal-seam/BONSAI-IMPORT.json
             build/normal-seam/proof-doomguy-seams/*.png
             build/normal-seam/proof-doomguy-seams/*.mp4
             build/normal-seam/proof-doomguy-seams/room_bundle_poc_manifest.txt
