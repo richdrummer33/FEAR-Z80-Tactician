@@ -85,7 +85,20 @@ RMBTransform rmb_compose(const RMBTransform *parent,const RMBTransform *child){
 static uint16_t add_vertex(RMBScene *s,RMBVec3 p){
     uint16_t id=s->vertex_count;
     if(id>=RMB_MAX_VERTICES)rmb_fail("too many mesh vertices");
-    s->vertices[id]=p;s->vertex_count=(uint16_t)(id+1u);return id;
+    s->vertices[id]=p;
+    if(!s->bounds_valid){
+        s->bounds_min=s->bounds_max=p;
+        s->bounds_valid=1u;
+    }else{
+        if(p.x<s->bounds_min.x)s->bounds_min.x=p.x;
+        if(p.y<s->bounds_min.y)s->bounds_min.y=p.y;
+        if(p.z<s->bounds_min.z)s->bounds_min.z=p.z;
+        if(p.x>s->bounds_max.x)s->bounds_max.x=p.x;
+        if(p.y>s->bounds_max.y)s->bounds_max.y=p.y;
+        if(p.z>s->bounds_max.z)s->bounds_max.z=p.z;
+    }
+    s->vertex_count=(uint16_t)(id+1u);
+    return id;
 }
 
 static void add_edge_ref(RMBScene *s,uint16_t a,uint16_t b,int16_t tri,uint8_t obj){
@@ -337,6 +350,69 @@ static void draw_silhouette_edge(const RMBScene *s,const RMBEdge *e,
         if(d<=0.0)d=0.001;
         tsp_host_composite_pixel_depth((uint8_t)ix,(uint8_t)iy,owner,0u,1u,d);
     }
+}
+
+static int segment_aabb_hit(const RMBScene *s,RMBVec3 o,RMBVec3 d){
+    double t0=0.0,t1=1.0;
+    int axis;
+    const double omin[3]={s->bounds_min.x,s->bounds_min.y,s->bounds_min.z};
+    const double omax[3]={s->bounds_max.x,s->bounds_max.y,s->bounds_max.z};
+    const double ov[3]={o.x,o.y,o.z};
+    const double dv[3]={d.x,d.y,d.z};
+    if(!s->bounds_valid)return 0;
+    for(axis=0;axis<3;++axis){
+        if(fabs(dv[axis])<1e-12){
+            if(ov[axis]<omin[axis]||ov[axis]>omax[axis])return 0;
+        }else{
+            double a=(omin[axis]-ov[axis])/dv[axis];
+            double b=(omax[axis]-ov[axis])/dv[axis];
+            if(a>b){double q=a;a=b;b=q;}
+            if(a>t0)t0=a;
+            if(b<t1)t1=b;
+            if(t0>t1)return 0;
+        }
+    }
+    return t1>1e-7&&t0<1.0-1e-7;
+}
+
+static int segment_triangle_hit(RMBVec3 o,RMBVec3 d,
+                                RMBVec3 a,RMBVec3 b,RMBVec3 c){
+    RMBVec3 e1=vsub(b,a),e2=vsub(c,a),p=vcross(d,e2);
+    double det=vdot(e1,p),inv,u,v,t;
+    RMBVec3 q,tv;
+    if(fabs(det)<1e-12)return 0;
+    inv=1.0/det;
+    tv=vsub(o,a);
+    u=vdot(tv,p)*inv;
+    if(u<-1e-8||u>1.0+1e-8)return 0;
+    q=vcross(tv,e1);
+    v=vdot(d,q)*inv;
+    if(v<-1e-8||u+v>1.0+1e-8)return 0;
+    t=vdot(e2,q)*inv;
+    return t>1e-6&&t<1.0-1e-6;
+}
+
+int rmb_segment_occluded(const RMBScene *s,
+                         double lx,double ly,double lz,
+                         double wx,double wy,double wz){
+    RMBVec3 o={lx,ly,lz},d={wx-lx,wy-ly,wz-lz};
+    uint16_t i;
+    if(!s||!s->triangle_count||!segment_aabb_hit(s,o,d))return 0;
+    for(i=0u;i<s->triangle_count;++i){
+        const RMBTriangle *t=&s->triangles[i];
+        if(segment_triangle_hit(o,d,
+                                s->vertices[t->v[0]],
+                                s->vertices[t->v[1]],
+                                s->vertices[t->v[2]]))
+            return 1;
+    }
+    return 0;
+}
+
+static int rmb_scene_occluder_adapter(const void *user,
+                                      double lx,double ly,double lz,
+                                      double wx,double wy,double wz){
+    return rmb_segment_occluded((const RMBScene *)user,lx,ly,lz,wx,wy,wz);
 }
 
 void rmb_render(const RMBScene *s,double cx,double cy,double cz,
