@@ -101,6 +101,10 @@ template<typename T> static T sym(void *h, const char *name) {
 int main(int argc,char **argv){
     if(argc<4){fprintf(stderr,"usage: %s <core.so> <rom.gg> <frames|max_frames> [frame.ppm] [ram_addr_hex] [ram_len] [wait_ram16_target]\n",argv[0]);return 2;}
     const char *core_path=argv[1], *rom_path=argv[2]; unsigned frames=(unsigned)strtoul(argv[3],nullptr,10);
+    const char *frame_dir=getenv("LIBRETRO_FRAME_DIR");
+    unsigned frame_start=0u,frame_stride=1u,frame_capture_index=0u;
+    if(const char *s=getenv("LIBRETRO_FRAME_START")) frame_start=(unsigned)strtoul(s,nullptr,0);
+    if(const char *s=getenv("LIBRETRO_FRAME_STRIDE")){frame_stride=(unsigned)strtoul(s,nullptr,0);if(!frame_stride)frame_stride=1u;}
     if(const char *joy=getenv("LIBRETRO_JOYPAD_MASK")) g_joypad_mask=(uint16_t)strtoul(joy,nullptr,0);
     if(const char *after=getenv("LIBRETRO_JOYPAD_AFTER_FRAME")) g_joypad_after_frame=(unsigned)strtoul(after,nullptr,0);
     const char *ppm=(argc>=5)?argv[4]:nullptr;
@@ -133,13 +137,18 @@ int main(int argc,char **argv){
     unsigned ran=0u;
     for(;ran<frames;++ran){
         retro_run();
+        if(frame_dir&&ran>=frame_start&&((ran-frame_start)%frame_stride)==0u){
+            char path[1024];
+            snprintf(path,sizeof(path),"%s/frame_%05u.ppm",frame_dir,frame_capture_index++);
+            if(!save_ppm(path)){fprintf(stderr,"failed to save sequence frame %s\n",path);return 5;}
+        }
         if(wait_marker){
             if(!ram||ram_size<2u){fprintf(stderr,"system RAM unavailable\n");return 6;}
             uint16_t v=(uint16_t)ram[ram_off]|((uint16_t)ram[(ram_off+1u)%ram_size]<<8);
             if(v>=wait_target){++ran;break;}
         }
     }
-    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
+    printf("ran=%u video_frames=%u captured_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu\n",ran,g_video_frames,frame_capture_index,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size());
     if(ppm){ if(!save_ppm(ppm)){fprintf(stderr,"failed to save ppm\n");return 5;} printf("saved=%s\n",ppm); }
     if(argc>=6){
         unsigned len=(argc>=7)?(unsigned)strtoul(argv[6],nullptr,0):2u;
