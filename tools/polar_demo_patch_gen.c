@@ -725,19 +725,20 @@ int main(int argc,char **argv){
     const char *dir;
     Patch patches[PATCH_COUNT];
     TilePatch *tilepatches=(TilePatch *)calloc(PATCH_COUNT,sizeof(TilePatch));
-    Bank banks[MAX_BANKS],tilebanks[MAX_TILEPATCH_BANKS];
+    Bank banks[MAX_BANKS],tilebanks[MAX_TILEPATCH_BANKS],patternbanks[MAX_PATTERN_BANKS];
+    PatternDict pattern_dict={0};
     TSPState s;
     uint16_t prev[TSP_MAP_CELLS],cur[TSP_MAP_CELLS],base[TSP_MAP_CELLS];
     uint16_t *all_maps=(uint16_t *)malloc((size_t)PATCH_COUNT*TSP_MAP_CELLS*sizeof(uint16_t));
     FILE *refs,*camera_csv,*lighting_info;
     char refpath[512],camerapath[512],lightpath[512];
     uint64_t seq_hash=UINT64_C(1469598103934665603),total=0u;
-    uint32_t zero=0u,changed_total=0u;
+    uint32_t zero=0u,changed_total=0u,raw_tile_jobs=0u;
     uint16_t i;
-    unsigned bank_count=0u,tilebank_count=0u,tile_vblank_budget=0u;
+    unsigned bank_count=0u,tilebank_count=0u,patternbank_count=0u,tile_vblank_budget=0u;
     PolarExploreCursor explore;
 
-    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|hard|point|texture]\n",argv[0]);return 2;}
+    if(argc<2||argc>3){fprintf(stderr,"usage: %s OUTPUT_DIR [baseline|ao|hard|point|texture|projective]\n",argv[0]);return 2;}
     if(!tilepatches||!all_maps)die("out of memory allocating bake tables");
     dir=argv[1];
     if(argc==3){g_lighting_name=argv[2];g_lighting_stage=parse_lighting_stage(argv[2]);}
@@ -812,6 +813,17 @@ int main(int argc,char **argv){
            tsp_host_composite_total_load_count());
     fflush(stdout);
     tile_vblank_budget=schedule_tilepatches(tilepatches,all_maps,dir);
+    raw_tile_jobs=count_tile_jobs(tilepatches);
+    pattern_dict_init(&pattern_dict,raw_tile_jobs);
+    compact_tilepatch_patterns(tilepatches,&pattern_dict);
+    printf("global_pattern_dictionary: jobs=%" PRIu32 " unique=%" PRIu32
+           " raw_pattern_bytes=%" PRIu32 " dictionary_bytes=%" PRIu32
+           " compact_ref_bytes=%" PRIu32 "\n",
+           raw_tile_jobs,pattern_dict.count,
+           raw_tile_jobs*TSP_HOST_TILE_BYTES,
+           pattern_dict.count*TSP_HOST_TILE_BYTES,
+           raw_tile_jobs*4u);
+    fflush(stdout);
 
     memset(banks,0,sizeof(banks));
     for(i=0u;i<PATCH_COUNT;){
@@ -853,6 +865,28 @@ int main(int argc,char **argv){
     }
     emit_tilepatch_dispatch(dir,tilebanks,tilebank_count);
 
+    memset(patternbanks,0,sizeof(patternbanks));
+    {
+        uint32_t pi=0u;
+        while(pi<pattern_dict.count){
+            Bank *b;
+            if(patternbank_count>=MAX_PATTERN_BANKS)die("global patterns exceed generated bank budget");
+            b=&patternbanks[patternbank_count];b->first=(uint16_t)pi;
+            while(pi<pattern_dict.count){
+                uint32_t next=b->bytes+TSP_HOST_TILE_BYTES;
+                if(b->count&&next>MAX_PATTERN_BANK_STREAM)break;
+                if(next>MAX_PATTERN_BANK_STREAM)die("single pattern exceeds bank stream cap");
+                b->bytes=next;++b->count;++pi;
+            }
+            ++patternbank_count;
+        }
+    }
+    for(i=0u;i<MAX_PATTERN_BANKS;++i){
+        Bank empty={0u,0u,0u};
+        emit_pattern_bank(dir,i,&pattern_dict,i<patternbank_count?&patternbanks[i]:&empty);
+    }
+    emit_pattern_dispatch(dir,patternbanks,patternbank_count);
+
     for(i=0u;i<PATCH_COUNT;++i)total+=patches[i].len;
     printf("=== POLAR PLAYER-LIKE EXPLORE PATCH GENERATOR ===\n");
     printf("lighting_stage=%s (%u)\n",g_lighting_name,(unsigned)g_lighting_stage);
@@ -865,10 +899,11 @@ int main(int argc,char **argv){
         printf("  bank%u first=%u count=%u stream=%" PRIu32 " bytes\n",
                i,banks[i].first,banks[i].count,banks[i].bytes);
     printf("generated runtime sources + exact %u-map exploration reference sequence; replay=PASS\n", PATCH_COUNT);
-    printf("baked composite cache: peak_unique/frame=%u original_peak_loads=%u total_tile_loads=%" PRIu32 " scheduled_vblank_budget=%u tilepatch_banks=%u\n",
+    printf("baked composite cache: peak_unique/frame=%u original_peak_loads=%u total_tile_loads=%" PRIu32 " scheduled_vblank_budget=%u tilepatch_banks=%u pattern_dict_unique=%" PRIu32 " pattern_banks=%u\n",
            (unsigned)tsp_host_composite_peak_unique_count(),
            (unsigned)tsp_host_composite_peak_load_count(),
-           tsp_host_composite_total_load_count(),tile_vblank_budget,tilebank_count);
+           tsp_host_composite_total_load_count(),tile_vblank_budget,tilebank_count,
+           pattern_dict.count,patternbank_count);
     printf("final state=(%.2f,%.2f) yaw=%u\n",s.x_q4/16.0,s.y_q4/16.0,s.yaw);
 
     /* Portal semantics probes are deliberately rendered AFTER all generated
@@ -911,6 +946,7 @@ int main(int argc,char **argv){
     }
 
     for(i=0u;i<PATCH_COUNT;++i)free(tilepatches[i].bytes);
+    pattern_dict_free(&pattern_dict);
     free(tilepatches);free(all_maps);
     return 0;
 }
