@@ -534,8 +534,11 @@ static void make_stair_world(World *w){
         add_rect(w,56,37,96,51,2,34);
         add_rect(w,56,52,96,63,3,35);
         add_rect(w,56,64,96,80,4,36);
-        if(add_risers_from_rects(w,floor_first,6u,1)!=4u)
-            die("stair world did not derive four expected risers");
+        /* Five shared height discontinuities are implied. The old manual
+         * geometry listed only four and omitted the z=1 -> z=2 turn/landing
+         * face; deriving from the floor regions closes that hole. */
+        if(add_risers_from_rects(w,floor_first,6u,1)!=5u)
+            die("stair world did not derive five expected risers");
     }
 
     w->lighting_stage=TSP_HOST_LIGHT_BASELINE;
