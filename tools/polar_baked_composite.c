@@ -66,6 +66,12 @@ static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
 static uint8_t g_camera_yaw;
 
+/* Host-only projective material source. This never enters the GG runtime:
+ * camera/wall projection is resolved here, then only final 8x8 patterns and
+ * name-table words are baked for replay. */
+static uint8_t g_projective_tex[128][64];
+static uint8_t g_projective_tex_ready;
+
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
 static uint64_t g_cache_hash[HW_TILES];
 static uint32_t g_cache_last[HW_TILES];
@@ -122,7 +128,7 @@ static int light_reactive(uint8_t v){
 }
 
 void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
-    g_lighting_stage=stage>TSP_HOST_LIGHT_TEXTURE?TSP_HOST_LIGHT_TEXTURE:stage;
+    g_lighting_stage=stage>TSP_HOST_LIGHT_PROJECTIVE?TSP_HOST_LIGHT_PROJECTIVE:stage;
     if(camera){
         g_camera_x_q4=camera->x_q4;
         g_camera_y_q4=camera->y_q4;
@@ -390,6 +396,86 @@ static uint8_t wall_material_sample(uint8_t sid,int sx,int sy,uint8_t fallback){
     tx=(int)floor(u*0.25);ty=(int)floor(wz*0.25);
     tx%=8;ty%=8;if(tx<0)tx+=8;if(ty<0)ty+=8;
     return k_wall_material_8x8[(unsigned)ty*8u+(unsigned)tx];
+}
+
+
+/*
+ * Exact/projective material path.
+ *
+ * Critical invariant: screen-tile coordinates NEVER participate in U/V.
+ * We first recover the true world receiver point for this visible pixel.
+ * U is physical distance along the wall segment. V is physical world Z.
+ * Only after those projected coordinates exist do we deliberately simplify
+ * the source material: one mirrored 8-texel strip horizontally, 4-source-pixel
+ * V buckets, and a collapsed semantic colour vocabulary.
+ *
+ * That preserves arbitrary perspective shear/compression and exact wall edges
+ * while attacking pattern entropy in texture/material space rather than by
+ * imposing an 8x8 screen-local transform.
+ */
+static void load_projective_texture(void){
+    FILE *f;
+    int ch,count=0;
+    if(g_projective_tex_ready)return;
+    f=fopen("experiments/polar_texture/TWBARLT1_2bpp.txt","rb");
+    if(!f)die("cannot open experiments/polar_texture/TWBARLT1_2bpp.txt");
+    while((ch=fgetc(f))!=EOF){
+        if(ch=='#'){while((ch=fgetc(f))!=EOF&&ch!='\n'){}continue;}
+        if(ch>='0'&&ch<='3'){
+            if(count>=64*128)die("projective wall texture has too many pixels");
+            g_projective_tex[count/64][count%64]=(uint8_t)(ch-'0');
+            ++count;
+        }
+    }
+    fclose(f);
+    if(count!=64*128)die("projective wall texture must contain exactly 64x128 class pixels");
+    g_projective_tex_ready=1u;
+}
+static int mirror_repeat8(int u){
+    int q=u%16;
+    if(q<0)q+=16;
+    return q<8?q:15-q;
+}
+static uint8_t projective_material_semantic(uint8_t cls,int vi){
+    /* Keep the authored lower grille black; elsewhere source black becomes the
+     * darkest oxide rather than a hole. Collapse the two similar steel body
+     * classes, but retain the brightest authored rail/mortar class. */
+    if(!cls)return vi>=92?SEM_BLACK:SEM_FAR;
+    if(cls>=3u)return MAT_MORTAR;
+    return SEM_MID;
+}
+static uint8_t wall_projective_material_sample(uint8_t sid,int sx,int sy,uint8_t fallback){
+    const TSPHostWorldSegment *seg;
+    const TSPHostWorldVertex *a,*b;
+    double wx,wy,wz,dx,dy,len,u;
+    int ui,vi;
+    uint8_t cls;
+    if(sid>=TSP_HOST_WORLD_SEGMENT_COUNT)return fallback;
+    if(!wall_world_point(sid,sx,sy,&wx,&wy,&wz))return fallback;
+    seg=&k_tsp_host_world_segments[sid];
+    a=&k_tsp_host_world_vertices[seg->v0];
+    b=&k_tsp_host_world_vertices[seg->v1];
+    dx=(double)b->x-(double)a->x;
+    dy=(double)b->y-(double)a->y;
+    len=sqrt(dx*dx+dy*dy);
+    if(len<1e-9)return fallback;
+
+    /* Exact projected/world U first. One world unit is one source texel before
+     * the authored 8px mirrored-repeat reduction. */
+    u=((wx-(double)a->x)*dx+(wy-(double)a->y)*dy)/len;
+    ui=mirror_repeat8((int)floor(u+0.5));
+
+    /* Exact world-Z V first, then quantize in SOURCE space. Full wall height
+     * z=0..32 maps to source rows 0..127. Raised/lintel/riser profiles therefore
+     * crop the same world-aligned material rather than stretching to fit. */
+    vi=(int)floor((wz*127.0/TSP_CEILING_Z)+0.5);
+    if(vi<0)vi=0;else if(vi>127)vi=127;
+    vi=((vi+2)/4)*4;
+    if(vi>127)vi=127;
+
+    load_projective_texture();
+    cls=g_projective_tex[vi][ui];
+    return projective_material_semantic(cls,vi);
 }
 
 static uint8_t lit_semantic(uint8_t v){
@@ -665,11 +751,15 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
             uint8_t black=(uint8_t)(y==top||y==bot),pixel=color;
             if((border&1u)&&sx==clip_x0)black=1u;
             if((border&2u)&&sx==clip_x1)black=1u;
-            if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE){
-                /* All textured wall geometry first receives one common base
-                 * material. A post-pass promotes only completely interior wall
-                 * cells to sampled material colors, so clipping/cap/portal
-                 * shapes do not multiply across four texture variants. */
+            if(!black&&g_lighting_stage==TSP_HOST_LIGHT_PROJECTIVE){
+                /* Exact wall ownership already exists at this pixel. Sample
+                 * material from true world/projective coordinates; do not let
+                 * the 8x8 display grid influence U, V, phase, scale or bounds. */
+                pixel=wall_projective_material_sample(sid,sx,y,SEM_MID);
+            }else if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE){
+                /* Cheap control path: all textured wall geometry first receives
+                 * one common base material. A post-pass promotes only completely
+                 * interior cells to one sampled material colour. */
                 pixel=SEM_MID;
             }else if(!black&&g_lighting_stage>=TSP_HOST_LIGHT_AO){
                 uint8_t strength=0u;
@@ -788,7 +878,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     uint8_t needed[HW_TILES];
     uint16_t req_count=0u,i;
     ensure_init();
-    if(g_lighting_stage>=TSP_HOST_LIGHT_TEXTURE)
+    if(g_lighting_stage==TSP_HOST_LIGHT_TEXTURE)
         apply_world_material_texture();
     if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&TSP_HOST_STATIC_LIGHT_COUNT)
         apply_point_light();
