@@ -738,6 +738,19 @@ static uint8_t yaw_from_vec(double dx,double dy){
     return (uint8_t)v;
 }
 
+static Pose window_detail_pose(uint16_t f){
+    Pose p;
+    double q=(double)f/95.0;
+    double deg=50.0-100.0*q;
+    double a=deg*(PI/180.0);
+    const double tx=68.0,ty=-34.0,r=16.0;
+    p.x=tx+r*cos(a);
+    p.y=ty+r*sin(a);
+    p.z=16.0;
+    p.yaw=yaw_from_vec(tx-p.x,ty-p.y);
+    return p;
+}
+
 static Pose route_pose(uint16_t f,uint8_t bundle){
     Pose p;
     double q,inspect_y=30.0;
@@ -1333,6 +1346,21 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 
     if(memcmp(prev,canonical,sizeof(prev))!=0)
         die("route terminal seam name table != canonical seam");
+
+    /* Dedicated visual microscope for the new solid window. This is outside
+     * the serialized route and therefore cannot affect runtime bundle data. */
+    if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
+       bundle==4u&&entry_portal==0u&&exit_portal==1u){
+        uint16_t rf;
+        for(rf=0u;rf<96u;++rf){
+            Pose rp=window_detail_pose(rf);
+            render_pose(w,&rp,cur);
+            snprintf(path,sizeof(path),"%s/review-window-detail-%03u.ppm",
+                     outdir,(unsigned)rf);
+            if(!tsp_host_composite_write_ppm(path))
+                die("window detail review frame write failed");
+        }
+    }
 
     stats.scheduled_budget=schedule_bundle_tiles(frames,maps);
     stats.tile_bytes=0u;
