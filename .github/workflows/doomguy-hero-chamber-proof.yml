@@ -18,9 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install video encoder
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
       - name: Validate compressed GLB preprocessing
         run: |
           cd tools/glb_rmb
@@ -47,6 +44,9 @@ jobs:
           ROOM_BUNDLE_ONLY=11 build/room_bundle_poc_gen_import_fixture build/doomguy-import-fixture
           grep -q '^doomguy_hero_chamber=PASS$' build/doomguy-import-fixture/room_bundle_poc_manifest.txt
           grep -q '^mesh_shadow_occlusion=PASS$' build/doomguy-import-fixture/room_bundle_poc_manifest.txt
+
+      - name: Install video encoder
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Build host baker
         run: |
