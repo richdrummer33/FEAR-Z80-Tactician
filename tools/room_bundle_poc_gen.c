@@ -21,7 +21,7 @@
 #include "polar_baked_composite.h"
 #include "room_mesh_bake.h"
 
-#define BUNDLE_COUNT 11u
+#define BUNDLE_COUNT 12u
 #define ROUTE_FRAMES 192u
 #define MAX_SEGMENTS 64u
 #define MAX_SCENE_VERTICES (MAX_SEGMENTS*2u)
@@ -687,6 +687,82 @@ static void add_showcase_shell(World *w){
     add_rect(w,36,-40,116,88,0,32);
 }
 
+
+static void add_doomguy_proxy_mesh(RMBScene *m){
+    RMBTransform t;
+    uint8_t body=rmb_new_object(m,RMB_OUTLINE_NONE);
+    uint8_t limb=rmb_new_object(m,RMB_OUTLINE_NONE);
+    uint8_t gear=rmb_new_object(m,RMB_OUTLINE_NONE);
+
+    /* Proxy bounds intentionally match the incoming real asset after height
+     * normalization: about 13.3 x 12.1 x 19 world units above the plinth. */
+    t=rmb_transform(78,24,6.5,0,0,-12,1,1,1);
+    rmb_add_box(m,body,&t,3.1,2.8,3.5,0);
+    t=rmb_transform(78,24,13.0,0,0,-12,1,1,1);
+    rmb_add_box(m,body,&t,4.2,3.1,4.0,0);
+    t=rmb_transform(78,24,20.0,0,0,-12,1,1,1);
+    rmb_add_uv_sphere(m,body,&t,2.5,4u,8u,0);
+
+    t=rmb_transform(76.0,20.5,14.5,58,10,-12,1,1,1);
+    rmb_add_cylinder(m,limb,&t,1.2,8.0,6u,0,1u);
+    t=rmb_transform(80.0,27.5,14.5,-50,-8,-12,1,1,1);
+    rmb_add_cylinder(m,limb,&t,1.2,8.5,6u,0,1u);
+
+    t=rmb_transform(75.3,21.0,7.0,0,0,-12,1,1,1);
+    rmb_add_box(m,limb,&t,1.5,1.6,4.0,0);
+    t=rmb_transform(80.7,27.0,7.0,0,0,-12,1,1,1);
+    rmb_add_box(m,limb,&t,1.5,1.6,4.0,0);
+
+    /* Raised weapon-shaped mass is important for the eventual shadow proxy. */
+    t=rmb_transform(82.0,31.0,17.0,-24,8,-18,1,1,1);
+    rmb_add_box(m,gear,&t,0.9,0.9,5.8,0);
+}
+
+static void make_doomguy_hero_chamber(World *w){
+    RMBTransform t;
+    uint8_t plinth;
+    init_world(w);
+
+    /* Canonical west/east traversal mouths remain unchanged. */
+    add_two_portal_seams(w,8.0,40.0);
+    add_seg(w,36,-40,36,8,0,32,0);
+    add_seg(w,36,40,36,88,0,32,0);
+    add_seg(w,116,-40,116,8,0,32,0);
+    add_seg(w,116,40,116,88,0,32,0);
+
+    /* NORTH perimeter remains infinitely thin. The porthole is a true hole:
+     * a 12-unit horizontal aperture with lower/upper wall spans only. */
+    add_seg(w,36,-40,66,-40,0,32,0);
+    add_seg(w,66,-40,78,-40,0,8,0);
+    add_seg(w,66,-40,78,-40,22,32,0);
+    add_seg(w,78,-40,116,-40,0,32,0);
+    add_seg(w,116,88,36,88,0,32,0);
+    add_rect(w,36,-40,116,88,0,32);
+
+    /* Four square eight-by-eight solid pillars, close to the room corners. */
+    add_solid_wall_line(w,54,-20,54,-12,8.0,0,32,1);
+    add_solid_wall_line(w,102,-20,102,-12,8.0,0,32,1);
+    add_solid_wall_line(w,54,60,54,68,8.0,0,32,1);
+    add_solid_wall_line(w,102,60,102,68,8.0,0,32,1);
+
+    plinth=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(78,24,1.5,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,plinth,&t,10.0,9.0,1.5,0);
+    add_doomguy_proxy_mesh(&w->mesh);
+
+    /* Outside light chosen from aperture geometry:
+     *  light (62,-96,18) -> porthole x 66..78, z 8..22
+     * encloses the 13.3x12.1x19 normalized hero proxy and magnifies its
+     * silhouette to nearly room height on the south wall. */
+    w->scene_lights[0].x_q4=(int16_t)(62<<4);
+    w->scene_lights[0].y_q4=(int16_t)(-96<<4);
+    w->scene_lights[0].height_q4=(uint8_t)(18<<4);
+    w->scene_lights[0].radius_world=220u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_HARD;
+    finalize_scene(w);
+}
+
 static void make_statue_showcase_world(World *w){
     RMBTransform t;
     uint8_t plinth,torso,head,limbs,sword;
@@ -843,6 +919,7 @@ static void make_world(uint8_t bundle,World *w){
     else if(bundle==8u)make_statue_showcase_world(w);
     else if(bundle==9u)make_curved_showcase_world(w);
     else if(bundle==10u)make_prop_showcase_world(w);
+    else if(bundle==11u)make_doomguy_hero_chamber(w);
     else die("invalid room bundle id");
 }
 
@@ -922,6 +999,7 @@ static Pose showcase_detail_pose(uint8_t bundle,uint16_t f){
     double a=(110.0-220.0*q)*(PI/180.0);
     if(bundle==9u){tx=80.0;ty=30.0;rx=24.0;ry=27.0;}
     else if(bundle==10u){tx=80.0;ty=28.0;tz=14.0;rx=21.0;ry=26.0;}
+    else if(bundle==11u){tx=78.0;ty=24.0;tz=15.0;rx=22.0;ry=27.0;}
     /* A deliberately interior ellipse: all review frames remain inside the
      * showcase room instead of occasionally filming the outside of a wall. */
     p.x=tx+rx*cos(a);p.y=ty+ry*sin(a);p.z=tz;
@@ -954,6 +1032,7 @@ static Pose route_pose(uint16_t f,uint8_t bundle){
     else if(bundle==8u)inspect_y=68.0; /* statue + four shadow pillars */
     else if(bundle==9u)inspect_y=72.0; /* curved primitive gallery */
     else if(bundle==10u)inspect_y=70.0; /* toppled furniture */
+    else if(bundle==11u)inspect_y=70.0; /* Doomguy hero chamber */
 
     /* 0..63: canonical entry seam -> inside room. */
     if(f<64u)return entry_outbound_pose(f);
@@ -1095,7 +1174,7 @@ static Pose turn_forward_pose(uint16_t f){
 static Pose route_pose_portals(uint16_t f,uint8_t bundle,
                                uint8_t entry_portal,uint8_t exit_portal){
     if(bundle==0u||bundle==1u||bundle==4u||bundle==6u||bundle==7u||
-       bundle==8u||bundle==9u||bundle==10u){
+       bundle==8u||bundle==9u||bundle==10u||bundle==11u){
         Pose p;
         if(entry_portal==0u&&exit_portal==1u)
             p=route_pose(f,bundle);
@@ -1543,11 +1622,12 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
          * artifacts without changing the normal room-bundle bake output. */
         if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
            entry_portal==0u&&exit_portal==1u&&
-           (bundle==4u||bundle==7u||bundle==8u||bundle==9u||bundle==10u)){
+           (bundle==4u||bundle==7u||bundle==8u||bundle==9u||bundle==10u||bundle==11u)){
             const char *tag=bundle==4u?"gallery-window":
                             (bundle==7u?"solid-pillars":
                             (bundle==8u?"statue-showcase":
-                            (bundle==9u?"curved-showcase":"prop-showcase")));
+                            (bundle==9u?"curved-showcase":
+                            (bundle==10u?"prop-showcase":"doomguy-proxy")))));
             snprintf(path,sizeof(path),"%s/review-%s-%03u.ppm",
                      outdir,tag,(unsigned)f);
             if(!tsp_host_composite_write_ppm(path))
@@ -1574,10 +1654,11 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
     }
 
     if(getenv("ROOM_BUNDLE_CAPTURE_REVIEW") &&
-       entry_portal==0u&&exit_portal==1u&&bundle>=8u&&bundle<=10u){
+       entry_portal==0u&&exit_portal==1u&&bundle>=8u&&bundle<=11u){
         uint16_t rf;
         const char *tag=bundle==8u?"statue-detail":
-                        (bundle==9u?"curved-detail":"prop-detail");
+                        (bundle==9u?"curved-detail":
+                        (bundle==10u?"prop-detail":"doomguy-detail"));
         for(rf=0u;rf<120u;++rf){
             Pose rp=showcase_detail_pose(bundle,rf);
             render_pose(w,&rp,cur);
