@@ -288,3 +288,68 @@ intermediate tone.
 `ROOM_BUNDLE_CAPTURE_OWNER=<object index>` additionally writes owner-masked and
 false-colour recess diagnostic frames, so the detected field can be inspected
 directly, including values below the threshold that will not be drawn.
+
+## Running it on hardware: the viewer ROM
+
+### Why a separate ROM
+
+`main_room_bundle_stream_poc_gg.c` is a scripted CI assertion run — a fixed
+sequence of routes with hard-coded seeds and status codes, ending in a halt. It
+is not a viewer, and it takes no input.
+
+It also cannot link. The thirteen-bundle catalogue needs **490 generated banks
+against `room_bundle_pack_to_c.py`'s `MAX_BANK_FILES` budget of 224**, measured
+per bundle:
+
+| bundle | room | banks |
+|---|---|---|
+| 0,1 | corridor A/B | 24 each |
+| 2 | split (6 routes) | 59 |
+| 3 | stair | 35 |
+| 4 | gallery | 18 |
+| 5 | turn | 35 |
+| 6 | step | 33 |
+| 7 | pillar | 31 |
+| 8 | statue showcase | 60 |
+| 9 | curved showcase | 47 |
+| 10 | prop showcase | 39 |
+| 11 | **Doomguy hero** | 52 -> 67 |
+| 12 | bonsai hero | 18 |
+
+This was already true before the shading work: pristine sources need 475 banks.
+The shading change adds 15 to bundle 11. Trimming to "about half" is not
+enough; and the proof ROM's `main()` asserts on specific bundle ids and
+catalogue choices, so dropping rooms from under it would brick it.
+
+`src/main_doomguy_viewer_gg.c` therefore bakes **bundle 11 alone (67 banks)**
+and does nothing but replay that room. `ROOM_BUNDLE_ONLY` now renumbers the
+pack densely, because the generated dispatcher requires dense bundle ids from
+zero — without that a subset pack was rejected by the packer and could not be
+built into a ROM at all.
+
+### Controls, and why not free movement
+
+- **1** — auto playback, the authored camera, looping forward and back.
+- **2** — manual step: advance while RIGHT is held, or one frame per LEFT press.
+
+Free movement is not possible in this ROM class. The Game Gear holds no
+geometry for the room: it has a baked stream of name-table **delta** patches
+along the two authored portal routes, so frame N is only reachable by applying
+frames 0..N in order. A free camera needs the general polar renderer, not this
+data.
+
+Stepping never skips or reorders frames, and the mode is sampled only between
+frames, so it cannot desynchronize the name-table/tile-cache state. That is the
+difference from the earlier "any D-pad press takes over playback" hook, which
+froze the build: it abandoned a route part-way and left the cache off its
+canonical seam.
+
+### Verification
+
+Built with GBDK 4.5.0 and run in Gearsystem 3.9.16:
+
+- links to exactly 4,194,304 bytes
+- `_main`, `_set_palette`, `_set_bkg_4bpp_data` all in fixed bank 00 below 0x4000
+- boot trace reaches `0xD005`, meaning startup completed through `DISPLAY_ON`
+- after 240 video frames `g_hero_view_frame` = 72, so playback is advancing
+  rather than frozen — the specific failure mode being guarded against

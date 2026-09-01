@@ -2023,7 +2023,11 @@ int main(int argc,char **argv){
         World w;
         if(only_bundle>=0&&bundle!=(uint8_t)only_bundle)continue;
         make_world(bundle,&w);
-        fputc((int)bundle,pack);
+        /* The GG dispatcher requires dense bundle ids from zero, so a subset
+         * pack must renumber. Without this a ROOM_BUNDLE_ONLY pack carries its
+         * original catalogue id and room_bundle_pack_to_c.py rejects it, which
+         * made subset packs unbuildable into a ROM. */
+        fputc((int)(only_bundle>=0?0:bundle),pack);
         if(bundle==2u){
             static const uint8_t pairs[6][2]={{0,1},{1,0},{0,2},{2,0},{1,2},{2,1}};
             uint8_t r;

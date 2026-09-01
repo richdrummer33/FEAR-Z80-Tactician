@@ -75,3 +75,7 @@ build/gearsystem_core_runner*
 tools/generated/
 tools/glb_rmb/node_modules/
 tools/glb_rmb/package-lock.json
+
+# Python bytecode from host tooling
+__pycache__/
+*.pyc

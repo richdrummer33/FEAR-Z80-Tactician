@@ -130,3 +130,124 @@ jobs:
             build/hero/proof/room_bundle_poc_manifest.txt
           if-no-files-found: error
           retention-days: 30
+
+  viewer-rom:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Bake the hero chamber alone
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The full thirteen-bundle catalogue needs 490 generated banks against
+          # room_bundle_pack_to_c.py's 224 budget, so it cannot link. Bundle 11
+          # alone is 67 banks. ROOM_BUNDLE_ONLY renumbers the pack densely so
+          # the generated dispatcher's "dense ids from zero" rule is satisfied.
+          mkdir -p build/hero-rom/host build/hero-rom/generated tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/hero-rom/IMPORT.json
+          cc -std=c99 -O2 -Wall -Wextra -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/hero-rom/room-bundle-gen
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 \
+            build/hero-rom/room-bundle-gen build/hero-rom/host \
+            | tee build/hero-rom/bundle-bake.txt
+          python3 tools/room_bundle_pack_to_c.py \
+            build/hero-rom/host/room_bundle_poc.pack \
+            build/hero-rom/host/room_bundle_poc_canonical.bin \
+            build/hero-rom/generated | tee build/hero-rom/c-gen.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build viewer ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/hero-rom/generated"
+          OUT="$PWD/build/hero-rom"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 -Isrc -I"$GEN")
+          OBJS=()
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_doomguy_viewer_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntstate.o" src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/dispatch.o" "$GEN/room_bundle_poc_dispatch.c"
+          OBJS+=("$OUT/main.o" "$OUT/ntstate.o" "$OUT/ntupload.o" "$OUT/dispatch.o")
+          for src in "$GEN"/room_bundle_poc_data_bank*.c; do
+            base="$(basename "${src%.c}")"
+            "$LCC" "${FLAGS[@]}" -c -o "$OUT/${base}.o" "$src"
+            OBJS+=("$OUT/${base}.o")
+          done
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Viewer.gg" "${OBJS[@]}"
+          test "$(wc -c < "$OUT/GG-Doomguy-Viewer.gg")" -eq 4194304
+          sha256sum "$OUT/GG-Doomguy-Viewer.gg" | tee "$OUT/SHA256.txt"
+
+          # Sega fixed code lives at 0000-3FFF; autobanked dispatch must never
+          # push startup/VDP entry points out of frame 0.
+          for sym in _main _set_palette _set_bkg_4bpp_data; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Doomguy-Viewer.sym")"
+            test -n "$tok"
+            test "${tok%%:*}" = "00"
+            test $((16#${tok##*:})) -lt $((0x4000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee "$OUT/FIXED-BANK-PASS.txt"
+
+      - name: Build Gearsystem runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove the ROM runs and advances
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PWD/build/hero-rom"
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          # A frozen ROM is the specific failure being guarded against, so read
+          # the frame counter rather than trusting a non-black framebuffer.
+          FRAME_ADDR="$(awk '$2=="_g_hero_view_frame"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Viewer.sym")"
+          test -n "$FRAME_ADDR"
+          # No wait-target: run a fixed number of video frames, then read the
+          # counter. A frozen ROM leaves it at 0000, which is the failure mode
+          # the earlier D-pad takeover hook produced.
+          ./build/libretro_runner "$CORE" "$OUT/GG-Doomguy-Viewer.gg" 240 \
+            "$OUT/viewer-240.ppm" "$FRAME_ADDR" 2 | tee "$OUT/run-240.txt"
+          grep -q 'data=' "$OUT/run-240.txt"
+          ! grep -q 'data=0000' "$OUT/run-240.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GG-doomguy-viewer-rom
+          path: |
+            build/hero-rom/GG-Doomguy-Viewer.gg
+            build/hero-rom/GG-Doomguy-Viewer.sym
+            build/hero-rom/SHA256.txt
+            build/hero-rom/FIXED-BANK-PASS.txt
+            build/hero-rom/bundle-bake.txt
+            build/hero-rom/c-gen.txt
+            build/hero-rom/run-240.txt
+            build/hero-rom/viewer-240.ppm
+          if-no-files-found: error
+          retention-days: 30

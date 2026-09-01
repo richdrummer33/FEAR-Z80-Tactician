@@ -61,6 +61,7 @@ jobs:
           mkdir -p build/room-poc/bundles
           cc -std=c99 -Wall -Wextra -Werror -Isrc -Itools \
              tools/polar_baked_composite.c \
+             tools/room_mesh_bake.c \
              tools/room_bundle_poc_gen.c \
              -lm -o build/room-poc/room-bundle-gen
           build/room-poc/room-bundle-gen build/room-poc/bundles \
@@ -192,6 +193,7 @@ jobs:
           mkdir -p build/room-poc-stream/host build/room-poc-stream/generated
           cc -std=c99 -O2 -Wall -Wextra -Werror -Isrc -Itools \
              tools/polar_baked_composite.c \
+             tools/room_mesh_bake.c \
              tools/room_bundle_poc_gen.c \
              -lm -o build/room-poc-stream/room-bundle-gen
           build/room-poc-stream/room-bundle-gen build/room-poc-stream/host \
