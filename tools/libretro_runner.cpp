@@ -103,6 +103,12 @@ int main(int argc,char **argv){
     const char *core_path=argv[1], *rom_path=argv[2]; unsigned frames=(unsigned)strtoul(argv[3],nullptr,10);
     if(const char *joy=getenv("LIBRETRO_JOYPAD_MASK")) g_joypad_mask=(uint16_t)strtoul(joy,nullptr,0);
     if(const char *after=getenv("LIBRETRO_JOYPAD_AFTER_FRAME")) g_joypad_after_frame=(unsigned)strtoul(after,nullptr,0);
+    const char *record_dir=getenv("LIBRETRO_RECORD_DIR");
+    unsigned record_start=1u,record_end=frames,record_step=1u,recorded=0u;
+    if(const char *v=getenv("LIBRETRO_RECORD_START"))record_start=(unsigned)strtoul(v,nullptr,0);
+    if(const char *v=getenv("LIBRETRO_RECORD_END"))record_end=(unsigned)strtoul(v,nullptr,0);
+    if(const char *v=getenv("LIBRETRO_RECORD_STEP"))record_step=(unsigned)strtoul(v,nullptr,0);
+    if(record_step==0u)record_step=1u;
     const char *ppm=(argc>=5)?argv[4]:nullptr;
     std::ifstream f(rom_path,std::ios::binary); if(!f){perror("rom");return 2;}
     std::vector<uint8_t> rom((std::istreambuf_iterator<char>(f)),{});
@@ -137,18 +143,43 @@ int main(int argc,char **argv){
         capture_every=(unsigned)strtoul(ev,nullptr,0);
         if(!capture_every)capture_every=1u;
     }
+    bool capture_ram_gate=false;
+    size_t capture_gate_off=0u;
+    unsigned capture_gate_min=0u,capture_gate_max=0xffffu;
+    if(const char *ga=getenv("LIBRETRO_CAPTURE_RAM16_ADDR")){
+        unsigned addr=(unsigned)strtoul(ga,nullptr,16);
+        if(ram&&ram_size){
+            capture_gate_off=(addr>=0xC000u)?((size_t)(addr-0xC000u)%ram_size):((size_t)addr%ram_size);
+            capture_ram_gate=true;
+        }
+    }
+    if(const char *v=getenv("LIBRETRO_CAPTURE_RAM16_MIN"))capture_gate_min=(unsigned)strtoul(v,nullptr,0);
+    if(const char *v=getenv("LIBRETRO_CAPTURE_RAM16_MAX"))capture_gate_max=(unsigned)strtoul(v,nullptr,0);
 
     unsigned ran=0u;
     for(;ran<frames;++ran){
         retro_run();
 
-        if(capture_dir && (ran%capture_every)==0u && !g_frame.empty()){
+        bool capture_gate_ok=true;
+        if(capture_ram_gate){
+            uint16_t gv=(uint16_t)ram[capture_gate_off]|
+                        ((uint16_t)ram[(capture_gate_off+1u)%ram_size]<<8);
+            capture_gate_ok=(gv>=capture_gate_min&&gv<=capture_gate_max);
+        }
+        if(capture_dir && capture_gate_ok && (ran%capture_every)==0u && !g_frame.empty()){
             char path[1024];
             snprintf(path,sizeof(path),"%s/frame_%06u.ppm",capture_dir,capture_index++);
             if(!save_ppm(path)){
                 fprintf(stderr,"failed to record frame %s\n",path);
                 return 7;
             }
+        }
+        if(record_dir && g_video_frames>=record_start && g_video_frames<=record_end &&
+           ((g_video_frames-record_start)%record_step)==0u){
+            char path[1024];
+            snprintf(path,sizeof(path),"%s/frame_%06u.ppm",record_dir,g_video_frames);
+            if(!save_ppm(path)){fprintf(stderr,"failed to save record frame %u\n",g_video_frames);return 7;}
+            ++recorded;
         }
 
         if(wait_marker){
@@ -157,7 +188,7 @@ int main(int argc,char **argv){
             if(v>=wait_target){++ran;break;}
         }
     }
-    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu captures=%u\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size(),capture_index);
+    printf("ran=%u video_frames=%u geometry=%ux%u fps=%.6f pixfmt=%d last=%ux%u pitch=%zu rom=%zu captures=%u recorded=%u\n",ran,g_video_frames,av.geometry.base_width,av.geometry.base_height,av.timing.fps,(int)g_pixfmt,g_w,g_h,g_pitch,rom.size(),capture_index,recorded);
     if(ppm){ if(!save_ppm(ppm)){fprintf(stderr,"failed to save ppm\n");return 5;} printf("saved=%s\n",ppm); }
     if(argc>=6){
         unsigned len=(argc>=7)?(unsigned)strtoul(argv[6],nullptr,0):2u;
