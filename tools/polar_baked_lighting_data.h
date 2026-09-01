@@ -13,10 +13,12 @@ typedef struct TSPHostStaticLight {
     uint8_t height_q4;
     uint8_t radius_world;
     uint8_t intensity;
+    uint8_t wall_angle_response;
+    uint8_t view_term_strength;
 } TSPHostStaticLight;
 
 static const TSPHostStaticLight k_tsp_host_static_lights[] = {
-    { (int16_t)(92 << 4), (int16_t)(50 << 4), 8u << 4, 76u, 255u }
+    { (int16_t)(92 << 4), (int16_t)(50 << 4), 8u << 4, 76u, 255u, 1u, 2u }
 };
 
 #define TSP_HOST_STATIC_LIGHT_COUNT \
@@ -26,7 +28,9 @@ enum {
     TSP_HOST_PROFILE_FULL   = 0u,
     TSP_HOST_PROFILE_LINTEL = 1u,
     TSP_HOST_PROFILE_RAISED = 2u,
-    TSP_HOST_PROFILE_RISER  = 3u
+    TSP_HOST_PROFILE_RISER  = 3u,
+    TSP_HOST_PROFILE_WINDOW_SILL = 4u,
+    TSP_HOST_PROFILE_WINDOW_REVEAL = 5u
 };
 
 typedef struct TSPHostWorldVertex {
