@@ -13,9 +13,7 @@
 
 static void rmb_fail(const char *msg){
     (void)msg;
-    /* Keep this module dependency-light; deliberate crash is preferable to
-     * silently corrupting a bake if a host-only capacity is exceeded. */
-    *(volatile int *)0=0;
+    abort();
 }
 
 static RMBVec3 vsub(RMBVec3 a,RMBVec3 b){
