@@ -30,6 +30,8 @@
 #define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
 
+static uint8_t g_view_term_steps=2u;
+
 typedef struct V2 { double x,y; } V2;
 typedef struct Seg {
     V2 a,b;
@@ -335,6 +337,10 @@ static void finalize_scene(World *w){
     w->scene.segment_count=w->count;
     w->scene.lights=w->scene_lights;
     w->scene.light_count=(uint8_t)(w->lighting_stage>=TSP_HOST_LIGHT_HARD?1u:0u);
+    if(w->scene.light_count){
+        w->scene_lights[0].wall_angle_response=1u;
+        w->scene_lights[0].view_term_strength=g_view_term_steps;
+    }
     w->scene.rects=w->scene_rects;
     w->scene.rect_count=w->scene_rect_count;
 }
@@ -701,6 +707,15 @@ static Pose exit_transform(Pose p){
     p.yaw=(uint8_t)(p.yaw+128u);
     return p;
 }
+/* Same rigid seam transform, but for a camera travelling OUT through the
+ * portal. The route parameter is already reversed, so applying another
+ * 180-degree yaw made the old review rail literally look backward while
+ * moving forward. Preserve the transformed position and face along motion. */
+static Pose exit_forward_transform(Pose p){
+    p.x=152.0-p.x;
+    p.y=48.0-p.y;
+    return p;
+}
 
 static Pose portal_transform_pose(Pose p,uint8_t portal){
     double tx,ty,nx,ny;
@@ -718,6 +733,16 @@ static Pose portal_transform_pose_z(Pose p,double tx,double ty,uint8_t rot,doubl
     transform_point(p.x,p.y,tx,ty,rot,&nx,&ny);
     p.x=nx;p.y=ny;p.z+=zbase;
     p.yaw=(uint8_t)(p.yaw+(uint8_t)(rot*64u));
+    return p;
+}
+static Pose portal_exit_forward_pose(Pose p,uint8_t portal){
+    p=portal_transform_pose(p,portal);
+    p.yaw=(uint8_t)(p.yaw+128u);
+    return p;
+}
+static Pose portal_exit_forward_pose_z(Pose p,double tx,double ty,uint8_t rot,double zbase){
+    p=portal_transform_pose_z(p,tx,ty,rot,zbase);
+    p.yaw=(uint8_t)(p.yaw+128u);
     return p;
 }
 static double stair_floor_z(double x,double y){
@@ -757,60 +782,48 @@ static Pose window_detail_pose(uint16_t f){
 static Pose route_pose(uint16_t f,uint8_t bundle){
     Pose p;
     double q,inspect_y=30.0;
+    V2 a,b;
 
-    if(bundle==0u)inspect_y=52.0;      /* wide portal-shadow room */
-    else if(bundle==1u)inspect_y=46.0; /* clear the inset baffle */
-    else if(bundle==4u)inspect_y=54.0; /* broad gallery */
-    else if(bundle==6u)inspect_y=44.0; /* stepped room */
-    else if(bundle==7u)inspect_y=70.0; /* sweep around both pillars */
+    if(bundle==0u)inspect_y=52.0;
+    else if(bundle==1u)inspect_y=46.0;
+    else if(bundle==4u)inspect_y=54.0;
+    else if(bundle==6u)inspect_y=44.0;
+    else if(bundle==7u)inspect_y=70.0;
 
-    /* 0..63: canonical entry seam -> inside room. */
+    /* Entry throat: always face into the room. */
     if(f<64u)return entry_outbound_pose(f);
-
     p.z=16.0;
 
-    /* 64..79: lateral excursion with an intentional side-look. */
+    /* Four cheap authored waypoints. They sample a useful side quadrant, then
+     * converge on the exit anchor without overshooting it. Camera yaw follows
+     * the travel tangent with only a small room-look bias - never a 180 turn. */
     if(f<80u){
         q=(double)(f-64u)/15.0;
-        p.x=62.0;
-        p.y=lerp(24.0,inspect_y,q);
-        p.yaw=yaw_lerp(0u,56u,q);
-        return p;
-    }
-
-    /* 80..95: travel deep along the offset line, still not facing perfectly
-     * along motion. This is the closest analogue to the old scripted strafe. */
-    if(f<96u){
+        a=(V2){62.0,24.0}; b=(V2){70.0,inspect_y};
+    }else if(f<96u){
         q=(double)(f-80u)/15.0;
-        p.x=lerp(62.0,106.0,q);
-        p.y=inspect_y;
-        p.yaw=yaw_lerp(56u,16u,q);
-        return p;
-    }
-
-    /* 96..111: cross back toward the exit line while turning to look behind.
-     * On the pillar room this happens after the camera has passed the pillars,
-     * avoiding an invalid through-solid path while still stressing occlusion. */
-    if(f<112u){
+        a=(V2){70.0,inspect_y}; b=(V2){80.0,inspect_y};
+    }else if(f<112u){
         q=(double)(f-96u)/15.0;
-        p.x=106.0;
-        p.y=lerp(inspect_y,24.0,q);
-        p.yaw=yaw_lerp(16u,176u,q);
-        return p;
+        a=(V2){80.0,inspect_y}; b=(V2){86.0,24.0};
+    }else if(f<128u){
+        q=(double)(f-112u)/15.0;
+        a=(V2){86.0,24.0}; b=(V2){90.0,24.0};
+    }else{
+        /* Reversed entry geometry supplies the outward position trajectory;
+         * exit_forward_transform deliberately does NOT turn the camera around. */
+        return exit_forward_transform(entry_outbound_pose((uint16_t)(191u-f)));
     }
-
-    /* 112..127: settle onto the exit anchor while mostly looking back toward
-     * the room we just crossed. */
-    q=(double)(f-112u)/15.0;
-    p.x=lerp(106.0,90.0,q);
-    p.y=24.0;
-    p.yaw=yaw_lerp(176u,128u,q);
-    if(f<128u)return p;
-
-    /* 128..191: back through the exit throat while still looking toward the
-     * old room until the seam mathematically occludes it. */
-    p=entry_outbound_pose((uint16_t)(191u-f));
-    return exit_transform(p);
+    p.x=lerp(a.x,b.x,q);
+    p.y=lerp(a.y,b.y,q);
+    p.yaw=yaw_from_vec(b.x-a.x,b.y-a.y);
+    /* Slight authored glance toward room centre, bounded to ~8 degrees. */
+    if(f>=80u&&f<112u){
+        int look=(int)lround(sin(q*PI)*6.0);
+        if(bundle&1u)look=-look;
+        p.yaw=(uint8_t)(p.yaw+look);
+    }
+    return p;
 }
 
 static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal){
@@ -823,7 +836,7 @@ static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal
         return portal_transform_pose(entry_outbound_pose(f),entry_portal);
 
     if(f>=128u)
-        return portal_transform_pose(entry_outbound_pose((uint16_t)(191u-f)),exit_portal);
+        return portal_exit_forward_pose(entry_outbound_pose((uint16_t)(191u-f)),exit_portal);
 
     a=portal_transform_pose(entry_outbound_pose(63u),entry_portal);
     b=portal_transform_pose(entry_outbound_pose(63u),exit_portal);
@@ -838,7 +851,7 @@ static Pose split_route_pose(uint16_t f,uint8_t entry_portal,uint8_t exit_portal
     {
         double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
         double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
-        int look=(int)lround(sin(q*PI)*32.0);
+        int look=(int)lround(sin(q*PI)*10.0);
         if(((uint8_t)(entry_portal+exit_portal)&1u)==0u)look=-look;
         p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)look);
     }
@@ -855,7 +868,7 @@ static Pose stair_forward_pose(uint16_t f){
     }
     if(f>=128u){
         p=entry_outbound_pose((uint16_t)(191u-f));
-        return portal_transform_pose_z(p,76.0,80.0,3u,4.0);
+        return portal_exit_forward_pose_z(p,76.0,80.0,3u,4.0);
     }
 
     a=entry_outbound_pose(63u);
@@ -871,7 +884,7 @@ static Pose stair_forward_pose(uint16_t f){
     {
         double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
         double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
-        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*20.0));
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*8.0));
     }
     return p;
 }
@@ -881,8 +894,8 @@ static Pose turn_forward_pose(uint16_t f){
     double q,cx=86.0,cy=38.0;
     if(f<64u)return entry_outbound_pose(f);
     if(f>=128u)
-        return portal_transform_pose_z(entry_outbound_pose((uint16_t)(191u-f)),
-                                       76.0,80.0,3u,0.0);
+        return portal_exit_forward_pose_z(entry_outbound_pose((uint16_t)(191u-f)),
+                                            76.0,80.0,3u,0.0);
 
     a=entry_outbound_pose(63u);
     b=portal_transform_pose_z(entry_outbound_pose(63u),76.0,80.0,3u,0.0);
@@ -896,7 +909,7 @@ static Pose turn_forward_pose(uint16_t f){
     {
         double dx=2.0*(1.0-q)*(cx-a.x)+2.0*q*(b.x-cx);
         double dy=2.0*(1.0-q)*(cy-a.y)+2.0*q*(b.y-cy);
-        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*24.0));
+        p.yaw=(uint8_t)(yaw_from_vec(dx,dy)+(uint8_t)lround(sin(q*PI)*8.0));
     }
     return p;
 }
@@ -908,7 +921,7 @@ static Pose route_pose_portals(uint16_t f,uint8_t bundle,
         if(entry_portal==0u&&exit_portal==1u)
             p=route_pose(f,bundle);
         else if(entry_portal==1u&&exit_portal==0u)
-            p=route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle);
+            p=route_pose((uint16_t)(ROUTE_FRAMES-1u-f),bundle); p.yaw=(uint8_t)(p.yaw+128u);
         else{
             die("invalid straight room route pair");
             return route_pose(f,0u);
@@ -920,13 +933,13 @@ static Pose route_pose_portals(uint16_t f,uint8_t bundle,
     if(bundle==3u){
         if(entry_portal==0u&&exit_portal==1u)return stair_forward_pose(f);
         if(entry_portal==1u&&exit_portal==0u)
-            return stair_forward_pose((uint16_t)(ROUTE_FRAMES-1u-f));
+            { Pose p=stair_forward_pose((uint16_t)(ROUTE_FRAMES-1u-f)); p.yaw=(uint8_t)(p.yaw+128u); return p; }
         die("invalid stair route pair");
     }
     if(bundle==5u){
         if(entry_portal==0u&&exit_portal==1u)return turn_forward_pose(f);
         if(entry_portal==1u&&exit_portal==0u)
-            return turn_forward_pose((uint16_t)(ROUTE_FRAMES-1u-f));
+            { Pose p=turn_forward_pose((uint16_t)(ROUTE_FRAMES-1u-f)); p.yaw=(uint8_t)(p.yaw+128u); return p; }
         die("invalid turn route pair");
     }
     die("invalid room bundle route");
@@ -1396,6 +1409,9 @@ int main(int argc,char **argv){
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
     outdir=argv[1];
+
+    tsp_host_composite_set_wall_angle_mode(1u);
+    tsp_host_composite_set_wall_quant_mode(TSP_HOST_LIGHT_QUANT_SOLID8);
 
     /* Fail before a multi-thousand-frame bake if the authoring expansion ever
      * stops producing the promised closed vertical wall/window topology. */
