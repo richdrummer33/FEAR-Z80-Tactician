@@ -43,22 +43,24 @@ jobs:
             --name prism --height 19 --up z --visual-tris 1000 --shadow-tris 200 \
             | tee build/doomguy-real-sweep/PRISM-IMPORT.json
 
-      - name: Sweep Doomguy visual fidelity against GG upload budget
+      - name: Sweep Doomguy visual and shadow complexity
         shell: bash
         run: |
           set -euo pipefail
-          targets="900 1500 2400 3600 5200 7000"
+          pairs="80:40 80:100 80:200 200:40 200:100 400:40 400:100 600:40 600:100 900:40 900:100 900:200"
           summary=build/doomguy-real-sweep/SWEEP.tsv
-          printf "target_visual\tactual_visual\tactual_shadow\tbudget_0to1\tbudget_1to0\tmax_budget\tpatch_0to1\tpatch_1to0\ttileloads_0to1\ttileloads_1to0\n" > "$summary"
+          printf "target_visual\ttarget_shadow\tactual_visual\tactual_shadow\tbudget_0to1\tbudget_1to0\tmax_budget\tpatch_0to1\tpatch_1to0\ttileloads_0to1\ttileloads_1to0\n" > "$summary"
 
-          for vis in $targets; do
-            echo "=== visual target $vis / shadow target $SHADOW_TRIS ==="
-            out="build/doomguy-real-sweep/v${vis}"
+          for pair in $pairs; do
+            vis=${pair%%:*}
+            shadow=${pair##*:}
+            echo "=== visual target $vis / shadow target $shadow ==="
+            out="build/doomguy-real-sweep/v${vis}-s${shadow}"
             mkdir -p "$out"
 
             node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
               --name doomguy --height 19 --up z \
-              --visual-tris "$vis" --shadow-tris "$SHADOW_TRIS" \
+              --visual-tris "$vis" --shadow-tris "$shadow" \
               | tee "$out/IMPORT.json"
 
             cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
@@ -94,32 +96,46 @@ jobs:
             actual_vis=$(node -e "const j=require('./$out/IMPORT.json'); console.log(j.visual.triangles)")
             actual_shadow=$(node -e "const j=require('./$out/IMPORT.json'); console.log(j.shadow.triangles)")
 
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-              "$vis" "$actual_vis" "$actual_shadow" "$b01" "$b10" "$maxb" \
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+              "$vis" "$shadow" "$actual_vis" "$actual_shadow" "$b01" "$b10" "$maxb" \
               "$p01" "$p10" "$t01" "$t10" | tee -a "$summary"
           done
 
           cat "$summary"
 
-          selected=$(awk -F '\t' -v cap="$GG_UPLOAD_CEILING" \
-            'NR>1 && $6<=cap {v=$1} END{print v+0}' "$summary")
-          if [ "$selected" -eq 0 ]; then
-            selected=$(awk -F '\t' 'NR==2{print $1}' "$summary")
-            echo "WARNING: no candidate met the upload ceiling; selecting lowest target $selected for proof" >&2
+          selected=$(awk -F '\t' -v cap="$GG_UPLOAD_CEILING" '
+            NR>1 && $7<=cap {
+              if($1>bestv || ($1==bestv && $2>bests)){
+                bestv=$1; bests=$2
+              }
+            }
+            END{if(bestv) printf "%d %d\n",bestv,bests}
+          ' "$summary")
+
+          safe=1
+          if [ -z "$selected" ]; then
+            selected=$(awk -F '\t' 'NR==2{printf "%d %d\n",$1,$2}' "$summary")
+            safe=0
+            echo "WARNING: no measured candidate met the upload ceiling; proof will use lowest pair in analysis mode" >&2
           fi
 
-          echo "$selected" | tee build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt
+          set -- $selected
+          echo "$1" | tee build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt
+          echo "$2" | tee build/doomguy-real-sweep/SELECTED-SHADOW-TARGET.txt
+          echo "$safe" | tee build/doomguy-real-sweep/SELECTED-PROMOTION-SAFE.txt
 
       - name: Build selected real Doomguy bake
         shell: bash
         run: |
           set -euo pipefail
           selected=$(cat build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt)
+          selected_shadow=$(cat build/doomguy-real-sweep/SELECTED-SHADOW-TARGET.txt)
+          safe=$(cat build/doomguy-real-sweep/SELECTED-PROMOTION-SAFE.txt)
           mkdir -p build/doomguy-real-selected build/doomguy-real-sanitize
 
           node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
             --name doomguy --height 19 --up z \
-            --visual-tris "$selected" --shadow-tris "$SHADOW_TRIS" \
+            --visual-tris "$selected" --shadow-tris "$selected_shadow" \
             | tee build/doomguy-real-selected/IMPORT.json
 
           cc -std=c99 -O2 -Wall -Wextra -Wpedantic \
@@ -135,9 +151,14 @@ jobs:
             tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
             -lm -o build/room_bundle_poc_gen_real_san
 
-          ROOM_BUNDLE_ONLY=11 \
-          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
-          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+          if [ "$safe" -eq 1 ]; then
+            scheduler_env=""
+          else
+            scheduler_env="ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255"
+          fi
+          env ROOM_BUNDLE_ONLY=11 $scheduler_env \
+            ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
             build/room_bundle_poc_gen_real_san build/doomguy-real-sanitize
 
           grep -q '^doomguy_hero_chamber=PASS$' build/doomguy-real-sanitize/room_bundle_poc_manifest.txt
@@ -150,7 +171,11 @@ jobs:
           ROOM_BUNDLE_CAPTURE_REVIEW: "1"
         run: |
           mkdir -p build/doomguy-real-review
-          build/room_bundle_poc_gen_real build/doomguy-real-review
+          if [ "$(cat build/doomguy-real-sweep/SELECTED-PROMOTION-SAFE.txt)" -eq 1 ]; then
+            build/room_bundle_poc_gen_real build/doomguy-real-review
+          else
+            ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 build/room_bundle_poc_gen_real build/doomguy-real-review
+          fi
           cp build/doomguy-real-review/room_bundle_poc_manifest.txt build/doomguy-real-review/PROOF-MANIFEST.txt
           grep '^bundle=11 route=0->1 frames=' build/doomguy-real-review/PROOF-MANIFEST.txt > build/doomguy-real-review/DOOMGUY-REAL-STATS.txt
           grep '^bundle=11 route=1->0 frames=' build/doomguy-real-review/PROOF-MANIFEST.txt >> build/doomguy-real-review/DOOMGUY-REAL-STATS.txt
@@ -195,7 +220,8 @@ jobs:
         run: |
           {
             echo "selected_visual_target=$(cat build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt)"
-            echo "shadow_target=$SHADOW_TRIS"
+            echo "selected_shadow_target=$(cat build/doomguy-real-sweep/SELECTED-SHADOW-TARGET.txt)"
+            echo "promotion_safe=$(cat build/doomguy-real-sweep/SELECTED-PROMOTION-SAFE.txt)"
             cat build/doomguy-real-review/DOOMGUY-REAL-STATS.txt
           } | tee build/doomguy-real-review/SELECTED-PROOF.txt
 
@@ -210,6 +236,8 @@ jobs:
             build/doomguy-real-sanitize/room_bundle_poc_manifest.txt
             build/doomguy-real-sweep/SWEEP.tsv
             build/doomguy-real-sweep/SELECTED-VISUAL-TARGET.txt
+            build/doomguy-real-sweep/SELECTED-SHADOW-TARGET.txt
+            build/doomguy-real-sweep/SELECTED-PROMOTION-SAFE.txt
             build/doomguy-real-sweep/ASSET-SHA256.txt
             build/doomguy-real-sweep/ASSET-SIZES.txt
             build/doomguy-real-sweep/PRISM-IMPORT.json
