@@ -24,7 +24,10 @@
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
 #include "generated/doomguy_mesh.inc"
 #ifndef ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS
-#define ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS 3
+#define ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY
+#define ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY 1
 #endif
 #endif
 
@@ -699,6 +702,7 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
     RMBTransform t=rmb_transform(78.0,24.0,3.0,0,0,0,1,1,1);
     uint8_t visual=rmb_new_object(m,RMB_OUTLINE_NONE);
+    uint8_t lighting=rmb_new_object(m,RMB_OUTLINE_NONE);
     uint8_t shadow=rmb_new_object(m,RMB_OUTLINE_NONE);
 
     /* The high-detail hero is allowed to affect the picture but deliberately
@@ -710,6 +714,17 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
     rmb_add_indexed_mesh_q8(m,visual,&t,
                             doomguy_visual_xyz_q8,DOOMGUY_VISUAL_VERTEX_COUNT,
                             doomguy_visual_indices,DOOMGUY_VISUAL_TRIANGLE_COUNT,0);
+
+#if ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY
+    rmb_set_object_flags(m,lighting,1u,0u);
+    rmb_set_object_shade_levels(m,lighting,3u);
+    rmb_set_object_overlay_target(m,lighting,visual);
+    rmb_add_indexed_mesh_q8(m,lighting,&t,
+                            doomguy_lighting_xyz_q8,DOOMGUY_LIGHTING_VERTEX_COUNT,
+                            doomguy_lighting_indices,DOOMGUY_LIGHTING_TRIANGLE_COUNT,0);
+#else
+    rmb_set_object_flags(m,lighting,0u,0u);
+#endif
 
     rmb_set_object_flags(m,shadow,0u,1u);
     rmb_add_indexed_mesh_q8(m,shadow,&t,
