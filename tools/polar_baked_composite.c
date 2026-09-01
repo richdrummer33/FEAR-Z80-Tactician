@@ -437,10 +437,11 @@ static int mirror_repeat8(int u){
     return q<8?q:15-q;
 }
 static uint8_t projective_material_semantic(uint8_t cls,int vi){
-    /* Keep the authored lower grille black; elsewhere source black becomes the
-     * darkest oxide rather than a hole. Collapse the two similar steel body
-     * classes, but retain the brightest authored rail/mortar class. */
-    if(!cls)return vi>=92?SEM_BLACK:SEM_FAR;
+    /* Entropy-controlled material vocabulary: the source still decides the
+     * bright machinery/rail class and the lower grille, but ordinary body
+     * pixels collapse to one oxide colour. Lighting supplies the secondary
+     * brightness structure without multiplying texture patterns. */
+    if(!cls&&vi>=92)return SEM_BLACK;
     if(cls>=3u)return MAT_MORTAR;
     return SEM_MID;
 }
@@ -460,17 +461,21 @@ static uint8_t wall_projective_material_sample(uint8_t sid,int sx,int sy,uint8_t
     len=sqrt(dx*dx+dy*dy);
     if(len<1e-9)return fallback;
 
-    /* Exact projected/world U first. One world unit is one source texel before
-     * the authored 8px mirrored-repeat reduction. */
+    /* Exact projected/world U first, THEN a 2-source-texel wall-space bucket.
+     * This cannot create screen-aligned texture blocks: the bucket boundary is
+     * attached to physical distance along the wall and therefore projects at
+     * whatever angle/perspective the wall demands. */
     u=((wx-(double)a->x)*dx+(wy-(double)a->y)*dy)/len;
-    ui=mirror_repeat8((int)floor(u+0.5));
+    ui=(int)floor((u+1.0)/2.0)*2;
+    ui=mirror_repeat8(ui);
 
-    /* Exact world-Z V first, then quantize in SOURCE space. Full wall height
-     * z=0..32 maps to source rows 0..127. Raised/lintel/riser profiles therefore
-     * crop the same world-aligned material rather than stretching to fit. */
+    /* Exact world-Z V first, THEN an 8-source-pixel material-space bucket.
+     * Full wall height z=0..32 maps to rows 0..127, so this is about two world
+     * units vertically. Raised/lintel/riser profiles crop the same material;
+     * nothing is stretched to the local screen tile or profile height. */
     vi=(int)floor((wz*127.0/TSP_CEILING_Z)+0.5);
     if(vi<0)vi=0;else if(vi>127)vi=127;
-    vi=((vi+2)/4)*4;
+    vi=((vi+4)/8)*8;
     if(vi>127)vi=127;
 
     load_projective_texture();
