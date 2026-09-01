@@ -964,7 +964,13 @@ static void self_test_forward_facing_routes(void){
                 if(mag2>1e-8){
                     double a=(double)cur.yaw*(2.0*PI/256.0);
                     double dot=cos(a)*dx+sin(a)*dy;
-                    if(dot<=0.0)die("camera rail moves backward relative to view");
+                    if(dot<=0.0){
+                        fprintf(stderr,
+                                "fatal: camera rail backward bundle=%u route=%u->%u frame=%u dot=%.6f pos=(%.3f,%.3f) yaw=%u\n",
+                                (unsigned)bundle,(unsigned)entry,(unsigned)exitp,
+                                (unsigned)f,dot,cur.x,cur.y,(unsigned)cur.yaw);
+                        exit(2);
+                    }
                 }
                 prev=cur;
             }
