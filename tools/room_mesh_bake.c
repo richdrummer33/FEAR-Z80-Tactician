@@ -409,12 +409,6 @@ int rmb_segment_occluded(const RMBScene *s,
     return 0;
 }
 
-static int rmb_scene_occluder_adapter(const void *user,
-                                      double lx,double ly,double lz,
-                                      double wx,double wy,double wz){
-    return rmb_segment_occluded((const RMBScene *)user,lx,ly,lz,wx,wy,wz);
-}
-
 void rmb_render(const RMBScene *s,double cx,double cy,double cz,
                 uint8_t yaw8,const RMBLight *light){
     uint16_t i;
