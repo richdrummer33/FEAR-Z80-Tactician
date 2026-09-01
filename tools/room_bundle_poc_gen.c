@@ -23,6 +23,9 @@
 
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
 #include "generated/doomguy_mesh.inc"
+#ifndef ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS
+#define ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS 3
+#endif
 #endif
 
 #define BUNDLE_COUNT 12u
@@ -703,6 +706,7 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
      * invisible proxy owns cast shadows. Both came from the same normalized
      * GLB master, so their silhouettes remain registered. */
     rmb_set_object_flags(m,visual,1u,0u);
+    rmb_set_object_shade_levels(m,visual,(uint8_t)ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS);
     rmb_add_indexed_mesh_q8(m,visual,&t,
                             doomguy_visual_xyz_q8,DOOMGUY_VISUAL_VERTEX_COUNT,
                             doomguy_visual_indices,DOOMGUY_VISUAL_TRIANGLE_COUNT,0);
