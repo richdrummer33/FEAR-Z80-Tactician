@@ -335,6 +335,12 @@ static void init_world(World *w){
     rmb_scene_init(&w->mesh);
 }
 
+static int room_mesh_light_occluder(const void *user,
+                                    double lx,double ly,double lz,
+                                    double wx,double wy,double wz){
+    return rmb_segment_occluded((const RMBScene *)user,lx,ly,lz,wx,wy,wz);
+}
+
 static void finalize_scene(World *w){
     w->scene.vertices=w->scene_vertices;
     w->scene.vertex_count=w->scene_vertex_count;
@@ -344,6 +350,8 @@ static void finalize_scene(World *w){
     w->scene.light_count=(uint8_t)(w->lighting_stage>=TSP_HOST_LIGHT_HARD?1u:0u);
     w->scene.rects=w->scene_rects;
     w->scene.rect_count=w->scene_rect_count;
+    w->scene.extra_occluder=w->mesh.triangle_count?room_mesh_light_occluder:(TSPHostExtraOccluderFn)0;
+    w->scene.extra_occluder_user=w->mesh.triangle_count?(const void *)&w->mesh:(const void *)0;
 }
 static void add_transformed_exit_seg(World *w,double ax,double ay,double bx,double by){
     add_seg(w,152.0-ax,48.0-ay,152.0-bx,48.0-by,0,32,0);
