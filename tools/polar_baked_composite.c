@@ -33,8 +33,55 @@ enum {
     SEM_FLOOR=2u,
     SEM_FAR=3u,
     SEM_MID=4u,
-    SEM_NEAR=5u
+    SEM_NEAR=5u,
+    /*
+     * Interstitial surface-brightness bands.
+     *
+     * FAR/MID/NEAR were originally a three-stop distance ramp, which is all a
+     * flat-shaded wall needs. A lit hero mesh needs finer angular resolution:
+     * with three stops, every surface whose normal turns away from the light
+     * bottoms out at FAR, which is also roughly the wall colour, so the statue
+     * dissolves into its own background.
+     *
+     * These two indices sit in the two largest gaps of the existing ramp, so
+     * the brightness ordering becomes FAR < FAR_MID < MID < MID_NEAR < NEAR.
+     * They are additions, not a renumbering: every existing semantic keeps its
+     * index, and the 4bpp shadow alias (+7) still lands inside the palette.
+     */
+    SEM_FAR_MID=6u,
+    SEM_MID_NEAR=7u
 };
+
+/*
+ * Ambient surface brightness, ordered dark -> bright.
+ *
+ * Walls address this ramp in steps of two (shade 0/1/2 -> FAR/MID/NEAR), so
+ * every wall result is bit-identical to the three-stop renderer. Meshes may
+ * address every stop. For the same reason the hard-light transform is +2 ramp
+ * positions and corner AO is -2: both reproduce the old whole-shade step.
+ */
+#define SHADE_RAMP_LEN 5u
+#define SHADE_LIT_STEP 2u
+static const uint8_t k_shade_ramp[SHADE_RAMP_LEN]={
+    SEM_FAR,SEM_FAR_MID,SEM_MID,SEM_MID_NEAR,SEM_NEAR
+};
+
+/* Position of a semantic within the brightness ramp, or 0xff if it is not a
+ * surface shade (black, sky/outside and floor carry dedicated roles). */
+static uint8_t ramp_pos(uint8_t v){
+    uint8_t i;
+    for(i=0u;i<SHADE_RAMP_LEN;++i)if(k_shade_ramp[i]==v)return i;
+    return 0xffu;
+}
+static uint8_t ramp_at(uint8_t i){
+    return k_shade_ramp[i>=SHADE_RAMP_LEN?SHADE_RAMP_LEN-1u:i];
+}
+/* Every index that has a brighter variant in palette 1. NEAR is already the
+ * ramp maximum; sky/outside and floor keep their historical +1 promotion. */
+static uint8_t light_reactive(uint8_t v){
+    if(v==SEM_BLACK||v==SEM_NEAR)return 0u;
+    return (uint8_t)(v<=SEM_MID_NEAR);
+}
 
 typedef struct FramePattern {
     uint64_t hash;
@@ -65,6 +112,10 @@ static uint8_t g_lightable[TSP_MAP_CELLS][PIXELS];
 static double g_depth[TSP_MAP_CELLS][PIXELS];
 /* Separate nearest-depth buffer for clipped coarse lighting overlays. */
 static double g_overlay_depth[TSP_MAP_CELLS][PIXELS];
+/* Per-pixel surface recess, 0..255. The crease itself is folded into
+ * brightness before quantization; this buffer exists so the diagnostic map can
+ * show what the geometry pass detected, sub-threshold values included. */
+static uint8_t g_recess[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -199,10 +250,12 @@ static int scene_light(uint8_t id,TSPHostSceneLight *out){
 }
 
 static uint8_t ao_pixel(uint8_t color,uint8_t strength,uint8_t sx,uint8_t sy){
-    if(!strength||color<=SEM_FAR)return color;
+    uint8_t pos=ramp_pos(color);
+    if(!strength||pos==0xffu||pos<SHADE_LIT_STEP)return color;
     /* Stable ordered coverage rather than a temporal shimmer.  Stronger
      * authored corners darken more of the sub-tile footprint. */
-    if(strength>=2u||(((uint8_t)(sx+sy)&1u)==0u))return (uint8_t)(color-1u);
+    if(strength>=2u||(((uint8_t)(sx+sy)&1u)==0u))
+        return ramp_at((uint8_t)(pos-SHADE_LIT_STEP));
     return color;
 }
 
@@ -442,10 +495,17 @@ static int wall_world_point(uint8_t sid,int sx,int sy,double *wx,double *wy,doub
 }
 
 static uint8_t lit_semantic(uint8_t v){
-    /* First geometric test deliberately has only two states: ambient and
-     * one shade brighter. No radius, attenuation band or penumbra yet. */
-    if(v==SEM_BLACK||v>=SEM_NEAR)return v;
-    return (uint8_t)(v+1u);
+    /* Geometric visibility still has only two states: ambient and lit. The
+     * lit variant is +2 ramp positions, which is the same whole shade the
+     * three-stop renderer used, so wall output is unchanged. Because a mesh
+     * encodes its incident angle in the AMBIENT index, a steeply-angled
+     * surface stays darker than a facing one both in light and in shadow --
+     * the light/shadow decision never flattens the angular information. */
+    uint8_t pos;
+    if(!light_reactive(v))return v;
+    pos=ramp_pos(v);
+    if(pos==0xffu)return (uint8_t)(v+1u); /* sky/outside and floor */
+    return ramp_at((uint8_t)(pos+SHADE_LIT_STEP));
 }
 
 /*
@@ -503,7 +563,7 @@ found_exact:
     if(best_cost>64u)return;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=g_cells[cell][i];
-        if(v>SEM_BLACK&&v<SEM_NEAR)
+        if(light_reactive(v))
             g_lit[cell][i]=(uint8_t)((best>>i)&UINT64_C(1));
     }
 }
@@ -541,7 +601,7 @@ static void apply_one_sided_penumbra(void){
         int x,y,k;
         for(i=0u;i<PIXELS;++i){
             uint8_t v=g_cells[cell][i];
-            if(v>SEM_BLACK&&v<SEM_NEAR){
+            if(light_reactive(v)){
                 ++eligible;
                 if(hard[cell][i])++lit;
             }
@@ -551,7 +611,7 @@ static void apply_one_sided_penumbra(void){
         for(y=0;y<8;++y)for(x=0;x<8;++x){
             uint16_t pi=(uint16_t)y*8u+(uint16_t)x;
             uint8_t v=g_cells[cell][pi],touch=0u;
-            if(hard[cell][pi]||v==SEM_BLACK||v>=SEM_NEAR)continue;
+            if(hard[cell][pi]||!light_reactive(v))continue;
 
             for(k=0;k<8;++k){
                 static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
@@ -592,7 +652,7 @@ static void apply_point_light(void){
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
             ok=background_world_receiver(x,y,&wx,&wy,&wz);
         }
-        if(ok&&v>SEM_BLACK&&v<SEM_NEAR&&world_point_lit(wx,wy,wz,receiver))
+        if(ok&&light_reactive(v)&&world_point_lit(wx,wy,wz,receiver))
             g_lit[cell][pi]=1u;
     }
     quantize_point_light_edges();
@@ -669,6 +729,7 @@ void tsp_host_composite_begin_frame(void){
     memset(g_owner,0xff,sizeof(g_owner));
     memset(g_lit,0,sizeof(g_lit));
     memset(g_lightable,1,sizeof(g_lightable));
+    memset(g_recess,0,sizeof(g_recess));
     for(di=0u;di<TSP_MAP_CELLS;++di){
         uint8_t pi;
         for(pi=0u;pi<PIXELS;++pi){
@@ -783,6 +844,36 @@ void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
     g_depth[cell][pi]=depth;
 }
 
+/*
+ * Mesh pixel addressed by ramp position rather than by wall shade.
+ *
+ * ramp_level 0..SHADE_RAMP_LEN-1 is the quantized incident angle; lit is the
+ * separate binary cast-shadow visibility, which rides the existing point-light
+ * channel so its boundary is resolved by the shared straight-edge tile
+ * vocabulary instead of costing a unique pattern per boundary cell.
+ */
+void tsp_host_composite_pixel_ramp(uint8_t sx,uint8_t sy,uint8_t sid,
+                                   uint8_t ramp_level,uint8_t black,
+                                   uint8_t lit,uint8_t recess,double depth){
+    uint8_t row,col,px,py;
+    uint16_t cell,pi;
+    if(sx>=160u||sy>=144u||depth<=0.0)return;
+    row=(uint8_t)(sy>>3);
+    col=(uint8_t)(sx>>3);
+    px=(uint8_t)(sx&7u);
+    py=(uint8_t)(sy&7u);
+    cell=(uint16_t)row*TSP_COLS+col;
+    pi=(uint16_t)py*8u+px;
+    if(depth>=g_depth[cell][pi]-1e-9)return;
+    g_cells[cell][pi]=black?SEM_BLACK:ramp_at(ramp_level);
+    g_owner[cell][pi]=sid;
+    g_depth[cell][pi]=depth;
+    /* apply_point_light() cannot resolve a world receiver for a mesh sid, so
+     * it neither sets nor clears these bits; they survive into the quantizer. */
+    g_lit[cell][pi]=(uint8_t)(black?0u:(lit?1u:0u));
+    g_recess[cell][pi]=black?0u:recess;
+}
+
 void tsp_host_composite_pixel_overlay_depth(uint8_t sx,uint8_t sy,
                                             uint8_t target_sid,
                                             uint8_t shade,uint8_t black,
@@ -800,6 +891,98 @@ void tsp_host_composite_pixel_overlay_depth(uint8_t sx,uint8_t sy,
     if(depth>=g_overlay_depth[cell][pi]-1e-9)return;
     g_cells[cell][pi]=black?SEM_BLACK:shade_sem(shade);
     g_overlay_depth[cell][pi]=depth;
+}
+
+/*
+ * Screen-space shade consolidation for one mesh object.
+ *
+ * Per-face flat shading of a densely tessellated hero mesh is anatomically
+ * correct but produces isolated single-pixel shade flips. Those flips are the
+ * dominant tile-vocabulary cost: an 8x8 cell that differs from its neighbours
+ * by one pixel still needs its own hardware tile and its own VBlank upload.
+ *
+ * The earlier answer was to shade a heavily decimated proxy instead. That
+ * reduces vocabulary but also destroys registration: the lit/unlit boundary
+ * moves to wherever the proxy's facet edges happen to project, which is not
+ * where the anatomy is.
+ *
+ * This filter attacks the actual cost driver instead. It is a majority vote
+ * over the eight neighbours that share the same owner, so:
+ *   - the object's silhouette is never crossed and never softened;
+ *   - SEM_BLACK outline pixels are preserved exactly;
+ *   - a shade region with real spatial support survives untouched;
+ *   - only unsupported speckle collapses into its surroundings.
+ *
+ * min_support is the number of same-owner, same-shade neighbours a pixel must
+ * have to be kept. Higher values consolidate harder. Passes iterate on a
+ * snapshot each time, so the result is order-independent and deterministic.
+ */
+static uint8_t consolidate_pixel_get(int x,int y){
+    return g_cells[(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3)]
+                  [(uint16_t)(y&7)*8u+(uint16_t)(x&7)];
+}
+
+static void consolidate_pixel_set(int x,int y,uint8_t v){
+    g_cells[(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3)]
+           [(uint16_t)(y&7)*8u+(uint16_t)(x&7)]=v;
+}
+
+static uint8_t consolidate_owner_get(int x,int y){
+    if(x<0||x>=160||y<0||y>=144)return 0xffu;
+    return g_owner[(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3)]
+                  [(uint16_t)(y&7)*8u+(uint16_t)(x&7)];
+}
+
+/* Only surface brightness values may be moved; sky, floor and the SEM_BLACK
+ * outline carry dedicated meaning and must survive the filter exactly. */
+static uint8_t consolidate_is_shade(uint8_t v){
+    return (uint8_t)(ramp_pos(v)!=0xffu);
+}
+
+void tsp_host_composite_consolidate_owner(uint8_t sid,uint8_t min_support,
+                                          uint8_t passes){
+    static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
+    static const int8_t ny[8]={-1,-1,-1,0,0,1,1,1};
+    static uint8_t snap[144][160];
+    uint8_t pass;
+    if(!min_support||!passes)return;
+    if(min_support>8u)min_support=8u;
+
+    for(pass=0u;pass<passes;++pass){
+        int x,y,changed=0;
+        for(y=0;y<144;++y)for(x=0;x<160;++x)snap[y][x]=consolidate_pixel_get(x,y);
+
+        for(y=0;y<144;++y)for(x=0;x<160;++x){
+            uint8_t votes[SEM_MID_NEAR+1u];
+            uint8_t v=snap[y][x],best,best_n=0u,own_n,k;
+            if(consolidate_owner_get(x,y)!=sid)continue;
+            if(!consolidate_is_shade(v))continue;
+
+            memset(votes,0,sizeof(votes));
+            for(k=0u;k<8u;++k){
+                int xx=x+nx[k],yy=y+ny[k];
+                uint8_t nv;
+                if(consolidate_owner_get(xx,yy)!=sid)continue;
+                nv=snap[yy][xx];
+                if(!consolidate_is_shade(nv))continue;
+                ++votes[nv];
+            }
+
+            own_n=votes[v];
+            if(own_n>=min_support)continue;
+
+            best=v;
+            for(k=0u;k<SHADE_RAMP_LEN;++k)
+                if(votes[k_shade_ramp[k]]>best_n){
+                    best_n=votes[k_shade_ramp[k]];best=k_shade_ramp[k];
+                }
+            if(best!=v&&best_n>own_n){
+                consolidate_pixel_set(x,y,best);
+                changed=1;
+            }
+        }
+        if(!changed)break;
+    }
 }
 
 static void flip_pattern(const uint8_t src[PIXELS],uint8_t dst[PIXELS],uint8_t fx,uint8_t fy){
@@ -853,12 +1036,12 @@ static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
     uint8_t i,any=0u;
     for(i=0u;i<PIXELS;++i){
         uint8_t v=ambient[i];
-        if(lit[i]&&v>SEM_BLACK&&v<SEM_NEAR){any=1u;break;}
+        if(lit[i]&&light_reactive(v)){any=1u;break;}
     }
     if(!any){memcpy(encoded,ambient,PIXELS);return 0u;}
     for(i=0u;i<PIXELS;++i){
         uint8_t v=ambient[i];
-        if(v==SEM_BLACK||v>=SEM_NEAR)encoded[i]=v;
+        if(!light_reactive(v))encoded[i]=v;
         else if(lit[i])encoded[i]=v;
         else encoded[i]=(uint8_t)(v+7u);
     }
@@ -960,9 +1143,75 @@ uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid){
     return n;
 }
 
+/*
+ * Owner-masked preview. Everything not owned by sid is written black, so a
+ * histogram of the result measures one object's shade distribution without the
+ * wall behind it contaminating the counts. Diagnostics only.
+ */
+/*
+ * Diagnostic false-colour map of the per-pixel recess field, INCLUDING values
+ * below the crease threshold. The point is to see what the geometry pass
+ * actually detected before the dither decides what to draw, so a weak or
+ * misplaced field is visible as a field rather than inferred from its absence
+ * in the final picture.
+ *
+ * Blue -> cyan -> yellow -> red as recess rises; the object's unrecessed area
+ * stays dark grey and everything else is black.
+ */
+int tsp_host_composite_write_recess_ppm(const char *path,uint8_t sid){
+    FILE *f=fopen(path,"wb");
+    uint16_t y,x;
+    if(!f)return 0;
+    fprintf(f,"P6\n160 144\n255\n");
+    for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
+        uint16_t cell=(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3);
+        uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
+        uint8_t rgb[3]={0u,0u,0u};
+        if(g_owner[cell][pi]==sid){
+            unsigned v=g_recess[cell][pi];
+            if(v==0u){rgb[0]=40u;rgb[1]=40u;rgb[2]=48u;}
+            else if(v<64u){rgb[2]=(uint8_t)(120u+v*2u);}
+            else if(v<128u){rgb[1]=(uint8_t)((v-64u)*4u);rgb[2]=255u;}
+            else if(v<192u){rgb[0]=(uint8_t)((v-128u)*4u);rgb[1]=255u;
+                            rgb[2]=(uint8_t)(255u-(v-128u)*4u);}
+            else{rgb[0]=255u;rgb[1]=(uint8_t)(255u-(v-192u)*4u);}
+        }
+        fwrite(rgb,1,3,f);
+    }
+    fclose(f);return 1;
+}
+
+int tsp_host_composite_write_owner_ppm(const char *path,uint8_t sid){
+    static const uint8_t rgb[8][3]={
+        {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240},
+        {120,136,168},{176,192,216}
+    };
+    FILE *f=fopen(path,"wb");
+    uint16_t y,x;
+    if(!f)return 0;
+    fprintf(f,"P6\n160 144\n255\n");
+    for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
+        uint8_t row=(uint8_t)(y>>3),col=(uint8_t)(x>>3);
+        uint8_t py=(uint8_t)(y&7u),px=(uint8_t)(x&7u);
+        uint16_t cell=(uint16_t)row*TSP_COLS+col;
+        uint16_t pi=(uint16_t)py*8u+px;
+        uint8_t v=g_cells[cell][pi];
+        if(g_owner[cell][pi]!=sid)v=SEM_BLACK;
+        else if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])
+            v=lit_semantic(v);
+        if(v>7u)v=0u;
+        fwrite(rgb[v],1,3,f);
+    }
+    fclose(f);return 1;
+}
+
 int tsp_host_composite_write_ppm(const char *path){
-    static const uint8_t rgb[6][3]={
-        {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240}
+    /* Preview ramp. Indices 0..5 are unchanged so every previously captured
+     * frame still compares byte-for-byte; 6 and 7 are the interstitial bands,
+     * placed at the midpoints of the two gaps they occupy on hardware. */
+    static const uint8_t rgb[8][3]={
+        {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240},
+        {120,136,168},{176,192,216}
     };
     FILE *f=fopen(path,"wb");
     uint16_t y,x;
@@ -976,7 +1225,7 @@ int tsp_host_composite_write_ppm(const char *path){
         uint8_t v=g_cells[cell][pi];
         if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])
             v=lit_semantic(v);
-        if(v>5u)v=0u;
+        if(v>7u)v=0u;
         fwrite(rgb[v],1,3,f);
     }
     fclose(f);return 1;

@@ -157,3 +157,134 @@ small: run the converter on the real source, inspect inferred orientation/bounds
 compile the generated include, tune visual/shadow triangle targets against
 appearance and the real 48-upload ceiling, then capture the existing route and
 detail-orbit proof.
+
+## Hero mesh shading: the coarse lighting proxy and its replacement
+
+### The failure
+
+The imported hero shipped with a "hybrid" lighting arrangement: the visual shell
+carried one flat shade (`ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS=1`) and all lighting
+came from a separately simplified **lighting proxy** rasterized on top as a
+clipped overlay.
+
+At the sweep's own settings that proxy decimates to **18 triangles / 12
+vertices** for a 500,086-triangle figure. Reproduced locally, the result is
+exactly what it must be: each proxy triangle covers a large screen area, gets
+one flat `face_shade()` value, and paints a hard straight-edged wedge across
+the model. The wedges cut through the helmet, the shoulder and the chest as one
+facet, because at 18 triangles no facet corresponds to any anatomical feature.
+
+Three separate defects compounded:
+
+1. **Resolution collapse.** Quadric decimation minimizes positional error, but
+   shading error is a function of the NORMAL field. At an 18-triangle budget the
+   normals are area-weighted averages over whole limbs.
+2. **No registration.** `convert.mjs` derives the visual, lighting and shadow
+   meshes by three INDEPENDENT simplifications of the same master, so the
+   proxy's surface deviates freely from the shell's. The lit/unlit boundary
+   therefore lands wherever the proxy's facet edges project, not where the
+   anatomy is.
+3. **No cross-depth test.** `tsp_host_composite_pixel_overlay_depth()`
+   depth-tests overlay facets only against each other, never against the shell's
+   own `g_depth`. A proxy facet lying behind the visible shell surface still
+   paints it. Combined with a near-convex 18-triangle hull, facets spanning
+   concavities light the concavity as though it were a convex lit surface.
+
+The overlay IS clipped to shell-owned pixels, so it cannot paint background;
+the appearance of lighting spilling into empty space is defect 3 plus the hull
+bridging concave regions.
+
+### Measured alternatives
+
+Bundle 11, route 0->1, `ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255`:
+
+| Configuration | scheduled budget |
+|---|---|
+| Flat shell, no lighting at all | 51 |
+| Flat shell + 18-triangle lighting proxy (the artefact) | 69 |
+| Uniform ambient + binary lit bit on the point-light channel | 58 |
+| Per-face 3-shade on the real 5,184-triangle shell | 111 |
+| ...+ screen-space shade consolidation | 87-91 |
+| **5-stop ramp, smooth normals, static bake, crease, dither** | **138** |
+
+The proxy is cheaper than correct shading, but it buys that by destroying
+registration, which is the wrong axis to spend on. Speckle consolidation alone
+only reached 91, so unsupported single-pixel noise was NOT the dominant cost;
+boundary cells were.
+
+### What replaced it
+
+**Widened brightness ramp.** `SEM_FAR/MID/NEAR` was a three-stop distance ramp,
+which is all a flat wall needs. Two interstitial indices (`SEM_FAR_MID`,
+`SEM_MID_NEAR`) were added in the two largest gaps, giving a five-stop ramp.
+Walls address it in steps of two and the hard-light transform is +2 stops, so
+every wall result is bit-identical; only meshes use the finer stops. The 4bpp
+shadow alias (`v+7`) still lands inside the palette: ambient 1..7 -> 8..14.
+
+**Smooth per-vertex normals**, so a shade boundary follows the surface
+curvature rather than the tessellation.
+
+**Static per-vertex bake.** The hero and its light are both fixed, so light
+visibility (self-shadow) and cavity openness are properties of the geometry.
+They are solved once per vertex against the object's own full-resolution
+triangles and interpolated per pixel. Doing this per pixel per frame would be
+billions of ray tests; per vertex it costs a few seconds, once.
+
+**Crease field measured on the SOURCE mesh.** Decimation removes folds before
+anything else, so the shell cannot measure its own creases: measured on the
+5,184-triangle shell, concavity came out negative (convex) for 89% of the
+surface and the crease it drove touched 482 pixels across 2,500 frames.
+`tools/glb_rmb/recess.mjs` measures concavity on the welded 500k source and
+stencils it onto the shell over a world-space radius matched to the shell's
+triangle size. The field is normalized by RANK, not by value: it has a long
+tail (90th percentile 0.026 against a maximum 0.125), so a linear remap left
+the whole drawn set bunched against zero.
+
+**Occlusion belongs in brightness, not in a post-pass.** A first attempt drew
+creases as a dithered darkening after quantization. That clips: creases mostly
+occur in already-dark regions, where there are no ramp stops left below them.
+Folding the crease into the brightness scalar before quantization lets the ramp
+equalization account for it.
+
+**Ramp equalization.** The three shading terms multiply, so their product is
+bunched; with plausible constants 88% of the figure landed on the darkest stop.
+Thresholds are therefore cut at equal quantiles of the object's own brightness
+distribution, so every stop carries a similar share of the surface for any
+light rig.
+
+**Incident weight.** At full weight a strongly directional source pushes the lit
+side to the top of the ramp and the dark side to the bottom, leaving no tonal
+room for occlusion or crease. Lowering it to 0.6 lets those terms carry more of
+the ordering, which is how the figure reads solid from every orbit angle.
+
+**Ordered dither** on the fractional ramp position, using the same 4x4 coverage
+vocabulary the renderer already uses for one-sided penumbra and cavity
+overlays. At 9x zoom it reads as noise; at hardware pitch it resolves to
+intermediate tone.
+
+### Rejected, with reasons
+
+- **Hard screen-space silhouette outline.** Derived from the owner buffer, it
+  needs no edge adjacency (the shell has ~7,800 edges against `RMB_MAX_EDGES`
+  4,096) and it does fix figure/ground. It was rejected on appearance: a
+  boundary-value stroke reads as ink laid over the model rather than as shade,
+  and the silhouette is legible without it.
+- **Character AO at boundary value.** Any occlusion cue allowed to reach
+  `SEM_BLACK` stops reading as shade and becomes a permanent-marker line.
+  Occlusion stays inside the brightness ramp, as a gradation.
+- **Uniform ambient + binary lit bit** (58 budget) is genuinely cheaper and is
+  the right shape for a CAST shadow boundary, but as the hero's only lighting it
+  collapses the figure to near-uniform. Removed rather than left as a second,
+  near-duplicate mesh lighting path.
+
+### Verification
+
+- warning-clean at `-Wall -Wextra -Wpedantic`: PASS
+- ASan/UBSan on bundle 11 and on the full catalogue: PASS
+- canonical seam `E4F108D3C424CCE3`: unchanged
+- full 13-bundle / 31-route catalogue: byte-identical except bundle 11, which is
+  the intended change
+
+`ROOM_BUNDLE_CAPTURE_OWNER=<object index>` additionally writes owner-masked and
+false-colour recess diagnostic frames, so the detected field can be inspected
+directly, including values below the threshold that will not be drawn.

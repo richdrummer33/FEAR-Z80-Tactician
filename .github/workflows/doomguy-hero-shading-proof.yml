@@ -1,0 +1,132 @@
+name: Doomguy hero shading proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-doomguy-glb-import
+      - experiment/gg-normal-seam-lighting
+    paths:
+      - ".github/workflows/doomguy-hybrid-lighting-sweep.yml"
+      - "tools/room_mesh_bake.*"
+      - "tools/polar_baked_composite.*"
+      - "tools/glb_rmb/**"
+  workflow_dispatch:
+
+# Replaces the old coarse lighting-proxy sweep. That sweep tuned the triangle
+# budget of a separately decimated lighting mesh, which is the mechanism that
+# produced the flat straight-edged wedges across the statue: decimation
+# minimizes positional error while shading depends on the normal field, so no
+# triangle budget makes an independently simplified proxy agree with the shell.
+# See docs/experiments/DOOMGUY_HERO_CHAMBER.md.
+jobs:
+  hero-shading:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+      VISUAL_TRIS: "5200"
+      SHADOW_TRIS: "200"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import mesh and source-measured crease field
+        run: |
+          set -euo pipefail
+          mkdir -p build/hero tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris "$VISUAL_TRIS" \
+            --shadow-tris "$SHADOW_TRIS" \
+            --recess-radius 0.5 \
+            | tee build/hero/IMPORT.json
+
+      - name: Warning-clean build
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/hero/room_bundle_poc_gen
+
+      - name: Non-hero bundles must be untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The shading work widened a ramp shared with the wall renderer. Walls
+          # address it in steps of two, so every non-hero bundle must remain
+          # byte-identical; only bundle 11 is allowed to change.
+          mkdir -p build/hero/all
+          ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 \
+            build/hero/room_bundle_poc_gen build/hero/all \
+            2>&1 | tee build/hero/all/run.txt
+          grep '^ROOM_BUNDLE_STATS' build/hero/all/run.txt > build/hero/all/stats.txt
+          grep -q '^ROOM_BUNDLE_POC_PASS' build/hero/all/run.txt
+          test -s build/hero/all/stats.txt
+
+      - name: Sanitizers
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O1 -g -fsanitize=address,undefined \
+            -Wall -Wextra -Wpedantic \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED \
+            -Isrc -Itools \
+            tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            -lm -o build/hero/asan
+          mkdir -p build/hero/asan_out
+          ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 build/hero/asan build/hero/asan_out
+
+      - name: Capture review and diagnostic frames
+        run: |
+          set -euo pipefail
+          out=build/hero/proof
+          mkdir -p "$out"
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_CAPTURE_REVIEW=1 \
+            ROOM_BUNDLE_CAPTURE_OWNER=1 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 \
+            build/hero/room_bundle_poc_gen "$out"
+          grep -q '^doomguy_hero_chamber=PASS$' "$out/room_bundle_poc_manifest.txt"
+          grep -q '^independent_bundle_replay=PASS$' "$out/room_bundle_poc_manifest.txt"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Encode proof
+        run: |
+          out=build/hero/proof
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i "$out/review-doomguy-detail-%03d.ppm" \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            "$out/doomguy-orbit.mp4"
+          # The recess diagnostic shows what the geometry pass detected,
+          # including sub-threshold values the shading will not draw.
+          ffmpeg -y -loglevel error -framerate 30 \
+            -i "$out/recess-doomguy-detail-%03d.ppm" \
+            -vf "scale=640:576:flags=neighbor" \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            "$out/doomguy-recess-diagnostic.mp4"
+          # Sample both the shadowed side and the lit front-facing arc.
+          for spec in "000 left" "020 quarter-left" "040 oblique" "070 front-lit" "090 front-right" "119 right"; do
+            set -- $spec
+            ffmpeg -y -loglevel error -i "$out/review-doomguy-detail-$1.ppm" \
+              -vf "scale=640:576:flags=neighbor" "$out/doomguy-$2.png"
+            ffmpeg -y -loglevel error -i "$out/recess-doomguy-detail-$1.ppm" \
+              -vf "scale=640:576:flags=neighbor" "$out/recess-$2.png"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-hero-shading-proof
+          path: |
+            build/hero/IMPORT.json
+            build/hero/all/stats.txt
+            build/hero/proof/*.png
+            build/hero/proof/*.mp4
+            build/hero/proof/room_bundle_poc_manifest.txt
+          if-no-files-found: error
+          retention-days: 30

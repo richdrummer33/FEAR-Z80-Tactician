@@ -122,6 +122,36 @@ void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x
                                       double depth);
 void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
                                     uint8_t shade,uint8_t black,double depth);
+/* Number of stops in the ambient surface-brightness ramp. Walls address it in
+ * steps of two (three-stop compatible); meshes may address every stop. */
+#define TSP_HOST_SHADE_RAMP_LEN 5u
+/* Mesh pixel addressed by ramp position (quantized incident angle) with the
+ * separate binary cast-shadow visibility on the point-light channel. */
+void tsp_host_composite_pixel_ramp(uint8_t sx,uint8_t sy,uint8_t sid,
+                                   uint8_t ramp_level,uint8_t black,
+                                   uint8_t lit,uint8_t recess,double depth);
+
+/* Number of stops in the ambient surface-brightness ramp. Walls address it in
+ * steps of two (three-stop compatible); meshes may address every stop. */
+#define TSP_HOST_SHADE_RAMP_LEN 5u
+/* Mesh pixel addressed by ramp position (quantized incident angle) with the
+ * separate binary cast-shadow visibility on the point-light channel. */
+void tsp_host_composite_pixel_ramp(uint8_t sx,uint8_t sy,uint8_t sid,
+                                   uint8_t ramp_level,uint8_t black,
+                                   uint8_t lit,uint8_t recess,double depth);
+/* Ordered-dither crease emphasis over one object, darkening by ramp stops in
+ * proportion to the per-pixel recess written by the mesh raster. Never darkens
+ * past ramp position floor_pos, so a crease can never reach the SEM_BLACK
+ * edge-boundary value and read as ink rather than as shade. */
+void tsp_host_composite_crease_owner(uint8_t sid,uint8_t threshold,
+                                     uint8_t max_steps,uint8_t floor_pos);
+/* Depth-tested mesh pixel whose lighting is carried as a binary lit bit on the
+ * existing point-light channel rather than as a per-pixel shade semantic. The
+ * object keeps one uniform ambient shade, so mixed cells are resolved by the
+ * shared straight-edge vocabulary and uniform cells cost no tile upload. */
+void tsp_host_composite_pixel_depth_lit(uint8_t sx,uint8_t sy,uint8_t sid,
+                                        uint8_t shade,uint8_t black,
+                                        uint8_t lit,double depth);
 /* Host-only clipped lighting overlay. Writes only where target_sid is already
  * the visible owner, and independently depth-tests multiple overlay facets.
  * The base owner's geometric depth/identity are preserved. */
@@ -129,6 +159,15 @@ void tsp_host_composite_pixel_overlay_depth(uint8_t sx,uint8_t sy,
                                             uint8_t target_sid,
                                             uint8_t shade,uint8_t black,
                                             double depth);
+/* Host-only screen-space shade consolidation for a single mesh object.
+ * Majority-votes each shade pixel against the eight neighbours that share the
+ * same owner, so the object silhouette and its SEM_BLACK outline are never
+ * crossed. This reduces tile vocabulary where the cost actually comes from --
+ * unsupported single-pixel shade flips -- without moving the lit/unlit
+ * boundary off the source geometry the way mesh decimation does.
+ * min_support: same-shade same-owner neighbours required to keep a pixel. */
+void tsp_host_composite_consolidate_owner(uint8_t sid,uint8_t min_support,
+                                          uint8_t passes);
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
 uint16_t tsp_host_composite_frame_load_count(void);
@@ -141,5 +180,11 @@ uint32_t tsp_host_composite_total_load_count(void);
 uint16_t tsp_host_composite_owner_pixel_count(uint8_t sid);
 uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid);
 int tsp_host_composite_write_ppm(const char *path);
+/* Diagnostics: same preview but masked to one owner id, so a histogram
+ * measures a single object's shade distribution. */
+int tsp_host_composite_write_owner_ppm(const char *path,uint8_t sid);
+/* Diagnostics: false-colour map of the per-pixel recess field for one object,
+ * including sub-threshold values the crease dither will not draw. */
+int tsp_host_composite_write_recess_ppm(const char *path,uint8_t sid);
 
 #endif

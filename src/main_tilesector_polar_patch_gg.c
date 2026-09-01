@@ -29,10 +29,21 @@
  * name-table palette attribute; only mixed boundary tiles need new patterns.
  */
 static const palette_color_t k_palettes[32] = {
+    /* Palette 0, ambient. 1..5 are the original OUT/FLOOR/FAR/MID/NEAR
+     * semantics; 6 and 7 are the interstitial surface-brightness bands added
+     * for hero-mesh shading, placed at the midpoints of the two largest gaps
+     * so the ramp reads FAR < 6 < MID < 7 < NEAR. */
     RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
+    RGB(4,5,7),RGB(8,9,11),
+    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
+    /* Palette 1, hard-light transform. 1..7 become one whole shade brighter
+     * (+2 ramp positions, clamped at NEAR); 8..14 duplicate ambient 1..7 for
+     * pixels on the shadow side of a mixed light-boundary tile. Widening the
+     * ambient ramp to index 7 keeps the +7 shadow alias inside the palette:
+     * 1..7 map to 8..14, leaving index 15 spare. */
     RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
-    RGB(0,0,0),RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
+    RGB(8,9,11),RGB(10,11,13),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(4,5,7),RGB(8,9,11),RGB(0,0,0)
 };
 static const int8_t k_edge_lut[8][8] = {
     {0,0,0,0,0,0,0,0},{0,0,0,0,1,1,1,1},{0,0,1,1,1,1,2,2},{0,0,1,1,2,2,3,3},

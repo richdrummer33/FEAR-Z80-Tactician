@@ -30,7 +30,49 @@
 #define ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS 1
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY
-#define ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY 1
+#define ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY 0
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CREASE_COVERAGE
+#define ROOM_BUNDLE_DOOMGUY_CREASE_COVERAGE 0.30
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CREASE_DEPTH
+#define ROOM_BUNDLE_DOOMGUY_CREASE_DEPTH 0.55
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_DITHER
+#define ROOM_BUNDLE_DOOMGUY_DITHER 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CREASE
+#define ROOM_BUNDLE_DOOMGUY_CREASE 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT
+#define ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_INCIDENT
+#define ROOM_BUNDLE_DOOMGUY_INCIDENT 0.60
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_AO_RADIUS
+#define ROOM_BUNDLE_DOOMGUY_AO_RADIUS 2.5
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_AO_STRENGTH
+#define ROOM_BUNDLE_DOOMGUY_AO_STRENGTH 0.65
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS
+#define ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS 0.0
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_SHADOW_FLOOR
+#define ROOM_BUNDLE_DOOMGUY_SHADOW_FLOOR 0.45
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_RAMP
+#define ROOM_BUNDLE_DOOMGUY_RAMP 5
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_SMOOTH
+#define ROOM_BUNDLE_DOOMGUY_SMOOTH 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CONSOLIDATE
+#define ROOM_BUNDLE_DOOMGUY_CONSOLIDATE 0
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CONSOLIDATE_PASSES
+#define ROOM_BUNDLE_DOOMGUY_CONSOLIDATE_PASSES 1
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS
 #define ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS 0
@@ -729,9 +771,40 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
      * GLB master, so their silhouettes remain registered. */
     rmb_set_object_flags(m,visual,1u,0u);
     rmb_set_object_shade_levels(m,visual,(uint8_t)ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS);
-    rmb_add_indexed_mesh_q8(m,visual,&t,
-                            doomguy_visual_xyz_q8,DOOMGUY_VISUAL_VERTEX_COUNT,
-                            doomguy_visual_indices,DOOMGUY_VISUAL_TRIANGLE_COUNT,0);
+    rmb_add_indexed_mesh_q8_ex(m,visual,&t,
+                               doomguy_visual_xyz_q8,DOOMGUY_VISUAL_VERTEX_COUNT,
+                               doomguy_visual_indices,
+                               DOOMGUY_VISUAL_TRIANGLE_COUNT,0,
+                               doomguy_visual_recess);
+#if ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT
+    rmb_set_object_incident_weight(m,visual,
+                                   (double)ROOM_BUNDLE_DOOMGUY_INCIDENT);
+    rmb_set_object_static_light(m,visual,
+                                (double)ROOM_BUNDLE_DOOMGUY_AO_RADIUS,
+                                (double)ROOM_BUNDLE_DOOMGUY_AO_STRENGTH,
+                                (double)ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS,
+                                (double)ROOM_BUNDLE_DOOMGUY_SHADOW_FLOOR);
+#endif
+#if ROOM_BUNDLE_DOOMGUY_RAMP
+    /* Incident angle straight onto the compositor brightness ramp. */
+    rmb_set_object_ramp_shading(m,visual,(uint8_t)ROOM_BUNDLE_DOOMGUY_RAMP,
+                                (uint8_t)ROOM_BUNDLE_DOOMGUY_SMOOTH);
+    rmb_set_object_ramp_equalize(m,visual,1u);
+#if ROOM_BUNDLE_DOOMGUY_DITHER
+    rmb_set_object_ramp_dither(m,visual,1u);
+#endif
+#if ROOM_BUNDLE_DOOMGUY_CREASE
+    rmb_set_object_crease(m,visual,(double)ROOM_BUNDLE_DOOMGUY_CREASE_COVERAGE,
+                          (double)ROOM_BUNDLE_DOOMGUY_CREASE_DEPTH);
+#endif
+#endif
+#if ROOM_BUNDLE_DOOMGUY_CONSOLIDATE
+    /* Reduce tile vocabulary in screen space rather than by decimating the
+     * mesh, so the lit/unlit boundary stays registered to the real anatomy. */
+    rmb_set_object_shade_consolidate(m,visual,
+                                     (uint8_t)ROOM_BUNDLE_DOOMGUY_CONSOLIDATE,
+                                     (uint8_t)ROOM_BUNDLE_DOOMGUY_CONSOLIDATE_PASSES);
+#endif
 
 #if ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY
     rmb_set_object_flags(m,lighting,1u,0u);
@@ -1840,6 +1913,19 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                      outdir,tag,(unsigned)rf);
             if(!tsp_host_composite_write_ppm(path))
                 die("showcase detail review frame write failed");
+            /* Optional owner-masked companion frame for shade diagnostics. */
+            if(getenv("ROOM_BUNDLE_CAPTURE_OWNER")){
+                uint8_t sid=(uint8_t)(0x80u+
+                    (uint8_t)atoi(getenv("ROOM_BUNDLE_CAPTURE_OWNER")));
+                snprintf(path,sizeof(path),"%s/owner-%s-%03u.ppm",
+                         outdir,tag,(unsigned)rf);
+                if(!tsp_host_composite_write_owner_ppm(path,sid))
+                    die("owner-masked review frame write failed");
+                snprintf(path,sizeof(path),"%s/recess-%s-%03u.ppm",
+                         outdir,tag,(unsigned)rf);
+                if(!tsp_host_composite_write_recess_ppm(path,sid))
+                    die("recess diagnostic frame write failed");
+            }
         }
     }
 
