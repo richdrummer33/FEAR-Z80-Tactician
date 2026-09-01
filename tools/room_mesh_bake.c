@@ -40,6 +40,7 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     s->objects[id].visible=1u;
     s->objects[id].casts_shadow=1u;
     s->objects[id].shade_levels=3u;
+    s->objects[id].overlay_target_object=0xffu;
     s->object_count=(uint8_t)(id+1u);
     return id;
 }
@@ -55,6 +56,14 @@ void rmb_set_object_shade_levels(RMBScene *s,uint8_t object_id,uint8_t levels){
     if(object_id>=s->object_count)rmb_fail("invalid mesh object id");
     if(levels<1u||levels>3u)rmb_fail("mesh shade levels must be 1..3");
     s->objects[object_id].shade_levels=levels;
+}
+
+void rmb_set_object_overlay_target(RMBScene *s,uint8_t object_id,
+                                   uint8_t target_object_id){
+    if(object_id>=s->object_count||target_object_id>=s->object_count)
+        rmb_fail("invalid mesh overlay object id");
+    if(object_id==target_object_id)rmb_fail("mesh overlay cannot target itself");
+    s->objects[object_id].overlay_target_object=target_object_id;
 }
 
 static RMBVec3 rotate_xyz(RMBVec3 p,double rx,double ry,double rz){
@@ -383,7 +392,14 @@ static void raster_triangle(const RMBScene *s,const RMBTriangle *t,
         inv=w0*pa.inv+w1*pb.inv+w2*pc.inv;
         if(inv<=1e-12)continue;
         d=1.0/inv;
-        tsp_host_composite_pixel_depth((uint8_t)x,(uint8_t)y,owner,shade,0u,d);
+        if(s->objects[t->object_id].overlay_target_object!=0xffu){
+            uint8_t target=(uint8_t)(0x80u+
+                (s->objects[t->object_id].overlay_target_object&0x3fu));
+            tsp_host_composite_pixel_overlay_depth((uint8_t)x,(uint8_t)y,
+                                                    target,shade,0u,d);
+        }else{
+            tsp_host_composite_pixel_depth((uint8_t)x,(uint8_t)y,owner,shade,0u,d);
+        }
     }
 }
 
