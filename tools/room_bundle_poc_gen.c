@@ -704,7 +704,7 @@ static void make_statue_showcase_world(World *w){
     t=rmb_transform(78,24,14,0,0,8,1,1,1);
     rmb_add_box(&w->mesh,torso,&t,3.5,5.0,6.0,0);
     t=rmb_transform(78,24,23.5,0,0,8,1,1,1);
-    rmb_add_uv_sphere(&w->mesh,head,&t,3.7,6u,12u,0);
+    rmb_add_uv_sphere(&w->mesh,head,&t,3.7,4u,8u,0);
 
     t=rmb_transform(78,20.8,8.5,0,0,8,1,1,1);
     rmb_add_box(&w->mesh,limbs,&t,2.0,1.7,5.5,0);
@@ -712,9 +712,9 @@ static void make_statue_showcase_world(World *w){
     rmb_add_box(&w->mesh,limbs,&t,2.0,1.7,5.5,0);
 
     t=rmb_transform(78,17.6,16.0,58,0,8,1,1,1);
-    rmb_add_cylinder(&w->mesh,limbs,&t,1.5,9.0,8u,0,1u);
+    rmb_add_cylinder(&w->mesh,limbs,&t,1.5,9.0,6u,0,1u);
     t=rmb_transform(78,30.4,16.0,-58,0,8,1,1,1);
-    rmb_add_cylinder(&w->mesh,limbs,&t,1.5,9.0,8u,0,1u);
+    rmb_add_cylinder(&w->mesh,limbs,&t,1.5,9.0,6u,0,1u);
 
     /* Ridiculous ceremonial sword, because this is a research branch. */
     t=rmb_transform(79.5,33.5,13.5,-18,8,10,1,1,1);
@@ -725,7 +725,9 @@ static void make_statue_showcase_world(World *w){
     w->scene_lights[0].height_q4=(uint8_t)(11<<4);
     w->scene_lights[0].radius_world=124u;
     w->scene_lights[0].intensity=255u;
-    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    /* Keep dramatic pillar-cast shadows but avoid the one-pixel penumbra
+     * pattern explosion on this deliberately busy hero composition. */
+    w->lighting_stage=TSP_HOST_LIGHT_HARD;
     finalize_scene(w);
 }
 
@@ -745,7 +747,7 @@ static void make_curved_showcase_world(World *w){
     rmb_add_cylinder(&w->mesh,cyl,&t,7.0,32.0,20u,0,1u);
 
     t=rmb_transform(80,48,6.5,0,0,0,1,1,1);
-    rmb_add_uv_sphere(&w->mesh,sphere,&t,6.5,8u,18u,0);
+    rmb_add_uv_sphere(&w->mesh,sphere,&t,6.5,8u,18u,1);
 
     t=rmb_transform(98,18,3.0,0,0,0,1,1,1);
     rmb_add_cylinder(&w->mesh,platform,&t,11.0,6.0,24u,0,1u);
@@ -798,8 +800,10 @@ static void add_shelf_mesh(RMBScene *m){
     t=rmb_compose(&parent,&child);
     rmb_add_box(m,obj,&t,4.5,0.7,10.0,0);
 
-    for(i=0u;i<4u;++i){
-        child=rmb_transform(0,0,-7.5+5.0*(double)i,0,0,0,1,1,1);
+    /* Three shelves are enough to read instantly as a bookcase at GG
+     * resolution; the fourth plane was mostly tile-pattern entropy. */
+    for(i=0u;i<3u;++i){
+        child=rmb_transform(0,0,-7.0+7.0*(double)i,0,0,0,1,1,1);
         t=rmb_compose(&parent,&child);
         rmb_add_box(m,obj,&t,4.5,6.0,0.55,0);
     }
@@ -811,16 +815,12 @@ static void make_prop_showcase_world(World *w){
     add_table_mesh(&w->mesh);
     add_shelf_mesh(&w->mesh);
 
-    /* A low solid divider gives the room one conventional architectural
-     * shadow caster while the mesh props exercise arbitrary 3D rotation. */
-    add_solid_wall_line(w,106,-4,106,12,2.0,0,18,1);
-
     w->scene_lights[0].x_q4=(int16_t)(50<<4);
     w->scene_lights[0].y_q4=(int16_t)(64<<4);
     w->scene_lights[0].height_q4=(uint8_t)(10<<4);
     w->scene_lights[0].radius_world=120u;
     w->scene_lights[0].intensity=255u;
-    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    w->lighting_stage=TSP_HOST_LIGHT_HARD;
     finalize_scene(w);
 }
 
@@ -909,12 +909,14 @@ static uint8_t yaw_from_vec(double dx,double dy){
 
 static Pose showcase_detail_pose(uint8_t bundle,uint16_t f){
     Pose p;
-    double tx=78.0,ty=24.0,tz=16.0,r=34.0;
+    double tx=78.0,ty=24.0,tz=16.0,rx=20.0,ry=27.0;
     double q=(double)f/119.0;
-    double a=(145.0-290.0*q)*(PI/180.0);
-    if(bundle==9u){tx=80.0;ty=30.0;r=38.0;}
-    else if(bundle==10u){tx=80.0;ty=28.0;tz=14.0;r=34.0;}
-    p.x=tx+r*cos(a);p.y=ty+r*sin(a);p.z=tz;
+    double a=(110.0-220.0*q)*(PI/180.0);
+    if(bundle==9u){tx=80.0;ty=30.0;rx=24.0;ry=27.0;}
+    else if(bundle==10u){tx=80.0;ty=28.0;tz=14.0;rx=21.0;ry=26.0;}
+    /* A deliberately interior ellipse: all review frames remain inside the
+     * showcase room instead of occasionally filming the outside of a wall. */
+    p.x=tx+rx*cos(a);p.y=ty+ry*sin(a);p.z=tz;
     p.yaw=yaw_from_vec(tx-p.x,ty-p.y);
     return p;
 }
@@ -1366,7 +1368,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     }
     if(j!=job_count)die("bundle tile scheduler job count mismatch");
 
-    for(budget=1u;budget<=96u&&!chosen;++budget){
+    for(budget=1u;budget<=48u&&!chosen;++budget){
         uint32_t done=0u;
         for(j=0u;j<job_count;++j)jobs[j].assigned=0xffffu;
         for(t=1u;t<ROUTE_FRAMES;++t){
@@ -1393,7 +1395,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
         }
         if(done==job_count)chosen=budget;
     }
-    if(!chosen)die("diagnostic bundle tile scheduler needs more than 96 uploads/VBlank");
+    if(!chosen)die("bundle tile scheduler needs more than 48 uploads/VBlank");
 
     for(t=1u;t<ROUTE_FRAMES;++t){
         uint16_t n=0u;
