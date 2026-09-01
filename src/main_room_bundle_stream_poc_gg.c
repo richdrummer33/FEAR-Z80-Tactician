@@ -425,15 +425,18 @@ void main(void){
     g_room_bundle_stream_progress=22000u;
 
     /*
-     * Final hostile-camera visual tour. The procedural tests above have
-     * already exercised bundles 2,3,4,6,7. Explicitly run the remaining
-     * visual classes so every one of the eight authored modules executes on
-     * the GG, including both directions through the lit L-turn.
+     * Final human-review tour. Functional backtracking/reverse-route proofs
+     * above stay intact, but the recording target is deliberately simple:
+     * every authored module once, always entry -> exit, camera facing travel.
      */
     play_route(0u,0u,1u,1u,23000u); /* wide portal-shadow chamber */
-    play_route(1u,0u,1u,1u,24000u); /* tight inset/spooky chamber */
-    play_route(5u,0u,1u,1u,25000u); /* flat quarter-turn */
-    play_route(5u,1u,0u,1u,26000u); /* same L in reverse handedness */
+    play_route(1u,0u,1u,1u,24000u); /* spooky flicker chamber */
+    play_route(2u,0u,1u,1u,25000u); /* split: parent -> north branch */
+    play_route(3u,0u,1u,1u,26000u); /* climbing quarter stair */
+    play_route(4u,0u,1u,1u,27000u); /* gallery + volumetric window */
+    play_route(5u,0u,1u,1u,28000u); /* flat quarter turn */
+    play_route(6u,0u,1u,1u,29000u); /* stepped room */
+    play_route(7u,0u,1u,1u,30000u); /* solid pillars */
     if(g_room_bundle_stream_status>=0xEE00u)for(;;)vsync();
     if(g_room_bundle_flicker_edges<10u){
         g_room_bundle_stream_status=0xEE40u;
@@ -441,7 +444,7 @@ void main(void){
     }
 
     g_room_bundle_stream_status=30u;
-    g_room_bundle_stream_progress=30000u;
+    g_room_bundle_stream_progress=32000u;
     stamp_success_marker();
 
     for(;;)vsync();
