@@ -161,20 +161,45 @@ void tsp_room_bundle_name_bank{bank_index}(uint16_t local) BANKED {{
     }}
 }}
 
-void tsp_room_bundle_tile_bank{bank_index}(uint16_t local) BANKED {{
+uint16_t tsp_room_bundle_tile_meta_bank{bank_index}(uint16_t local,
+                                                     uint16_t *safe) BANKED {{
     const uint8_t *p=frame_ptr(local);
-    uint16_t patch_len,tile_len,n,i;
-    if(!p)return;
+    uint16_t patch_len,tile_len,n;
+    if(safe)*safe=0u;
+    if(!p)return 0u;
     patch_len=(uint16_t)p[0]|((uint16_t)p[1]<<8);
     tile_len=(uint16_t)p[2]|((uint16_t)p[3]<<8);
     p+=4u+patch_len;
-    if(tile_len<2u)return;
-    n=(uint16_t)*p++;n|=(uint16_t)*p++<<8;
-    for(i=0u;i<n;++i){{
+    if(tile_len<4u)return 0u;
+    n=(uint16_t)p[0]|((uint16_t)p[1]<<8);
+    if(safe)*safe=(uint16_t)p[2]|((uint16_t)p[3]<<8);
+    return n;
+}}
+
+void tsp_room_bundle_tile_range_bank{bank_index}(uint16_t local,uint16_t first,
+                                                  uint16_t count) BANKED {{
+    const uint8_t *p=frame_ptr(local);
+    uint16_t patch_len,tile_len,n,i;
+    if(!p||!count)return;
+    patch_len=(uint16_t)p[0]|((uint16_t)p[1]<<8);
+    tile_len=(uint16_t)p[2]|((uint16_t)p[3]<<8);
+    p+=4u+patch_len;
+    if(tile_len<4u)return;
+    n=(uint16_t)p[0]|((uint16_t)p[1]<<8);
+    if(first>=n)return;
+    if(count>n-first)count=(uint16_t)(n-first);
+    p+=4u+(uint32_t)first*(2u+TSP_HOST_TILE_BYTES);
+    for(i=0u;i<count;++i){{
         uint16_t slot=(uint16_t)*p++;slot|=(uint16_t)*p++<<8;
         set_bkg_4bpp_data(slot,1u,p);
-        p+=32u;
+        p+=TSP_HOST_TILE_BYTES;
     }}
+}}
+
+void tsp_room_bundle_tile_bank{bank_index}(uint16_t local) BANKED {{
+    uint16_t safe,n=tsp_room_bundle_tile_meta_bank{bank_index}(local,&safe);
+    (void)safe;
+    tsp_room_bundle_tile_range_bank{bank_index}(local,0u,n);
 }}
 """
     (outdir / f"room_bundle_poc_data_bank{bank_index}.c").write_text(s)
@@ -207,9 +232,13 @@ def emit_dispatch(outdir, bundles, chunks, canonical):
     for i in range(len(chunks)):
         decl.append(f"void tsp_room_bundle_name_bank{i}(uint16_t local) BANKED;")
         decl.append(f"void tsp_room_bundle_tile_bank{i}(uint16_t local) BANKED;")
+        decl.append(f"uint16_t tsp_room_bundle_tile_meta_bank{i}(uint16_t local, uint16_t *safe) BANKED;")
+        decl.append(f"void tsp_room_bundle_tile_range_bank{i}(uint16_t local, uint16_t first, uint16_t count) BANKED;")
 
     dispatch_cases_name = []
     dispatch_cases_tile = []
+    dispatch_cases_meta = []
+    dispatch_cases_range = []
     for i,(first, frames) in enumerate(chunks):
         end = first + len(frames)
         kw = "if" if i == 0 else "else if"
@@ -217,6 +246,10 @@ def emit_dispatch(outdir, bundles, chunks, canonical):
             f"    {kw}(global<{end}u){{tsp_room_bundle_name_bank{i}((uint16_t)(global-{first}u));return;}}")
         dispatch_cases_tile.append(
             f"    {kw}(global<{end}u){{tsp_room_bundle_tile_bank{i}((uint16_t)(global-{first}u));return;}}")
+        dispatch_cases_meta.append(
+            f"    {kw}(global<{end}u){{return tsp_room_bundle_tile_meta_bank{i}((uint16_t)(global-{first}u),safe);}}")
+        dispatch_cases_range.append(
+            f"    {kw}(global<{end}u){{tsp_room_bundle_tile_range_bank{i}((uint16_t)(global-{first}u),first,count);return;}}")
 
     s = f"""/* GENERATED room-bundle PoC dispatcher + canonical seam.
  *
@@ -287,6 +320,24 @@ void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t e
 {chr(10).join(dispatch_cases_tile)}
 }}
 
+uint16_t tsp_room_bundle_generated_tile_meta(uint8_t bundle,uint8_t entry,
+                                             uint8_t exit_portal,uint16_t frame,
+                                             uint16_t *safe) BANKED {{
+    uint16_t global=global_frame(bundle,entry,exit_portal,frame);
+    if(safe)*safe=0u;
+    if(global==0xffffu)return 0u;
+{chr(10).join(dispatch_cases_meta)}
+    return 0u;
+}}
+
+void tsp_room_bundle_generated_apply_tile_range(uint8_t bundle,uint8_t entry,
+                                                uint8_t exit_portal,uint16_t frame,
+                                                uint16_t first,uint16_t count) BANKED {{
+    uint16_t global=global_frame(bundle,entry,exit_portal,frame);
+    if(global==0xffffu||!count)return;
+{chr(10).join(dispatch_cases_range)}
+}}
+
 void tsp_room_bundle_generated_load_canonical(void) BANKED {{
     uint16_t i;
     uint8_t row;
@@ -310,6 +361,8 @@ uint8_t tsp_room_bundle_generated_route_count(void) BANKED;
 uint16_t tsp_room_bundle_generated_frames(uint8_t bundle,uint8_t entry,uint8_t exit_portal) BANKED;
 void tsp_room_bundle_generated_apply_name(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame) BANKED;
 void tsp_room_bundle_generated_apply_tile(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame) BANKED;
+uint16_t tsp_room_bundle_generated_tile_meta(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame,uint16_t *safe) BANKED;
+void tsp_room_bundle_generated_apply_tile_range(uint8_t bundle,uint8_t entry,uint8_t exit_portal,uint16_t frame,uint16_t first,uint16_t count) BANKED;
 void tsp_room_bundle_generated_load_canonical(void) BANKED;
 #endif
 """
