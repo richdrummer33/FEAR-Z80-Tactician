@@ -52,6 +52,7 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     s->objects[id].light_radius=0.0;
     s->objects[id].shadow_floor=1.0;
     s->objects[id].equalize=0u;
+    s->objects[id].highlight_fraction=0.0;
     s->objects[id].crease_coverage=0.0;
     s->objects[id].crease_depth=0.0;
     s->objects[id].ramp_dither=0u;
@@ -105,6 +106,14 @@ void rmb_set_object_ramp_dither(RMBScene *s,uint8_t object_id,uint8_t on){
 void rmb_set_object_ramp_equalize(RMBScene *s,uint8_t object_id,uint8_t on){
     if(object_id>=s->object_count)rmb_fail("invalid ramp-equalize object id");
     s->objects[object_id].equalize=(uint8_t)(on?1u:0u);
+}
+
+void rmb_set_object_ramp_highlight_fraction(RMBScene *s,uint8_t object_id,
+                                            double fraction){
+    if(object_id>=s->object_count)rmb_fail("invalid highlight-fraction object id");
+    if(fraction<0.0||fraction>=1.0)
+        rmb_fail("highlight fraction must be in [0,1)");
+    s->objects[object_id].highlight_fraction=fraction;
 }
 
 void rmb_set_object_incident_weight(RMBScene *s,uint8_t object_id,double w){
@@ -827,7 +836,22 @@ static void ensure_static_lighting(const RMBScene *s,const RMBLight *light){
                  * for a few thousand offline samples. */
                 qsort(bsamp,bn,sizeof(double),cmp_double);
                 for(k=0u;k<ob->ramp_levels;++k){
-                    uint32_t idx=(uint32_t)(((uint64_t)(k+1u)*bn)/ob->ramp_levels);
+                    uint32_t idx;
+                    if(ob->highlight_fraction>0.0 &&
+                       k+1u<ob->ramp_levels){
+                        /* Reserve only highlight_fraction for the top stop.
+                         * The remaining probability mass is spread evenly
+                         * across the lower stops. This is deliberately a
+                         * quantile policy rather than an exposure multiplier:
+                         * it still works when equalization is enabled. */
+                        double low_mass=1.0-ob->highlight_fraction;
+                        double q=low_mass*(double)(k+1u)/
+                                 (double)(ob->ramp_levels-1u);
+                        idx=(uint32_t)floor(q*(double)bn);
+                    }else{
+                        idx=(uint32_t)(((uint64_t)(k+1u)*bn)/
+                                       ob->ramp_levels);
+                    }
                     if(idx>=bn)idx=bn-1u;
                     g_ramp_thresh[oid][k]=bsamp[idx];
                 }
