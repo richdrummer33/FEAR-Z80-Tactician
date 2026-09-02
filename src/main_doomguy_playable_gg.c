@@ -1,0 +1,254 @@
+/*
+ * Interactive Doomguy hero-chamber inspection ROM.
+ *
+ * This is not route playback. The host bake contains 640 independently
+ * addressable camera states: forty legal positions around the statue times
+ * sixteen yaw angles. Each state owns a complete name table and a compact
+ * contiguous pattern block.
+ *
+ * Runtime alternates two disjoint VRAM pools. While pool A is visible, every
+ * pattern for the requested state is uploaded into pool B over as many VBlanks
+ * as necessary. Only after that complete destination image exists do we publish
+ * its name table. The next move reverses A/B. Random movement order therefore
+ * cannot desynchronize a persistent tile cache.
+ *
+ * Controls:
+ *   D-pad UP/DOWN  - forward/back
+ *   D-pad LEFT/RIGHT - turn left/right (22.5 degrees per state)
+ *   button 1 / A   - strafe left
+ *   button 2 / B   - strafe right
+ *   START          - return to the initial inspection position
+ */
+#include <stdint.h>
+#include <gbdk/platform.h>
+#include "tilesector_polar.h"
+#include "doomguy_playable_meta.h"
+
+#define C_BLACK 0u
+#define C_CEILING 1u
+#define C_FLOOR 2u
+#define HERO_UPLOAD_CAP 48u
+
+uint16_t g_map[TSP_MAP_CELLS];
+
+volatile uint16_t g_hero_play_state;
+volatile uint16_t g_hero_play_actions;
+volatile uint16_t g_hero_play_status;
+volatile uint8_t g_hero_play_ix;
+volatile uint8_t g_hero_play_iy;
+volatile uint8_t g_hero_play_yaw;
+volatile uint8_t g_hero_play_pool;
+volatile uint8_t g_hero_play_phases;
+
+void tsp_polar_nt_init(void);
+void tsp_polar_nt_upload_dirty(void);
+
+static uint8_t g_tile[32u];
+
+static const palette_color_t k_palettes[32] = {
+    RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
+    RGB(4,5,7),RGB(8,9,11),
+    RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
+    RGB(0,0,0),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(10,11,13),
+    RGB(8,9,11),RGB(10,11,13),
+    RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),RGB(4,5,7),RGB(8,9,11),RGB(0,0,0)
+};
+
+static const int8_t k_move_dx[8]={ 1, 1, 0,-1,-1,-1, 0, 1};
+static const int8_t k_move_dy[8]={ 0, 1, 1, 1, 0,-1,-1,-1};
+
+static void clear_tile(void){
+    uint8_t i;
+    for(i=0u;i<32u;++i)g_tile[i]=0u;
+}
+static void paint_pixel(uint8_t x,uint8_t y,uint8_t color){
+    uint8_t p,bit=(uint8_t)(0x80u>>x);
+    uint8_t *row=g_tile+(uint16_t)y*4u;
+    for(p=0u;p<4u;++p)
+        if(color&(uint8_t)(1u<<p))row[p]|=bit;
+}
+static void emit_solid(uint16_t id,uint8_t color){
+    uint8_t x,y;
+    clear_tile();
+    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)paint_pixel(x,y,color);
+    set_bkg_4bpp_data(id,1u,g_tile);
+}
+static void emit_horizon(void){
+    uint8_t x,y;
+    clear_tile();
+    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)
+        paint_pixel(x,y,y==0u?C_BLACK:C_FLOOR);
+    set_bkg_4bpp_data(TSP_TILE_HORIZON,1u,g_tile);
+}
+static void init_base_tiles(void){
+    emit_solid(TSP_TILE_CEILING,C_CEILING);
+    emit_solid(TSP_TILE_FLOOR,C_FLOOR);
+    emit_horizon();
+}
+
+static uint16_t state_for(uint8_t ix,uint8_t iy,uint8_t yaw){
+    uint8_t p=doom_play_position_ordinal(ix,iy);
+    if(p==0xffu)return 0xffffu;
+    return (uint16_t)p*DOOM_PLAY_YAWS+(uint16_t)(yaw&(DOOM_PLAY_YAWS-1u));
+}
+
+/* Load one complete random-access pose into the invisible pattern pool, then
+ * publish the corresponding full name table on its own VBlank. */
+static void present_state(uint16_t state,uint8_t boot){
+    uint16_t n=doom_play_state_patterns(state),first=0u;
+    uint8_t next_pool=boot?0u:(uint8_t)(g_hero_play_pool^1u);
+    uint8_t phases=1u;
+
+    if(n>DOOM_PLAY_POOL_SIZE){
+        g_hero_play_status=0xEE10u;
+        return;
+    }
+
+    while(first<n){
+        uint16_t remain=(uint16_t)(n-first);
+        uint16_t take=remain>HERO_UPLOAD_CAP?HERO_UPLOAD_CAP:remain;
+        if(!boot)vsync();
+        doom_play_upload_state(state,next_pool,first,take);
+        first=(uint16_t)(first+take);
+        ++phases;
+    }
+
+    /* Name-table publication gets its own blank. That keeps the tile budget
+     * honest rather than pretending forty-eight pattern uploads plus a full
+     * 20x18 map rewrite somehow occupy the same VBlank for free. */
+    if(!boot)vsync();
+    doom_play_apply_name(state,next_pool);
+    tsp_polar_nt_upload_dirty();
+
+    g_hero_play_pool=next_pool;
+    g_hero_play_state=state;
+    g_hero_play_phases=phases;
+}
+
+/* Quantize sixteen look directions to the nearest of eight grid movement
+ * directions. This affects movement only; the rendered view still uses all
+ * sixteen 22.5-degree yaw states. */
+static uint8_t move_dir8(uint8_t yaw){
+    return (uint8_t)(((yaw+1u)>>1)&7u);
+}
+
+static int8_t clamp_step(int8_t v){
+    return v<0?-1:(v>0?1:0);
+}
+
+static uint8_t apply_controls(uint8_t keys){
+    uint8_t old_ix=g_hero_play_ix,old_iy=g_hero_play_iy,old_yaw=g_hero_play_yaw;
+    uint8_t dir;
+    int8_t mx=0,my=0;
+    int16_t nx,ny;
+    uint16_t state;
+
+    if(keys&J_START){
+        g_hero_play_ix=3u;
+        g_hero_play_iy=7u;
+        g_hero_play_yaw=12u;
+    }else{
+        if((keys&J_LEFT)&&!(keys&J_RIGHT))
+            g_hero_play_yaw=(uint8_t)((g_hero_play_yaw+DOOM_PLAY_YAWS-1u)&
+                                      (DOOM_PLAY_YAWS-1u));
+        else if((keys&J_RIGHT)&&!(keys&J_LEFT))
+            g_hero_play_yaw=(uint8_t)((g_hero_play_yaw+1u)&
+                                      (DOOM_PLAY_YAWS-1u));
+
+        dir=move_dir8(g_hero_play_yaw);
+        if((keys&J_UP)&&!(keys&J_DOWN)){
+            mx+=k_move_dx[dir];my+=k_move_dy[dir];
+        }else if((keys&J_DOWN)&&!(keys&J_UP)){
+            mx-=k_move_dx[dir];my-=k_move_dy[dir];
+        }
+
+        /* With yaw zero facing +X, screen-left is world -Y and screen-right
+         * is +Y. Rotate the eight-way movement direction by +/-90 degrees. */
+        if((keys&J_A)&&!(keys&J_B)){
+            uint8_t sd=(uint8_t)((dir+6u)&7u);
+            mx+=k_move_dx[sd];my+=k_move_dy[sd];
+        }else if((keys&J_B)&&!(keys&J_A)){
+            uint8_t sd=(uint8_t)((dir+2u)&7u);
+            mx+=k_move_dx[sd];my+=k_move_dy[sd];
+        }
+
+        mx=clamp_step(mx);my=clamp_step(my);
+        nx=(int16_t)g_hero_play_ix+mx;
+        ny=(int16_t)g_hero_play_iy+my;
+        if(mx||my){
+            if(nx>=0&&nx<DOOM_PLAY_GRID_W&&ny>=0&&ny<DOOM_PLAY_GRID_H&&
+               doom_play_position_ordinal((uint8_t)nx,(uint8_t)ny)!=0xffu){
+                g_hero_play_ix=(uint8_t)nx;
+                g_hero_play_iy=(uint8_t)ny;
+            }
+        }
+    }
+
+    if(old_ix==g_hero_play_ix&&old_iy==g_hero_play_iy&&old_yaw==g_hero_play_yaw)
+        return 0u;
+
+    state=state_for(g_hero_play_ix,g_hero_play_iy,g_hero_play_yaw);
+    if(state==0xffffu){
+        g_hero_play_ix=old_ix;g_hero_play_iy=old_iy;g_hero_play_yaw=old_yaw;
+        g_hero_play_status=0xEE11u;
+        return 0u;
+    }
+    ++g_hero_play_actions;
+    present_state(state,0u);
+    return 1u;
+}
+
+void main(void){
+    uint8_t prev=0u,repeat=0u;
+    uint16_t start;
+
+    DISPLAY_OFF;
+    __WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);
+    HIDE_SPRITES;
+    SET_BORDER_COLOR(C_BLACK);
+    set_bkg_palette(0u,2u,k_palettes);
+    init_base_tiles();
+
+    g_hero_play_status=0u;
+    g_hero_play_actions=0u;
+    g_hero_play_ix=3u;
+    g_hero_play_iy=7u;
+    g_hero_play_yaw=12u;
+    g_hero_play_pool=1u;
+    g_hero_play_phases=0u;
+
+    tsp_polar_nt_init();
+    doom_play_load_dictionary();
+
+    start=state_for(g_hero_play_ix,g_hero_play_iy,g_hero_play_yaw);
+    if(start==0xffffu){
+        g_hero_play_status=0xEE12u;
+        for(;;)vsync();
+    }
+    present_state(start,1u);
+    g_hero_play_status=1u;
+    DISPLAY_ON;
+
+    for(;;){
+        uint8_t keys;
+        vsync();
+        keys=joypad();
+
+        if(!keys){
+            prev=0u;repeat=0u;
+            continue;
+        }
+
+        /* Immediate first response. Holding a control repeats after two idle
+         * polls; the expensive state publication itself naturally limits the
+         * sustained movement rate, so this does not need a timer interrupt. */
+        if(keys!=prev){
+            repeat=0u;
+            apply_controls(keys);
+        }else if(++repeat>=2u){
+            repeat=0u;
+            apply_controls(keys);
+        }
+        prev=keys;
+    }
+}
