@@ -6,6 +6,8 @@ on:
       - experiment/gg-doomguy-glb-import
       - experiment/gg-normal-seam-lighting
       - experiment/gg-doomguy-hero-codec
+      - feature/gg-hero-view-codec-v1-continued
+      - temp/hero-codec-v1-contrast-anchor-lab
     paths:
       - ".github/workflows/doomguy-hybrid-lighting-sweep.yml"
       - "tools/room_mesh_bake.*"
