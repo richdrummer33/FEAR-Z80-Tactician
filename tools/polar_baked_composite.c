@@ -633,6 +633,82 @@ static void apply_one_sided_penumbra(void){
     }
 }
 
+/*
+ * Pre-quantization smoothing of the raw per-pixel point-light hit test for
+ * background floor/ceiling receivers.
+ *
+ * world_point_lit() casts one ray per pixel against the scene's mesh
+ * occluder. A tree canopy is genuinely full of gaps between leaf clusters,
+ * and the geometry casting through those gaps is only a ~200-triangle
+ * decimated shadow proxy, so the raw result on the floor is a real scattered
+ * dapple pattern: dozens of small, disconnected lit/shadow flecks per 8x8
+ * screen tile.
+ *
+ * quantize_light_cell() then has to fit ONE straight edge per independent
+ * tile to whatever pattern landed there. Handed a scattered pattern instead
+ * of one real boundary, its cost search still returns its least-bad line --
+ * which routinely does not correspond to anything physical, and is exactly
+ * what reads as noisy triangles scattered across the floor rather than one
+ * coherent canopy shadow.
+ *
+ * This is the shape of problem a majority vote solves: a pixel whose local
+ * neighbourhood disagrees with it flips to match before the quantizer ever
+ * sees it, so each tile is handed one real boundary instead of a dozen fake
+ * ones. Multiple passes let that correction propagate so small fragments
+ * fully resolve rather than merely shrink. A dapple spot large enough to
+ * have real neighbour support survives; only sub-tile noise gets erased,
+ * which trades exact per-gap fidelity (never achievable at this proxy
+ * density) for a shadow shape that reads as organic instead of as static.
+ */
+static void smooth_background_lit(void){
+    static uint8_t snap[144][160];
+    static uint8_t elig[144][160];
+    int x,y,pass;
+
+    for(y=0;y<144;++y)for(x=0;x<160;++x){
+        uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
+        uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
+        uint8_t v=g_cells[cell][pi],owner=g_owner[cell][pi];
+        elig[y][x]=(uint8_t)(owner==0xffu&&
+            ((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)));
+    }
+
+    for(pass=0;pass<3;++pass){
+        int changed=0;
+        for(y=0;y<144;++y)for(x=0;x<160;++x){
+            uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
+            uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
+            snap[y][x]=elig[y][x]?g_lit[cell][pi]:0u;
+        }
+        for(y=0;y<144;++y)for(x=0;x<160;++x){
+            static const int8_t nx[8]={-1,0,1,-1,1,-1,0,1};
+            static const int8_t ny[8]={-1,-1,-1,0,0,1,1,1};
+            uint16_t cell,pi;
+            uint8_t k,lit_n=0u,total=0u,cur,next;
+            if(!elig[y][x])continue;
+            cur=snap[y][x];
+            for(k=0u;k<8u;++k){
+                int xx=x+nx[k],yy=y+ny[k];
+                if(xx<0||xx>=160||yy<0||yy>=144||!elig[yy][xx])continue;
+                ++total;
+                if(snap[yy][xx])++lit_n;
+            }
+            if(total<4u)continue; /* room edge: too little context to judge */
+            /* Ties keep the current state so a genuine 50/50 boundary --
+             * exactly what the quantizer is supposed to resolve -- is left
+             * alone rather than pushed arbitrarily one way. */
+            next=(uint8_t)(lit_n*2u>total?1u:(lit_n*2u<total?0u:cur));
+            if(next!=cur){
+                cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
+                pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
+                g_lit[cell][pi]=next;
+                changed=1;
+            }
+        }
+        if(!changed)break;
+    }
+}
+
 static void apply_point_light(void){
     int x,y;
     if(!scene_light_count())return;
@@ -655,6 +731,7 @@ static void apply_point_light(void){
         if(ok&&light_reactive(v)&&world_point_lit(wx,wy,wz,receiver))
             g_lit[cell][pi]=1u;
     }
+    smooth_background_lit();
     quantize_point_light_edges();
     if(g_lighting_stage>=TSP_HOST_LIGHT_POINT)apply_one_sided_penumbra();
     enforce_lightable_mask();
