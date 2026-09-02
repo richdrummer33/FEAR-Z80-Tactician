@@ -229,14 +229,18 @@ uint16_t doom_play_bank{bank_index}(uint16_t local,uint8_t op,uint8_t pool,
 """
     (outdir / f"doomguy_playable_bank{bank_index}.c").write_text(s)
 
-def emit_dispatch(outdir, chunks, meta, lut, dictionary):
-    # Quality-filtered positions sorted by object-relative orbit angle. Each
-    # entry points at the state whose camera is at that position and whose yaw
-    # aims directly at Doomguy. This turns the same random-access pack into a
-    # user-driven codec microscope without baking a second dataset.
+def build_orbit_entries(meta, lut):
+    """Return a near-constant-distance aimed orbit from the legal grid.
+
+    The quality envelope contains several concentric-ish lattice radii. Using
+    every legal point makes the codec microscope pump in and out while it
+    rotates. Prefer the median-radius annulus (within 0.30 grid steps); it keeps
+    magnification nearly fixed while retaining useful angular density. Fall
+    back to the whole legal set for tiny synthetic/unit-test grids.
+    """
     cx = meta["origin_x"] + 0.5 * (meta["grid_w"] - 1) * meta["step"]
     cy = meta["origin_y"] + 0.5 * (meta["grid_h"] - 1) * meta["step"]
-    orbit = []
+    all_entries = []
     for q, ordinal in enumerate(lut):
         if ordinal == 0xff:
             continue
@@ -245,11 +249,30 @@ def emit_dispatch(outdir, chunks, meta, lut, dictionary):
         x = meta["origin_x"] + ix * meta["step"]
         y = meta["origin_y"] + iy * meta["step"]
         angle = math.atan2(y - cy, x - cx)
+        radius = math.hypot(x - cx, y - cy)
         aim = int(round(math.atan2(cy - y, cx - x) *
                         meta["yaws"] / (2.0 * math.pi))) % meta["yaws"]
-        orbit.append((angle, ordinal * meta["yaws"] + aim))
+        state = ordinal * meta["yaws"] + aim
+        all_entries.append((angle, radius, ordinal, state, x, y))
+
+    if not all_entries:
+        return []
+    radii = sorted(v[1] for v in all_entries)
+    target = radii[len(radii) // 2]
+    tolerance = max(1.0, 0.30 * meta["step"])
+    orbit = [v for v in all_entries if abs(v[1] - target) <= tolerance]
+    if len(orbit) < 12:
+        orbit = all_entries
     orbit.sort(key=lambda v: v[0])
-    orbit_states = [state for _angle, state in orbit]
+    return orbit
+
+
+def emit_dispatch(outdir, chunks, meta, lut, dictionary):
+    # Quality-filtered, aimed, near-constant-distance camera orbit. This turns
+    # the same random-access pack into a user-driven codec microscope without
+    # baking a second dataset or changing the fixed world-space light.
+    orbit = build_orbit_entries(meta, lut)
+    orbit_states = [state for _angle, _radius, _ordinal, state, _x, _y in orbit]
 
     decl = []
     for i, (first, states) in enumerate(chunks):
