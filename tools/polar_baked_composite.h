@@ -192,6 +192,10 @@ void tsp_host_composite_consolidate_owner(uint8_t sid,uint8_t min_support,
 void tsp_host_composite_codec_train_begin(uint8_t owner_sid,uint8_t patterns);
 void tsp_host_composite_codec_train_commit(void);
 void tsp_host_composite_codec_disable(void);
+/* Clear the atomic copy-on-write visible-slot set before a route's frame-zero
+ * oracle. Frame zero is a bootstrap/reference frame and is never published as
+ * a transition from the preceding independently baked route. */
+void tsp_host_composite_codec_begin_route(void);
 uint8_t tsp_host_composite_codec_pattern_count(void);
 uint32_t tsp_host_composite_codec_sample_count(void);
 uint32_t tsp_host_composite_codec_cell_count(void);
