@@ -74,6 +74,15 @@
 #ifndef ROOM_BUNDLE_DOOMGUY_CONSOLIDATE_PASSES
 #define ROOM_BUNDLE_DOOMGUY_CONSOLIDATE_PASSES 1
 #endif
+/* Quality-first hero codec: the camera envelope is fixed before compression.
+ * Only fully enclosed visual-owner cells are approximated by this many
+ * route-trained resident patterns. */
+#ifndef ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS
+#define ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS 8
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE
+#define ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE 22.0
+#endif
 #ifndef ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS
 #define ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS 0
 #endif
@@ -138,7 +147,7 @@
 #define MAX_SCENE_RECTS 12u
 #define MAX_HSURFS 32u
 #define PATCH_MAX (2u + TSP_MAP_CELLS * 5u)
-#define TILEPATCH_MAX (2u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
+#define TILEPATCH_MAX (4u + TSP_MAP_CELLS * (2u + TSP_HOST_TILE_BYTES))
 #define PI 3.14159265358979323846
 
 typedef struct V2 { double x,y; } V2;
@@ -181,6 +190,7 @@ typedef struct FramePack {
     uint16_t runs;
     uint16_t tile_len;
     uint16_t tile_loads;
+    uint16_t tile_safe_preloads;
     uint8_t patch[PATCH_MAX];
     uint8_t tile[TILEPATCH_MAX];
 } FramePack;
@@ -191,6 +201,7 @@ typedef struct BundleStats {
     uint16_t peak_tile_loads;
     uint16_t raw_peak_tile_loads;
     uint16_t scheduled_budget;
+    uint16_t atomic_unsafe_peak;
     uint16_t changed_words;
 } BundleStats;
 typedef struct TileJob {
@@ -1295,6 +1306,22 @@ static uint8_t yaw_from_vec(double dx,double dy){
     return (uint8_t)v;
 }
 
+static Pose doomguy_quality_clamp(Pose p){
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+    const double cx=78.0,cy=24.0;
+    const double min_d=(double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE;
+    double dx=p.x-cx,dy=p.y-cy,d=sqrt(dx*dx+dy*dy);
+    if(d<min_d){
+        if(d<1e-9){dx=-1.0;dy=0.0;d=1.0;}
+        p.x=cx+dx*(min_d/d);
+        p.y=cy+dy*(min_d/d);
+    }
+#else
+    (void)p;
+#endif
+    return p;
+}
+
 static Pose showcase_detail_pose(uint8_t bundle,uint16_t f){
     Pose p;
     double tx=78.0,ty=24.0,tz=16.0,rx=20.0,ry=27.0;
@@ -1520,6 +1547,7 @@ static Pose route_pose_portals(uint16_t f,uint8_t bundle,
             return route_pose(f,0u);
         }
         if(bundle==6u)p.z=16.0+step_room_floor_z(p.x);
+        if(bundle==11u)p=doomguy_quality_clamp(p);
         return p;
     }
     if(bundle==2u)return split_route_pose(f,entry_portal,exit_portal);
@@ -1730,10 +1758,13 @@ static int apply_patch(uint16_t *map,const uint8_t *src,size_t len){
 static void capture_tiles(FramePack *fp){
     uint16_t n=tsp_host_composite_frame_load_count(),i;
     const TSPHostTileLoad *loads=tsp_host_composite_frame_loads();
-    size_t p=2u;
+    size_t p=4u;
     fp->tile_loads=n;
-    fp->tile[p?0:0]=(uint8_t)n;
+    fp->tile_safe_preloads=0u;
+    fp->tile[0]=(uint8_t)n;
     fp->tile[1]=(uint8_t)(n>>8);
+    fp->tile[2]=0u;
+    fp->tile[3]=0u;
     for(i=0u;i<n;++i){
         if(p+2u+TSP_HOST_TILE_BYTES>TILEPATCH_MAX)die("tilepatch overflow");
         fp->tile[p++]=(uint8_t)loads[i].slot;
@@ -1779,7 +1810,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     }
 
     for(t=1u;t<ROUTE_FRAMES;++t){
-        const uint8_t *p=frames[t].tile+2u;
+        const uint8_t *p=frames[t].tile+4u;
         uint16_t n=frame_tile_loads(&frames[t]),q;
         for(q=0u;q<n;++q){
             uint16_t slot=(uint16_t)p[0]|((uint16_t)p[1]<<8);
@@ -1829,21 +1860,59 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     if(!chosen)die("bundle tile scheduler exceeds configured upload search limit");
 
     for(t=1u;t<ROUTE_FRAMES;++t){
-        uint16_t n=0u;
-        size_t p=2u;
-        for(j=0u;j<job_count;++j)if(jobs[j].assigned==t)++n;
+        uint8_t prev_slot[448];
+        uint16_t n=0u,safe=0u;
+        size_t p=4u;
+        memset(prev_slot,0,sizeof(prev_slot));
+        for(i=0u;i<TSP_MAP_CELLS;++i){
+            uint16_t slot=maps[(size_t)(t-1u)*TSP_MAP_CELLS+i]&TSP_TILE_ID_MASK;
+            if(slot<448u)prev_slot[slot]=1u;
+        }
+        for(j=0u;j<job_count;++j)if(jobs[j].assigned==t){
+            ++n;
+            if(jobs[j].slot<448u&&!prev_slot[jobs[j].slot])++safe;
+        }
         frames[t].tile[0]=(uint8_t)n;
         frames[t].tile[1]=(uint8_t)(n>>8);
+        frames[t].tile[2]=(uint8_t)safe;
+        frames[t].tile[3]=(uint8_t)(safe>>8);
         frames[t].tile_loads=n;
-        for(j=0u;j<job_count;++j)if(jobs[j].assigned==t){
-            if(p+2u+TSP_HOST_TILE_BYTES>TILEPATCH_MAX)
-                die("scheduled bundle tilepatch overflow");
-            frames[t].tile[p++]=(uint8_t)jobs[j].slot;
-            frames[t].tile[p++]=(uint8_t)(jobs[j].slot>>8);
-            memcpy(frames[t].tile+p,jobs[j].bytes,TSP_HOST_TILE_BYTES);
-            p+=TSP_HOST_TILE_BYTES;
+        frames[t].tile_safe_preloads=safe;
+
+        /* Safe-first ordering is runtime metadata, not a visual approximation.
+         * A safe upload targets a slot the currently visible frame does not
+         * reference, so it may be staged a refresh early without damaging the
+         * old complete picture. */
+        {
+            uint8_t pass;
+            for(pass=0u;pass<2u;++pass)
+                for(j=0u;j<job_count;++j)if(jobs[j].assigned==t){
+                    uint8_t is_safe=(uint8_t)(jobs[j].slot<448u&&!prev_slot[jobs[j].slot]);
+                    if((pass==0u&&!is_safe)||(pass==1u&&is_safe))continue;
+                    if(p+2u+TSP_HOST_TILE_BYTES>TILEPATCH_MAX)
+                        die("scheduled bundle tilepatch overflow");
+                    frames[t].tile[p++]=(uint8_t)jobs[j].slot;
+                    frames[t].tile[p++]=(uint8_t)(jobs[j].slot>>8);
+                    memcpy(frames[t].tile+p,jobs[j].bytes,TSP_HOST_TILE_BYTES);
+                    p+=TSP_HOST_TILE_BYTES;
+                }
         }
         frames[t].tile_len=(uint16_t)p;
+    }
+
+    /* Optional proof gate for the atomic runtime.  The final publication
+     * refresh may carry at most cap uploads; every excess upload must therefore
+     * come from the safe prefix that can be staged while the old frame remains
+     * visible. */
+    {
+        const char *cap_env=getenv("ROOM_BUNDLE_ATOMIC_UPLOAD_CAP");
+        if(cap_env&&*cap_env){
+            long cap=strtol(cap_env,(char **)0,10);
+            if(cap<1||cap>512)die("ROOM_BUNDLE_ATOMIC_UPLOAD_CAP must be 1..512");
+            for(t=1u;t<ROUTE_FRAMES;++t)
+                if(frames[t].tile_loads>frames[t].tile_safe_preloads+(uint16_t)cap)
+                    die("bundle frame cannot be atomically staged within upload cap");
+        }
     }
 
     free(jobs);
@@ -1867,7 +1936,7 @@ static void emit_route(FILE *pack,FILE *manifest,uint8_t bundle,
                        BundleStats *stats){
     uint16_t i;
     fprintf(manifest,
-            "bundle=%u route=%u->%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak_tile_loads=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
+            "bundle=%u route=%u->%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak_tile_loads=%u scheduled_peak=%u scheduled_budget=%u atomic_unsafe_peak=%u changed_words=%u\n",
             (unsigned)bundle,(unsigned)entry_portal,(unsigned)exit_portal,
             (unsigned)ROUTE_FRAMES,
             (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
@@ -1875,8 +1944,9 @@ static void emit_route(FILE *pack,FILE *manifest,uint8_t bundle,
             (unsigned)stats->raw_peak_tile_loads,
             (unsigned)stats->peak_tile_loads,
             (unsigned)stats->scheduled_budget,
+            (unsigned)stats->atomic_unsafe_peak,
             (unsigned)stats->changed_words);
-    printf("ROOM_BUNDLE_STATS bundle=%u route=%u->%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak=%u scheduled_peak=%u scheduled_budget=%u changed_words=%u\n",
+    printf("ROOM_BUNDLE_STATS bundle=%u route=%u->%u frames=%u patch_bytes=%lu tile_bytes=%lu tile_loads=%lu raw_peak=%u scheduled_peak=%u scheduled_budget=%u atomic_unsafe_peak=%u changed_words=%u\n",
            (unsigned)bundle,(unsigned)entry_portal,(unsigned)exit_portal,
            (unsigned)ROUTE_FRAMES,
            (unsigned long)stats->patch_bytes,(unsigned long)stats->tile_bytes,
@@ -1884,6 +1954,7 @@ static void emit_route(FILE *pack,FILE *manifest,uint8_t bundle,
            (unsigned)stats->raw_peak_tile_loads,
            (unsigned)stats->peak_tile_loads,
            (unsigned)stats->scheduled_budget,
+           (unsigned)stats->atomic_unsafe_peak,
            (unsigned)stats->changed_words);
 
     fputc((int)entry_portal,pack);
@@ -1898,6 +1969,26 @@ static void emit_route(FILE *pack,FILE *manifest,uint8_t bundle,
         fwrite(frames[i].tile,1,frames[i].tile_len,pack);
     }
 }
+
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+static void train_doomguy_codec(World *w){
+#if ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS > 0
+    uint16_t dummy[TSP_MAP_CELLS],f;
+    uint8_t dir;
+    tsp_host_composite_set_scene(&w->scene);
+    tsp_host_composite_codec_train_begin(0x81u,
+        (uint8_t)ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS);
+    for(dir=0u;dir<2u;++dir){
+        tsp_host_composite_reset_cache();
+        for(f=0u;f<ROUTE_FRAMES;++f){
+            Pose p=route_pose_portals(f,11u,dir?1u:0u,dir?0u:1u);
+            render_pose(w,&p,dummy);
+        }
+    }
+    tsp_host_composite_codec_train_commit();
+#endif
+}
+#endif
 
 static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                        uint8_t bundle,World *w,
@@ -2033,10 +2124,12 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
     stats.tile_loads=0u;
     stats.peak_tile_loads=0u;
     for(f=0u;f<ROUTE_FRAMES;++f){
+        uint16_t unsafe=(uint16_t)(frames[f].tile_loads-frames[f].tile_safe_preloads);
         stats.tile_bytes+=frames[f].tile_len;
         stats.tile_loads+=frames[f].tile_loads;
         if(frames[f].tile_loads>stats.peak_tile_loads)
             stats.peak_tile_loads=frames[f].tile_loads;
+        if(unsafe>stats.atomic_unsafe_peak)stats.atomic_unsafe_peak=unsafe;
     }
 
     fprintf(manifest,
@@ -2122,6 +2215,10 @@ int main(int argc,char **argv){
         World w;
         if(only_bundle>=0&&bundle!=(uint8_t)only_bundle)continue;
         make_world(bundle,&w);
+        tsp_host_composite_codec_disable();
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+        if(bundle==11u)train_doomguy_codec(&w);
+#endif
         /* The GG dispatcher requires dense bundle ids from zero, so a subset
          * pack must renumber. Without this a ROOM_BUNDLE_ONLY pack carries its
          * original catalogue id and room_bundle_pack_to_c.py rejects it, which
@@ -2142,6 +2239,20 @@ int main(int argc,char **argv){
                        canonical,&canonical_hash,&canonical_ready);
             bake_route(outdir,pack,manifest,bundle,&w,1u,0u,
                        canonical,&canonical_hash,&canonical_ready);
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+            if(bundle==11u){
+                uint32_t cc=tsp_host_composite_codec_cell_count();
+                uint32_t ce=tsp_host_composite_codec_error_sum();
+                fprintf(manifest,
+                        "doomguy_codec_patterns=%u samples=%lu enclosed_cells=%lu mean_hamming_x1000=%lu max_hamming=%u min_clearance_x100=%u\n",
+                        (unsigned)tsp_host_composite_codec_pattern_count(),
+                        (unsigned long)tsp_host_composite_codec_sample_count(),
+                        (unsigned long)cc,
+                        (unsigned long)(cc?((uint64_t)ce*1000u)/cc:0u),
+                        (unsigned)tsp_host_composite_codec_error_max(),
+                        (unsigned)lround((double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE*100.0));
+            }
+#endif
         }
     }
 
