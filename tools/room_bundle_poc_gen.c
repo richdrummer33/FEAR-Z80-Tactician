@@ -2201,13 +2201,31 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 #define KLEINER_PLAY_GRID_H 6u
 #define KLEINER_PLAY_YAWS 16u
 #define KLEINER_PLAY_STEP 10
-#define KLEINER_PLAY_ORIGIN_X 42
+#define KLEINER_PLAY_ORIGIN_X 46
 #define KLEINER_PLAY_ORIGIN_Y (-8)
+#define KLEINER_PLAY_EYE_Z 8u
 #define KLEINER_PLAY_POOL_A_BASE 3u
 #define KLEINER_PLAY_POOL_SIZE 222u
 #define KLEINER_PLAY_POOL_B_BASE (KLEINER_PLAY_POOL_A_BASE+KLEINER_PLAY_POOL_SIZE)
 #define KLEINER_PLAY_DICT_TOP 448u
 
+/* Source-to-GG trace transform used by the extracted OBJ:
+ *   world_x = obj_x + 36
+ *   world_y = obj_y - 16
+ *   world_z = obj_z
+ *
+ * Dominant wall planes from a z=6 OBJ slice:
+ *   obj x=25.6  -> world x=61.6  teleporter/main partition
+ *   obj y=12.8  -> world y=-3.2  HEV north / teleporter south
+ *   obj y=57.6  -> world y=41.6  teleporter north / east north wall
+ *   obj y=64.0  -> world y=48.0  tall main north wall
+ *   obj x=68.8  -> world x=104.8 HEV west wall
+ *   obj x=96.0  -> world x=132.0 east perimeter
+ *
+ * Openings from the same slice:
+ *   teleporter partition: obj y=19.6..36.4 -> world y=3.6..20.4
+ *   HEV north wall:       obj x=78.0..88.4 -> world x=114.0..124.4
+ */
 static void kleiner_add_colored_cylinder(World *w,double cx,double cy,double r,
                                          double z0,double z1,uint8_t sides){
     uint8_t i;
@@ -2220,45 +2238,93 @@ static void kleiner_add_colored_cylinder(World *w,double cx,double cy,double r,
     }
 }
 
-static void kleiner_add_floor_texture(World *w){
-    uint8_t ix,iy;
-    const double x0=36.0,y0=-16.0;
-    for(iy=0u;iy<4u;++iy)for(ix=0u;ix<4u;++ix){
-        V2 a,b,c,d;
-        double ax=x0+(double)ix*24.0,bx=ax+24.0;
-        double ay=y0+(double)iy*16.0,by=ay+16.0;
-        a.x=ax;a.y=ay;b.x=bx;b.y=ay;c.x=bx;c.y=by;d.x=ax;d.y=by;
-        add_hsurf_quad(w,a,b,c,d,0.02,((ix+iy)&1u)?-1:0);
+static void kleiner_add_banded_wall(World *w,
+                                    double ax,double ay,double bx,double by,
+                                    double top){
+    const double split=12.8;
+    if(top<=split){
+        add_seg(w,ax,ay,bx,by,0,top,-1);
+        return;
     }
-    /* One brutally compressed "texture": the red/orange rug under the desk. */
+    add_seg(w,ax,ay,bx,by,0,split,-1);
+    add_seg(w,ax,ay,bx,by,split,top,0);
+}
+
+static void kleiner_add_lintel(World *w,
+                               double ax,double ay,double bx,double by,
+                               double top){
+    if(top>12.8)add_seg(w,ax,ay,bx,by,12.8,top,0);
+}
+
+static void kleiner_floor_quad(World *w,double x0,double y0,double x1,double y1,
+                               int8_t bias){
+    V2 a={x0,y0},b={x1,y0},c={x1,y1},d={x0,y1};
+    add_hsurf_quad(w,a,b,c,d,0.02,bias);
+}
+
+static void kleiner_add_floor_texture(World *w){
+    /* Coarse value fields clipped to the actual traced floor-plan pieces. */
+    kleiner_floor_quad(w,36.0,-3.2,48.8,19.2,0);
+    kleiner_floor_quad(w,48.8,-3.2,61.6,19.2,-1);
+    kleiner_floor_quad(w,36.0,19.2,48.8,41.6,-1);
+    kleiner_floor_quad(w,48.8,19.2,61.6,41.6,0);
+
+    kleiner_floor_quad(w,61.6,-16.0,83.6,16.0,-1);
+    kleiner_floor_quad(w,83.6,-16.0,105.6,16.0,0);
+    kleiner_floor_quad(w,61.6,16.0,83.6,48.0,0);
+    kleiner_floor_quad(w,83.6,16.0,105.6,48.0,-1);
+
+    kleiner_floor_quad(w,105.6,-16.0,132.0,12.8,0);
+    kleiner_floor_quad(w,105.6,12.8,132.0,41.6,-1);
+
+    /* One deliberately crude authored colour field: the rug/work mat. */
     {
-        V2 a={86.0,-12.0},b={124.0,-12.0},c={124.0,10.0},d={86.0,10.0};
+        V2 a={86.0,0.0},b={104.0,0.0},c={104.0,12.0},d={86.0,12.0};
         add_hsurf_quad_semantic(w,a,b,c,d,0.06,TSP_HOST_SEM_ACCENT);
     }
 }
 
 static void make_kleiner_lab_world(World *w){
     RMBTransform t;
-    uint8_t metal,desk,human,legs,rings,lights;
+    uint8_t metal,desk,human,legs,rings,lights,overhead;
     init_world(w);
 
-    /* 96x64 world-unit shell, preserving the source crop's aspect ratio.
-     * Split lower/upper bands are the "brick/plaster texture" at GG scale. */
-    add_seg(w,36,-16,132,-16,0,11,-1); add_seg(w,36,-16,132,-16,11,32,0);
-    add_seg(w,132,-16,132,48,0,11,-1); add_seg(w,132,-16,132,48,11,32,0);
-    add_seg(w,132,48,36,48,0,11,-1);   add_seg(w,132,48,36,48,11,32,0);
-    add_seg(w,36,48,36,-16,0,11,-1);   add_seg(w,36,48,36,-16,11,32,0);
-    add_rect(w,36,-16,132,48,0,32);
+    /* TRACE PASS 2: actual room topology from the extracted BSP/OBJ. */
+    kleiner_add_banded_wall(w,36.0,-3.2,36.0,41.6,34.8);
+    kleiner_add_banded_wall(w,36.0,-3.2,61.6,-3.2,34.8);
+    kleiner_add_banded_wall(w,36.0,41.6,61.6,41.6,34.8);
+
+    /* Teleporter/main partition with measured doorway. */
+    kleiner_add_banded_wall(w,61.6,-16.0,61.6,3.6,32.0);
+    kleiner_add_lintel(w,61.6,3.6,61.6,20.4,32.0);
+    kleiner_add_banded_wall(w,61.6,20.4,61.6,48.0,32.0);
+
+    /* Main shell, including the real north-wall step. */
+    kleiner_add_banded_wall(w,61.6,-16.0,132.0,-16.0,32.0);
+    kleiner_add_banded_wall(w,132.0,-16.0,132.0,41.6,32.0);
+    kleiner_add_banded_wall(w,61.6,48.0,105.6,48.0,32.0);
+    kleiner_add_banded_wall(w,105.6,48.0,105.6,41.6,32.0);
+    kleiner_add_banded_wall(w,105.6,41.6,132.0,41.6,32.0);
+
+    /* HEV suit room: real enclosed sub-room with measured doorway. */
+    kleiner_add_banded_wall(w,104.8,-16.0,104.8,-3.2,32.0);
+    kleiner_add_banded_wall(w,104.8,-3.2,114.0,-3.2,32.0);
+    kleiner_add_lintel(w,114.0,-3.2,124.4,-3.2,32.0);
+    kleiner_add_banded_wall(w,124.4,-3.2,132.0,-3.2,32.0);
+
+    add_rect(w,36,-3,61,41,0,35);
+    add_rect(w,62,-16,105,48,0,32);
+    add_rect(w,106,-16,132,41,0,32);
     kleiner_add_floor_texture(w);
 
-    /* Bright horizontal workshop slats: three literal bands instead of a
-     * high-frequency texture. They read at 160x144 and cost almost nothing. */
-    add_seg_semantic(w,82,47.6,126,47.6,18,19,1u);
-    add_seg_semantic(w,82,47.6,126,47.6,22,23,1u);
-    add_seg_semantic(w,82,47.6,126,47.6,26,27,1u);
+    /* Wall lighting/slat features on both north-wall heights. */
+    add_seg_semantic(w,82.0,47.6,103.5,47.6,18,19,1u);
+    add_seg_semantic(w,82.0,47.6,103.5,47.6,22,23,1u);
+    add_seg_semantic(w,82.0,47.6,103.5,47.6,26,27,1u);
+    add_seg_semantic(w,108.0,41.2,128.0,41.2,18,19,1u);
+    add_seg_semantic(w,108.0,41.2,128.0,41.2,22,23,1u);
 
-    /* The iconic twin orange teleporter columns. Source anchor is around
-     * (-7187,-1177); here the pair occupies one blocked circular island. */
+    /* Twin teleporter columns in their actual left-hand chamber. */
     kleiner_add_colored_cylinder(w,49.0,23.5,5.0,2.0,22.0,8u);
     kleiner_add_colored_cylinder(w,49.0,32.5,5.0,2.0,22.0,8u);
 
@@ -2274,59 +2340,65 @@ static void make_kleiner_lab_world(World *w){
     t=rmb_transform(49,28,25.0,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,rings,&t,7.0,11.0,2.5,-2);
 
-    /* Teleporter console, server/rack, lockers and HEV case: intentionally
-     * chunky silhouette proxies, based on the BSP entity anchors. */
     metal=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(61,28,4.0,0,0,-18,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,7.0,3.5,3.0,-1);
+    t=rmb_transform(57,15,4.0,0,0,-18,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,5.0,3.0,3.0,-1);
     t=rmb_transform(72,16,7.5,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,metal,&t,5.0,4.0,7.5,-1);
     t=rmb_transform(73,16,15.7,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,metal,&t,5.4,4.4,0.6,0);
+
+    /* HEV case / locker masses are now inside the actual sub-room. */
     t=rmb_transform(119,-11,6.0,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,metal,&t,3.2,2.0,6.0,0);
     t=rmb_transform(119,-8.8,7.0,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,metal,&t,1.8,0.4,3.8,1);
-    t=rmb_transform(67,-13,6.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,8.0,2.0,6.0,-1);
+    t=rmb_transform(128,-10,6.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,2.4,1.8,6.0,-1);
 
     desk=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(106,0,4.5,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,desk,&t,17.0,6.0,0.6,0);
-    t=rmb_transform(98,-4,2.2,0,0,0,1,1,1);
+    t=rmb_transform(106,6,4.5,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,14.0,5.0,0.6,0);
+    t=rmb_transform(97,3,2.2,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,desk,&t,1.0,1.0,2.2,-1);
-    t=rmb_transform(116,4,2.2,0,0,0,1,1,1);
+    t=rmb_transform(115,9,2.2,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,desk,&t,1.0,1.0,2.2,-1);
-    t=rmb_transform(103,1,8.0,0,0,0,1,1,1);
+    t=rmb_transform(102,6,8.0,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,desk,&t,3.2,1.0,2.4,1);
-    t=rmb_transform(114,-1,7.0,0,0,0,1,1,1);
+    t=rmb_transform(113,5,7.0,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,desk,&t,4.0,2.0,1.8,0);
 
-    /* Frozen Kleiner: lab-coat value structure is more important here than
-     * anatomical detail. This is a six-primitive "recognition glyph". */
     human=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(86,5,8.6,0,0,0,1,1,1);
+    t=rmb_transform(86,13,8.6,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,human,&t,1.8,1.2,3.1,1);
-    t=rmb_transform(86,5,12.6,0,0,0,1,1,1);
+    t=rmb_transform(86,13,12.6,0,0,0,1,1,1);
     rmb_add_uv_sphere(&w->mesh,human,&t,1.45,4u,8u,1);
     legs=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(84.9,5,3.7,0,0,0,1,1,1);
+    t=rmb_transform(84.9,13,3.7,0,0,0,1,1,1);
     rmb_add_cylinder(&w->mesh,legs,&t,0.65,4.7,6u,-1,1u);
-    t=rmb_transform(87.1,5,3.7,0,0,0,1,1,1);
+    t=rmb_transform(87.1,13,3.7,0,0,0,1,1,1);
     rmb_add_cylinder(&w->mesh,legs,&t,0.65,4.7,6u,-1,1u);
-    t=rmb_transform(83.8,5,8.8,0,22,0,1,1,1);
+    t=rmb_transform(83.8,13,8.8,0,22,0,1,1,1);
     rmb_add_cylinder(&w->mesh,human,&t,0.5,4.0,6u,1,1u);
-    t=rmb_transform(88.2,5,8.8,0,-22,0,1,1,1);
+    t=rmb_transform(88.2,13,8.8,0,-22,0,1,1,1);
     rmb_add_cylinder(&w->mesh,human,&t,0.5,4.0,6u,1,1u);
+
+    /* Coarse versions of repeated z=25.6..28.8 truss and z=16..18.4 duct
+     * bands measured from the OBJ. */
+    overhead=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(106.4,-3.2,27.2,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,overhead,&t,24.8,0.4,1.6,-1);
+    t=rmb_transform(106.4,40.0,27.2,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,overhead,&t,24.8,0.4,1.6,-1);
+    t=rmb_transform(126.8,-3.2,17.2,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,overhead,&t,5.2,4.8,1.2,-1);
 
     lights=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(70,18,29.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,lights,&t,9.0,0.7,0.35,1);
-    t=rmb_transform(105,18,29.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,lights,&t,9.0,0.7,0.35,1);
+    t=rmb_transform(78,20,29.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,lights,&t,8.0,0.7,0.35,1);
+    t=rmb_transform(105,20,29.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,lights,&t,8.0,0.7,0.35,1);
 
-    /* Warm teleporter-biased room light. Palette 1 is the bright transform;
-     * the orange index is deliberately independent so its identity survives. */
     w->scene_lights[0].x_q4=(int16_t)(55<<4);
     w->scene_lights[0].y_q4=(int16_t)(25<<4);
     w->scene_lights[0].height_q4=(int16_t)(24<<4);
@@ -2337,16 +2409,20 @@ static void make_kleiner_lab_world(World *w){
     w->scene.source_radius=2.5;
 }
 
-/* Traversal is a true random-access lattice, not a route. Obstacles are the
- * same big semantic masses the player sees: teleporter, server rack and desk.
- * Nine by six gives 54 candidate cells; these exclusions leave exactly 40. */
 static uint8_t kleiner_play_position_valid(uint8_t ix,uint8_t iy){
     double x=(double)(KLEINER_PLAY_ORIGIN_X+(int)ix*KLEINER_PLAY_STEP);
     double y=(double)(KLEINER_PLAY_ORIGIN_Y+(int)iy*KLEINER_PLAY_STEP);
-    double dx=x-49.0,dy=y-28.0;
-    if(dx*dx+dy*dy<121.0)return 0u; /* twin teleporter island */
-    if(x>=66.0&&x<=80.0&&y>=8.0&&y<=25.0)return 0u; /* server rack */
-    if(x>=90.0&&x<=126.0&&y>=-12.0&&y<=8.0)return 0u; /* desk/HEV */
+    uint8_t in_teleporter=(uint8_t)(x>=36.8&&x<=60.8&&y>=-2.2&&y<=40.6);
+    uint8_t in_main_left=(uint8_t)(x>=62.4&&x<=105.6&&y>=-15.0&&y<=47.0);
+    uint8_t in_main_right=(uint8_t)(x>105.6&&x<=131.0&&y>=-15.0&&y<=40.6);
+
+    if(!(in_teleporter||in_main_left||in_main_right))return 0u;
+
+    if((x-49.0)*(x-49.0)+(y-23.5)*(y-23.5)<36.0)return 0u;
+    if((x-49.0)*(x-49.0)+(y-32.5)*(y-32.5)<36.0)return 0u;
+    if(x>=66.0&&x<=80.0&&y>=8.0&&y<=25.0)return 0u;
+    if(x>=92.0&&x<=118.0&&y>=-2.0&&y<=8.0)return 0u;
+    if(x>=122.0&&y>=-1.0&&y<=6.0)return 0u;
     return 1u;
 }
 
@@ -2369,8 +2445,8 @@ static void bake_kleiner_playable(const char *outdir){
         if(kleiner_play_position_valid(ix,iy))
             lut[(uint16_t)iy*KLEINER_PLAY_GRID_W+ix]=pos_count++;
     state_count=(uint16_t)pos_count*KLEINER_PLAY_YAWS;
-    if(pos_count!=40u||state_count!=640u)
-        die("Kleiner playable grid cardinality changed unexpectedly");
+    if(pos_count!=37u||state_count!=592u)
+        die("Kleiner playable traced-grid cardinality changed unexpectedly");
     if(KLEINER_PLAY_POOL_B_BASE+KLEINER_PLAY_POOL_SIZE>dict_base)
         die("Kleiner playable VRAM pools overlap hardware limit");
 
@@ -2385,7 +2461,7 @@ static void bake_kleiner_playable(const char *outdir){
     write_u16(pack,(uint16_t)(int16_t)KLEINER_PLAY_ORIGIN_X);
     write_u16(pack,(uint16_t)(int16_t)KLEINER_PLAY_ORIGIN_Y);
     fputc(KLEINER_PLAY_STEP,pack);
-    fputc(16u,pack);
+    fputc(KLEINER_PLAY_EYE_Z,pack);
     write_u16(pack,KLEINER_PLAY_POOL_A_BASE);
     write_u16(pack,KLEINER_PLAY_POOL_B_BASE);
     write_u16(pack,KLEINER_PLAY_POOL_SIZE);
@@ -2401,12 +2477,15 @@ static void bake_kleiner_playable(const char *outdir){
             "Kleiner lab playable random-access bake v1\n"
             "source=d1_trainstation_05 crop=(-7312..-6352,-1664..-1024) scale~=0.1\n"
             "grid=%ux%u step=%u origin=(%d,%d) positions=%u yaws=%u states=%u\n"
-            "anchors=teleporter(49,28) kleiner(86,5) hev(119,-11)\n"
+            "anchors=teleporter(49,28) kleiner(86,13) hev(119,-11)\n"
+            "trace_planes=teleporter_x61.6 hev_north_y-3.2 hev_west_x104.8 north_step_x105.6\n"
+            "trace_doors=teleporter_y3.6..20.4 hev_x114.0..124.4 eye_z=%u\n"
             "palette_model=warm-industrial-ramp+orange-accent semantic_texture=PASS\n"
-            "movement_obstacles=teleporter,server-rack,desk-hev\n",
+            "movement_obstacles=teleporter,server-rack,desk,lockers\n",
             (unsigned)KLEINER_PLAY_GRID_W,(unsigned)KLEINER_PLAY_GRID_H,
             (unsigned)KLEINER_PLAY_STEP,KLEINER_PLAY_ORIGIN_X,KLEINER_PLAY_ORIGIN_Y,
-            (unsigned)pos_count,(unsigned)KLEINER_PLAY_YAWS,(unsigned)state_count);
+            (unsigned)pos_count,(unsigned)KLEINER_PLAY_YAWS,(unsigned)state_count,
+            (unsigned)KLEINER_PLAY_EYE_Z);
 
     tsp_host_composite_set_scene(&w.scene);
     for(iy=0u;iy<KLEINER_PLAY_GRID_H;++iy)for(ix=0u;ix<KLEINER_PLAY_GRID_W;++ix){
@@ -2421,7 +2500,7 @@ static void bake_kleiner_playable(const char *outdir){
 
             p.x=(double)(KLEINER_PLAY_ORIGIN_X+(int)ix*KLEINER_PLAY_STEP);
             p.y=(double)(KLEINER_PLAY_ORIGIN_Y+(int)iy*KLEINER_PLAY_STEP);
-            p.z=16.0;
+            p.z=(double)KLEINER_PLAY_EYE_Z;
             p.yaw=(uint8_t)(yaw_i*16u);
 
             memset(present,0,sizeof(present));
@@ -2460,7 +2539,7 @@ static void bake_kleiner_playable(const char *outdir){
             sum_patterns+=dyn_count;
             if(dyn_count>peak_patterns)peak_patterns=dyn_count;
 
-            if(ix==2u&&iy==5u&&(yaw_i==9u||yaw_i==11u||yaw_i==13u)){
+            if(ix==4u&&iy==1u&&(yaw_i==5u||yaw_i==7u||yaw_i==9u)){
                 snprintf(path,sizeof(path),"%s/kleiner-start-yaw%02u.ppm",
                          outdir,(unsigned)yaw_i);
                 if(!tsp_host_composite_write_ppm(path))

@@ -1,9 +1,9 @@
 /*
  * Interactive Kleiner's Lab reconstruction ROM.
  *
- * This is not route playback. The host bake contains 640 independently
- * addressable camera states: forty legal positions around the statue times
- * sixteen yaw angles. Each state owns a complete name table and a compact
+ * This is not route playback. The host bake contains 592 independently
+ * addressable camera states: thirty-seven traced legal positions across the
+ * actual lab floor plan times sixteen yaw angles. Each state owns a complete name table and a compact
  * contiguous pattern block.
  *
  * Runtime alternates two disjoint VRAM pools. While pool A is visible, every
@@ -46,16 +46,16 @@ void tsp_polar_nt_upload_dirty(void);
 static uint8_t g_tile[32u];
 
 static const palette_color_t k_palettes[32] = {
-    /* palette 0: dirty cool ceiling, grey tile, warm brick/plaster ramp */
+    /* Game Gear channels are 4-bit: keep every component in 0..15. */
     RGB(0,0,0), RGB(4,5,5), RGB(6,6,5), RGB(5,4,3),
     RGB(8,7,5), RGB(13,12,9), RGB(6,5,4), RGB(10,9,7),
     RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
-    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(18,5,2),
-    /* palette 1: +light transform; 8..14 duplicate ambient mixed-tile values */
-    RGB(0,0,0), RGB(8,9,9), RGB(9,8,6), RGB(13,12,9),
-    RGB(16,14,10), RGB(16,15,11), RGB(14,12,9), RGB(17,15,11),
+    RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(15,4,1),
+    /* Palette 1: lit transform + mixed-tile ambient aliases. */
+    RGB(0,0,0), RGB(8,9,9), RGB(9,8,6), RGB(10,9,7),
+    RGB(12,11,8), RGB(15,14,10), RGB(11,10,7), RGB(14,13,9),
     RGB(4,5,5), RGB(6,6,5), RGB(5,4,3), RGB(8,7,5),
-    RGB(13,12,9), RGB(6,5,4), RGB(10,9,7), RGB(25,8,2)
+    RGB(13,12,9), RGB(6,5,4), RGB(10,9,7), RGB(15,6,2)
 };
 
 static const int8_t k_move_dx[8]={ 1, 1, 0,-1,-1,-1, 0, 1};
@@ -140,6 +140,57 @@ static int8_t clamp_step(int8_t v){
     return v<0?-1:(v>0?1:0);
 }
 
+/* Match movement connectivity to the traced walls. Coordinates are tenths of
+ * a GG world unit so x=61.6 / y=-3.2 / x=104.8 remain exact on Z80. */
+static uint8_t vertical_wall_blocks(int16_t x0,int16_t y0,
+                                    int16_t x1,int16_t y1,
+                                    int16_t wall_x,
+                                    int16_t span_lo,int16_t span_hi,
+                                    int16_t open_lo,int16_t open_hi,
+                                    uint8_t has_opening){
+    int32_t cross_y;
+    int16_t dx=(int16_t)(x1-x0);
+    if(!((x0<wall_x&&x1>wall_x)||(x1<wall_x&&x0>wall_x)))return 0u;
+    cross_y=(int32_t)y0+
+            ((int32_t)(y1-y0)*(int32_t)(wall_x-x0))/(int32_t)dx;
+    if(cross_y<span_lo||cross_y>span_hi)return 0u;
+    if(has_opening&&cross_y>=open_lo&&cross_y<=open_hi)return 0u;
+    return 1u;
+}
+
+static uint8_t horizontal_wall_blocks(int16_t x0,int16_t y0,
+                                      int16_t x1,int16_t y1,
+                                      int16_t wall_y,
+                                      int16_t span_lo,int16_t span_hi,
+                                      int16_t open_lo,int16_t open_hi,
+                                      uint8_t has_opening){
+    int32_t cross_x;
+    int16_t dy=(int16_t)(y1-y0);
+    if(!((y0<wall_y&&y1>wall_y)||(y1<wall_y&&y0>wall_y)))return 0u;
+    cross_x=(int32_t)x0+
+            ((int32_t)(x1-x0)*(int32_t)(wall_y-y0))/(int32_t)dy;
+    if(cross_x<span_lo||cross_x>span_hi)return 0u;
+    if(has_opening&&cross_x>=open_lo&&cross_x<=open_hi)return 0u;
+    return 1u;
+}
+
+static uint8_t kleiner_step_allowed(uint8_t ix0,uint8_t iy0,
+                                    uint8_t ix1,uint8_t iy1){
+    int16_t x0=(int16_t)(KLEINER_PLAY_ORIGIN_X*10+
+                         (int16_t)ix0*KLEINER_PLAY_STEP*10);
+    int16_t y0=(int16_t)(KLEINER_PLAY_ORIGIN_Y*10+
+                         (int16_t)iy0*KLEINER_PLAY_STEP*10);
+    int16_t x1=(int16_t)(KLEINER_PLAY_ORIGIN_X*10+
+                         (int16_t)ix1*KLEINER_PLAY_STEP*10);
+    int16_t y1=(int16_t)(KLEINER_PLAY_ORIGIN_Y*10+
+                         (int16_t)iy1*KLEINER_PLAY_STEP*10);
+
+    if(vertical_wall_blocks(x0,y0,x1,y1,616,-160,480,36,204,1u))return 0u;
+    if(vertical_wall_blocks(x0,y0,x1,y1,1048,-160,-32,0,0,0u))return 0u;
+    if(horizontal_wall_blocks(x0,y0,x1,y1,-32,1048,1320,1140,1244,1u))return 0u;
+    return 1u;
+}
+
 static uint8_t apply_controls(uint8_t keys){
     uint8_t old_ix=g_kleiner_play_ix,old_iy=g_kleiner_play_iy,old_yaw=g_kleiner_play_yaw;
     uint8_t dir;
@@ -148,9 +199,9 @@ static uint8_t apply_controls(uint8_t keys){
     uint16_t state;
 
     if(keys&J_START){
-        g_kleiner_play_ix=2u;
-        g_kleiner_play_iy=5u;
-        g_kleiner_play_yaw=11u;
+        g_kleiner_play_ix=4u;
+        g_kleiner_play_iy=1u;
+        g_kleiner_play_yaw=7u;
     }else{
         if((keys&J_LEFT)&&!(keys&J_RIGHT))
             g_kleiner_play_yaw=(uint8_t)((g_kleiner_play_yaw+KLEINER_PLAY_YAWS-1u)&
@@ -181,7 +232,9 @@ static uint8_t apply_controls(uint8_t keys){
         ny=(int16_t)g_kleiner_play_iy+my;
         if(mx||my){
             if(nx>=0&&nx<KLEINER_PLAY_GRID_W&&ny>=0&&ny<KLEINER_PLAY_GRID_H&&
-               kleiner_play_position_ordinal((uint8_t)nx,(uint8_t)ny)!=0xffu){
+               kleiner_play_position_ordinal((uint8_t)nx,(uint8_t)ny)!=0xffu&&
+               kleiner_step_allowed(g_kleiner_play_ix,g_kleiner_play_iy,
+                                    (uint8_t)nx,(uint8_t)ny)){
                 g_kleiner_play_ix=(uint8_t)nx;
                 g_kleiner_play_iy=(uint8_t)ny;
             }
@@ -215,9 +268,9 @@ void main(void){
 
     g_kleiner_play_status=0u;
     g_kleiner_play_actions=0u;
-    g_kleiner_play_ix=2u;
-    g_kleiner_play_iy=5u;
-    g_kleiner_play_yaw=11u;
+    g_kleiner_play_ix=4u;
+    g_kleiner_play_iy=1u;
+    g_kleiner_play_yaw=7u;
     g_kleiner_play_pool=1u;
     g_kleiner_play_phases=0u;
 

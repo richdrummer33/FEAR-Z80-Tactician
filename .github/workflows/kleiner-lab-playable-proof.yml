@@ -10,6 +10,7 @@ on:
       - "tools/polar_baked_composite.*"
       - "tools/room_mesh_bake.*"
       - "tools/kleiner_playable_pack_to_c.py"
+      - "tools/hl2_lab_obj_trace.py"
       - "src/main_kleiner_playable_gg.c"
   workflow_dispatch:
 
@@ -35,7 +36,7 @@ jobs:
           ROOM_BUNDLE_KLEINER_PLAYABLE=1 \
             build/kleiner/kleiner-play-bake build/kleiner/host \
             | tee build/kleiner/bake.txt
-          grep -q '^KLEINER_PLAYABLE_PASS positions=40 states=640 ' build/kleiner/bake.txt
+          grep -q '^KLEINER_PLAYABLE_PASS positions=37 states=592 ' build/kleiner/bake.txt
           grep -q '^random_access_double_buffer=PASS$' \
             build/kleiner/host/kleiner_playable_manifest.txt
           grep -q '^movement_grid=PASS$' \
@@ -47,7 +48,7 @@ jobs:
           python3 tools/kleiner_playable_pack_to_c.py \
             build/kleiner/host/kleiner_playable.pack \
             build/kleiner/generated | tee build/kleiner/c-gen.txt
-          grep -q '^KLEINER_PLAYABLE_C_PASS states=640 ' build/kleiner/c-gen.txt
+          grep -q '^KLEINER_PLAYABLE_C_PASS states=592 ' build/kleiner/c-gen.txt
 
       - name: Install GBDK 4.5.0
         run: |
