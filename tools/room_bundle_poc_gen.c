@@ -1791,6 +1791,8 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
     uint16_t t,i;
     uint16_t chosen=0u,budget,max_budget=48u;
     const char *max_env=getenv("ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS");
+    const char *atomic_env=getenv("ROOM_BUNDLE_ATOMIC_UPLOAD_CAP");
+    uint8_t atomic_mode=(uint8_t)(atomic_env&&*atomic_env);
 
     if(max_env&&*max_env){
         char *end=(char *)0;
@@ -1840,7 +1842,10 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
                 uint16_t best_deadline=0xffffu;
                 for(x=0u;x<job_count;++x){
                     if(jobs[x].assigned==0xffffu &&
-                       jobs[x].release<=t &&
+                       ((!atomic_mode&&jobs[x].release<=t) ||
+                        (atomic_mode&&
+                         (jobs[x].release<t ||
+                          (jobs[x].release==t&&jobs[x].deadline==t)))) &&
                        jobs[x].deadline<best_deadline){
                         best=x;
                         best_deadline=jobs[x].deadline;
@@ -1905,7 +1910,7 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
      * come from the safe prefix that can be staged while the old frame remains
      * visible. */
     {
-        const char *cap_env=getenv("ROOM_BUNDLE_ATOMIC_UPLOAD_CAP");
+        const char *cap_env=atomic_env;
         if(cap_env&&*cap_env){
             long cap=strtol(cap_env,(char **)0,10);
             if(cap<1||cap>512)die("ROOM_BUNDLE_ATOMIC_UPLOAD_CAP must be 1..512");
