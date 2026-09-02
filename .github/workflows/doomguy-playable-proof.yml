@@ -103,9 +103,7 @@ jobs:
             build/playable/generated | tee build/playable/c-gen.txt
           grep -q '^DOOM_PLAYABLE_C_PASS states=608 ' build/playable/c-gen.txt
           grep -q ' dict_bytes=512 ' build/playable/c-gen.txt
-          grep -q 'dual_name_tables=PASS graph=PASS
-      - name: Install GBDK 4.5.0
-        run: |
+          grep -q 'dual_name_tables=PASS graph=PASS        run: |
           set -euo pipefail
           mkdir -p .toolchain
           curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
@@ -126,13 +124,13 @@ jobs:
           COMMON=()
 
           "$LCC" "${FLAGS[@]}" -c -o "$OBJ/main.o" src/main_doomguy_playable_gg.c
-          "$LCC" "${FLAGS[@]}" -DDOOM_PLAY_ORBIT_LAB -c             -o "$OBJ/main-orbit.o" src/main_doomguy_playable_gg.c
+          "$LCC" "${FLAGS[@]}" -DDOOM_PLAY_ORBIT_LAB -c \
+            -o "$OBJ/main-orbit.o" src/main_doomguy_playable_gg.c
           "$LCC" "${FLAGS[@]}" -c -o "$OBJ/ntupload.o" src/doomguy_playable_ntupload_gg.s
           "$LCC" "${FLAGS[@]}" -c -o "$OBJ/dispatch.o" "$GEN/doomguy_playable_dispatch.c"
           COMMON+=("$OBJ/ntupload.o" "$OBJ/dispatch.o")
 
-          BANK_SOURCES=("$GEN"/doomguy_playable_bank*.c)
-          for src in "${BANK_SOURCES[@]}"; do
+          for src in "$GEN"/doomguy_playable_bank*.c; do
             base="$(basename "${src%.c}")"
             "$LCC" "${FLAGS[@]}" -c -o "$OBJ/${base}.o" "$src"
             COMMON+=("$OBJ/${base}.o")
@@ -143,11 +141,14 @@ jobs:
           test "$(find "$OBJ" -maxdepth 1 -name 'doomguy_playable_bank*.o' | wc -l)" -eq "$BANK_COUNT"
           printf 'generated_banks=%s PASS\n' "$BANK_COUNT" | tee "$OUT/BANK-COUNT.txt"
 
-          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Playable.gg"             "$OBJ/main.o" "${COMMON[@]}"
-          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Codec-Orbit.gg"             "$OBJ/main-orbit.o" "${COMMON[@]}"
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Playable.gg" \
+            "$OBJ/main.o" "${COMMON[@]}"
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Codec-Orbit.gg" \
+            "$OBJ/main-orbit.o" "${COMMON[@]}"
           test "$(wc -c < "$OUT/GG-Doomguy-Playable.gg")" -eq 4194304
           test "$(wc -c < "$OUT/GG-Doomguy-Codec-Orbit.gg")" -eq 4194304
-          sha256sum "$OUT/GG-Doomguy-Playable.gg"                     "$OUT/GG-Doomguy-Codec-Orbit.gg" | tee "$OUT/SHA256.txt"
+          sha256sum "$OUT/GG-Doomguy-Playable.gg" \
+                    "$OUT/GG-Doomguy-Codec-Orbit.gg" | tee "$OUT/SHA256.txt"
 
           for sym in _main _set_palette _set_bkg_4bpp_data; do
             tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Doomguy-Playable.sym")"
@@ -227,14 +228,18 @@ jobs:
           grep -q 'data=' "$OUT/run-strafe.txt"
           ! grep -q 'data=0000' "$OUT/run-strafe.txt"
           ! cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-strafe.ppm"
-          # Codec microscope: RIGHT advances through camera positions sorted
-          # around the hero, with every state aimed at Doomguy. This changes
-          # object-relative view angle rather than merely sliding him on screen.
+          # Codec microscope: RIGHT advances around quality-filtered camera
+          # positions while each selected view remains aimed at Doomguy.
           ORBIT_ROM="$OUT/GG-Doomguy-Codec-Orbit.gg"
           ORBIT_ADDR="$(awk '$2=="_g_hero_play_orbit"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Codec-Orbit.sym")"
           test -n "$ORBIT_ADDR"
-          ./build/libretro_runner "$CORE" "$ORBIT_ROM" 110             "$OUT/orbit-idle.ppm" "$ORBIT_ADDR" 1             | tee "$OUT/run-orbit-idle.txt"
-          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90             ./build/libretro_runner "$CORE" "$ORBIT_ROM" 150             "$OUT/orbit-right.ppm" "$ORBIT_ADDR" 1             | tee "$OUT/run-orbit-right.txt"
+          ./build/libretro_runner "$CORE" "$ORBIT_ROM" 110 \
+            "$OUT/orbit-idle.ppm" "$ORBIT_ADDR" 1 \
+            | tee "$OUT/run-orbit-idle.txt"
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ORBIT_ROM" 150 \
+            "$OUT/orbit-right.ppm" "$ORBIT_ADDR" 1 \
+            | tee "$OUT/run-orbit-right.txt"
           grep -q 'data=' "$OUT/run-orbit-right.txt"
           ! grep -q 'data=00' "$OUT/run-orbit-right.txt"
           ! cmp -s "$OUT/orbit-idle.ppm" "$OUT/orbit-right.ppm"
@@ -285,11 +290,11 @@ jobs:
       - name: Report VRAM and VBlank headroom
         run: |
           set -euo pipefail
-          python3 tools/analyze_doomguy_playable.py             build/playable/host/doomguy_playable.pack             | tee build/playable/headroom.txt
+          python3 tools/analyze_doomguy_playable.py \
+            build/playable/host/doomguy_playable.pack \
+            | tee build/playable/headroom.txt
           grep -q '^dictionary slots=16 bytes=512 ' build/playable/headroom.txt
-          grep -q 'total_accounted_bytes=16384
-      - name: Install GBDK 4.5.0
-        run: |
+          grep -q 'total_accounted_bytes=16384        run: |
           set -euo pipefail
           mkdir -p .toolchain
           curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
