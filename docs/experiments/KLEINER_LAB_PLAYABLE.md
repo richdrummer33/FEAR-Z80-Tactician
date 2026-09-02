@@ -56,7 +56,9 @@ Controls:
 - D-pad left/right: turn,
 - button 1 / A: strafe left,
 - button 2 / B: strafe right,
-- Start: reset to the overview position.
+- Start: reset to the overview position at grid (2,5), yaw 11. The default
+  camera is deliberately aimed toward the twin teleporter rather than at a
+  generic wall/desk view.
 
 ## Why this branch
 

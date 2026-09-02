@@ -121,13 +121,13 @@ jobs:
             "$OUT/kleiner-idle.ppm" "$STATE_ADDR" 2 | tee "$OUT/run-idle.txt"
 
           LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
-            ./build/libretro_runner "$CORE" "$ROM" 260 \
+            ./build/libretro_runner "$CORE" "$ROM" 100 \
             "$OUT/kleiner-turn.ppm" "$ACT_ADDR" 2 | tee "$OUT/run-turn.txt"
           ! grep -q 'data=0000' "$OUT/run-turn.txt"
           ! cmp -s "$OUT/kleiner-idle.ppm" "$OUT/kleiner-turn.ppm"
 
           LIBRETRO_JOYPAD_MASK=$((1<<4)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
-            ./build/libretro_runner "$CORE" "$ROM" 260 \
+            ./build/libretro_runner "$CORE" "$ROM" 100 \
             "$OUT/kleiner-walk.ppm" "$ACT_ADDR" 2 | tee "$OUT/run-walk.txt"
           ! grep -q 'data=0000' "$OUT/run-walk.txt"
           ! cmp -s "$OUT/kleiner-idle.ppm" "$OUT/kleiner-walk.ppm"

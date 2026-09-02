@@ -2460,7 +2460,7 @@ static void bake_kleiner_playable(const char *outdir){
             sum_patterns+=dyn_count;
             if(dyn_count>peak_patterns)peak_patterns=dyn_count;
 
-            if(ix==4u&&iy==5u&&(yaw_i==10u||yaw_i==12u||yaw_i==14u)){
+            if(ix==2u&&iy==5u&&(yaw_i==9u||yaw_i==11u||yaw_i==13u)){
                 snprintf(path,sizeof(path),"%s/kleiner-start-yaw%02u.ppm",
                          outdir,(unsigned)yaw_i);
                 if(!tsp_host_composite_write_ppm(path))

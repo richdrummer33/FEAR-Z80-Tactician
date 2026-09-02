@@ -148,9 +148,9 @@ static uint8_t apply_controls(uint8_t keys){
     uint16_t state;
 
     if(keys&J_START){
-        g_kleiner_play_ix=4u;
+        g_kleiner_play_ix=2u;
         g_kleiner_play_iy=5u;
-        g_kleiner_play_yaw=12u;
+        g_kleiner_play_yaw=11u;
     }else{
         if((keys&J_LEFT)&&!(keys&J_RIGHT))
             g_kleiner_play_yaw=(uint8_t)((g_kleiner_play_yaw+KLEINER_PLAY_YAWS-1u)&
@@ -215,9 +215,9 @@ void main(void){
 
     g_kleiner_play_status=0u;
     g_kleiner_play_actions=0u;
-    g_kleiner_play_ix=4u;
+    g_kleiner_play_ix=2u;
     g_kleiner_play_iy=5u;
-    g_kleiner_play_yaw=12u;
+    g_kleiner_play_yaw=11u;
     g_kleiner_play_pool=1u;
     g_kleiner_play_phases=0u;
 
