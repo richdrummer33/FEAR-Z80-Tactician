@@ -148,11 +148,13 @@ static uint8_t vertical_wall_blocks(int16_t x0,int16_t y0,
                                     int16_t span_lo,int16_t span_hi,
                                     int16_t open_lo,int16_t open_hi,
                                     uint8_t has_opening){
-    int32_t cross_y;
+    int16_t cross_y;
     int16_t dx=(int16_t)(x1-x0);
     if(!((x0<wall_x&&x1>wall_x)||(x1<wall_x&&x0>wall_x)))return 0u;
-    cross_y=(int32_t)y0+
-            ((int32_t)(y1-y0)*(int32_t)(wall_x-x0))/(int32_t)dx;
+    /* One grid move is at most 100 deci-units per axis, so the product stays
+     * safely inside signed 16-bit range and avoids SDCC's long-multiply helper. */
+    cross_y=(int16_t)(y0+
+            (int16_t)(((int16_t)(y1-y0)*(int16_t)(wall_x-x0))/dx));
     if(cross_y<span_lo||cross_y>span_hi)return 0u;
     if(has_opening&&cross_y>=open_lo&&cross_y<=open_hi)return 0u;
     return 1u;
@@ -164,11 +166,11 @@ static uint8_t horizontal_wall_blocks(int16_t x0,int16_t y0,
                                       int16_t span_lo,int16_t span_hi,
                                       int16_t open_lo,int16_t open_hi,
                                       uint8_t has_opening){
-    int32_t cross_x;
+    int16_t cross_x;
     int16_t dy=(int16_t)(y1-y0);
     if(!((y0<wall_y&&y1>wall_y)||(y1<wall_y&&y0>wall_y)))return 0u;
-    cross_x=(int32_t)x0+
-            ((int32_t)(x1-x0)*(int32_t)(wall_y-y0))/(int32_t)dy;
+    cross_x=(int16_t)(x0+
+            (int16_t)(((int16_t)(x1-x0)*(int16_t)(wall_y-y0))/dy));
     if(cross_x<span_lo||cross_x>span_hi)return 0u;
     if(has_opening&&cross_x>=open_lo&&cross_x<=open_hi)return 0u;
     return 1u;
