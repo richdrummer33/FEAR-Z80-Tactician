@@ -87,6 +87,11 @@ typedef struct FramePattern {
     uint64_t hash;
     uint8_t pix[PIXELS];
     uint16_t slot;
+    /* 0xffff = ordinary world/cache pattern.  Codec patterns are pinned to a
+     * specific resident slot and are deliberately kept distinct from an
+     * identical-looking world pattern so canonical world slot assignment never
+     * changes merely because the hero dictionary happens to contain it. */
+    uint16_t fixed_slot;
 } FramePattern;
 
 static const int8_t k_edge_lut[8][8] = {
@@ -1364,8 +1369,12 @@ static uint8_t codec_cell_eligible(uint16_t cell){
 
 static uint16_t codec_distance(const uint8_t a[PIXELS],uint8_t ap,
                                const uint8_t b[PIXELS],uint8_t bp){
-    uint16_t d=(uint16_t)(ap==bp?0u:24u);
+    uint16_t d=0u;
     uint8_t i;
+    /* Palette selection is a name-table attribute, not part of the pattern
+     * payload. Preserve it exactly per cell; the dictionary only compresses
+     * the 32-byte pattern. */
+    (void)ap;(void)bp;
     for(i=0u;i<PIXELS;++i)if(a[i]!=b[i])++d;
     return d;
 }
@@ -1495,8 +1504,7 @@ void tsp_host_composite_codec_train_commit(void){
         for(k=0u;k<g_codec_count;++k){
             uint8_t q,dup=0u;
             for(q=0u;q<outn;++q)
-                if(g_codec_palette[q]==g_codec_palette[k]&&
-                   memcmp(g_codec_pix[q],g_codec_pix[k],PIXELS)==0){
+                if(memcmp(g_codec_pix[q],g_codec_pix[k],PIXELS)==0){
                     dup=1u;break;
                 }
             if(!dup){
@@ -1553,7 +1561,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
 
     for(i=0u;i<TSP_MAP_CELLS;++i){
         uint8_t canon[PIXELS],encoded[PIXELS],use_lit_palette=0u;
-        uint16_t attr,pos;
+        uint16_t attr,pos,fixed_slot=0xffffu;
         uint64_t h;
         if(g_lighting_stage>=TSP_HOST_LIGHT_HARD)
             use_lit_palette=point_tile_encode(g_cells[i],g_lit[i],encoded);
@@ -1569,8 +1577,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
                 uint16_t err=0u;
                 uint8_t k=codec_nearest(canon,pal,&err);
                 memcpy(canon,g_codec_pix[k],PIXELS);
-                attr=(uint16_t)((attr&~TSP_ATTR_PALETTE)|
-                      (g_codec_palette[k]?TSP_ATTR_PALETTE:0u));
+                fixed_slot=(uint16_t)(HW_TILES-g_codec_count+k);
                 ++g_codec_cells;
                 g_codec_error_sum+=err;
                 if(err>g_codec_error_max)
@@ -1578,15 +1585,23 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
             }
         }
 
-        h=fnv64(canon);pos=(uint16_t)h&(FRAME_HASH-1u);
+        h=fnv64(canon);
+        if(fixed_slot!=0xffffu)
+            h^=UINT64_C(0x9E3779B97F4A7C15)^(uint64_t)fixed_slot;
+        pos=(uint16_t)h&(FRAME_HASH-1u);
         for(;;){
             int16_t q=htab[pos];
             if(q<0){
                 if(req_count>=TSP_MAP_CELLS)die("frame pattern capacity exceeded");
-                req[req_count].hash=h;memcpy(req[req_count].pix,canon,PIXELS);req[req_count].slot=0xffffu;
+                req[req_count].hash=h;
+                memcpy(req[req_count].pix,canon,PIXELS);
+                req[req_count].slot=0xffffu;
+                req[req_count].fixed_slot=fixed_slot;
                 htab[pos]=(int16_t)req_count;cell_req[i]=req_count++;break;
             }
-            if(req[(uint16_t)q].hash==h&&memcmp(req[(uint16_t)q].pix,canon,PIXELS)==0){
+            if(req[(uint16_t)q].hash==h&&
+               req[(uint16_t)q].fixed_slot==fixed_slot&&
+               memcmp(req[(uint16_t)q].pix,canon,PIXELS)==0){
                 cell_req[i]=(uint16_t)q;break;
             }
             pos=(uint16_t)((pos+1u)&(FRAME_HASH-1u));
@@ -1598,10 +1613,27 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     if(req_count>g_peak_unique)g_peak_unique=req_count;
     if(req_count>HW_TILES)die("single frame needs more than 512 unique tile patterns");
 
-    /* First retain every pattern already resident. */
-    for(i=0u;i<req_count;++i){
-        int s=cache_find(req[i].hash,req[i].pix);
-        if(s>=0){req[i].slot=(uint16_t)s;needed[(uint16_t)s]=1u;g_cache_last[(uint16_t)s]=g_frame_no;}
+    /* First bind codec requests to their pinned slots. Ordinary world
+     * requests may only retain from the dynamic region; resident hero slots
+     * are intentionally invisible to them even when the bytes match. */
+    {
+        uint16_t dynamic_limit=(g_codec_ready&&g_codec_count)?
+                               (uint16_t)(HW_TILES-g_codec_count):HW_TILES;
+        for(i=0u;i<req_count;++i){
+            int s;
+            if(req[i].fixed_slot!=0xffffu){
+                req[i].slot=req[i].fixed_slot;
+                needed[req[i].slot]=1u;
+                g_cache_last[req[i].slot]=g_frame_no;
+                continue;
+            }
+            s=cache_find(req[i].hash,req[i].pix);
+            if(s>=0&&(uint16_t)s<dynamic_limit){
+                req[i].slot=(uint16_t)s;
+                needed[(uint16_t)s]=1u;
+                g_cache_last[(uint16_t)s]=g_frame_no;
+            }
+        }
     }
 
     /* Load misses into free slots, otherwise evict the least-recent resident
