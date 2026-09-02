@@ -5,6 +5,7 @@ on:
     branches:
       - experiment/gg-doomguy-playable
       - feature/gg-hero-view-codec-v1-continued
+      - temp/hero-codec-v1-contrast-anchor-lab
     paths:
       - ".github/workflows/doomguy-playable-proof.yml"
       - "tools/room_bundle_poc_gen.c"
@@ -12,6 +13,7 @@ on:
       - "tools/room_mesh_bake.*"
       - "tools/glb_rmb/**"
       - "tools/doomguy_playable_pack_to_c.py"
+      - "tools/analyze_doomguy_playable.py"
       - "src/main_doomguy_playable_gg.c"
       - "src/doomguy_playable_ntupload_gg.s"
       - "tests/test_doomguy_playable_pack_to_c.py"
@@ -77,6 +79,7 @@ jobs:
             build/playable/doom-play-bake build/playable/host \
             | tee build/playable/bake.txt
           grep -q '^DOOM_PLAYABLE_PASS positions=38 states=608 ' build/playable/bake.txt
+          grep -q '^DOOM_CODEC_TRAIN patterns=16 bands=3 angles=128 ' build/playable/bake.txt
           grep -q '^random_access_double_buffer=PASS$' \
             build/playable/host/doomguy_playable_manifest.txt
           grep -q '^quality_clearance_grid=PASS$' \
@@ -99,8 +102,343 @@ jobs:
             build/playable/host/doomguy_playable.pack \
             build/playable/generated | tee build/playable/c-gen.txt
           grep -q '^DOOM_PLAYABLE_C_PASS states=608 ' build/playable/c-gen.txt
-          grep -q ' banks=177 ' build/playable/c-gen.txt
-          grep -q 'dual_name_tables=PASS graph=PASS$' build/playable/c-gen.txt
+          grep -q ' dict_bytes=512 ' build/playable/c-gen.txt
+          grep -q 'dual_name_tables=PASS graph=PASS
+      - name: Install GBDK 4.5.0
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 4 MiB playable ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/playable/generated"
+          OUT="$PWD/build/playable"
+          OBJ="$OUT/obj"
+          mkdir -p "$OBJ"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 -Isrc -I"$GEN")
+          COMMON=()
+
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/main.o" src/main_doomguy_playable_gg.c
+          "$LCC" "${FLAGS[@]}" -DDOOM_PLAY_ORBIT_LAB -c             -o "$OBJ/main-orbit.o" src/main_doomguy_playable_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/ntupload.o" src/doomguy_playable_ntupload_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/dispatch.o" "$GEN/doomguy_playable_dispatch.c"
+          COMMON+=("$OBJ/ntupload.o" "$OBJ/dispatch.o")
+
+          BANK_SOURCES=("$GEN"/doomguy_playable_bank*.c)
+          for src in "${BANK_SOURCES[@]}"; do
+            base="$(basename "${src%.c}")"
+            "$LCC" "${FLAGS[@]}" -c -o "$OBJ/${base}.o" "$src"
+            COMMON+=("$OBJ/${base}.o")
+          done
+
+          BANK_COUNT="$(find "$GEN" -maxdepth 1 -name 'doomguy_playable_bank*.c' | wc -l)"
+          test "$BANK_COUNT" -gt 0
+          test "$(find "$OBJ" -maxdepth 1 -name 'doomguy_playable_bank*.o' | wc -l)" -eq "$BANK_COUNT"
+          printf 'generated_banks=%s PASS\n' "$BANK_COUNT" | tee "$OUT/BANK-COUNT.txt"
+
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Playable.gg"             "$OBJ/main.o" "${COMMON[@]}"
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Codec-Orbit.gg"             "$OBJ/main-orbit.o" "${COMMON[@]}"
+          test "$(wc -c < "$OUT/GG-Doomguy-Playable.gg")" -eq 4194304
+          test "$(wc -c < "$OUT/GG-Doomguy-Codec-Orbit.gg")" -eq 4194304
+          sha256sum "$OUT/GG-Doomguy-Playable.gg"                     "$OUT/GG-Doomguy-Codec-Orbit.gg" | tee "$OUT/SHA256.txt"
+
+          for sym in _main _set_palette _set_bkg_4bpp_data; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+            test -n "$tok"
+            test "${tok%%:*}" = "00"
+            test $((16#${tok##*:})) -lt $((0x4000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee "$OUT/FIXED-BANK-PASS.txt"
+
+          for sym in _g_hero_play_state _g_hero_play_actions _g_hero_play_nt_flips _g_hero_play_orbit; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+            test -n "$tok"
+            test "${tok%%:*}" = "00"
+            test $((16#${tok##*:})) -ge $((0xC000))
+            test $((16#${tok##*:})) -lt $((0xE000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee "$OUT/RUNTIME-SYMBOLS-PASS.txt"
+
+      - name: Build Gearsystem runner
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 \
+            https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove boot and D-pad control
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PWD/build/playable"
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM="$OUT/GG-Doomguy-Playable.gg"
+          ACT_ADDR="$(awk '$2=="_g_hero_play_actions"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+          STATE_ADDR="$(awk '$2=="_g_hero_play_state"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+          test -n "$ACT_ADDR"
+          test -n "$STATE_ADDR"
+
+          ./build/libretro_runner "$CORE" "$ROM" 150 \
+            "$OUT/playable-idle.ppm" "$STATE_ADDR" 2 \
+            | tee "$OUT/run-idle.txt"
+
+          # Libretro joypad RIGHT is bit seven. Hold it after boot; the ROM must
+          # consume input, advance the exposed action counter, and visibly turn.
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-turn.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-turn.txt"
+          grep -q 'data=' "$OUT/run-turn.txt"
+          ! grep -q 'data=0000' "$OUT/run-turn.txt"
+          ! cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-turn.ppm"
+
+          # The visible map must be published by R2 page flips, not by writes
+          # into the active name table. Turning repeatedly exercises both
+          # 0x3000 and 0x3800 pages; the exposed counter proves publication.
+          FLIP_ADDR="$(awk '$2=="_g_hero_play_nt_flips"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+          test -n "$FLIP_ADDR"
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 300 \
+            "$OUT/playable-flips.ppm" "$FLIP_ADDR" 2 \
+            | tee "$OUT/run-flips.txt"
+          grep -q 'data=' "$OUT/run-flips.txt"
+          ! grep -q 'data=0000' "$OUT/run-flips.txt"
+
+          # The initial forward step points into a picture-quality exclusion.
+          # It must be blocked, while a strafe remains a legal visible action.
+          LIBRETRO_JOYPAD_MASK=$((1<<4)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-blocked.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-blocked.txt"
+          grep -q 'data=0000' "$OUT/run-blocked.txt"
+          cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-blocked.ppm"
+
+          LIBRETRO_JOYPAD_MASK=$((1<<0)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-strafe.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-strafe.txt"
+          grep -q 'data=' "$OUT/run-strafe.txt"
+          ! grep -q 'data=0000' "$OUT/run-strafe.txt"
+          ! cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-strafe.ppm"
+          # Codec microscope: RIGHT advances through camera positions sorted
+          # around the hero, with every state aimed at Doomguy. This changes
+          # object-relative view angle rather than merely sliding him on screen.
+          ORBIT_ROM="$OUT/GG-Doomguy-Codec-Orbit.gg"
+          ORBIT_ADDR="$(awk '$2=="_g_hero_play_orbit"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Codec-Orbit.sym")"
+          test -n "$ORBIT_ADDR"
+          ./build/libretro_runner "$CORE" "$ORBIT_ROM" 110             "$OUT/orbit-idle.ppm" "$ORBIT_ADDR" 1             | tee "$OUT/run-orbit-idle.txt"
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90             ./build/libretro_runner "$CORE" "$ORBIT_ROM" 150             "$OUT/orbit-right.ppm" "$ORBIT_ADDR" 1             | tee "$OUT/run-orbit-right.txt"
+          grep -q 'data=' "$OUT/run-orbit-right.txt"
+          ! grep -q 'data=00' "$OUT/run-orbit-right.txt"
+          ! cmp -s "$OUT/orbit-idle.ppm" "$OUT/orbit-right.ppm"
+
+          printf '%s\n' \
+            'RUNTIME_PASS idle_boot=PASS turn=PASS atomic_flips=PASS blocked_envelope=PASS strafe=PASS orbit_lab=PASS' \
+            | tee "$OUT/RUNTIME-PASS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GG-doomguy-playable
+          path: |
+            build/playable/GG-Doomguy-Playable.gg
+            build/playable/GG-Doomguy-Playable.sym
+            build/playable/GG-Doomguy-Codec-Orbit.gg
+            build/playable/GG-Doomguy-Codec-Orbit.sym
+            build/playable/SHA256.txt
+            build/playable/BANK-COUNT.txt
+            build/playable/headroom.txt
+            build/playable/FIXED-BANK-PASS.txt
+            build/playable/RUNTIME-SYMBOLS-PASS.txt
+            build/playable/IMPORT.json
+            build/playable/bake.txt
+            build/playable/sanitized-bake.txt
+            build/playable/c-gen.txt
+            build/playable/RUNTIME-PASS.txt
+            build/playable/host/doomguy_playable_manifest.txt
+            build/playable/host/playable-eval-*.ppm
+            build/playable/host/playable-mask-*.pgm
+            build/playable/run-idle.txt
+            build/playable/run-turn.txt
+            build/playable/run-flips.txt
+            build/playable/run-blocked.txt
+            build/playable/run-strafe.txt
+            build/playable/playable-idle.ppm
+            build/playable/playable-turn.ppm
+            build/playable/playable-flips.ppm
+            build/playable/playable-blocked.ppm
+            build/playable/playable-strafe.ppm
+            build/playable/run-orbit-idle.txt
+            build/playable/run-orbit-right.txt
+            build/playable/orbit-idle.ppm
+            build/playable/orbit-right.ppm
+          if-no-files-found: error
+          retention-days: 30
+ build/playable/c-gen.txt
+
+      - name: Report VRAM and VBlank headroom
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_doomguy_playable.py             build/playable/host/doomguy_playable.pack             | tee build/playable/headroom.txt
+          grep -q '^dictionary slots=16 bytes=512 ' build/playable/headroom.txt
+          grep -q 'total_accounted_bytes=16384
+      - name: Install GBDK 4.5.0
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 4 MiB playable ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/playable/generated"
+          OUT="$PWD/build/playable"
+          OBJ="$OUT/obj"
+          mkdir -p "$OBJ"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 -Isrc -I"$GEN")
+          OBJS=()
+
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/main.o" src/main_doomguy_playable_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/ntupload.o" src/doomguy_playable_ntupload_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/dispatch.o" "$GEN/doomguy_playable_dispatch.c"
+          OBJS+=("$OBJ/main.o" "$OBJ/ntupload.o" "$OBJ/dispatch.o")
+
+          for src in "$GEN"/doomguy_playable_bank*.c; do
+            base="$(basename "${src%.c}")"
+            "$LCC" "${FLAGS[@]}" -c -o "$OBJ/${base}.o" "$src"
+            OBJS+=("$OBJ/${base}.o")
+          done
+
+          test "$(find "$GEN" -maxdepth 1 -name 'doomguy_playable_bank*.c' | wc -l)" -eq 177
+          test "$(find "$OBJ" -maxdepth 1 -name 'doomguy_playable_bank*.o' | wc -l)" -eq 177
+
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Playable.gg" "${OBJS[@]}"
+          test "$(wc -c < "$OUT/GG-Doomguy-Playable.gg")" -eq 4194304
+          sha256sum "$OUT/GG-Doomguy-Playable.gg" | tee "$OUT/SHA256.txt"
+
+          for sym in _main _set_palette _set_bkg_4bpp_data; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+            test -n "$tok"
+            test "${tok%%:*}" = "00"
+            test $((16#${tok##*:})) -lt $((0x4000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee "$OUT/FIXED-BANK-PASS.txt"
+
+          for sym in _g_hero_play_state _g_hero_play_actions _g_hero_play_nt_flips; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+            test -n "$tok"
+            test "${tok%%:*}" = "00"
+            test $((16#${tok##*:})) -ge $((0xC000))
+            test $((16#${tok##*:})) -lt $((0xE000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee "$OUT/RUNTIME-SYMBOLS-PASS.txt"
+
+      - name: Build Gearsystem runner
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 \
+            https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove boot and D-pad control
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PWD/build/playable"
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM="$OUT/GG-Doomguy-Playable.gg"
+          ACT_ADDR="$(awk '$2=="_g_hero_play_actions"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+          STATE_ADDR="$(awk '$2=="_g_hero_play_state"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+          test -n "$ACT_ADDR"
+          test -n "$STATE_ADDR"
+
+          ./build/libretro_runner "$CORE" "$ROM" 150 \
+            "$OUT/playable-idle.ppm" "$STATE_ADDR" 2 \
+            | tee "$OUT/run-idle.txt"
+
+          # Libretro joypad RIGHT is bit seven. Hold it after boot; the ROM must
+          # consume input, advance the exposed action counter, and visibly turn.
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-turn.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-turn.txt"
+          grep -q 'data=' "$OUT/run-turn.txt"
+          ! grep -q 'data=0000' "$OUT/run-turn.txt"
+          ! cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-turn.ppm"
+
+          # The visible map must be published by R2 page flips, not by writes
+          # into the active name table. Turning repeatedly exercises both
+          # 0x3000 and 0x3800 pages; the exposed counter proves publication.
+          FLIP_ADDR="$(awk '$2=="_g_hero_play_nt_flips"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+          test -n "$FLIP_ADDR"
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 300 \
+            "$OUT/playable-flips.ppm" "$FLIP_ADDR" 2 \
+            | tee "$OUT/run-flips.txt"
+          grep -q 'data=' "$OUT/run-flips.txt"
+          ! grep -q 'data=0000' "$OUT/run-flips.txt"
+
+          # The initial forward step points into a picture-quality exclusion.
+          # It must be blocked, while a strafe remains a legal visible action.
+          LIBRETRO_JOYPAD_MASK=$((1<<4)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-blocked.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-blocked.txt"
+          grep -q 'data=0000' "$OUT/run-blocked.txt"
+          cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-blocked.ppm"
+
+          LIBRETRO_JOYPAD_MASK=$((1<<0)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-strafe.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-strafe.txt"
+          grep -q 'data=' "$OUT/run-strafe.txt"
+          ! grep -q 'data=0000' "$OUT/run-strafe.txt"
+          ! cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-strafe.ppm"
+          printf '%s\n' \
+            'RUNTIME_PASS idle_boot=PASS turn=PASS atomic_flips=PASS blocked_envelope=PASS strafe=PASS' \
+            | tee "$OUT/RUNTIME-PASS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GG-doomguy-playable
+          path: |
+            build/playable/GG-Doomguy-Playable.gg
+            build/playable/GG-Doomguy-Playable.sym
+            build/playable/SHA256.txt
+            build/playable/FIXED-BANK-PASS.txt
+            build/playable/RUNTIME-SYMBOLS-PASS.txt
+            build/playable/IMPORT.json
+            build/playable/bake.txt
+            build/playable/sanitized-bake.txt
+            build/playable/c-gen.txt
+            build/playable/RUNTIME-PASS.txt
+            build/playable/host/doomguy_playable_manifest.txt
+            build/playable/host/playable-eval-*.ppm
+            build/playable/host/playable-mask-*.pgm
+            build/playable/run-idle.txt
+            build/playable/run-turn.txt
+            build/playable/run-flips.txt
+            build/playable/run-blocked.txt
+            build/playable/run-strafe.txt
+            build/playable/playable-idle.ppm
+            build/playable/playable-turn.ppm
+            build/playable/playable-flips.ppm
+            build/playable/playable-blocked.ppm
+            build/playable/playable-strafe.ppm
+          if-no-files-found: error
+          retention-days: 30
+ build/playable/headroom.txt
 
       - name: Install GBDK 4.5.0
         run: |
