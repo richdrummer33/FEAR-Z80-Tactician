@@ -188,11 +188,11 @@ void tsp_room_bundle_tile_range_bank{bank_index}(uint16_t local,uint16_t first,
     n=(uint16_t)p[0]|((uint16_t)p[1]<<8);
     if(first>=n)return;
     if(count>n-first)count=(uint16_t)(n-first);
-    p+=4u+(uint32_t)first*(2u+TSP_HOST_TILE_BYTES);
+    p+=4u+(uint32_t)first*(2u+32u);
     for(i=0u;i<count;++i){{
         uint16_t slot=(uint16_t)*p++;slot|=(uint16_t)*p++<<8;
         set_bkg_4bpp_data(slot,1u,p);
-        p+=TSP_HOST_TILE_BYTES;
+        p+=32u;
     }}
 }}
 
