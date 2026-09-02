@@ -393,9 +393,11 @@ def main():
     emit_dispatch(outdir, chunks, meta, lut, dictionary)
 
     payload = sum(len(s) for s in states)
+    orbit_count = len(build_orbit_entries(meta, lut))
     print(
         f"DOOM_PLAYABLE_C_PASS states={len(states)} banks={len(chunks)} "
         f"state_bytes={payload} dict_bytes={len(dictionary)} "
+        f"orbit={orbit_count} "
         f"dispatch_depth={math.ceil(math.log2(max(1,len(chunks))))} "
         "dual_name_tables=PASS graph=PASS")
 
