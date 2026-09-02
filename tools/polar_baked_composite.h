@@ -176,6 +176,28 @@ void tsp_host_composite_pixel_overlay_depth(uint8_t sx,uint8_t sy,
  * min_support: same-shade same-owner neighbours required to keep a pixel. */
 void tsp_host_composite_consolidate_owner(uint8_t sid,uint8_t min_support,
                                           uint8_t passes);
+
+/*
+ * Optional host-only enclosed-cell codec.
+ *
+ * Training sees exact final 8x8 patterns only where every pixel belongs to the
+ * selected owner and no boundary-black pixel is present.  The committed
+ * dictionary is then pinned into resident VRAM slots and only those fully
+ * enclosed cells may be approximated; silhouette, holes, boundary crossings,
+ * background interaction and cast shadows stay on the exact ordinary path.
+ *
+ * Call train_begin(), render/export representative views, then train_commit().
+ * The dictionary remains active across cache resets until codec_disable().
+ */
+void tsp_host_composite_codec_train_begin(uint8_t owner_sid,uint8_t patterns);
+void tsp_host_composite_codec_train_commit(void);
+void tsp_host_composite_codec_disable(void);
+uint8_t tsp_host_composite_codec_pattern_count(void);
+uint32_t tsp_host_composite_codec_sample_count(void);
+uint32_t tsp_host_composite_codec_cell_count(void);
+uint32_t tsp_host_composite_codec_error_sum(void);
+uint8_t tsp_host_composite_codec_error_max(void);
+
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
 uint16_t tsp_host_composite_frame_load_count(void);
