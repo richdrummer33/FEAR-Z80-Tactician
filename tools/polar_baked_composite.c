@@ -1398,15 +1398,16 @@ static uint8_t codec_nearest(const uint8_t pix[PIXELS],uint8_t palette,
 
 static void codec_cache_reset(void){
     uint8_t k;
-    if(!g_codec_ready||!g_codec_count){g_codec_bootstrap=0u;return;}
+    if(!g_codec_ready||!g_codec_count)return;
     for(k=0u;k<g_codec_count;++k){
         uint16_t slot=(uint16_t)(HW_TILES-g_codec_count+k);
         cache_seed(slot,g_codec_pix[k]);
     }
-    /* A cache reset models an independent route/bootstrap. Emit the pinned
-     * dictionary in that route's first tile packet so a cold ROM has the same
-     * resident state the host model assumes. */
-    g_codec_bootstrap=1u;
+    /* Do NOT re-arm the bootstrap upload here. Route baking deliberately
+     * resets the dynamic cache again at the hidden seam (frame 176); resident
+     * dictionary slots survive that logical reset on real hardware and
+     * re-uploading them would create fake unsafe work.  train_commit() arms
+     * exactly one cold-boot upload for the first serialized route instead. */
 }
 
 void tsp_host_composite_codec_disable(void){
@@ -1509,7 +1510,7 @@ void tsp_host_composite_codec_train_commit(void){
         g_codec_count=outn;
     }
 
-    g_codec_training=0u;g_codec_ready=1u;
+    g_codec_training=0u;g_codec_ready=1u;g_codec_bootstrap=1u;
     g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
     free(g_codec_samples);
     g_codec_samples=(CodecSample *)0;
