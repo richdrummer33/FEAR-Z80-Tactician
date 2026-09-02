@@ -14,6 +14,7 @@ on:
       - "tools/glb_rmb/**"
       - "tools/doomguy_playable_pack_to_c.py"
       - "tools/analyze_doomguy_playable.py"
+      - "tools/analyze_doomguy_orbit_corpus.py"
       - "src/main_doomguy_playable_gg.c"
       - "src/doomguy_playable_ntupload_gg.s"
       - "tests/test_doomguy_playable_pack_to_c.py"
@@ -94,6 +95,16 @@ jobs:
             build/playable/host/doomguy_playable_manifest.txt
           test "$(find build/playable/host -name 'playable-eval-*.ppm' | wc -l)" -eq 38
           test "$(find build/playable/host -name 'playable-mask-*.pgm' | wc -l)" -eq 38
+
+      - name: Measure object-relative orbit residuals
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_doomguy_orbit_corpus.py \
+            build/playable/host/doomguy_playable.pack \
+            build/playable/host \
+            | tee build/playable/orbit-corpus.txt
+          grep -q '^DOOM_ORBIT_CORPUS v1$' build/playable/orbit-corpus.txt
+          grep -q '^views=38 ' build/playable/orbit-corpus.txt
 
       - name: Pack playable states into GBDK banks
         run: |
@@ -271,6 +282,7 @@ jobs:
             build/playable/SHA256.txt
             build/playable/BANK-COUNT.txt
             build/playable/headroom.txt
+            build/playable/orbit-corpus.txt
             build/playable/FIXED-BANK-PASS.txt
             build/playable/RUNTIME-SYMBOLS-PASS.txt
             build/playable/IMPORT.json
