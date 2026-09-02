@@ -462,6 +462,9 @@ static void finalize_scene(World *w){
     w->scene.rect_count=w->scene_rect_count;
     w->scene.extra_occluder=w->mesh.triangle_count?room_mesh_light_occluder:(TSPHostExtraOccluderFn)0;
     w->scene.extra_occluder_user=w->mesh.triangle_count?(const void *)&w->mesh:(const void *)0;
+    /* Default to the exact point cast; chambers with a high, gappy occluder
+     * opt into a soft source. */
+    w->scene.source_radius=0.0;
 }
 static void add_transformed_exit_seg(World *w,double ax,double ay,double bx,double by){
     add_seg(w,152.0-ax,48.0-ay,152.0-bx,48.0-by,0,32,0);
@@ -1055,6 +1058,11 @@ static void make_bonsai_hero_chamber(World *w){
     w->scene_lights[0].intensity=255u;
     w->lighting_stage=TSP_HOST_LIGHT_HARD;
     finalize_scene(w);
+    /* Canopy spans z=40..64 under a light at z=78, so this radius puts the
+     * floor penumbra at roughly 4 to 18 world units -- wider than the 2-to-6
+     * unit gaps in the canopy, which is what merges them into one soft mass
+     * instead of printing each gap as its own hard polygon. */
+    w->scene.source_radius=2.0;
 }
 
 static void make_statue_showcase_world(World *w){

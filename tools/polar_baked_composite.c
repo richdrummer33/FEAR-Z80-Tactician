@@ -122,6 +122,12 @@ static int16_t g_camera_y_q4;
 static int16_t g_camera_z_q4=TSP_EYE_HEIGHT_Q4;
 static uint8_t g_camera_yaw;
 static const TSPHostCompositeScene *g_scene_override;
+/* Cells carrying dithered partial floor coverage. quantize_light_cell() fits
+ * one straight edge per cell, which is right for a real boundary and fatal for
+ * an ordered dither -- it would collapse the mottle straight back into the
+ * hard wedges this is meant to replace. */
+static uint8_t g_cell_no_quantize[TSP_MAP_CELLS];
+static void floor_cov_invalidate(void);
 
 static uint8_t g_cache_pix[HW_TILES][PIXELS];
 static uint64_t g_cache_hash[HW_TILES];
@@ -182,6 +188,7 @@ void tsp_host_composite_set_lighting(uint8_t stage,const TSPState *camera){
 
 void tsp_host_composite_set_scene(const TSPHostCompositeScene *scene){
     g_scene_override=scene;
+    floor_cov_invalidate();
 }
 
 static uint8_t scene_vertex_count(void){
@@ -337,7 +344,8 @@ static int receiver_accepts_light(uint8_t sid){
  * the same parametric t gives the ray's Z at that crossing. A segment blocks
  * only if z_hit lies inside its profile-derived vertical interval.
  */
-static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
+static int world_point_lit(double wx,double wy,double wz,int receiver_sid,
+                           int include_mesh){
     TSPHostSceneLight light;
     double lx,ly,lz,dx,dy;
     uint8_t sid;
@@ -358,7 +366,7 @@ static int world_point_lit(double wx,double wy,double wz,int receiver_sid){
         segment_z_range(&s,&z0,&z1);
         if(zhit>=z0-1e-7&&zhit<=z1+1e-7)return 0;
     }
-    if(g_scene_override&&g_scene_override->extra_occluder&&
+    if(include_mesh&&g_scene_override&&g_scene_override->extra_occluder&&
        g_scene_override->extra_occluder(g_scene_override->extra_occluder_user,
                                         lx,ly,lz,wx,wy,wz))
         return 0;
@@ -570,7 +578,10 @@ found_exact:
 
 static void quantize_point_light_edges(void){
     uint16_t cell;
-    for(cell=0u;cell<TSP_MAP_CELLS;++cell)quantize_light_cell(cell);
+    for(cell=0u;cell<TSP_MAP_CELLS;++cell){
+        if(g_cell_no_quantize[cell])continue;
+        quantize_light_cell(cell);
+    }
 }
 
 /* Quantization approximates only the SHAPE of a hard shadow. Material
@@ -660,6 +671,169 @@ static void apply_one_sided_penumbra(void){
  * which trades exact per-gap fidelity (never achievable at this proxy
  * density) for a shadow shape that reads as organic instead of as static.
  */
+/* ------------------------------------------------------------------------
+ * Baked soft floor shadow.
+ *
+ * world_point_lit() is an exact point-light test, and a point source resolves
+ * every gap in an occluder perfectly. For a tree that is wrong twice over:
+ * the geometry casting the shadow is a ~200-triangle decimated proxy, so its
+ * "gaps" are hard-edged polygons rather than leaves, and a point source then
+ * prints each one at full sharpness. The result is confetti.
+ *
+ * Real foliage shadow is soft, and not by a small amount. Penumbra width is
+ * source_radius * (occluder-to-receiver) / (source-to-occluder). With this
+ * chamber's geometry -- light at z=78, canopy spanning z=40..64, floor at 0 --
+ * a source radius of 4 gives a penumbra of 4 to 18 world units, while the
+ * canopy's gaps are only 2 to 6 units across. The gaps physically cannot
+ * resolve individually; they blur wider than their own size and merge into
+ * one mottled mass. That merge is the whole look.
+ *
+ * Sampling an area source per screen pixel per frame would be billions of ray
+ * tests. It is also unnecessary: tree, light and floor are all static, and
+ * only the camera moves, so the answer is a property of world space. Bake it
+ * once into a world-space grid and look it up. That also keeps the result
+ * stable frame to frame, which matters because an unstable shadow would show
+ * up directly as changed words in every delta patch.
+ * ------------------------------------------------------------------------ */
+#define FLOOR_COV_DIM 192u
+#define FLOOR_COV_SAMPLES 16u
+
+static uint8_t g_floor_cov[FLOOR_COV_DIM][FLOOR_COV_DIM];
+static double g_floor_cov_x0,g_floor_cov_y0,g_floor_cov_sx,g_floor_cov_sy;
+static uint8_t g_floor_cov_ready;
+/* Distinct from _ready: the grid is only AUTHORITATIVE when a soft source
+ * actually baked into it. Without this, a scene with source_radius 0 would
+ * read the all-lit default and silently drop its mesh shadow entirely. */
+static uint8_t g_floor_cov_active;
+static const void *g_floor_cov_key;
+
+static void floor_cov_invalidate(void){
+    g_floor_cov_ready=0u;
+    g_floor_cov_active=0u;
+    g_floor_cov_key=(const void *)0;
+}
+
+/* Orthonormal pair spanning the plane perpendicular to d. */
+static void perp_basis(double dx,double dy,double dz,
+                       double *ux,double *uy,double *uz,
+                       double *vx,double *vy,double *vz){
+    double ax,ay,az,len;
+    /* Pick a reference axis that is not near-parallel to d. */
+    if(fabs(dz)<0.9){ax=0.0;ay=0.0;az=1.0;}else{ax=1.0;ay=0.0;az=0.0;}
+    *ux=ay*dz-az*dy; *uy=az*dx-ax*dz; *uz=ax*dy-ay*dx;
+    len=sqrt((*ux)*(*ux)+(*uy)*(*uy)+(*uz)*(*uz));
+    if(len<1e-12){*ux=1.0;*uy=0.0;*uz=0.0;len=1.0;}
+    *ux/=len; *uy/=len; *uz/=len;
+    *vx=dy*(*uz)-dz*(*uy);
+    *vy=dz*(*ux)-dx*(*uz);
+    *vz=dx*(*uy)-dy*(*ux);
+    len=sqrt((*vx)*(*vx)+(*vy)*(*vy)+(*vz)*(*vz));
+    if(len<1e-12){*vx=0.0;*vy=1.0;*vz=0.0;len=1.0;}
+    *vx/=len; *vy/=len; *vz/=len;
+}
+
+static void bake_floor_shadow(void){
+    TSPHostSceneLight light;
+    double lx,ly,lz,radius;
+    double minx=1e30,maxx=-1e30,miny=1e30,maxy=-1e30;
+    uint8_t v;
+    uint16_t gx,gy;
+
+    g_floor_cov_ready=1u;
+    g_floor_cov_active=0u;
+    g_floor_cov_key=g_scene_override;
+    memset(g_floor_cov,255,sizeof(g_floor_cov));
+
+    if(!g_scene_override||!g_scene_override->extra_occluder)return;
+    radius=g_scene_override->source_radius;
+    if(!(radius>0.0))return;
+    if(!scene_light(0u,&light))return;
+    lx=(double)light.x_q4/16.0;
+    ly=(double)light.y_q4/16.0;
+    lz=(double)light.height_q4/16.0;
+
+    for(v=0u;v<scene_vertex_count();++v){
+        double wx,wy;
+        if(!scene_vertex_world(v,&wx,&wy))continue;
+        if(wx<minx)minx=wx;
+        if(wx>maxx)maxx=wx;
+        if(wy<miny)miny=wy;
+        if(wy>maxy)maxy=wy;
+    }
+    if(minx>maxx||miny>maxy)return;
+
+    g_floor_cov_x0=minx;
+    g_floor_cov_y0=miny;
+    g_floor_cov_sx=(maxx-minx)/(double)(FLOOR_COV_DIM-1u);
+    g_floor_cov_sy=(maxy-miny)/(double)(FLOOR_COV_DIM-1u);
+    if(g_floor_cov_sx<=0.0)g_floor_cov_sx=1.0;
+    if(g_floor_cov_sy<=0.0)g_floor_cov_sy=1.0;
+
+    for(gy=0u;gy<FLOOR_COV_DIM;++gy)for(gx=0u;gx<FLOOR_COV_DIM;++gx){
+        double wx=g_floor_cov_x0+(double)gx*g_floor_cov_sx;
+        double wy=g_floor_cov_y0+(double)gy*g_floor_cov_sy;
+        double dx=wx-lx,dy=wy-ly,dz=-lz;
+        double ux,uy,uz,vx2,vy2,vz2;
+        uint8_t k,open=0u;
+        perp_basis(dx,dy,dz,&ux,&uy,&uz,&vx2,&vy2,&vz2);
+        for(k=0u;k<FLOOR_COV_SAMPLES;++k){
+            /* Deterministic spiral over the source disc: fixed sample set so
+             * two bakes of the same scene are identical. */
+            double t=((double)k+0.5)/(double)FLOOR_COV_SAMPLES;
+            double r=radius*sqrt(t);
+            double a=(double)k*2.399963229728653; /* golden angle */
+            double sx=lx+(ux*cos(a)+vx2*sin(a))*r;
+            double sy=ly+(uy*cos(a)+vy2*sin(a))*r;
+            double sz=lz+(uz*cos(a)+vz2*sin(a))*r;
+            if(!g_scene_override->extra_occluder(
+                   g_scene_override->extra_occluder_user,sx,sy,sz,wx,wy,0.0))
+                ++open;
+        }
+        g_floor_cov[gy][gx]=(uint8_t)((open*255u)/FLOOR_COV_SAMPLES);
+    }
+
+    g_floor_cov_active=1u;
+
+    if(getenv("TSP_DUMP_FLOOR_COV")){
+        FILE *f=fopen(getenv("TSP_DUMP_FLOOR_COV"),"wb");
+        if(f){
+            uint16_t i,j;
+            fprintf(f,"P5\n%u %u\n255\n",
+                    (unsigned)FLOOR_COV_DIM,(unsigned)FLOOR_COV_DIM);
+            for(j=0u;j<FLOOR_COV_DIM;++j)
+                for(i=0u;i<FLOOR_COV_DIM;++i)fputc(g_floor_cov[j][i],f);
+            fclose(f);
+        }
+    }
+}
+
+/* Bilinear sample of the baked coverage, 0 = fully shadowed, 255 = fully lit. */
+static uint8_t floor_cov_at(double wx,double wy){
+    double fx,fy;
+    uint16_t x0,y0,x1,y1;
+    double tx,ty,c00,c10,c01,c11,top,bot;
+    if(!g_floor_cov_ready)return 255u;
+    fx=(wx-g_floor_cov_x0)/g_floor_cov_sx;
+    fy=(wy-g_floor_cov_y0)/g_floor_cov_sy;
+    if(fx<0.0)fx=0.0;
+    if(fy<0.0)fy=0.0;
+    if(fx>(double)(FLOOR_COV_DIM-1u))fx=(double)(FLOOR_COV_DIM-1u);
+    if(fy>(double)(FLOOR_COV_DIM-1u))fy=(double)(FLOOR_COV_DIM-1u);
+    x0=(uint16_t)fx;
+    y0=(uint16_t)fy;
+    x1=(uint16_t)(x0+1u<FLOOR_COV_DIM?x0+1u:x0);
+    y1=(uint16_t)(y0+1u<FLOOR_COV_DIM?y0+1u:y0);
+    tx=fx-(double)x0;
+    ty=fy-(double)y0;
+    c00=(double)g_floor_cov[y0][x0];
+    c10=(double)g_floor_cov[y0][x1];
+    c01=(double)g_floor_cov[y1][x0];
+    c11=(double)g_floor_cov[y1][x1];
+    top=c00+(c10-c00)*tx;
+    bot=c01+(c11-c01)*tx;
+    return (uint8_t)(top+(bot-top)*ty+0.5);
+}
+
 static void smooth_background_lit(void){
     static uint8_t snap[144][160];
     static uint8_t elig[144][160];
@@ -686,6 +860,7 @@ static void smooth_background_lit(void){
             uint16_t cell,pi;
             uint8_t k,lit_n=0u,total=0u,cur,next;
             if(!elig[y][x])continue;
+            if(g_cell_no_quantize[(uint16_t)((y>>3)*TSP_COLS+(x>>3))])continue;
             cur=snap[y][x];
             for(k=0u;k<8u;++k){
                 int xx=x+nx[k],yy=y+ny[k];
@@ -710,8 +885,16 @@ static void smooth_background_lit(void){
 }
 
 static void apply_point_light(void){
+    /* Ordered 4x4 Bayer. Partial light coverage becomes a stable dither
+     * pattern, so the mottled interior of a canopy shadow reads as texture
+     * rather than as a handful of discrete polygons. */
+    static const uint8_t k_bayer4[16]={
+        0u,8u,2u,10u,12u,4u,14u,6u,3u,11u,1u,9u,15u,7u,13u,5u
+    };
     int x,y;
     if(!scene_light_count())return;
+    memset(g_cell_no_quantize,0,sizeof(g_cell_no_quantize));
+    if(!g_floor_cov_ready||g_floor_cov_key!=g_scene_override)bake_floor_shadow();
     for(y=0;y<144;++y)for(x=0;x<160;++x){
         uint16_t cell=(uint16_t)((y>>3)*TSP_COLS+(x>>3));
         uint16_t pi=(uint16_t)(y&7)*8u+(uint16_t)(x&7);
@@ -728,7 +911,23 @@ static void apply_point_light(void){
         }else if((y<72&&v==SEM_CEILING)||(y>72&&v==SEM_FLOOR)){
             ok=background_world_receiver(x,y,&wx,&wy,&wz);
         }
-        if(ok&&light_reactive(v)&&world_point_lit(wx,wy,wz,receiver))
+        if(!ok||!light_reactive(v))continue;
+
+        if(owner==0xffu&&y>72&&v==SEM_FLOOR&&g_floor_cov_active){
+            /* Architecture still casts an exact hard shadow; only the mesh's
+             * contribution is the baked soft one. */
+            uint8_t cov,thr;
+            if(!world_point_lit(wx,wy,wz,receiver,0))continue;
+            cov=floor_cov_at(wx,wy);
+            if(cov>=250u){g_lit[cell][pi]=1u;continue;}
+            if(cov<=5u)continue;
+            thr=(uint8_t)((k_bayer4[((uint8_t)y&3u)*4u+((uint8_t)x&3u)]*255u)/15u);
+            if(cov>thr)g_lit[cell][pi]=1u;
+            g_cell_no_quantize[cell]=1u;
+            continue;
+        }
+
+        if(world_point_lit(wx,wy,wz,receiver,1))
             g_lit[cell][pi]=1u;
     }
     smooth_background_lit();

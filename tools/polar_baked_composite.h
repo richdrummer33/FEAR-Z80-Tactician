@@ -74,6 +74,14 @@ typedef struct TSPHostCompositeScene {
      * Nothing here exists in the GG runtime representation. */
     TSPHostExtraOccluderFn extra_occluder;
     const void *extra_occluder_user;
+    /* Angular size of the light source, in world units. Zero keeps the exact
+     * point-light cast. Non-zero bakes a soft floor shadow instead: a point
+     * source resolves every gap in an occluder perfectly, which for foliage
+     * means each gap in the proxy prints as its own hard-edged polygon. A
+     * real source has width, and penumbra scales with how far the occluder
+     * sits above the receiver, so a high canopy's gaps blur wider than the
+     * gaps themselves and merge into one mottled mass. */
+    double source_radius;
 } TSPHostCompositeScene;
 
 enum {
