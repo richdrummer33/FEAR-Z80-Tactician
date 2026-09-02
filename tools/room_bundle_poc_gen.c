@@ -65,6 +65,15 @@
 #ifndef ROOM_BUNDLE_DOOMGUY_RAMP
 #define ROOM_BUNDLE_DOOMGUY_RAMP 5
 #endif
+#ifndef ROOM_BUNDLE_DOOMGUY_EQUALIZE
+#define ROOM_BUNDLE_DOOMGUY_EQUALIZE 1
+#endif
+/* Keep genuine specular-ish peaks, but stop the front-lit view from assigning
+ * a full equal-quantile fifth of the hero to the same near-white used by lit
+ * architecture. The lower four bands share the remaining ninety percent. */
+#ifndef ROOM_BUNDLE_DOOMGUY_HIGHLIGHT_FRACTION
+#define ROOM_BUNDLE_DOOMGUY_HIGHLIGHT_FRACTION 0.10
+#endif
 #ifndef ROOM_BUNDLE_DOOMGUY_SMOOTH
 #define ROOM_BUNDLE_DOOMGUY_SMOOTH 1
 #endif
@@ -78,7 +87,15 @@
  * Only fully enclosed visual-owner cells are approximated by this many
  * route-trained resident patterns. */
 #ifndef ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS
-#define ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS 8
+#define ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS 16
+#endif
+/* Dense object-relative training: same offline sample count as the old two
+ * 192-frame routes, but spread over the full circle and three distances. */
+#ifndef ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_ANGLES
+#define ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_ANGLES 128
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_BANDS
+#define ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_BANDS 3
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE
 #define ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE 22.0
@@ -845,7 +862,10 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
     /* Incident angle straight onto the compositor brightness ramp. */
     rmb_set_object_ramp_shading(m,visual,(uint8_t)ROOM_BUNDLE_DOOMGUY_RAMP,
                                 (uint8_t)ROOM_BUNDLE_DOOMGUY_SMOOTH);
-    rmb_set_object_ramp_equalize(m,visual,1u);
+    rmb_set_object_ramp_equalize(m,visual,
+                                     (uint8_t)ROOM_BUNDLE_DOOMGUY_EQUALIZE);
+    rmb_set_object_ramp_highlight_fraction(
+        m,visual,(double)ROOM_BUNDLE_DOOMGUY_HIGHLIGHT_FRACTION);
 #if ROOM_BUNDLE_DOOMGUY_DITHER
     rmb_set_object_ramp_dither(m,visual,1u);
 #endif
@@ -1991,19 +2011,43 @@ static void emit_route(FILE *pack,FILE *manifest,uint8_t bundle,
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
 static void train_doomguy_codec(World *w){
 #if ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS > 0
-    uint16_t dummy[TSP_MAP_CELLS],f;
-    uint8_t dir;
+    uint16_t dummy[TSP_MAP_CELLS],a;
+    uint8_t band;
+    const double cx=78.0,cy=24.0;
     tsp_host_composite_set_scene(&w->scene);
     tsp_host_composite_codec_train_begin(0x81u,
         (uint8_t)ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS);
-    for(dir=0u;dir<2u;++dir){
+
+    /*
+     * Train on object-relative appearance rather than on room traversal.
+     *
+     * The old dictionary saw two authored 192-frame portal routes. That gave
+     * plenty of samples but heavily overrepresented a couple of camera arcs.
+     * Keep essentially the same host workload while covering the full orbit at
+     * three inspection distances. The world-space light never moves, so these
+     * samples retain exactly the same lighting relationship as the playable
+     * chamber; only the camera-to-object relation changes.
+     */
+    for(band=0u;band<(uint8_t)ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_BANDS;++band){
+        double radius=26.0+6.0*(double)band;
         tsp_host_composite_reset_cache();
-        for(f=0u;f<ROUTE_FRAMES;++f){
-            Pose p=route_pose_portals(f,11u,dir?1u:0u,dir?0u:1u);
+        for(a=0u;a<(uint16_t)ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_ANGLES;++a){
+            double theta=(2.0*PI*(double)a)/
+                         (double)ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_ANGLES;
+            Pose p;
+            p.x=cx+radius*cos(theta);
+            p.y=cy+radius*sin(theta);
+            p.z=15.0;
+            p.yaw=yaw_from_vec(cx-p.x,cy-p.y);
             render_pose(w,&p,dummy);
         }
     }
     tsp_host_composite_codec_train_commit();
+    printf("DOOM_CODEC_TRAIN patterns=%u bands=%u angles=%u samples=%lu\n",
+           (unsigned)tsp_host_composite_codec_pattern_count(),
+           (unsigned)ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_BANDS,
+           (unsigned)ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_ANGLES,
+           (unsigned long)tsp_host_composite_codec_sample_count());
 #endif
 }
 #endif
@@ -2187,7 +2231,7 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 #define DOOM_PLAY_ORIGIN_X 50
 #define DOOM_PLAY_ORIGIN_Y (-4)
 #define DOOM_PLAY_POOL_A_BASE 3u
-#define DOOM_PLAY_POOL_SIZE 186u
+#define DOOM_PLAY_POOL_SIZE 180u
 #define DOOM_PLAY_POOL_B_BASE (DOOM_PLAY_POOL_A_BASE+DOOM_PLAY_POOL_SIZE)
 /* Tile patterns stop at 0x3000. The two 2 KiB regions above that are complete
  * name tables; runtime fills the invisible one and flips VDP R2 atomically. */
