@@ -104,7 +104,7 @@ jobs:
             build/playable/host \
             | tee build/playable/orbit-corpus.txt
           grep -q '^DOOM_ORBIT_CORPUS v1$' build/playable/orbit-corpus.txt
-          grep -q '^views=38 ' build/playable/orbit-corpus.txt
+          grep -q '^views=20 ' build/playable/orbit-corpus.txt
 
       - name: Pack playable states into GBDK banks
         run: |
@@ -114,6 +114,7 @@ jobs:
             build/playable/generated | tee build/playable/c-gen.txt
           grep -q '^DOOM_PLAYABLE_C_PASS states=608 ' build/playable/c-gen.txt
           grep -q ' dict_bytes=512 ' build/playable/c-gen.txt
+          grep -q ' orbit=20 ' build/playable/c-gen.txt
           grep -q 'dual_name_tables=PASS graph=PASS$' build/playable/c-gen.txt
 
       - name: Report VRAM and VBlank headroom
