@@ -1395,10 +1395,18 @@ static void codec_sample_push(const uint8_t pix[PIXELS],uint8_t palette){
 
 static uint8_t codec_nearest(const uint8_t pix[PIXELS],uint8_t palette,
                              uint16_t *error){
-    uint8_t k,best=0u;
+    uint8_t k,best=0u,mask=(uint8_t)(palette?2u:1u),found=0u;
     uint16_t bd=0xffffu;
-    for(k=0u;k<g_codec_count;++k){
-        uint16_t d=codec_distance(pix,palette,g_codec_pix[k],g_codec_palette[k]);
+    /* Palette 1 carries shadow-alias indices whose byte values do not mean the
+     * same thing under palette 0. Prefer only representatives trained for the
+     * current palette state; a merged representative advertises both bits. */
+    for(k=0u;k<g_codec_count;++k)if(g_codec_palette[k]&mask){
+        uint16_t d=codec_distance(pix,palette,g_codec_pix[k],palette);
+        if(d<bd){bd=d;best=k;found=1u;}
+    }
+    /* Defensive fallback for a degenerate training set. */
+    if(!found)for(k=0u;k<g_codec_count;++k){
+        uint16_t d=codec_distance(pix,palette,g_codec_pix[k],palette);
         if(d<bd){bd=d;best=k;}
     }
     if(error)*error=bd;
@@ -1441,83 +1449,82 @@ void tsp_host_composite_codec_train_begin(uint8_t owner_sid,uint8_t patterns){
 }
 
 void tsp_host_composite_codec_train_commit(void){
-    uint8_t k,iter;
+    uint32_t nby[2]={0u,0u},si;
+    uint8_t want[2]={0u,0u},pal,outn=0u;
     if(!g_codec_training)die("hero codec commit without training");
     if(!g_codec_samples_n)die("hero codec training found no enclosed cells");
-    g_codec_count=(uint8_t)(g_codec_samples_n<(uint32_t)g_codec_target?
-                            g_codec_samples_n:(uint32_t)g_codec_target);
 
-    /* Deterministic route-spread seeds.  Samples arrive in frame order, so
-     * midpoint quantiles give the first pass viewpoints from across the route
-     * instead of accidentally learning eight neighbours from one close-up. */
-    for(k=0u;k<g_codec_count;++k){
-        uint32_t idx=(uint32_t)(((uint64_t)(2u*k+1u)*g_codec_samples_n)/
-                                (uint64_t)(2u*g_codec_count));
-        if(idx>=g_codec_samples_n)idx=g_codec_samples_n-1u;
-        memcpy(g_codec_pix[k],g_codec_samples[idx].pix,PIXELS);
-        g_codec_palette[k]=g_codec_samples[idx].palette;
+    for(si=0u;si<g_codec_samples_n;++si)
+        ++nby[g_codec_samples[si].palette?1u:0u];
+
+    if(nby[0]&&nby[1]&&g_codec_target>1u){
+        uint32_t q=((uint32_t)g_codec_target*nby[0]+g_codec_samples_n/2u)/
+                   g_codec_samples_n;
+        if(q<1u)q=1u;
+        if(q>g_codec_target-1u)q=g_codec_target-1u;
+        want[0]=(uint8_t)q;
+        want[1]=(uint8_t)(g_codec_target-want[0]);
+    }else if(nby[0])want[0]=g_codec_target;
+    else want[1]=g_codec_target;
+
+    /*
+     * Palette-aware farthest-first medoids.
+     *
+     * Every resident pattern is an actual route sample rather than a synthetic
+     * average.  The first representative is the midpoint sample for that
+     * palette; each following one is the sample farthest in 8x8 Hamming space
+     * from the representatives already chosen for the same palette.  Eight
+     * patterns therefore spread across genuinely different interior states
+     * instead of spending the whole dictionary on eight neighbouring frames.
+     */
+    for(pal=0u;pal<2u;++pal){
+        uint8_t made=0u;
+        while(made<want[pal]&&outn<CODEC_MAX_PATTERNS){
+            uint32_t best_si=UINT32_MAX,ordinal=0u;
+            uint16_t best_d=0u;
+            if(!made){
+                uint32_t target=nby[pal]/2u;
+                for(si=0u;si<g_codec_samples_n;++si)
+                    if(g_codec_samples[si].palette==pal){
+                        if(ordinal++==target){best_si=si;break;}
+                    }
+            }else{
+                for(si=0u;si<g_codec_samples_n;++si)
+                    if(g_codec_samples[si].palette==pal){
+                        uint8_t k;
+                        uint16_t md=0xffffu;
+                        for(k=0u;k<outn;++k)if(g_codec_palette[k]&(uint8_t)(1u<<pal)){
+                            uint16_t d=codec_distance(g_codec_samples[si].pix,pal,
+                                                      g_codec_pix[k],pal);
+                            if(d<md)md=d;
+                        }
+                        if(md>best_d){best_d=md;best_si=si;}
+                    }
+                if(best_d==0u)break; /* no additional distinct state */
+            }
+            if(best_si==UINT32_MAX)break;
+
+            /* If another palette already selected byte-identical content, one
+             * physical resident slot can serve both name-table palette bits. */
+            {
+                uint8_t q,merged=0u;
+                for(q=0u;q<outn;++q)
+                    if(memcmp(g_codec_pix[q],g_codec_samples[best_si].pix,PIXELS)==0){
+                        g_codec_palette[q]|=(uint8_t)(1u<<pal);
+                        merged=1u;break;
+                    }
+                if(!merged){
+                    memcpy(g_codec_pix[outn],g_codec_samples[best_si].pix,PIXELS);
+                    g_codec_palette[outn]=(uint8_t)(1u<<pal);
+                    ++outn;
+                }
+            }
+            ++made;
+        }
     }
 
-    /* Three tiny Hamming k-modes passes.  This is an offline bake, so spending
-     * host cycles here is preferable to spending ROM or VBlank bandwidth. */
-    for(iter=0u;iter<3u;++iter){
-        static uint32_t hist[CODEC_MAX_PATTERNS][PIXELS][16];
-        static uint32_t pal_hist[CODEC_MAX_PATTERNS][2];
-        uint32_t si;
-        memset(hist,0,sizeof(hist));
-        memset(pal_hist,0,sizeof(pal_hist));
-        for(si=0u;si<g_codec_samples_n;++si){
-            uint8_t best=0u,j;
-            uint16_t bd=0xffffu;
-            for(j=0u;j<g_codec_count;++j){
-                uint16_t d=codec_distance(g_codec_samples[si].pix,
-                                          g_codec_samples[si].palette,
-                                          g_codec_pix[j],g_codec_palette[j]);
-                if(d<bd){bd=d;best=j;}
-            }
-            ++pal_hist[best][g_codec_samples[si].palette?1u:0u];
-            for(j=0u;j<PIXELS;++j){
-                uint8_t v=g_codec_samples[si].pix[j];
-                if(v<16u)++hist[best][j][v];
-            }
-        }
-        for(k=0u;k<g_codec_count;++k){
-            uint8_t raw[PIXELS],canon[PIXELS],i;
-            uint16_t attr;
-            for(i=0u;i<PIXELS;++i){
-                uint8_t v,bestv=0u;
-                uint32_t bestn=0u;
-                for(v=0u;v<16u;++v)if(hist[k][i][v]>bestn){
-                    bestn=hist[k][i][v];bestv=v;
-                }
-                raw[i]=bestn?bestv:g_codec_pix[k][i];
-            }
-            canonicalize(raw,canon,&attr);
-            memcpy(g_codec_pix[k],canon,PIXELS);
-            g_codec_palette[k]=(uint8_t)(pal_hist[k][1]>pal_hist[k][0]);
-        }
-    }
-
-    /* Collapse duplicate modes rather than wasting pinned VRAM slots. */
-    {
-        uint8_t outn=0u;
-        for(k=0u;k<g_codec_count;++k){
-            uint8_t q,dup=0u;
-            for(q=0u;q<outn;++q)
-                if(memcmp(g_codec_pix[q],g_codec_pix[k],PIXELS)==0){
-                    dup=1u;break;
-                }
-            if(!dup){
-                if(outn!=k){
-                    memcpy(g_codec_pix[outn],g_codec_pix[k],PIXELS);
-                    g_codec_palette[outn]=g_codec_palette[k];
-                }
-                ++outn;
-            }
-        }
-        g_codec_count=outn;
-    }
-
+    if(!outn)die("hero codec training produced empty dictionary");
+    g_codec_count=outn;
     g_codec_training=0u;g_codec_ready=1u;g_codec_bootstrap=1u;
     g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
     free(g_codec_samples);
