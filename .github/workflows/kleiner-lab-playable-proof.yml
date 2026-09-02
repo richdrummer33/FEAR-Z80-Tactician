@@ -1,0 +1,154 @@
+name: Kleiner lab playable proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-kleiner-lab-playable
+    paths:
+      - ".github/workflows/kleiner-lab-playable-proof.yml"
+      - "tools/room_bundle_poc_gen.c"
+      - "tools/polar_baked_composite.*"
+      - "tools/room_mesh_bake.*"
+      - "tools/kleiner_playable_pack_to_c.py"
+      - "src/main_kleiner_playable_gg.c"
+  workflow_dispatch:
+
+jobs:
+  playable-rom:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Warning-clean host build
+        run: |
+          set -euo pipefail
+          mkdir -p build/kleiner/host build/kleiner/generated
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_KLEINER -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/kleiner/kleiner-play-bake
+
+      - name: Bake random-access Kleiner lab lattice
+        run: |
+          set -euo pipefail
+          ROOM_BUNDLE_KLEINER_PLAYABLE=1 \
+            build/kleiner/kleiner-play-bake build/kleiner/host \
+            | tee build/kleiner/bake.txt
+          grep -q '^KLEINER_PLAYABLE_PASS positions=40 states=640 ' build/kleiner/bake.txt
+          grep -q '^random_access_double_buffer=PASS$' \
+            build/kleiner/host/kleiner_playable_manifest.txt
+          grep -q '^movement_grid=PASS$' \
+            build/kleiner/host/kleiner_playable_manifest.txt
+
+      - name: Pack random-access states into GBDK banks
+        run: |
+          set -euo pipefail
+          python3 tools/kleiner_playable_pack_to_c.py \
+            build/kleiner/host/kleiner_playable.pack \
+            build/kleiner/generated | tee build/kleiner/c-gen.txt
+          grep -q '^KLEINER_PLAYABLE_C_PASS states=640 ' build/kleiner/c-gen.txt
+
+      - name: Install GBDK 4.5.0
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 4 MiB playable ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/kleiner/generated"
+          OUT="$PWD/build/kleiner"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 -Isrc -I"$GEN")
+          OBJS=()
+
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_kleiner_playable_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntstate.o" src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/dispatch.o" "$GEN/kleiner_playable_dispatch.c"
+          OBJS+=("$OUT/main.o" "$OUT/ntstate.o" "$OUT/ntupload.o" "$OUT/dispatch.o")
+
+          for src in "$GEN"/kleiner_playable_dispatch_group*.c; do
+            base="$(basename "${src%.c}")"
+            "$LCC" "${FLAGS[@]}" -c -o "$OUT/${base}.o" "$src"
+            OBJS+=("$OUT/${base}.o")
+          done
+
+          for src in "$GEN"/kleiner_playable_bank*.c; do
+            base="$(basename "${src%.c}")"
+            "$LCC" "${FLAGS[@]}" -c -o "$OUT/${base}.o" "$src"
+            OBJS+=("$OUT/${base}.o")
+          done
+
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Kleiners-Lab-Playable.gg" "${OBJS[@]}"
+          test "$(wc -c < "$OUT/GG-Kleiners-Lab-Playable.gg")" -eq 4194304
+          sha256sum "$OUT/GG-Kleiners-Lab-Playable.gg" | tee "$OUT/SHA256.txt"
+
+          for sym in _main _set_palette _set_bkg_4bpp_data; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Kleiners-Lab-Playable.sym")"
+            test -n "$tok"
+            test "${tok%%:*}" = "00"
+            test $((16#${tok##*:})) -lt $((0x4000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee "$OUT/FIXED-BANK-PASS.txt"
+
+      - name: Build Gearsystem runner
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 \
+            https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove boot, turn, and forward traversal
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PWD/build/kleiner"
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM="$OUT/GG-Kleiners-Lab-Playable.gg"
+          ACT_ADDR="$(awk '$2=="_g_kleiner_play_actions"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Kleiners-Lab-Playable.sym")"
+          STATE_ADDR="$(awk '$2=="_g_kleiner_play_state"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Kleiners-Lab-Playable.sym")"
+          test -n "$ACT_ADDR"
+          test -n "$STATE_ADDR"
+
+          ./build/libretro_runner "$CORE" "$ROM" 180 \
+            "$OUT/kleiner-idle.ppm" "$STATE_ADDR" 2 | tee "$OUT/run-idle.txt"
+
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 260 \
+            "$OUT/kleiner-turn.ppm" "$ACT_ADDR" 2 | tee "$OUT/run-turn.txt"
+          ! grep -q 'data=0000' "$OUT/run-turn.txt"
+          ! cmp -s "$OUT/kleiner-idle.ppm" "$OUT/kleiner-turn.ppm"
+
+          LIBRETRO_JOYPAD_MASK=$((1<<4)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 260 \
+            "$OUT/kleiner-walk.ppm" "$ACT_ADDR" 2 | tee "$OUT/run-walk.txt"
+          ! grep -q 'data=0000' "$OUT/run-walk.txt"
+          ! cmp -s "$OUT/kleiner-idle.ppm" "$OUT/kleiner-walk.ppm"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GG-kleiner-lab-playable
+          path: |
+            build/kleiner/GG-Kleiners-Lab-Playable.gg
+            build/kleiner/GG-Kleiners-Lab-Playable.sym
+            build/kleiner/SHA256.txt
+            build/kleiner/FIXED-BANK-PASS.txt
+            build/kleiner/bake.txt
+            build/kleiner/c-gen.txt
+            build/kleiner/host/kleiner_playable_manifest.txt
+            build/kleiner/host/kleiner-start-yaw*.ppm
+            build/kleiner/run-idle.txt
+            build/kleiner/run-turn.txt
+            build/kleiner/run-walk.txt
+            build/kleiner/kleiner-idle.ppm
+            build/kleiner/kleiner-turn.ppm
+            build/kleiner/kleiner-walk.ppm
+          if-no-files-found: error
+          retention-days: 30

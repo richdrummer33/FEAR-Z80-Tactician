@@ -130,6 +130,19 @@ void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x
                                       double depth);
 void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
                                     uint8_t shade,uint8_t black,double depth);
+
+/* Host-bake direct semantic path. This is deliberately tiny: it lets a
+ * reconstruction reserve one 4bpp index for a recognisable authored accent
+ * (orange teleporter glass / rug here) without turning the whole renderer into
+ * a general material system. Index 15 is outside the five-stop shade ramp and
+ * outside the 8..14 mixed-light aliases. */
+#define TSP_HOST_SEM_ACCENT 15u
+void tsp_host_composite_surface_semantic_depth(
+    uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+    int16_t tl,int16_t tr,int16_t bl,int16_t br,
+    uint8_t sid,uint8_t semantic,uint8_t border,double depth);
+void tsp_host_composite_pixel_semantic_depth(
+    uint8_t sx,uint8_t sy,uint8_t sid,uint8_t semantic,double depth);
 /* Number of stops in the ambient surface-brightness ramp. Walls address it in
  * steps of two (three-stop compatible); meshes may address every stop. */
 #define TSP_HOST_SHADE_RAMP_LEN 5u

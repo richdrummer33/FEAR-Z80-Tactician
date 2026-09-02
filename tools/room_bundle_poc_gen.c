@@ -155,11 +155,13 @@ typedef struct Seg {
     V2 a,b;
     double z0,z1;
     int8_t shade_bias;
+    uint8_t semantic; /* 0xff = ordinary shade ramp; 0..15 = direct palette index */
 } Seg;
 typedef struct HSurf {
     V2 p[4];
     double z;
     int8_t shade_bias;
+    uint8_t semantic; /* 0xff = ordinary shade ramp; 0..15 = direct palette index */
 } HSurf;
 typedef struct World {
     Seg seg[MAX_SEGMENTS];
@@ -227,7 +229,7 @@ static void add_seg(World *w,double ax,double ay,double bx,double by,
         die("too many room PoC segments");
     s=&w->seg[w->count++];
     s->a.x=ax;s->a.y=ay;s->b.x=bx;s->b.y=by;
-    s->z0=z0;s->z1=z1;s->shade_bias=bias;
+    s->z0=z0;s->z1=z1;s->shade_bias=bias;s->semantic=0xffu;
 
     w->scene_vertices[v0].x=(int16_t)lround(ax);
     w->scene_vertices[v0].y=(int16_t)lround(ay);
@@ -258,8 +260,21 @@ static void add_hsurf_quad(World *w,V2 a,V2 b,V2 c,V2 d,
     if(w->hsurf_count>=MAX_HSURFS)die("too many horizontal room surfaces");
     s=&w->hsurf[w->hsurf_count++];
     s->p[0]=a;s->p[1]=b;s->p[2]=c;s->p[3]=d;
-    s->z=z;s->shade_bias=bias;
+    s->z=z;s->shade_bias=bias;s->semantic=0xffu;
 }
+
+#ifdef ROOM_BUNDLE_KLEINER
+static void add_seg_semantic(World *w,double ax,double ay,double bx,double by,
+                             double z0,double z1,uint8_t semantic){
+    add_seg(w,ax,ay,bx,by,z0,z1,0);
+    w->seg[w->count-1u].semantic=semantic;
+}
+static void add_hsurf_quad_semantic(World *w,V2 a,V2 b,V2 c,V2 d,
+                                    double z,uint8_t semantic){
+    add_hsurf_quad(w,a,b,c,d,z,0);
+    w->hsurf[w->hsurf_count-1u].semantic=semantic;
+}
+#endif
 
 /*
  * Host-only volumetric wall authoring.
@@ -1623,8 +1638,12 @@ static void render_horizontal_column(const World *w,const Pose *p,int sx){
             if(shade>2)shade=2;
             /* 0xfe marks a host-only horizontal receiver. Current point-light
              * pass simply leaves such local caps ambient; geometry is exact. */
-            tsp_host_composite_pixel_depth((uint8_t)sx,(uint8_t)sy,0xfeu,
-                                           (uint8_t)shade,0u,depth);
+            if(s->semantic<=15u)
+                tsp_host_composite_pixel_semantic_depth(
+                    (uint8_t)sx,(uint8_t)sy,0xfeu,s->semantic,depth);
+            else
+                tsp_host_composite_pixel_depth((uint8_t)sx,(uint8_t)sy,0xfeu,
+                                               (uint8_t)shade,0u,depth);
         }
     }
 }
@@ -1684,12 +1703,17 @@ static void render_pose(const World *w,const Pose *p,uint16_t out[TSP_MAP_CELLS]
             bottom=72.0-(s->z0-p->z)*80.0/depth;
             inv=2560.0/depth;if(inv>255.0)inv=255.0;
             it=iround(top);ib=iround(bottom);
-            tsp_host_composite_surface_depth((uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
-                                             (int16_t)it,(int16_t)it,
-                                             (int16_t)ib,(int16_t)ib,
-                                             hit[i].sid,
-                                             shade_for_inv(inv,s->shade_bias),
-                                             0u,0u,0u,depth);
+            if(s->semantic<=15u)
+                tsp_host_composite_surface_semantic_depth(
+                    (uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
+                    (int16_t)it,(int16_t)it,(int16_t)ib,(int16_t)ib,
+                    hit[i].sid,s->semantic,0u,depth);
+            else
+                tsp_host_composite_surface_depth(
+                    (uint8_t)(sx>>3),(uint8_t)sx,(uint8_t)sx,
+                    (int16_t)it,(int16_t)it,(int16_t)ib,(int16_t)ib,
+                    hit[i].sid,shade_for_inv(inv,s->shade_bias),
+                    0u,0u,0u,depth);
         }
         render_horizontal_column(w,p,sx);
     }
@@ -2162,6 +2186,308 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
     free(frames);
 }
 
+
+#ifdef ROOM_BUNDLE_KLEINER
+/*
+ * Kleiner's lab reconstruction.
+ *
+ * The canonical d1_trainstation_05 BSP is used only as an offline measuring
+ * reference. The Game Gear scene is intentionally NOT a polygon export. The
+ * lab crop (-7312..-6352, -1664..-1024) is mapped at roughly 0.1 Source units
+ * to one small authoring room. Recognisable props become boxes/cylinders and
+ * the original material noise becomes a tiny semantic vocabulary.
+ */
+#define KLEINER_PLAY_GRID_W 9u
+#define KLEINER_PLAY_GRID_H 6u
+#define KLEINER_PLAY_YAWS 16u
+#define KLEINER_PLAY_STEP 10
+#define KLEINER_PLAY_ORIGIN_X 42
+#define KLEINER_PLAY_ORIGIN_Y (-8)
+#define KLEINER_PLAY_POOL_A_BASE 3u
+#define KLEINER_PLAY_POOL_SIZE 222u
+#define KLEINER_PLAY_POOL_B_BASE (KLEINER_PLAY_POOL_A_BASE+KLEINER_PLAY_POOL_SIZE)
+#define KLEINER_PLAY_DICT_TOP 448u
+
+static void kleiner_add_colored_cylinder(World *w,double cx,double cy,double r,
+                                         double z0,double z1,uint8_t sides){
+    uint8_t i;
+    for(i=0u;i<sides;++i){
+        double a0=(2.0*PI*(double)i)/(double)sides;
+        double a1=(2.0*PI*(double)(i+1u))/(double)sides;
+        add_seg_semantic(w,cx+r*cos(a0),cy+r*sin(a0),
+                         cx+r*cos(a1),cy+r*sin(a1),
+                         z0,z1,TSP_HOST_SEM_ACCENT);
+    }
+}
+
+static void kleiner_add_floor_texture(World *w){
+    uint8_t ix,iy;
+    const double x0=36.0,y0=-16.0;
+    for(iy=0u;iy<4u;++iy)for(ix=0u;ix<4u;++ix){
+        V2 a,b,c,d;
+        double ax=x0+(double)ix*24.0,bx=ax+24.0;
+        double ay=y0+(double)iy*16.0,by=ay+16.0;
+        a.x=ax;a.y=ay;b.x=bx;b.y=ay;c.x=bx;c.y=by;d.x=ax;d.y=by;
+        add_hsurf_quad(w,a,b,c,d,0.02,((ix+iy)&1u)?-1:0);
+    }
+    /* One brutally compressed "texture": the red/orange rug under the desk. */
+    {
+        V2 a={86.0,-12.0},b={124.0,-12.0},c={124.0,10.0},d={86.0,10.0};
+        add_hsurf_quad_semantic(w,a,b,c,d,0.06,TSP_HOST_SEM_ACCENT);
+    }
+}
+
+static void make_kleiner_lab_world(World *w){
+    RMBTransform t;
+    uint8_t metal,desk,human,legs,rings,lights;
+    init_world(w);
+
+    /* 96x64 world-unit shell, preserving the source crop's aspect ratio.
+     * Split lower/upper bands are the "brick/plaster texture" at GG scale. */
+    add_seg(w,36,-16,132,-16,0,11,-1); add_seg(w,36,-16,132,-16,11,32,0);
+    add_seg(w,132,-16,132,48,0,11,-1); add_seg(w,132,-16,132,48,11,32,0);
+    add_seg(w,132,48,36,48,0,11,-1);   add_seg(w,132,48,36,48,11,32,0);
+    add_seg(w,36,48,36,-16,0,11,-1);   add_seg(w,36,48,36,-16,11,32,0);
+    add_rect(w,36,-16,132,48,0,32);
+    kleiner_add_floor_texture(w);
+
+    /* Bright horizontal workshop slats: three literal bands instead of a
+     * high-frequency texture. They read at 160x144 and cost almost nothing. */
+    add_seg_semantic(w,82,47.6,126,47.6,18,19,1u);
+    add_seg_semantic(w,82,47.6,126,47.6,22,23,1u);
+    add_seg_semantic(w,82,47.6,126,47.6,26,27,1u);
+
+    /* The iconic twin orange teleporter columns. Source anchor is around
+     * (-7187,-1177); here the pair occupies one blocked circular island. */
+    kleiner_add_colored_cylinder(w,49.0,23.5,5.0,2.0,22.0,8u);
+    kleiner_add_colored_cylinder(w,49.0,32.5,5.0,2.0,22.0,8u);
+
+    rings=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(49,23.5,2.0,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,rings,&t,5.7,0.8,8u,-2,1u);
+    t=rmb_transform(49,32.5,2.0,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,rings,&t,5.7,0.8,8u,-2,1u);
+    t=rmb_transform(49,23.5,22.0,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,rings,&t,5.8,1.0,8u,-2,1u);
+    t=rmb_transform(49,32.5,22.0,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,rings,&t,5.8,1.0,8u,-2,1u);
+    t=rmb_transform(49,28,25.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,rings,&t,7.0,11.0,2.5,-2);
+
+    /* Teleporter console, server/rack, lockers and HEV case: intentionally
+     * chunky silhouette proxies, based on the BSP entity anchors. */
+    metal=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(61,28,4.0,0,0,-18,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,7.0,3.5,3.0,-1);
+    t=rmb_transform(72,16,7.5,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,5.0,4.0,7.5,-1);
+    t=rmb_transform(73,16,15.7,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,5.4,4.4,0.6,0);
+    t=rmb_transform(119,-11,6.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,3.2,2.0,6.0,0);
+    t=rmb_transform(119,-8.8,7.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,1.8,0.4,3.8,1);
+    t=rmb_transform(67,-13,6.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,8.0,2.0,6.0,-1);
+
+    desk=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(106,0,4.5,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,17.0,6.0,0.6,0);
+    t=rmb_transform(98,-4,2.2,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,1.0,1.0,2.2,-1);
+    t=rmb_transform(116,4,2.2,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,1.0,1.0,2.2,-1);
+    t=rmb_transform(103,1,8.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,3.2,1.0,2.4,1);
+    t=rmb_transform(114,-1,7.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,4.0,2.0,1.8,0);
+
+    /* Frozen Kleiner: lab-coat value structure is more important here than
+     * anatomical detail. This is a six-primitive "recognition glyph". */
+    human=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(86,5,8.6,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,human,&t,1.8,1.2,3.1,1);
+    t=rmb_transform(86,5,12.6,0,0,0,1,1,1);
+    rmb_add_uv_sphere(&w->mesh,human,&t,1.45,4u,8u,1);
+    legs=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(84.9,5,3.7,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,legs,&t,0.65,4.7,6u,-1,1u);
+    t=rmb_transform(87.1,5,3.7,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,legs,&t,0.65,4.7,6u,-1,1u);
+    t=rmb_transform(83.8,5,8.8,0,22,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,human,&t,0.5,4.0,6u,1,1u);
+    t=rmb_transform(88.2,5,8.8,0,-22,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,human,&t,0.5,4.0,6u,1,1u);
+
+    lights=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+    t=rmb_transform(70,18,29.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,lights,&t,9.0,0.7,0.35,1);
+    t=rmb_transform(105,18,29.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,lights,&t,9.0,0.7,0.35,1);
+
+    /* Warm teleporter-biased room light. Palette 1 is the bright transform;
+     * the orange index is deliberately independent so its identity survives. */
+    w->scene_lights[0].x_q4=(int16_t)(55<<4);
+    w->scene_lights[0].y_q4=(int16_t)(25<<4);
+    w->scene_lights[0].height_q4=(int16_t)(24<<4);
+    w->scene_lights[0].radius_world=110u;
+    w->scene_lights[0].intensity=255u;
+    w->lighting_stage=TSP_HOST_LIGHT_POINT;
+    finalize_scene(w);
+    w->scene.source_radius=2.5;
+}
+
+/* Traversal is a true random-access lattice, not a route. Obstacles are the
+ * same big semantic masses the player sees: teleporter, server rack and desk.
+ * Nine by six gives 54 candidate cells; these exclusions leave exactly 40. */
+static uint8_t kleiner_play_position_valid(uint8_t ix,uint8_t iy){
+    double x=(double)(KLEINER_PLAY_ORIGIN_X+(int)ix*KLEINER_PLAY_STEP);
+    double y=(double)(KLEINER_PLAY_ORIGIN_Y+(int)iy*KLEINER_PLAY_STEP);
+    double dx=x-49.0,dy=y-28.0;
+    if(dx*dx+dy*dy<121.0)return 0u; /* twin teleporter island */
+    if(x>=66.0&&x<=80.0&&y>=8.0&&y<=25.0)return 0u; /* server rack */
+    if(x>=90.0&&x<=126.0&&y>=-12.0&&y<=8.0)return 0u; /* desk/HEV */
+    return 1u;
+}
+
+static void bake_kleiner_playable(const char *outdir){
+    World w;
+    FILE *pack,*manifest;
+    char path[512];
+    uint8_t lut[KLEINER_PLAY_GRID_W*KLEINER_PLAY_GRID_H];
+    uint8_t pos_count=0u,ix,iy,yaw_i;
+    uint16_t state_count=0u,peak_patterns=0u;
+    uint32_t sum_patterns=0u;
+    uint16_t map[TSP_MAP_CELLS];
+    const uint16_t dict_base=KLEINER_PLAY_DICT_TOP;
+
+    make_kleiner_lab_world(&w);
+    tsp_host_composite_codec_disable();
+
+    memset(lut,0xff,sizeof(lut));
+    for(iy=0u;iy<KLEINER_PLAY_GRID_H;++iy)for(ix=0u;ix<KLEINER_PLAY_GRID_W;++ix)
+        if(kleiner_play_position_valid(ix,iy))
+            lut[(uint16_t)iy*KLEINER_PLAY_GRID_W+ix]=pos_count++;
+    state_count=(uint16_t)pos_count*KLEINER_PLAY_YAWS;
+    if(pos_count!=40u||state_count!=640u)
+        die("Kleiner playable grid cardinality changed unexpectedly");
+    if(KLEINER_PLAY_POOL_B_BASE+KLEINER_PLAY_POOL_SIZE>dict_base)
+        die("Kleiner playable VRAM pools overlap hardware limit");
+
+    snprintf(path,sizeof(path),"%s/kleiner_playable.pack",outdir);
+    pack=fopen(path,"wb");if(!pack)die("cannot create Kleiner playable pack");
+    fwrite("KLP1",1,4,pack);
+    write_u16(pack,1u);
+    fputc(KLEINER_PLAY_GRID_W,pack);
+    fputc(KLEINER_PLAY_GRID_H,pack);
+    fputc(KLEINER_PLAY_YAWS,pack);
+    fputc(pos_count,pack);
+    write_u16(pack,(uint16_t)(int16_t)KLEINER_PLAY_ORIGIN_X);
+    write_u16(pack,(uint16_t)(int16_t)KLEINER_PLAY_ORIGIN_Y);
+    fputc(KLEINER_PLAY_STEP,pack);
+    fputc(16u,pack);
+    write_u16(pack,KLEINER_PLAY_POOL_A_BASE);
+    write_u16(pack,KLEINER_PLAY_POOL_B_BASE);
+    write_u16(pack,KLEINER_PLAY_POOL_SIZE);
+    write_u16(pack,dict_base);
+    fputc(0u,pack); /* no resident approximation dictionary */
+    fputc(0u,pack);
+    write_u16(pack,state_count);
+    fwrite(lut,1,sizeof(lut),pack);
+
+    snprintf(path,sizeof(path),"%s/kleiner_playable_manifest.txt",outdir);
+    manifest=fopen(path,"w");if(!manifest)die("cannot create Kleiner manifest");
+    fprintf(manifest,
+            "Kleiner lab playable random-access bake v1\n"
+            "source=d1_trainstation_05 crop=(-7312..-6352,-1664..-1024) scale~=0.1\n"
+            "grid=%ux%u step=%u origin=(%d,%d) positions=%u yaws=%u states=%u\n"
+            "anchors=teleporter(49,28) kleiner(86,5) hev(119,-11)\n"
+            "palette_model=warm-industrial-ramp+orange-accent semantic_texture=PASS\n"
+            "movement_obstacles=teleporter,server-rack,desk-hev\n",
+            (unsigned)KLEINER_PLAY_GRID_W,(unsigned)KLEINER_PLAY_GRID_H,
+            (unsigned)KLEINER_PLAY_STEP,KLEINER_PLAY_ORIGIN_X,KLEINER_PLAY_ORIGIN_Y,
+            (unsigned)pos_count,(unsigned)KLEINER_PLAY_YAWS,(unsigned)state_count);
+
+    tsp_host_composite_set_scene(&w.scene);
+    for(iy=0u;iy<KLEINER_PLAY_GRID_H;++iy)for(ix=0u;ix<KLEINER_PLAY_GRID_W;++ix){
+        uint8_t ordinal=lut[(uint16_t)iy*KLEINER_PLAY_GRID_W+ix];
+        if(ordinal==0xffu)continue;
+        for(yaw_i=0u;yaw_i<KLEINER_PLAY_YAWS;++yaw_i){
+            Pose p;
+            const TSPHostTileLoad *loads;
+            uint16_t n,li,dyn_count=0u,s;
+            uint8_t present[KLEINER_PLAY_POOL_SIZE];
+            uint8_t patterns[KLEINER_PLAY_POOL_SIZE][TSP_HOST_TILE_BYTES];
+
+            p.x=(double)(KLEINER_PLAY_ORIGIN_X+(int)ix*KLEINER_PLAY_STEP);
+            p.y=(double)(KLEINER_PLAY_ORIGIN_Y+(int)iy*KLEINER_PLAY_STEP);
+            p.z=16.0;
+            p.yaw=(uint8_t)(yaw_i*16u);
+
+            memset(present,0,sizeof(present));
+            tsp_host_composite_reset_cache();
+            render_pose(&w,&p,map);
+            loads=tsp_host_composite_frame_loads();
+            n=tsp_host_composite_frame_load_count();
+
+            for(li=0u;li<n;++li){
+                uint16_t slot=loads[li].slot,q;
+                if(slot<KLEINER_PLAY_POOL_A_BASE)
+                    die("Kleiner state unexpectedly reloads a permanent base tile");
+                if(slot>=dict_base)
+                    die("Kleiner state emitted tile outside hardware VRAM");
+                q=(uint16_t)(slot-KLEINER_PLAY_POOL_A_BASE);
+                if(q>=KLEINER_PLAY_POOL_SIZE)
+                    die("Kleiner state exceeds one double-buffer VRAM pool");
+                present[q]=1u;
+                memcpy(patterns[q],loads[li].bytes,TSP_HOST_TILE_BYTES);
+                if(q+1u>dyn_count)dyn_count=(uint16_t)(q+1u);
+            }
+            for(s=0u;s<dyn_count;++s)
+                if(!present[s])die("Kleiner dynamic tile block is not contiguous");
+            for(s=0u;s<TSP_MAP_CELLS;++s){
+                uint16_t id=(uint16_t)(map[s]&TSP_TILE_ID_MASK);
+                if(id>=KLEINER_PLAY_POOL_A_BASE&&id<dict_base &&
+                   id>=KLEINER_PLAY_POOL_A_BASE+dyn_count)
+                    die("Kleiner map references unloaded dynamic slot");
+            }
+
+            write_u16(pack,dyn_count);
+            for(s=0u;s<TSP_MAP_CELLS;++s)write_u16(pack,map[s]);
+            for(s=0u;s<dyn_count;++s)
+                fwrite(patterns[s],1,TSP_HOST_TILE_BYTES,pack);
+
+            sum_patterns+=dyn_count;
+            if(dyn_count>peak_patterns)peak_patterns=dyn_count;
+
+            if(ix==4u&&iy==5u&&(yaw_i==10u||yaw_i==12u||yaw_i==14u)){
+                snprintf(path,sizeof(path),"%s/kleiner-start-yaw%02u.ppm",
+                         outdir,(unsigned)yaw_i);
+                if(!tsp_host_composite_write_ppm(path))
+                    die("cannot write Kleiner host review frame");
+            }
+        }
+    }
+
+    fprintf(manifest,
+            "state_pack=PASS peak_dynamic_patterns=%u mean_dynamic_patterns_x100=%lu\n"
+            "random_access_double_buffer=PASS\n"
+            "movement_grid=PASS\nplayable_states=%u\n",
+            (unsigned)peak_patterns,
+            (unsigned long)(state_count?((uint64_t)sum_patterns*100u)/state_count:0u),
+            (unsigned)state_count);
+    fflush(pack);
+    fprintf(manifest,"pack_bytes=%ld\n",ftell(pack));
+    fclose(manifest);
+    fclose(pack);
+
+    printf("KLEINER_PLAYABLE_PASS positions=%u states=%u peak_patterns=%u "
+           "mean_patterns_x100=%lu\n",
+           (unsigned)pos_count,(unsigned)state_count,(unsigned)peak_patterns,
+           (unsigned long)(state_count?((uint64_t)sum_patterns*100u)/state_count:0u));
+}
+#endif
+
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
 /*
  * Random-access playable hero chamber.
@@ -2419,6 +2745,12 @@ int main(int argc,char **argv){
             die("indexed mesh ingestion self-test failed");
     }
 
+#ifdef ROOM_BUNDLE_KLEINER
+    if(getenv("ROOM_BUNDLE_KLEINER_PLAYABLE")){
+        bake_kleiner_playable(outdir);
+        return 0;
+    }
+#endif
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
     if(getenv("ROOM_BUNDLE_PLAYABLE")){
         bake_doomguy_playable(outdir);

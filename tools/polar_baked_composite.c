@@ -1077,8 +1077,9 @@ static void composite_surface_impl(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                    int16_t tl,int16_t tr,int16_t bl,int16_t br,
                                    uint8_t sid,uint8_t shade,uint8_t border,
                                    uint8_t ao_left,uint8_t ao_right,
-                                   uint8_t depth_test,double depth){
-    uint8_t sx,color=shade_sem(shade);
+                                   uint8_t depth_test,double depth,
+                                   int semantic_override){
+    uint8_t sx,color=semantic_override>=0?(uint8_t)semantic_override:shade_sem(shade);
     uint16_t coarse_x=(uint16_t)col*8u;
     if(col>=TSP_COLS||clip_x0>clip_x1||clip_x1>159u)die("surface raster bounds invalid");
     if(!surface_visible_from_camera(sid))return;
@@ -1128,7 +1129,7 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
                                 uint8_t sid,uint8_t shade,uint8_t border,
                                 uint8_t ao_left,uint8_t ao_right){
     composite_surface_impl(col,clip_x0,clip_x1,tl,tr,bl,br,sid,shade,border,
-                           ao_left,ao_right,0u,0.0);
+                           ao_left,ao_right,0u,0.0,-1);
 }
 
 void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
@@ -1138,7 +1139,16 @@ void tsp_host_composite_surface_depth(uint8_t col,uint8_t clip_x0,uint8_t clip_x
                                       double depth){
     if(depth<=0.0)return;
     composite_surface_impl(col,clip_x0,clip_x1,tl,tr,bl,br,sid,shade,border,
-                           ao_left,ao_right,1u,depth);
+                           ao_left,ao_right,1u,depth,-1);
+}
+
+void tsp_host_composite_surface_semantic_depth(
+    uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
+    int16_t tl,int16_t tr,int16_t bl,int16_t br,
+    uint8_t sid,uint8_t semantic,uint8_t border,double depth){
+    if(depth<=0.0||semantic>15u)return;
+    composite_surface_impl(col,clip_x0,clip_x1,tl,tr,bl,br,sid,0u,border,
+                           0u,0u,1u,depth,(int)semantic);
 }
 
 void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
@@ -1154,6 +1164,23 @@ void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
     pi=(uint16_t)py*8u+px;
     if(depth>=g_depth[cell][pi]-1e-9)return;
     g_cells[cell][pi]=black?SEM_BLACK:shade_sem(shade);
+    g_owner[cell][pi]=sid;
+    g_depth[cell][pi]=depth;
+}
+
+void tsp_host_composite_pixel_semantic_depth(
+    uint8_t sx,uint8_t sy,uint8_t sid,uint8_t semantic,double depth){
+    uint8_t row,col,px,py;
+    uint16_t cell,pi;
+    if(sx>=160u||sy>=144u||semantic>15u||depth<=0.0)return;
+    row=(uint8_t)(sy>>3);
+    col=(uint8_t)(sx>>3);
+    px=(uint8_t)(sx&7u);
+    py=(uint8_t)(sy&7u);
+    cell=(uint16_t)row*TSP_COLS+col;
+    pi=(uint16_t)py*8u+px;
+    if(depth>=g_depth[cell][pi]-1e-9)return;
+    g_cells[cell][pi]=semantic;
     g_owner[cell][pi]=sid;
     g_depth[cell][pi]=depth;
 }
