@@ -12,6 +12,7 @@ import struct
 
 BANK_STREAM_MAX = 12000
 MAX_BANK_FILES = 224
+DISPATCH_GROUP_BANKS = 24
 MAP_CELLS = 360
 MAP_BYTES = MAP_CELLS * 2
 PATTERN_BYTES = 32
@@ -204,25 +205,83 @@ void doom_play_name_bank{bank_index}(uint16_t local,uint8_t pool) BANKED {{
 """
     (outdir / f"doomguy_playable_bank{bank_index}.c").write_text(s)
 
-def emit_dispatch(outdir, chunks, meta, lut, dictionary):
+def emit_dispatch_group(outdir, group_index, indexed_chunks):
     decl = []
     pattern_cases = []
     upload_cases = []
     name_cases = []
-    for i, (first, states) in enumerate(chunks):
+    for ordinal, (bank_index, first, states) in enumerate(indexed_chunks):
         end = first + len(states)
-        kw = "if" if i == 0 else "else if"
+        kw = "if" if ordinal == 0 else "else if"
         decl += [
-            f"uint16_t doom_play_patterns_bank{i}(uint16_t local) BANKED;",
-            f"void doom_play_upload_bank{i}(uint16_t local,uint8_t pool,uint16_t first,uint16_t count) BANKED;",
-            f"void doom_play_name_bank{i}(uint16_t local,uint8_t pool) BANKED;",
+            f"uint16_t doom_play_patterns_bank{bank_index}(uint16_t local) BANKED;",
+            f"void doom_play_upload_bank{bank_index}(uint16_t local,uint8_t pool,uint16_t first,uint16_t count) BANKED;",
+            f"void doom_play_name_bank{bank_index}(uint16_t local,uint8_t pool) BANKED;",
         ]
         pattern_cases.append(
-            f"    {kw}(state<{end}u)return doom_play_patterns_bank{i}((uint16_t)(state-{first}u));")
+            f"    {kw}(state<{end}u)return doom_play_patterns_bank{bank_index}((uint16_t)(state-{first}u));")
         upload_cases.append(
-            f"    {kw}(state<{end}u){{doom_play_upload_bank{i}((uint16_t)(state-{first}u),pool,first,count);return;}}")
+            f"    {kw}(state<{end}u){{doom_play_upload_bank{bank_index}((uint16_t)(state-{first}u),pool,first,count);return;}}")
         name_cases.append(
-            f"    {kw}(state<{end}u){{doom_play_name_bank{i}((uint16_t)(state-{first}u),pool);return;}}")
+            f"    {kw}(state<{end}u){{doom_play_name_bank{bank_index}((uint16_t)(state-{first}u),pool);return;}}")
+
+    s = f"""/* GENERATED Doomguy playable dispatch group {group_index}. */
+#include <stdint.h>
+#include <gbdk/platform.h>
+#include "doomguy_playable_meta.h"
+
+#pragma bank 255
+BANKREF(doomguy_playable_dispatch_group{group_index})
+
+{chr(10).join(decl)}
+
+uint16_t doom_play_patterns_group{group_index}(uint16_t state) BANKED {{
+{chr(10).join(pattern_cases)}
+    return 0u;
+}}
+
+void doom_play_upload_group{group_index}(uint16_t state,uint8_t pool,
+                                        uint16_t first,uint16_t count) BANKED {{
+{chr(10).join(upload_cases)}
+}}
+
+void doom_play_name_group{group_index}(uint16_t state,uint8_t pool) BANKED {{
+{chr(10).join(name_cases)}
+}}
+"""
+    (outdir / f"doomguy_playable_dispatch_group{group_index}.c").write_text(s)
+
+
+def emit_dispatch(outdir, chunks, meta, lut, dictionary):
+    groups = []
+    for start in range(0, len(chunks), DISPATCH_GROUP_BANKS):
+        indexed = [
+            (i, chunks[i][0], chunks[i][1])
+            for i in range(start, min(start + DISPATCH_GROUP_BANKS, len(chunks)))
+        ]
+        groups.append(indexed)
+
+    group_decl = []
+    pattern_cases = []
+    upload_cases = []
+    name_cases = []
+    for gi, indexed in enumerate(groups):
+        first = indexed[0][1]
+        last_bank, last_first, last_states = indexed[-1]
+        end = last_first + len(last_states)
+        kw = "if" if gi == 0 else "else if"
+        group_decl += [
+            f"uint16_t doom_play_patterns_group{gi}(uint16_t state) BANKED;",
+            f"void doom_play_upload_group{gi}(uint16_t state,uint8_t pool,uint16_t first,uint16_t count) BANKED;",
+            f"void doom_play_name_group{gi}(uint16_t state,uint8_t pool) BANKED;",
+        ]
+        pattern_cases.append(
+            f"    {kw}(state<{end}u)return doom_play_patterns_group{gi}(state);")
+        upload_cases.append(
+            f"    {kw}(state<{end}u){{doom_play_upload_group{gi}(state,pool,first,count);return;}}")
+        name_cases.append(
+            f"    {kw}(state<{end}u){{doom_play_name_group{gi}(state,pool);return;}}")
+        emit_dispatch_group(outdir, gi, indexed)
 
     h = f"""#ifndef DOOMGUY_PLAYABLE_META_H
 #define DOOMGUY_PLAYABLE_META_H
@@ -256,7 +315,7 @@ void doom_play_load_dictionary(void) BANKED;
 """
     (outdir / "doomguy_playable_meta.h").write_text(h)
 
-    s = f"""/* GENERATED Doomguy playable dispatcher + resident dictionary. */
+    s = f"""/* GENERATED top-level Doomguy playable dispatcher + dictionary. */
 #include <stdint.h>
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
@@ -265,7 +324,7 @@ void doom_play_load_dictionary(void) BANKED;
 #pragma bank 255
 BANKREF(doomguy_playable_dispatch)
 
-{chr(10).join(decl)}
+{chr(10).join(group_decl)}
 
 {c_u8_array("k_grid_lut", lut)}
 {c_u8_array("k_dictionary", dictionary)}
@@ -313,9 +372,10 @@ def main():
     emit_dispatch(outdir, chunks, meta, lut, dictionary)
 
     payload = sum(len(s) for s in states)
+    groups = (len(chunks) + DISPATCH_GROUP_BANKS - 1) // DISPATCH_GROUP_BANKS
     print(
         f"DOOM_PLAYABLE_C_PASS states={len(states)} banks={len(chunks)} "
-        f"state_bytes={payload} dict_bytes={len(dictionary)}")
+        f"dispatch_groups={groups} state_bytes={payload} dict_bytes={len(dictionary)}")
 
 if __name__ == "__main__":
     main()
