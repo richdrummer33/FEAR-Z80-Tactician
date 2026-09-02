@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - experiment/gg-doomguy-playable
+      - feature/gg-hero-view-codec-v1-continued
     paths:
       - ".github/workflows/doomguy-playable-proof.yml"
       - "tools/room_bundle_poc_gen.c"
@@ -12,6 +13,8 @@ on:
       - "tools/glb_rmb/**"
       - "tools/doomguy_playable_pack_to_c.py"
       - "src/main_doomguy_playable_gg.c"
+      - "src/doomguy_playable_ntupload_gg.s"
+      - "tests/test_doomguy_playable_pack_to_c.py"
   workflow_dispatch:
 
 jobs:
@@ -45,17 +48,49 @@ jobs:
             tools/polar_baked_composite.c tools/room_mesh_bake.c \
             tools/room_bundle_poc_gen.c -lm -o build/playable/doom-play-bake
 
+      - name: Host unit tests
+        run: python3 -m unittest discover -s tests -p 'test_doomguy_playable_pack_to_c.py' -v
+
+      - name: Sanitized host bake
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/playable/doom-play-bake-sanitized
+          mkdir -p build/playable/sanitized-host
+          # LeakSanitizer cannot inspect /proc on the hosted runner. Address and
+          # undefined-behaviour checks remain enabled and halt on first error.
+          ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+          ROOM_BUNDLE_PLAYABLE=1 \
+            build/playable/doom-play-bake-sanitized build/playable/sanitized-host \
+            | tee build/playable/sanitized-bake.txt
+          grep -q '^DOOM_PLAYABLE_PASS positions=38 states=608 ' \
+            build/playable/sanitized-bake.txt
+
       - name: Bake random-access camera lattice
         run: |
           set -euo pipefail
-          ROOM_BUNDLE_PLAYABLE=1 \
+          ROOM_BUNDLE_PLAYABLE=1 ROOM_BUNDLE_PLAYABLE_CAPTURE=1 \
             build/playable/doom-play-bake build/playable/host \
             | tee build/playable/bake.txt
-          grep -q '^DOOM_PLAYABLE_PASS positions=40 states=640 ' build/playable/bake.txt
+          grep -q '^DOOM_PLAYABLE_PASS positions=38 states=608 ' build/playable/bake.txt
           grep -q '^random_access_double_buffer=PASS$' \
             build/playable/host/doomguy_playable_manifest.txt
           grep -q '^quality_clearance_grid=PASS$' \
             build/playable/host/doomguy_playable_manifest.txt
+          grep -q '^level_collision_grid=PASS ' \
+            build/playable/host/doomguy_playable_manifest.txt
+          grep -q '^aimed_framing=PASS states=38 ' \
+            build/playable/host/doomguy_playable_manifest.txt
+          grep -q '^quality_envelope_excluded=2$' \
+            build/playable/host/doomguy_playable_manifest.txt
+          grep -q '^walkable_graph=PASS ' \
+            build/playable/host/doomguy_playable_manifest.txt
+          test "$(find build/playable/host -name 'playable-eval-*.ppm' | wc -l)" -eq 38
+          test "$(find build/playable/host -name 'playable-mask-*.pgm' | wc -l)" -eq 38
 
       - name: Pack playable states into GBDK banks
         run: |
@@ -63,7 +98,9 @@ jobs:
           python3 tools/doomguy_playable_pack_to_c.py \
             build/playable/host/doomguy_playable.pack \
             build/playable/generated | tee build/playable/c-gen.txt
-          grep -q '^DOOM_PLAYABLE_C_PASS states=640 ' build/playable/c-gen.txt
+          grep -q '^DOOM_PLAYABLE_C_PASS states=608 ' build/playable/c-gen.txt
+          grep -q ' banks=177 ' build/playable/c-gen.txt
+          grep -q 'dual_name_tables=PASS graph=PASS$' build/playable/c-gen.txt
 
       - name: Install GBDK 4.5.0
         run: |
@@ -81,20 +118,24 @@ jobs:
           LCC="$PWD/.toolchain/gbdk/bin/lcc"
           GEN="$PWD/build/playable/generated"
           OUT="$PWD/build/playable"
+          OBJ="$OUT/obj"
+          mkdir -p "$OBJ"
           FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 -Isrc -I"$GEN")
           OBJS=()
 
-          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_doomguy_playable_gg.c
-          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntstate.o" src/tilesector_polar_ntstate_gg.s
-          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
-          "$LCC" "${FLAGS[@]}" -c -o "$OUT/dispatch.o" "$GEN/doomguy_playable_dispatch.c"
-          OBJS+=("$OUT/main.o" "$OUT/ntstate.o" "$OUT/ntupload.o" "$OUT/dispatch.o")
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/main.o" src/main_doomguy_playable_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/ntupload.o" src/doomguy_playable_ntupload_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OBJ/dispatch.o" "$GEN/doomguy_playable_dispatch.c"
+          OBJS+=("$OBJ/main.o" "$OBJ/ntupload.o" "$OBJ/dispatch.o")
 
           for src in "$GEN"/doomguy_playable_bank*.c; do
             base="$(basename "${src%.c}")"
-            "$LCC" "${FLAGS[@]}" -c -o "$OUT/${base}.o" "$src"
-            OBJS+=("$OUT/${base}.o")
+            "$LCC" "${FLAGS[@]}" -c -o "$OBJ/${base}.o" "$src"
+            OBJS+=("$OBJ/${base}.o")
           done
+
+          test "$(find "$GEN" -maxdepth 1 -name 'doomguy_playable_bank*.c' | wc -l)" -eq 177
+          test "$(find "$OBJ" -maxdepth 1 -name 'doomguy_playable_bank*.o' | wc -l)" -eq 177
 
           "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Doomguy-Playable.gg" "${OBJS[@]}"
           test "$(wc -c < "$OUT/GG-Doomguy-Playable.gg")" -eq 4194304
@@ -107,6 +148,15 @@ jobs:
             test $((16#${tok##*:})) -lt $((0x4000))
             printf '%s %s PASS\n' "$sym" "$tok"
           done | tee "$OUT/FIXED-BANK-PASS.txt"
+
+          for sym in _g_hero_play_state _g_hero_play_actions _g_hero_play_nt_flips; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+            test -n "$tok"
+            test "${tok%%:*}" = "00"
+            test $((16#${tok##*:})) -ge $((0xC000))
+            test $((16#${tok##*:})) -lt $((0xE000))
+            printf '%s %s PASS\n' "$sym" "$tok"
+          done | tee "$OUT/RUNTIME-SYMBOLS-PASS.txt"
 
       - name: Build Gearsystem runner
         run: |
@@ -141,6 +191,38 @@ jobs:
           ! grep -q 'data=0000' "$OUT/run-turn.txt"
           ! cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-turn.ppm"
 
+          # The visible map must be published by R2 page flips, not by writes
+          # into the active name table. Turning repeatedly exercises both
+          # 0x3000 and 0x3800 pages; the exposed counter proves publication.
+          FLIP_ADDR="$(awk '$2=="_g_hero_play_nt_flips"{split($1,a,":"); print a[2]; exit}' "$OUT/GG-Doomguy-Playable.sym")"
+          test -n "$FLIP_ADDR"
+          LIBRETRO_JOYPAD_MASK=$((1<<7)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 300 \
+            "$OUT/playable-flips.ppm" "$FLIP_ADDR" 2 \
+            | tee "$OUT/run-flips.txt"
+          grep -q 'data=' "$OUT/run-flips.txt"
+          ! grep -q 'data=0000' "$OUT/run-flips.txt"
+
+          # The initial forward step points into a picture-quality exclusion.
+          # It must be blocked, while a strafe remains a legal visible action.
+          LIBRETRO_JOYPAD_MASK=$((1<<4)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-blocked.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-blocked.txt"
+          grep -q 'data=0000' "$OUT/run-blocked.txt"
+          cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-blocked.ppm"
+
+          LIBRETRO_JOYPAD_MASK=$((1<<0)) LIBRETRO_JOYPAD_AFTER_FRAME=90 \
+            ./build/libretro_runner "$CORE" "$ROM" 240 \
+            "$OUT/playable-strafe.ppm" "$ACT_ADDR" 2 \
+            | tee "$OUT/run-strafe.txt"
+          grep -q 'data=' "$OUT/run-strafe.txt"
+          ! grep -q 'data=0000' "$OUT/run-strafe.txt"
+          ! cmp -s "$OUT/playable-idle.ppm" "$OUT/playable-strafe.ppm"
+          printf '%s\n' \
+            'RUNTIME_PASS idle_boot=PASS turn=PASS atomic_flips=PASS blocked_envelope=PASS strafe=PASS' \
+            | tee "$OUT/RUNTIME-PASS.txt"
+
       - uses: actions/upload-artifact@v4
         with:
           name: GG-doomguy-playable
@@ -149,13 +231,24 @@ jobs:
             build/playable/GG-Doomguy-Playable.sym
             build/playable/SHA256.txt
             build/playable/FIXED-BANK-PASS.txt
+            build/playable/RUNTIME-SYMBOLS-PASS.txt
             build/playable/IMPORT.json
             build/playable/bake.txt
+            build/playable/sanitized-bake.txt
             build/playable/c-gen.txt
+            build/playable/RUNTIME-PASS.txt
             build/playable/host/doomguy_playable_manifest.txt
+            build/playable/host/playable-eval-*.ppm
+            build/playable/host/playable-mask-*.pgm
             build/playable/run-idle.txt
             build/playable/run-turn.txt
+            build/playable/run-flips.txt
+            build/playable/run-blocked.txt
+            build/playable/run-strafe.txt
             build/playable/playable-idle.ppm
             build/playable/playable-turn.ppm
+            build/playable/playable-flips.ppm
+            build/playable/playable-blocked.ppm
+            build/playable/playable-strafe.ppm
           if-no-files-found: error
           retention-days: 30

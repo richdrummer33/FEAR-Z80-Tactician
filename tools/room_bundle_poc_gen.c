@@ -2175,9 +2175,10 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
  * not reference, then its name table is published atomically.
  *
  * Grid centre is Doomguy (78,24). An even 8x8 grid deliberately puts the hero
- * between cells rather than on one; the existing 22-unit quality envelope
- * removes the inner positions. The resulting forty legal positions x sixteen
- * yaws = 640 free-order camera states.
+ * between cells rather than on one; the existing 22-unit radius removes the
+ * inner positions. A second picture-quality pass removes any near-quarter
+ * point whose nearest aimed view clips the asymmetric figure. Every surviving
+ * position receives sixteen independently addressable yaw states.
  */
 #define DOOM_PLAY_GRID_W 8u
 #define DOOM_PLAY_GRID_H 8u
@@ -2186,17 +2187,101 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 #define DOOM_PLAY_ORIGIN_X 50
 #define DOOM_PLAY_ORIGIN_Y (-4)
 #define DOOM_PLAY_POOL_A_BASE 3u
-#define DOOM_PLAY_POOL_SIZE 218u
+#define DOOM_PLAY_POOL_SIZE 186u
 #define DOOM_PLAY_POOL_B_BASE (DOOM_PLAY_POOL_A_BASE+DOOM_PLAY_POOL_SIZE)
-#define DOOM_PLAY_DICT_TOP 448u
+/* Tile patterns stop at 0x3000. The two 2 KiB regions above that are complete
+ * name tables; runtime fills the invisible one and flips VDP R2 atomically. */
+#define DOOM_PLAY_DICT_TOP 384u
+#define DOOM_PLAY_PLAYER_RADIUS 2.0
 
-static uint8_t doom_play_position_valid(uint8_t ix,uint8_t iy){
+static double point_segment_distance_sq(double px,double py,const Seg *s){
+    double dx=s->b.x-s->a.x,dy=s->b.y-s->a.y;
+    double len2=dx*dx+dy*dy,t;
+    if(len2<=1e-12){dx=px-s->a.x;dy=py-s->a.y;return dx*dx+dy*dy;}
+    t=((px-s->a.x)*dx+(py-s->a.y)*dy)/len2;
+    if(t<0.0)t=0.0;else if(t>1.0)t=1.0;
+    dx=px-(s->a.x+t*dx);dy=py-(s->a.y+t*dy);
+    return dx*dx+dy*dy;
+}
+
+static uint8_t doom_play_position_walkable(const World *w,double x,double y){
+    uint8_t i,inside=0u;
+    double r=DOOM_PLAY_PLAYER_RADIUS;
+    for(i=0u;i<w->scene_rect_count;++i){
+        const TSPHostSceneRect *q=&w->scene_rects[i];
+        if(x>=(double)q->x0+r&&x<=(double)q->x1-r&&
+           y>=(double)q->y0+r&&y<=(double)q->y1-r){inside=1u;break;}
+    }
+    if(!inside)return 0u;
+    for(i=0u;i<w->count;++i)
+        if(point_segment_distance_sq(x,y,&w->seg[i])<r*r)return 0u;
+    return 1u;
+}
+
+static uint8_t doom_play_position_valid(const World *w,uint8_t ix,uint8_t iy){
     double x=(double)(DOOM_PLAY_ORIGIN_X+(int)ix*DOOM_PLAY_STEP);
     double y=(double)(DOOM_PLAY_ORIGIN_Y+(int)iy*DOOM_PLAY_STEP);
     double dx=x-78.0,dy=y-24.0;
-    return (uint8_t)(dx*dx+dy*dy >=
+    return (uint8_t)(doom_play_position_walkable(w,x,y)&&dx*dx+dy*dy >=
                      (double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE*
                      (double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE);
+}
+
+static uint8_t doom_play_target_yaw(double x,double y){
+    int target=(int)lround(atan2(24.0-y,78.0-x)*
+                           (double)DOOM_PLAY_YAWS/(2.0*PI));
+    return (uint8_t)(target&(DOOM_PLAY_YAWS-1u));
+}
+
+static uint8_t doom_play_position_framed(World *w,uint8_t ix,uint8_t iy){
+    Pose p;
+    uint16_t dummy[TSP_MAP_CELLS],pixels;
+    uint8_t x0=0u,y0=0u,x1=0u,y1=0u;
+    p.x=(double)(DOOM_PLAY_ORIGIN_X+(int)ix*DOOM_PLAY_STEP);
+    p.y=(double)(DOOM_PLAY_ORIGIN_Y+(int)iy*DOOM_PLAY_STEP);
+    p.z=16.0;
+    p.yaw=(uint8_t)(doom_play_target_yaw(p.x,p.y)*16u);
+    tsp_host_composite_reset_cache();
+    tsp_host_composite_codec_begin_route();
+    render_pose(w,&p,dummy);
+    pixels=tsp_host_composite_owner_bounds(0x81u,&x0,&y0,&x1,&y1);
+    if(!pixels||x0==0u||y0==0u||x1==159u||y1==143u){
+        fprintf(stderr,
+                "quality envelope excludes grid=(%u,%u) world=(%.0f,%.0f) "
+                "yaw=%u bounds=(%u,%u)-(%u,%u) pixels=%u distance=%.3f\n",
+                (unsigned)ix,(unsigned)iy,p.x,p.y,
+                (unsigned)(p.yaw/16u),(unsigned)x0,(unsigned)y0,
+                (unsigned)x1,(unsigned)y1,(unsigned)pixels,
+                hypot(p.x-78.0,p.y-24.0));
+        return 0u;
+    }
+    return 1u;
+}
+
+static uint8_t doom_play_grid_connected(const uint8_t *lut,uint8_t count){
+    uint8_t queue[DOOM_PLAY_GRID_W*DOOM_PLAY_GRID_H];
+    uint8_t seen[DOOM_PLAY_GRID_W*DOOM_PLAY_GRID_H];
+    uint8_t head=0u,tail=0u,visited=0u,i;
+    static const int8_t dx[8]={-1,0,1,-1,1,-1,0,1};
+    static const int8_t dy[8]={-1,-1,-1,0,0,1,1,1};
+    memset(seen,0,sizeof(seen));
+    for(i=0u;i<DOOM_PLAY_GRID_W*DOOM_PLAY_GRID_H;++i)if(lut[i]!=0xffu){
+        queue[tail++]=i;seen[i]=1u;break;
+    }
+    while(head<tail){
+        uint8_t q=queue[head++],x=(uint8_t)(q%DOOM_PLAY_GRID_W);
+        uint8_t y=(uint8_t)(q/DOOM_PLAY_GRID_W),d;
+        ++visited;
+        for(d=0u;d<8u;++d){
+            int nx=(int)x+dx[d],ny=(int)y+dy[d];
+            uint8_t ni;
+            if(nx<0||ny<0||nx>=(int)DOOM_PLAY_GRID_W||
+               ny>=(int)DOOM_PLAY_GRID_H)continue;
+            ni=(uint8_t)((uint8_t)ny*DOOM_PLAY_GRID_W+(uint8_t)nx);
+            if(!seen[ni]&&lut[ni]!=0xffu){seen[ni]=1u;queue[tail++]=ni;}
+        }
+    }
+    return (uint8_t)(visited==count);
 }
 
 static void bake_doomguy_playable(const char *outdir){
@@ -2204,15 +2289,17 @@ static void bake_doomguy_playable(const char *outdir){
     FILE *pack,*manifest;
     char path[512];
     uint8_t lut[DOOM_PLAY_GRID_W*DOOM_PLAY_GRID_H];
-    uint8_t pos_count=0u,ix,iy,yaw_i,dict_count,k;
-    uint16_t state_count=0u,peak_patterns=0u;
+    uint8_t pos_count=0u,ix,iy,yaw_i,dict_count,k,quality_excluded=0u;
+    uint16_t state_count=0u,peak_patterns=0u,aimed_states=0u;
     uint32_t sum_patterns=0u;
+    double min_distance=1e30;
     uint16_t map[TSP_MAP_CELLS];
     uint8_t dict_bytes[32u][TSP_HOST_TILE_BYTES];
     uint16_t dict_base;
 
     make_world(11u,&w);
     tsp_host_composite_codec_disable();
+    tsp_host_composite_set_tile_limit(DOOM_PLAY_DICT_TOP);
     train_doomguy_codec(&w);
     dict_count=tsp_host_composite_codec_pattern_count();
     if(!dict_count||dict_count>32u)die("playable hero dictionary invalid");
@@ -2220,13 +2307,24 @@ static void bake_doomguy_playable(const char *outdir){
     if(DOOM_PLAY_POOL_B_BASE+DOOM_PLAY_POOL_SIZE>dict_base)
         die("playable hero VRAM pools overlap dictionary");
 
+    tsp_host_composite_set_scene(&w.scene);
     memset(lut,0xff,sizeof(lut));
     for(iy=0u;iy<DOOM_PLAY_GRID_H;++iy)for(ix=0u;ix<DOOM_PLAY_GRID_W;++ix)
-        if(doom_play_position_valid(ix,iy))
+        if(doom_play_position_valid(&w,ix,iy)){
+            double x=(double)(DOOM_PLAY_ORIGIN_X+(int)ix*DOOM_PLAY_STEP);
+            double y=(double)(DOOM_PLAY_ORIGIN_Y+(int)iy*DOOM_PLAY_STEP);
+            double d=hypot(x-78.0,y-24.0);
+            if(!doom_play_position_framed(&w,ix,iy)){
+                ++quality_excluded;
+                continue;
+            }
+            if(d<min_distance)min_distance=d;
             lut[(uint16_t)iy*DOOM_PLAY_GRID_W+ix]=pos_count++;
+        }
     state_count=(uint16_t)pos_count*DOOM_PLAY_YAWS;
-    if(pos_count!=40u||state_count!=640u)
-        die("playable hero grid cardinality changed unexpectedly");
+    if(pos_count<24u||!doom_play_grid_connected(lut,pos_count))
+        die("playable hero quality envelope disconnects the walkable ring");
+    tsp_host_composite_codec_reset_metrics();
 
     for(k=0u;k<dict_count;++k)
         tsp_host_composite_codec_pattern_4bpp(k,dict_bytes[k]);
@@ -2288,6 +2386,36 @@ static void bake_doomguy_playable(const char *outdir){
             tsp_host_composite_reset_cache();
             tsp_host_composite_codec_begin_route();
             render_pose(&w,&p,map);
+
+            /* One nearest-to-target yaw per position is the framing oracle.
+             * The 22-unit barrier is a picture-quality promise: when the user
+             * deliberately faces the statue, it must exist and remain wholly
+             * inside the Game Gear viewport. */
+            {
+                uint8_t target_yaw=doom_play_target_yaw(p.x,p.y);
+                if(yaw_i==target_yaw){
+                    uint8_t x0=0u,y0=0u,x1=0u,y1=0u;
+                    uint16_t pixels=tsp_host_composite_owner_bounds(
+                        0x81u,&x0,&y0,&x1,&y1);
+                    char eval_path[512];
+                    if(!pixels)die("playable aimed state cannot see Doomguy");
+                    if(x0==0u||y0==0u||x1==159u||y1==143u)
+                        die("playable aimed state clips Doomguy at screen edge");
+                    if(getenv("ROOM_BUNDLE_PLAYABLE_CAPTURE")){
+                        snprintf(eval_path,sizeof(eval_path),
+                                 "%s/playable-eval-%03u.ppm",outdir,
+                                 (unsigned)ordinal);
+                        if(!tsp_host_composite_write_owner_contrast_ppm(
+                               eval_path,0x81u))die("cannot write playable eval frame");
+                        snprintf(eval_path,sizeof(eval_path),
+                                 "%s/playable-mask-%03u.pgm",outdir,
+                                 (unsigned)ordinal);
+                        if(!tsp_host_composite_write_owner_mask_pgm(
+                               eval_path,0x81u))die("cannot write playable owner mask");
+                    }
+                    ++aimed_states;
+                }
+            }
             loads=tsp_host_composite_frame_loads();
             n=tsp_host_composite_frame_load_count();
 
@@ -2346,6 +2474,13 @@ static void bake_doomguy_playable(const char *outdir){
             (unsigned)tsp_host_composite_codec_error_max());
     fprintf(manifest,"random_access_double_buffer=PASS\n");
     fprintf(manifest,"quality_clearance_grid=PASS\n");
+    fprintf(manifest,"level_collision_grid=PASS player_radius=%.2f\n",
+            DOOM_PLAY_PLAYER_RADIUS);
+    fprintf(manifest,"aimed_framing=PASS states=%u min_distance=%.3f\n",
+            (unsigned)aimed_states,min_distance);
+    fprintf(manifest,"quality_envelope_excluded=%u\n",
+            (unsigned)quality_excluded);
+    fprintf(manifest,"walkable_graph=PASS connectivity=8-neighbour\n");
     fprintf(manifest,"playable_states=%u\n",(unsigned)state_count);
     fflush(pack);
     fprintf(manifest,"pack_bytes=%ld\n",ftell(pack));

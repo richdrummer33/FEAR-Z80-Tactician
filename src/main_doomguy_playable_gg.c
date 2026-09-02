@@ -1,16 +1,16 @@
 /*
  * Interactive Doomguy hero-chamber inspection ROM.
  *
- * This is not route playback. The host bake contains 640 independently
- * addressable camera states: forty legal positions around the statue times
- * sixteen yaw angles. Each state owns a complete name table and a compact
- * contiguous pattern block.
+ * This is not route playback. The host bake contains hundreds of independently
+ * addressable camera states: a quality- and collision-filtered ring of legal
+ * positions around the statue times sixteen yaw angles. Each state owns a
+ * complete name table and a compact contiguous pattern block.
  *
- * Runtime alternates two disjoint VRAM pools. While pool A is visible, every
- * pattern for the requested state is uploaded into pool B over as many VBlanks
- * as necessary. Only after that complete destination image exists do we publish
- * its name table. The next move reverses A/B. Random movement order therefore
- * cannot desynchronize a persistent tile cache.
+ * Runtime alternates two complete VRAM display pages. Each page owns a disjoint
+ * pattern pool and a full name table (0x3000 or 0x3800). While page A is
+ * visible, page B's patterns and map arrive over bounded VBlank slices. One R2
+ * register write then reveals the complete page. Random movement order cannot
+ * desynchronize a cache or expose a half-written name table.
  *
  * Controls:
  *   D-pad UP/DOWN  - forward/back
@@ -39,9 +39,12 @@ volatile uint8_t g_hero_play_iy;
 volatile uint8_t g_hero_play_yaw;
 volatile uint8_t g_hero_play_pool;
 volatile uint8_t g_hero_play_phases;
+volatile uint16_t g_hero_play_nt_flips;
 
-void tsp_polar_nt_init(void);
-void tsp_polar_nt_upload_dirty(void);
+void doom_play_nt_upload_3000_top(void);
+void doom_play_nt_upload_3000_bottom(void);
+void doom_play_nt_upload_3800_top(void);
+void doom_play_nt_upload_3800_bottom(void);
 
 static uint8_t g_tile[32u];
 
@@ -92,12 +95,28 @@ static uint16_t state_for(uint8_t ix,uint8_t iy,uint8_t yaw){
     return (uint16_t)p*DOOM_PLAY_YAWS+(uint16_t)(yaw&(DOOM_PLAY_YAWS-1u));
 }
 
-/* Load one complete random-access pose into the invisible pattern pool, then
- * publish the corresponding full name table on its own VBlank. */
+static void upload_name_half(uint8_t pool,uint8_t bottom){
+    if(pool){
+        if(bottom)doom_play_nt_upload_3800_bottom();
+        else doom_play_nt_upload_3800_top();
+    }else{
+        if(bottom)doom_play_nt_upload_3000_bottom();
+        else doom_play_nt_upload_3000_top();
+    }
+}
+
+static void reveal_page(uint8_t pool){
+    __WRITE_VDP_REG(VDP_R2,pool?R2_MAP_0x3800:R2_MAP_0x3000);
+    ++g_hero_play_nt_flips;
+}
+
+/* Load one complete random-access pose into an invisible display page. Pattern
+ * slices use at most 48 uploads per VBlank. The inactive name table follows in
+ * two nine-row VBlank slices, then one R2 write atomically reveals the page. */
 static void present_state(uint16_t state,uint8_t boot){
     uint16_t n=doom_play_state_patterns(state),first=0u;
     uint8_t next_pool=boot?0u:(uint8_t)(g_hero_play_pool^1u);
-    uint8_t phases=1u;
+    uint8_t phases=0u;
 
     if(n>DOOM_PLAY_POOL_SIZE){
         g_hero_play_status=0xEE10u;
@@ -110,15 +129,18 @@ static void present_state(uint16_t state,uint8_t boot){
         if(!boot)vsync();
         doom_play_upload_state(state,next_pool,first,take);
         first=(uint16_t)(first+take);
-        ++phases;
+        if(!boot)++phases;
     }
 
-    /* Name-table publication gets its own blank. That keeps the tile budget
-     * honest rather than pretending forty-eight pattern uploads plus a full
-     * 20x18 map rewrite somehow occupy the same VBlank for free. */
-    if(!boot)vsync();
+    /* Decode to RAM before spending either name-table VBlank. The two uploads
+     * target the inactive table, so the visible page stays complete. */
     doom_play_apply_name(state,next_pool);
-    tsp_polar_nt_upload_dirty();
+    if(!boot)vsync();
+    upload_name_half(next_pool,0u);
+    if(!boot){++phases;vsync();}
+    upload_name_half(next_pool,1u);
+    if(!boot)++phases;
+    reveal_page(next_pool);
 
     g_hero_play_pool=next_pool;
     g_hero_play_state=state;
@@ -216,8 +238,8 @@ void main(void){
     g_hero_play_yaw=12u;
     g_hero_play_pool=1u;
     g_hero_play_phases=0u;
+    g_hero_play_nt_flips=0u;
 
-    tsp_polar_nt_init();
     doom_play_load_dictionary();
 
     start=state_for(g_hero_play_ix,g_hero_play_iy,g_hero_play_yaw);

@@ -192,6 +192,10 @@ void tsp_host_composite_consolidate_owner(uint8_t sid,uint8_t min_support,
 void tsp_host_composite_codec_train_begin(uint8_t owner_sid,uint8_t patterns);
 void tsp_host_composite_codec_train_commit(void);
 void tsp_host_composite_codec_disable(void);
+/* Restrict the usable background-pattern address space before codec training.
+ * The playable proof uses 384 patterns so VRAM can hold name tables at both
+ * 0x3000 and 0x3800. Ordinary bakes retain the 448-pattern default. */
+void tsp_host_composite_set_tile_limit(uint16_t patterns);
 /* Clear the atomic copy-on-write visible-slot set before a route's frame-zero
  * oracle. Frame zero is a bootstrap/reference frame and is never published as
  * a transition from the preceding independently baked route. */
@@ -204,6 +208,7 @@ uint32_t tsp_host_composite_codec_sample_count(void);
 uint32_t tsp_host_composite_codec_cell_count(void);
 uint32_t tsp_host_composite_codec_error_sum(void);
 uint8_t tsp_host_composite_codec_error_max(void);
+void tsp_host_composite_codec_reset_metrics(void);
 
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]);
 
@@ -216,10 +221,16 @@ uint32_t tsp_host_composite_total_load_count(void);
 /* Host-only semantic probes used to validate portal sidedness. */
 uint16_t tsp_host_composite_owner_pixel_count(uint8_t sid);
 uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid);
+/* Exact final screen-space ownership bounds. Returns the visible pixel count;
+ * zero means the owner is fully outside the view or occluded. */
+uint16_t tsp_host_composite_owner_bounds(uint8_t sid,uint8_t *x0,uint8_t *y0,
+                                         uint8_t *x1,uint8_t *y1);
 int tsp_host_composite_write_ppm(const char *path);
 /* Diagnostics: same preview but masked to one owner id, so a histogram
  * measures a single object's shade distribution. */
 int tsp_host_composite_write_owner_ppm(const char *path,uint8_t sid);
+int tsp_host_composite_write_owner_mask_pgm(const char *path,uint8_t sid);
+int tsp_host_composite_write_owner_contrast_ppm(const char *path,uint8_t sid);
 /* Diagnostics: false-colour map of the per-pixel recess field for one object,
  * including sub-threshold values the crease dither will not draw. */
 int tsp_host_composite_write_recess_ppm(const char *path,uint8_t sid);

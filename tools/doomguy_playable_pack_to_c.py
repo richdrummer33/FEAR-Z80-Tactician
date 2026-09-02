@@ -7,6 +7,7 @@ ordinary 32-byte patterns. Runtime alternates two disjoint VRAM pools. The
 resident hero dictionary is loaded once at boot and is shared by both pools.
 """
 import argparse
+import math
 import pathlib
 import struct
 
@@ -15,6 +16,8 @@ MAX_BANK_FILES = 224
 MAP_CELLS = 360
 MAP_BYTES = MAP_CELLS * 2
 PATTERN_BYTES = 32
+TILE_ID_MASK = 0x01FF
+DUAL_NAME_TABLE_TILE_LIMIT = 384
 
 def u16(b, p):
     return struct.unpack_from("<H", b, p)[0]
@@ -73,6 +76,8 @@ def parse_pack(path):
         raise SystemExit("playable VRAM pools overlap")
     if meta["pool_b"] + meta["pool_size"] > meta["dict_base"]:
         raise SystemExit("playable pool B overlaps resident dictionary")
+    if meta["dict_base"] + meta["dict_count"] > DUAL_NAME_TABLE_TILE_LIMIT:
+        raise SystemExit("playable patterns overlap the 0x3000 name table")
 
     p = 28
     lut_n = meta["grid_w"] * meta["grid_h"]
@@ -105,6 +110,41 @@ def parse_pack(path):
         raise SystemExit(f"playable pack has {len(data)-p} trailing bytes")
     if sum(1 for v in lut if v != 0xff) != meta["positions"]:
         raise SystemExit("playable grid LUT valid-position count mismatch")
+    ordinals=sorted(v for v in lut if v != 0xff)
+    if ordinals != list(range(meta["positions"])):
+        raise SystemExit("playable grid LUT ordinals are not dense and unique")
+
+    valid={i for i,v in enumerate(lut) if v != 0xff}
+    reached=set()
+    if valid:
+        pending=[next(iter(valid))]
+        reached.add(pending[0])
+        while pending:
+            q=pending.pop()
+            x,y=q%meta["grid_w"],q//meta["grid_w"]
+            for dy in (-1,0,1):
+                for dx in (-1,0,1):
+                    if not (dx or dy):
+                        continue
+                    nx,ny=x+dx,y+dy
+                    if 0<=nx<meta["grid_w"] and 0<=ny<meta["grid_h"]:
+                        ni=ny*meta["grid_w"]+nx
+                        if ni in valid and ni not in reached:
+                            reached.add(ni);pending.append(ni)
+    if reached != valid:
+        raise SystemExit("playable grid contains disconnected movement islands")
+
+    for state_i,blob in enumerate(states):
+        n=u16(blob,0)
+        dynamic_end=meta["pool_a"]+n
+        dict_end=meta["dict_base"]+meta["dict_count"]
+        for cell in range(MAP_CELLS):
+            tile=u16(blob,2+cell*2)&TILE_ID_MASK
+            resident=tile<meta["pool_a"] or meta["dict_base"]<=tile<dict_end
+            dynamic=meta["pool_a"]<=tile<dynamic_end
+            if not (resident or dynamic):
+                raise SystemExit(
+                    f"state {state_i} cell {cell} references unavailable tile {tile}")
     return meta, lut, dictionary, states
 
 def make_chunks(states):
@@ -147,8 +187,6 @@ def emit_bank(outdir, bank_index, first, states, meta):
 BANKREF(doomguy_playable_bank{bank_index})
 
 extern uint16_t g_map[TSP_MAP_CELLS];
-extern uint8_t g_polar_nt_row_min[TSP_ROWS];
-extern uint8_t g_polar_nt_row_max[TSP_ROWS];
 
 {c_u16_array("k_off", offsets)}
 {c_u8_array("k_data", raw)}
@@ -160,69 +198,62 @@ static const uint8_t *state_ptr(uint16_t local) {{
     return &k_data[k_off[local]];
 }}
 
-uint16_t doom_play_patterns_bank{bank_index}(uint16_t local) BANKED {{
-    const uint8_t *p=state_ptr(local);
-    if(!p)return 0u;
-    return (uint16_t)p[0]|((uint16_t)p[1]<<8);
-}}
-
-void doom_play_upload_bank{bank_index}(uint16_t local,uint8_t pool,
-                                      uint16_t first,uint16_t count) BANKED {{
+uint16_t doom_play_bank{bank_index}(uint16_t local,uint8_t op,uint8_t pool,
+                                   uint16_t first,uint16_t count) BANKED {{
     const uint8_t *p=state_ptr(local);
     uint16_t n,base;
-    if(!p||!count)return;
+    if(!p)return 0u;
     n=(uint16_t)p[0]|((uint16_t)p[1]<<8);
-    if(first>=n)return;
-    if(count>n-first)count=(uint16_t)(n-first);
-    base=pool?DOOM_PLAY_POOL_B_BASE:DOOM_PLAY_POOL_A_BASE;
-    p+=2u+DOOM_PLAY_MAP_BYTES+(uint32_t)first*32u;
-    set_bkg_4bpp_data((uint16_t)(base+first),(uint8_t)count,p);
-}}
-
-void doom_play_name_bank{bank_index}(uint16_t local,uint8_t pool) BANKED {{
-    const uint8_t *p=state_ptr(local);
-    uint16_t i,n,shift=pool?DOOM_PLAY_POOL_SHIFT:0u;
-    uint8_t row;
-    if(!p)return;
-    n=(uint16_t)p[0]|((uint16_t)p[1]<<8);
-    (void)n;
-    p+=2u;
-    for(i=0u;i<TSP_MAP_CELLS;++i){{
-        uint16_t w=(uint16_t)p[0]|((uint16_t)p[1]<<8);
-        uint16_t id=(uint16_t)(w&TSP_TILE_ID_MASK);
+    if(op==DOOM_PLAY_OP_PATTERNS)return n;
+    if(op==DOOM_PLAY_OP_UPLOAD){{
+        if(!count||first>=n)return n;
+        if(count>n-first)count=(uint16_t)(n-first);
+        base=pool?DOOM_PLAY_POOL_B_BASE:DOOM_PLAY_POOL_A_BASE;
+        p+=2u+DOOM_PLAY_MAP_BYTES+(uint32_t)first*32u;
+        set_bkg_4bpp_data((uint16_t)(base+first),(uint8_t)count,p);
+    }}else if(op==DOOM_PLAY_OP_NAME){{
+        uint16_t i,shift=pool?DOOM_PLAY_POOL_SHIFT:0u;
         p+=2u;
-        if(id>=DOOM_PLAY_POOL_A_BASE &&
-           id<DOOM_PLAY_POOL_A_BASE+DOOM_PLAY_POOL_SIZE)
-            w=(uint16_t)((w&~TSP_TILE_ID_MASK)|(id+shift));
-        g_map[i]=w;
+        for(i=0u;i<TSP_MAP_CELLS;++i){{
+            uint16_t w=(uint16_t)p[0]|((uint16_t)p[1]<<8);
+            uint16_t id=(uint16_t)(w&TSP_TILE_ID_MASK);
+            p+=2u;
+            if(id>=DOOM_PLAY_POOL_A_BASE &&
+               id<DOOM_PLAY_POOL_A_BASE+DOOM_PLAY_POOL_SIZE)
+                w=(uint16_t)((w&~TSP_TILE_ID_MASK)|(id+shift));
+            g_map[i]=w;
+        }}
     }}
-    for(row=0u;row<TSP_ROWS;++row){{
-        g_polar_nt_row_min[row]=0u;
-        g_polar_nt_row_max[row]=TSP_COLS-1u;
-    }}
+    return n;
 }}
 """
     (outdir / f"doomguy_playable_bank{bank_index}.c").write_text(s)
 
 def emit_dispatch(outdir, chunks, meta, lut, dictionary):
     decl = []
-    pattern_cases = []
-    upload_cases = []
-    name_cases = []
     for i, (first, states) in enumerate(chunks):
-        end = first + len(states)
-        kw = "if" if i == 0 else "else if"
-        decl += [
-            f"uint16_t doom_play_patterns_bank{i}(uint16_t local) BANKED;",
-            f"void doom_play_upload_bank{i}(uint16_t local,uint8_t pool,uint16_t first,uint16_t count) BANKED;",
-            f"void doom_play_name_bank{i}(uint16_t local,uint8_t pool) BANKED;",
-        ]
-        pattern_cases.append(
-            f"    {kw}(state<{end}u)return doom_play_patterns_bank{i}((uint16_t)(state-{first}u));")
-        upload_cases.append(
-            f"    {kw}(state<{end}u){{doom_play_upload_bank{i}((uint16_t)(state-{first}u),pool,first,count);return;}}")
-        name_cases.append(
-            f"    {kw}(state<{end}u){{doom_play_name_bank{i}((uint16_t)(state-{first}u),pool);return;}}")
+        decl.append(
+            f"uint16_t doom_play_bank{i}(uint16_t local,uint8_t op,uint8_t pool,uint16_t first,uint16_t count) BANKED;")
+
+    def dispatch_tree(lo, hi, indent="    "):
+        """Emit a balanced selector: ~log2(bank count), not a 188-way walk."""
+        if hi - lo == 1:
+            first, _states = chunks[lo]
+            return (
+                f"{indent}return doom_play_bank{lo}((uint16_t)(state-{first}u),"
+                "op,pool,first,count);"
+            )
+        mid = (lo + hi) // 2
+        boundary = chunks[mid][0]
+        return "\n".join((
+            f"{indent}if(state<{boundary}u){{",
+            dispatch_tree(lo, mid, indent + "    "),
+            f"{indent}}}else{{",
+            dispatch_tree(mid, hi, indent + "    "),
+            f"{indent}}}",
+        ))
+
+    dispatch_cases = dispatch_tree(0, len(chunks))
 
     h = f"""#ifndef DOOMGUY_PLAYABLE_META_H
 #define DOOMGUY_PLAYABLE_META_H
@@ -245,13 +276,21 @@ def emit_dispatch(outdir, chunks, meta, lut, dictionary):
 #define DOOM_PLAY_DICT_BASE {meta["dict_base"]}u
 #define DOOM_PLAY_DICT_COUNT {meta["dict_count"]}u
 #define DOOM_PLAY_MAP_BYTES {MAP_BYTES}u
+#define DOOM_PLAY_OP_PATTERNS 0u
+#define DOOM_PLAY_OP_UPLOAD 1u
+#define DOOM_PLAY_OP_NAME 2u
 
 uint8_t doom_play_position_ordinal(uint8_t ix,uint8_t iy) BANKED;
-uint16_t doom_play_state_patterns(uint16_t state) BANKED;
-void doom_play_upload_state(uint16_t state,uint8_t pool,
+uint16_t doom_play_dispatch(uint16_t state,uint8_t op,uint8_t pool,
                             uint16_t first,uint16_t count) BANKED;
-void doom_play_apply_name(uint16_t state,uint8_t pool) BANKED;
 void doom_play_load_dictionary(void) BANKED;
+
+#define doom_play_state_patterns(state) \
+    doom_play_dispatch((state),DOOM_PLAY_OP_PATTERNS,0u,0u,0u)
+#define doom_play_upload_state(state,pool,first,count) \
+    ((void)doom_play_dispatch((state),DOOM_PLAY_OP_UPLOAD,(pool),(first),(count)))
+#define doom_play_apply_name(state,pool) \
+    ((void)doom_play_dispatch((state),DOOM_PLAY_OP_NAME,(pool),0u,0u))
 #endif
 """
     (outdir / "doomguy_playable_meta.h").write_text(h)
@@ -275,21 +314,10 @@ uint8_t doom_play_position_ordinal(uint8_t ix,uint8_t iy) BANKED {{
     return k_grid_lut[(uint16_t)iy*DOOM_PLAY_GRID_W+ix];
 }}
 
-uint16_t doom_play_state_patterns(uint16_t state) BANKED {{
-    if(state>=DOOM_PLAY_STATE_COUNT)return 0u;
-{chr(10).join(pattern_cases)}
-    return 0u;
-}}
-
-void doom_play_upload_state(uint16_t state,uint8_t pool,
+uint16_t doom_play_dispatch(uint16_t state,uint8_t op,uint8_t pool,
                             uint16_t first,uint16_t count) BANKED {{
-    if(state>=DOOM_PLAY_STATE_COUNT||!count)return;
-{chr(10).join(upload_cases)}
-}}
-
-void doom_play_apply_name(uint16_t state,uint8_t pool) BANKED {{
-    if(state>=DOOM_PLAY_STATE_COUNT)return;
-{chr(10).join(name_cases)}
+    if(state>=DOOM_PLAY_STATE_COUNT)return 0u;
+{dispatch_cases}
 }}
 
 void doom_play_load_dictionary(void) BANKED {{
@@ -315,7 +343,9 @@ def main():
     payload = sum(len(s) for s in states)
     print(
         f"DOOM_PLAYABLE_C_PASS states={len(states)} banks={len(chunks)} "
-        f"state_bytes={payload} dict_bytes={len(dictionary)}")
+        f"state_bytes={payload} dict_bytes={len(dictionary)} "
+        f"dispatch_depth={math.ceil(math.log2(max(1,len(chunks))))} "
+        "dual_name_tables=PASS graph=PASS")
 
 if __name__ == "__main__":
     main()

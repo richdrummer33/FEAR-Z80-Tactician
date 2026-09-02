@@ -140,6 +140,10 @@ static uint32_t g_cache_last[HW_TILES];
 static uint8_t g_cache_valid[HW_TILES];
 static uint32_t g_frame_no;
 static uint8_t g_ready;
+/* Most bakes may use all 448 background patterns below the conventional
+ * 0x3800 name table.  The playable proof deliberately caps this at 384 so
+ * 0x3000..0x37ff can hold a second, invisible name table. */
+static uint16_t g_hw_tile_limit=HW_TILES;
 
 /*
  * Enclosed-cell hero dictionary.
@@ -1329,7 +1333,7 @@ static void encode_4bpp(const uint8_t sem[PIXELS],uint8_t out[TSP_HOST_TILE_BYTE
 }
 static int cache_find(uint64_t h,const uint8_t p[PIXELS]){
     uint16_t i;
-    for(i=0u;i<HW_TILES;++i)
+    for(i=0u;i<g_hw_tile_limit;++i)
         if(g_cache_valid[i]&&g_cache_hash[i]==h&&memcmp(g_cache_pix[i],p,PIXELS)==0)return (int)i;
     return -1;
 }
@@ -1422,7 +1426,7 @@ static void codec_cache_reset(void){
     uint8_t k;
     if(!g_codec_ready||!g_codec_count)return;
     for(k=0u;k<g_codec_count;++k){
-        uint16_t slot=(uint16_t)(HW_TILES-g_codec_count+k);
+        uint16_t slot=(uint16_t)(g_hw_tile_limit-g_codec_count+k);
         cache_seed(slot,g_codec_pix[k]);
     }
     /* Do NOT re-arm the bootstrap upload here. Route baking deliberately
@@ -1441,6 +1445,15 @@ void tsp_host_composite_codec_disable(void){
     g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
     memset(g_codec_prev_slot,0,sizeof(g_codec_prev_slot));
     g_codec_prev_valid=0u;
+}
+
+void tsp_host_composite_set_tile_limit(uint16_t patterns){
+    if(patterns<4u||patterns>HW_TILES)
+        die("compositor tile limit outside 4..448");
+    if(g_codec_training||g_codec_ready)
+        die("compositor tile limit changed while codec is active");
+    g_hw_tile_limit=patterns;
+    tsp_host_composite_reset_cache();
 }
 
 void tsp_host_composite_codec_begin_route(void){
@@ -1557,6 +1570,9 @@ uint32_t tsp_host_composite_codec_sample_count(void){return g_codec_sample_total
 uint32_t tsp_host_composite_codec_cell_count(void){return g_codec_cells;}
 uint32_t tsp_host_composite_codec_error_sum(void){return g_codec_error_sum;}
 uint8_t tsp_host_composite_codec_error_max(void){return g_codec_error_max;}
+void tsp_host_composite_codec_reset_metrics(void){
+    g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
+}
 
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     FramePattern req[TSP_MAP_CELLS];
@@ -1575,7 +1591,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     if(g_codec_ready&&g_codec_bootstrap){
         uint8_t k;
         for(k=0u;k<g_codec_count;++k){
-            uint16_t slot=(uint16_t)(HW_TILES-g_codec_count+k);
+            uint16_t slot=(uint16_t)(g_hw_tile_limit-g_codec_count+k);
             if(g_load_count>=TSP_HOST_MAX_FRAME_LOADS)
                 die("hero codec bootstrap tile-load capacity exceeded");
             g_loads[g_load_count].slot=slot;
@@ -1603,7 +1619,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
                 uint16_t err=0u;
                 uint8_t k=codec_nearest(canon,pal,&err);
                 memcpy(canon,g_codec_pix[k],PIXELS);
-                fixed_slot=(uint16_t)(HW_TILES-g_codec_count+k);
+                fixed_slot=(uint16_t)(g_hw_tile_limit-g_codec_count+k);
                 ++g_codec_cells;
                 g_codec_error_sum+=err;
                 if(err>g_codec_error_max)
@@ -1637,14 +1653,15 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
 
     g_frame_unique=req_count;
     if(req_count>g_peak_unique)g_peak_unique=req_count;
-    if(req_count>HW_TILES)die("single frame needs more than 512 unique tile patterns");
+    if(req_count>g_hw_tile_limit)
+        die("single frame exceeds configured hardware tile limit");
 
     /* First bind codec requests to their pinned slots. Ordinary world
      * requests may only retain from the dynamic region; resident hero slots
      * are intentionally invisible to them even when the bytes match. */
     {
         uint16_t dynamic_limit=(g_codec_ready&&g_codec_count)?
-                               (uint16_t)(HW_TILES-g_codec_count):HW_TILES;
+                               (uint16_t)(g_hw_tile_limit-g_codec_count):g_hw_tile_limit;
         for(i=0u;i<req_count;++i){
             int s;
             if(req[i].fixed_slot!=0xffffu){
@@ -1668,7 +1685,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
         uint16_t s,chosen=0xffffu;
         uint32_t oldest=UINT32_MAX;
         uint16_t dynamic_limit=(g_codec_ready&&g_codec_count)?
-                               (uint16_t)(HW_TILES-g_codec_count):HW_TILES;
+                               (uint16_t)(g_hw_tile_limit-g_codec_count):g_hw_tile_limit;
         /* Copy-on-write on the quality-clamped codec route. A miss may
          * use only a dynamic slot the previous visible frame did not reference.
          * With 440 dynamic slots and at most 360 name-table cells this leaves
@@ -1714,7 +1731,7 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     if(g_codec_ready){
         memset(g_codec_prev_slot,0,sizeof(g_codec_prev_slot));
         for(i=0u;i<req_count;++i)
-            if(req[i].slot<HW_TILES)g_codec_prev_slot[req[i].slot]=1u;
+            if(req[i].slot<g_hw_tile_limit)g_codec_prev_slot[req[i].slot]=1u;
         g_codec_prev_valid=1u;
     }
 }
@@ -1736,6 +1753,29 @@ uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid){
     uint16_t cell,n=0u;uint8_t i;
     for(cell=0u;cell<TSP_MAP_CELLS;++cell)
         for(i=0u;i<PIXELS;++i)if(g_owner[cell][i]==sid&&g_lit[cell][i])++n;
+    return n;
+}
+
+uint16_t tsp_host_composite_owner_bounds(uint8_t sid,uint8_t *x0,uint8_t *y0,
+                                         uint8_t *x1,uint8_t *y1){
+    uint16_t y,x,n=0u;
+    uint8_t lo_x=159u,lo_y=143u,hi_x=0u,hi_y=0u;
+    for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
+        uint16_t cell=(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3);
+        uint16_t pi=(uint16_t)(y&7u)*8u+(uint16_t)(x&7u);
+        if(g_owner[cell][pi]!=sid)continue;
+        ++n;
+        if(x<lo_x)lo_x=(uint8_t)x;
+        if(x>hi_x)hi_x=(uint8_t)x;
+        if(y<lo_y)lo_y=(uint8_t)y;
+        if(y>hi_y)hi_y=(uint8_t)y;
+    }
+    if(n){
+        if(x0)*x0=lo_x;
+        if(y0)*y0=lo_y;
+        if(x1)*x1=hi_x;
+        if(y1)*y1=hi_y;
+    }
     return n;
 }
 
@@ -1797,6 +1837,44 @@ int tsp_host_composite_write_owner_ppm(const char *path,uint8_t sid){
             v=lit_semantic(v);
         if(v>7u)v=0u;
         fwrite(rgb[v],1,3,f);
+    }
+    fclose(f);return 1;
+}
+
+int tsp_host_composite_write_owner_mask_pgm(const char *path,uint8_t sid){
+    FILE *f=fopen(path,"wb");
+    uint16_t y,x;
+    if(!f)return 0;
+    fprintf(f,"P5\n160 144\n255\n");
+    for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
+        uint16_t cell=(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3);
+        uint16_t pi=(uint16_t)(y&7u)*8u+(uint16_t)(x&7u);
+        fputc(g_owner[cell][pi]==sid?255:0,f);
+    }
+    fclose(f);return 1;
+}
+
+int tsp_host_composite_write_owner_contrast_ppm(const char *path,uint8_t sid){
+    static const uint8_t rgb[8][3]={
+        {0,0,0},{16,16,48},{64,64,96},{96,112,144},{144,160,192},{208,224,240},
+        {120,136,168},{176,192,216}
+    };
+    static const uint8_t diagnostic_bg[3]={255u,0u,255u};
+    FILE *f=fopen(path,"wb");
+    uint16_t y,x;
+    if(!f)return 0;
+    fprintf(f,"P6\n160 144\n255\n");
+    for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
+        uint16_t cell=(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3);
+        uint16_t pi=(uint16_t)(y&7u)*8u+(uint16_t)(x&7u);
+        uint8_t v=g_cells[cell][pi];
+        if(g_owner[cell][pi]!=sid)fwrite(diagnostic_bg,1,3,f);
+        else{
+            if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])
+                v=lit_semantic(v);
+            if(v>7u)v=0u;
+            fwrite(rgb[v],1,3,f);
+        }
     }
     fclose(f);return 1;
 }
