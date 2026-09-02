@@ -230,6 +230,27 @@ uint16_t doom_play_bank{bank_index}(uint16_t local,uint8_t op,uint8_t pool,
     (outdir / f"doomguy_playable_bank{bank_index}.c").write_text(s)
 
 def emit_dispatch(outdir, chunks, meta, lut, dictionary):
+    # Quality-filtered positions sorted by object-relative orbit angle. Each
+    # entry points at the state whose camera is at that position and whose yaw
+    # aims directly at Doomguy. This turns the same random-access pack into a
+    # user-driven codec microscope without baking a second dataset.
+    cx = meta["origin_x"] + 0.5 * (meta["grid_w"] - 1) * meta["step"]
+    cy = meta["origin_y"] + 0.5 * (meta["grid_h"] - 1) * meta["step"]
+    orbit = []
+    for q, ordinal in enumerate(lut):
+        if ordinal == 0xff:
+            continue
+        ix = q % meta["grid_w"]
+        iy = q // meta["grid_w"]
+        x = meta["origin_x"] + ix * meta["step"]
+        y = meta["origin_y"] + iy * meta["step"]
+        angle = math.atan2(y - cy, x - cx)
+        aim = int(round(math.atan2(cy - y, cx - x) *
+                        meta["yaws"] / (2.0 * math.pi))) % meta["yaws"]
+        orbit.append((angle, ordinal * meta["yaws"] + aim))
+    orbit.sort(key=lambda v: v[0])
+    orbit_states = [state for _angle, state in orbit]
+
     decl = []
     for i, (first, states) in enumerate(chunks):
         decl.append(
@@ -275,12 +296,14 @@ def emit_dispatch(outdir, chunks, meta, lut, dictionary):
 #define DOOM_PLAY_POOL_SIZE {meta["pool_size"]}u
 #define DOOM_PLAY_DICT_BASE {meta["dict_base"]}u
 #define DOOM_PLAY_DICT_COUNT {meta["dict_count"]}u
+#define DOOM_PLAY_ORBIT_COUNT {len(orbit_states)}u
 #define DOOM_PLAY_MAP_BYTES {MAP_BYTES}u
 #define DOOM_PLAY_OP_PATTERNS 0u
 #define DOOM_PLAY_OP_UPLOAD 1u
 #define DOOM_PLAY_OP_NAME 2u
 
 uint8_t doom_play_position_ordinal(uint8_t ix,uint8_t iy) BANKED;
+uint16_t doom_play_orbit_state(uint8_t index) BANKED;
 uint16_t doom_play_dispatch(uint16_t state,uint8_t op,uint8_t pool,
                             uint16_t first,uint16_t count) BANKED;
 void doom_play_load_dictionary(void) BANKED;
@@ -307,11 +330,17 @@ BANKREF(doomguy_playable_dispatch)
 {chr(10).join(decl)}
 
 {c_u8_array("k_grid_lut", lut)}
+{c_u16_array("k_orbit_states", orbit_states)}
 {c_u8_array("k_dictionary", dictionary)}
 
 uint8_t doom_play_position_ordinal(uint8_t ix,uint8_t iy) BANKED {{
     if(ix>=DOOM_PLAY_GRID_W||iy>=DOOM_PLAY_GRID_H)return 0xffu;
     return k_grid_lut[(uint16_t)iy*DOOM_PLAY_GRID_W+ix];
+}}
+
+uint16_t doom_play_orbit_state(uint8_t index) BANKED {{
+    if(index>=DOOM_PLAY_ORBIT_COUNT)return 0xffffu;
+    return k_orbit_states[index];
 }}
 
 uint16_t doom_play_dispatch(uint16_t state,uint8_t op,uint8_t pool,
