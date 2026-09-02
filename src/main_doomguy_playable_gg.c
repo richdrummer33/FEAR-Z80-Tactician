@@ -18,6 +18,11 @@
  *   button 1 / A   - strafe left
  *   button 2 / B   - strafe right
  *   START          - return to the initial inspection position
+ *
+ * With DOOM_PLAY_ORBIT_LAB defined, this same transport becomes a codec
+ * microscope: LEFT/RIGHT walk the quality-filtered camera positions sorted
+ * around Doomguy while every selected state aims at him. The light and hero
+ * remain fixed in world space, so only object-relative view angle changes.
  */
 #include <stdint.h>
 #include <gbdk/platform.h>
@@ -40,6 +45,7 @@ volatile uint8_t g_hero_play_yaw;
 volatile uint8_t g_hero_play_pool;
 volatile uint8_t g_hero_play_phases;
 volatile uint16_t g_hero_play_nt_flips;
+volatile uint8_t g_hero_play_orbit;
 
 void doom_play_nt_upload_3000_top(void);
 void doom_play_nt_upload_3000_bottom(void);
@@ -158,6 +164,33 @@ static int8_t clamp_step(int8_t v){
     return v<0?-1:(v>0?1:0);
 }
 
+#ifdef DOOM_PLAY_ORBIT_LAB
+static uint8_t apply_orbit_controls(uint8_t keys){
+    uint8_t old=g_hero_play_orbit;
+    uint16_t state;
+
+    if(keys&J_START)g_hero_play_orbit=0u;
+    else if((keys&J_LEFT)&&!(keys&J_RIGHT))
+        g_hero_play_orbit=(uint8_t)(g_hero_play_orbit?
+            g_hero_play_orbit-1u:DOOM_PLAY_ORBIT_COUNT-1u);
+    else if((keys&J_RIGHT)&&!(keys&J_LEFT))
+        g_hero_play_orbit=(uint8_t)((g_hero_play_orbit+1u)%
+                                    DOOM_PLAY_ORBIT_COUNT);
+    else return 0u;
+
+    if(old==g_hero_play_orbit)return 0u;
+    state=doom_play_orbit_state(g_hero_play_orbit);
+    if(state==0xffffu){
+        g_hero_play_orbit=old;
+        g_hero_play_status=0xEE20u;
+        return 0u;
+    }
+    ++g_hero_play_actions;
+    present_state(state,0u);
+    return 1u;
+}
+#endif
+
 static uint8_t apply_controls(uint8_t keys){
     uint8_t old_ix=g_hero_play_ix,old_iy=g_hero_play_iy,old_yaw=g_hero_play_yaw;
     uint8_t dir;
@@ -239,10 +272,15 @@ void main(void){
     g_hero_play_pool=1u;
     g_hero_play_phases=0u;
     g_hero_play_nt_flips=0u;
+    g_hero_play_orbit=0u;
 
     doom_play_load_dictionary();
 
+#ifdef DOOM_PLAY_ORBIT_LAB
+    start=doom_play_orbit_state(g_hero_play_orbit);
+#else
     start=state_for(g_hero_play_ix,g_hero_play_iy,g_hero_play_yaw);
+#endif
     if(start==0xffffu){
         g_hero_play_status=0xEE12u;
         for(;;)vsync();
@@ -266,10 +304,18 @@ void main(void){
          * sustained movement rate, so this does not need a timer interrupt. */
         if(keys!=prev){
             repeat=0u;
+#ifdef DOOM_PLAY_ORBIT_LAB
+            apply_orbit_controls(keys);
+#else
             apply_controls(keys);
+#endif
         }else if(++repeat>=2u){
             repeat=0u;
+#ifdef DOOM_PLAY_ORBIT_LAB
+            apply_orbit_controls(keys);
+#else
             apply_controls(keys);
+#endif
         }
         prev=keys;
     }
