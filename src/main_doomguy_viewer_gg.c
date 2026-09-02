@@ -39,7 +39,10 @@ uint16_t g_map[TSP_MAP_CELLS];
 volatile uint16_t g_hero_view_status;
 volatile uint16_t g_hero_view_frame;
 volatile uint8_t  g_hero_view_mode;   /* 0 = auto, 1 = manual step */
+volatile uint8_t  g_hero_view_phases; /* refresh slices used by last frame */
 volatile uint16_t g_hero_view_boot_trace;
+
+#define HERO_UPLOAD_CAP 48u
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
@@ -100,27 +103,54 @@ static void init_base_tiles(void){
 }
 
 /*
- * One frame of the baked route. Ordering matches the proof ROM: apply the name
- * patch, wait for VBlank, then upload tile data and dirty name words.
+ * Atomic frame publication.
  *
- * This room needs far more tile uploads per frame than a Game Gear VBlank can
- * carry, so at full speed the uploads spill into active display and tear. The
- * scheduler reports the minimum feasible uploads per route frame: 51 for the
- * unshaded shell and 138 with full shading, against roughly 48 sustainable.
- * That is a property of the content, not a setting -- schedule_bundle_tiles()
- * already searches for the smallest budget that meets every deadline.
+ * The host pack orders each frame's tile list with preload-safe entries first.
+ * "Safe" means the slot is NOT referenced by the currently visible name table,
+ * so those patterns may be written during earlier VBlanks while the old frame
+ * remains completely intact.  Any slot still referenced by the old frame is
+ * kept in the final publication slice.
  *
- * In manual step mode the camera only advances on a keypress, so the display
- * can simply be blanked for that one upload and the frame arrives intact. This
- * is why stepping, not auto playback, is the mode to inspect the statue in.
+ * For a fifty-one-upload frame this is the intended two-phase case:
+ *   VBlank A: preload three safe patterns, keep old complete frame visible.
+ *   VBlank B: upload the remaining forty-eight, apply the new name patch, then
+ *             publish dirty name words.  No partial new frame is ever visible.
+ *
+ * Larger frames generalize to more staging slices, but every slice is still
+ * capped at HERO_UPLOAD_CAP and the name table changes exactly once, at commit.
  */
 static void show_frame(uint8_t entry,uint8_t exit_portal,uint16_t frame){
-    tsp_room_bundle_generated_apply_name(HERO_BUNDLE,entry,exit_portal,frame);
+    uint16_t safe=0u,n=tsp_room_bundle_generated_tile_meta(
+        HERO_BUNDLE,entry,exit_portal,frame,&safe);
+    uint16_t preload=n>HERO_UPLOAD_CAP?(uint16_t)(n-HERO_UPLOAD_CAP):0u;
+    uint16_t first=0u;
+    uint8_t phases=1u;
+
+    if(preload>safe){
+        /* The baker's atomic proof gate should make this unreachable. */
+        g_hero_view_status=0xEE02u;
+        return;
+    }
+
+    while(preload){
+        uint16_t take=preload>HERO_UPLOAD_CAP?HERO_UPLOAD_CAP:preload;
+        vsync();
+        tsp_room_bundle_generated_apply_tile_range(
+            HERO_BUNDLE,entry,exit_portal,frame,first,take);
+        first=(uint16_t)(first+take);
+        preload=(uint16_t)(preload-take);
+        ++phases;
+    }
+
+    /* Final slice: finish tile residency, then atomically expose the new map. */
     vsync();
-    if(g_hero_view_mode)DISPLAY_OFF;
-    tsp_room_bundle_generated_apply_tile(HERO_BUNDLE,entry,exit_portal,frame);
+    if(first<n)
+        tsp_room_bundle_generated_apply_tile_range(
+            HERO_BUNDLE,entry,exit_portal,frame,first,(uint16_t)(n-first));
+    tsp_room_bundle_generated_apply_name(HERO_BUNDLE,entry,exit_portal,frame);
     tsp_polar_nt_upload_dirty();
-    if(g_hero_view_mode)DISPLAY_ON;
+
+    g_hero_view_phases=phases;
     g_hero_view_frame=frame;
 }
 
@@ -175,6 +205,7 @@ void main(void){
     g_hero_view_status=0u;
     g_hero_view_frame=0u;
     g_hero_view_mode=0u;
+    g_hero_view_phases=0u;
 
     tsp_polar_nt_init();
 
