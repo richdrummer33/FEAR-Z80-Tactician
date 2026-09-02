@@ -84,6 +84,48 @@
 #ifdef ROOM_BUNDLE_BONSAI_SEAMS
 #include "generated/bonsai_seams.inc"
 #endif
+#ifndef ROOM_BUNDLE_BONSAI_RAMP
+#define ROOM_BUNDLE_BONSAI_RAMP 5
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_SMOOTH
+#define ROOM_BUNDLE_BONSAI_SMOOTH 1
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_LIGHTING_PROXY
+#define ROOM_BUNDLE_BONSAI_LIGHTING_PROXY 0
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_STATIC_LIGHT
+#define ROOM_BUNDLE_BONSAI_STATIC_LIGHT 1
+#endif
+/* Canopy scale, not seam scale: the occlusion probe has to reach across the
+ * gap between a leaf mass and the branches under it, otherwise the underside
+ * of the canopy never registers as enclosed. */
+#ifndef ROOM_BUNDLE_BONSAI_AO_RADIUS
+#define ROOM_BUNDLE_BONSAI_AO_RADIUS 8.0
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_AO_STRENGTH
+#define ROOM_BUNDLE_BONSAI_AO_STRENGTH 0.40
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_LIGHT_RADIUS
+#define ROOM_BUNDLE_BONSAI_LIGHT_RADIUS 0.0
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_SHADOW_FLOOR
+#define ROOM_BUNDLE_BONSAI_SHADOW_FLOOR 0.55
+#endif
+/*
+ * Equalization spreads the ramp evenly over the surface, which is right for a
+ * figure lit from the side but wrong for a top-lit tree: it forces a fifth of
+ * the canopy into each band and so cancels the very contrast that makes an
+ * underside look like an underside. Off keeps the measured brightness.
+ */
+#ifndef ROOM_BUNDLE_BONSAI_EQUALIZE
+#define ROOM_BUNDLE_BONSAI_EQUALIZE 0
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_CONSOLIDATE
+#define ROOM_BUNDLE_BONSAI_CONSOLIDATE 4
+#endif
+#ifndef ROOM_BUNDLE_BONSAI_CONSOLIDATE_PASSES
+#define ROOM_BUNDLE_BONSAI_CONSOLIDATE_PASSES 3
+#endif
 #ifndef ROOM_BUNDLE_BONSAI_SEAM_COMPONENTS
 #define ROOM_BUNDLE_BONSAI_SEAM_COMPONENTS 0
 #endif
@@ -930,12 +972,47 @@ static void add_bonsai_generated_mesh(RMBScene *m){
                             bonsai_visual_xyz_q8,BONSAI_VISUAL_VERTEX_COUNT,
                             bonsai_visual_indices,BONSAI_VISUAL_TRIANGLE_COUNT,0);
 
+#if ROOM_BUNDLE_BONSAI_RAMP
+    /*
+     * Same treatment as the Doomguy hero: incident angle onto the compositor
+     * brightness ramp, with self-shadow and cavity occlusion baked per vertex.
+     *
+     * It matters more here than it did on the statue. The light sits directly
+     * overhead, so with flat shading a tree is a single silhouette blob -- the
+     * canopy has no top or bottom. Self-shadowing is what separates the lit
+     * upper leaf mass from the branches it hangs over, and the occlusion term
+     * is what makes the underside read as an underside rather than as more
+     * foliage.
+     */
+    rmb_set_object_ramp_shading(m,visual,(uint8_t)ROOM_BUNDLE_BONSAI_RAMP,
+                                (uint8_t)ROOM_BUNDLE_BONSAI_SMOOTH);
+    rmb_set_object_ramp_equalize(m,visual,
+                                 (uint8_t)ROOM_BUNDLE_BONSAI_EQUALIZE);
+#if ROOM_BUNDLE_BONSAI_STATIC_LIGHT
+    rmb_set_object_static_light(m,visual,
+                                (double)ROOM_BUNDLE_BONSAI_AO_RADIUS,
+                                (double)ROOM_BUNDLE_BONSAI_AO_STRENGTH,
+                                (double)ROOM_BUNDLE_BONSAI_LIGHT_RADIUS,
+                                (double)ROOM_BUNDLE_BONSAI_SHADOW_FLOOR);
+#endif
+#if ROOM_BUNDLE_BONSAI_CONSOLIDATE
+    rmb_set_object_shade_consolidate(m,visual,
+                                     (uint8_t)ROOM_BUNDLE_BONSAI_CONSOLIDATE,
+                                     (uint8_t)ROOM_BUNDLE_BONSAI_CONSOLIDATE_PASSES);
+#endif
+#endif
+
+#if ROOM_BUNDLE_BONSAI_LIGHTING_PROXY
     rmb_set_object_flags(m,lighting,1u,0u);
     rmb_set_object_shade_levels(m,lighting,3u);
     rmb_set_object_overlay_target(m,lighting,visual);
     rmb_add_indexed_mesh_q8(m,lighting,&t,
                             bonsai_lighting_xyz_q8,BONSAI_LIGHTING_VERTEX_COUNT,
                             bonsai_lighting_indices,BONSAI_LIGHTING_TRIANGLE_COUNT,0);
+#else
+    /* Superseded by the ramp path above, exactly as on the hero statue. */
+    rmb_set_object_flags(m,lighting,0u,0u);
+#endif
 
     rmb_set_object_flags(m,shadow,0u,1u);
     rmb_add_indexed_mesh_q8(m,shadow,&t,
@@ -1226,17 +1303,31 @@ static Pose showcase_detail_pose(uint8_t bundle,uint16_t f){
     return p;
 }
 
+/*
+ * Two deliberately different passes over a 64-unit tree in a 32-unit room.
+ *
+ * The camera cannot pitch -- project() puts the horizon on a fixed screen row
+ * -- so the only way to fit a tall object is horizontal distance plus eye
+ * height. Screen row is 72 - (worldZ - camZ) * 80 / distance, so holding the
+ * canopy top (z=64) on screen needs (64 - camZ) * 80 / d <= 72.
+ *
+ * Pass one stays close and low for the root flare and trunk. Pass two backs
+ * off to the room walls and raises the eye to 27, which satisfies that
+ * inequality across the wide part of the orbit and puts the whole tree in
+ * frame; the very tip still grazes the top edge at the narrow end, which is
+ * the room's x extent talking, not the framing.
+ */
 static Pose bonsai_detail_pose(uint16_t f){
     Pose p;
     const double tx=78.0,ty=24.0;
     if(f<60u){
         double q=(double)f/59.0;
         double a=(125.0-250.0*q)*(PI/180.0);
-        p.x=tx+18.0*cos(a);p.y=ty+20.0*sin(a);p.z=12.0;
+        p.x=tx+20.0*cos(a);p.y=ty+26.0*sin(a);p.z=15.0;
     }else{
         double q=(double)(f-60u)/59.0;
         double a=(180.0-360.0*q)*(PI/180.0);
-        p.x=tx+34.0*cos(a);p.y=ty+52.0*sin(a);p.z=16.0;
+        p.x=tx+36.0*cos(a);p.y=ty+52.0*sin(a);p.z=27.0;
     }
     p.yaw=yaw_from_vec(tx-p.x,ty-p.y);
     return p;

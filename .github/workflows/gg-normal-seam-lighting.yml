@@ -62,7 +62,7 @@ jobs:
             --max-components 12 --model-scale 1.35 --model-offset 78,24,3 --light-world 62,-96,18 \
             | tee build/normal-seam/DOOMGUY-SEAMS.json
           node tools/glb_rmb/analyze_seams.mjs "$BONSAI" tools/generated/bonsai_seams.inc \
-            --name bonsai --height 64 --up z --visual-tris 5200 --shadow-tris 200 \
+            --name bonsai --height 64 --up y --visual-tris 5200 --shadow-tris 200 \
             --max-components 12 --model-scale 1 --model-offset 78,24,0 --light-world 78,24,78 \
             | tee build/normal-seam/BONSAI-SEAMS.json
 
@@ -137,7 +137,7 @@ jobs:
           set -euo pipefail
           line=$(cat build/normal-seam/SELECTED-SEAMS.tsv); lighting=$(printf '%s\n' "$line"|cut -f1); seams=$(printf '%s\n' "$line"|cut -f3)
           genlight=$lighting; if [ "$genlight" -eq 0 ]; then genlight=8; fi
-          node tools/glb_rmb/convert.mjs "$BONSAI" tools/generated/bonsai_mesh.inc --name bonsai --height 64 --up z --visual-tris 5200 --lighting-tris "$genlight" --shadow-tris 200 > build/normal-seam/BONSAI-IMPORT.json
+          node tools/glb_rmb/convert.mjs "$BONSAI" tools/generated/bonsai_mesh.inc --name bonsai --height 64 --up y --visual-tris 5200 --lighting-tris "$genlight" --shadow-tris 200 > build/normal-seam/BONSAI-IMPORT.json
           out=build/normal-seam/proof-bonsai; mkdir -p "$out"
           cc -std=c99 -O2 -Wall -Wextra -Wpedantic -DROOM_BUNDLE_BONSAI_GENERATED -DROOM_BUNDLE_BONSAI_SEAMS -DROOM_BUNDLE_BONSAI_SEAM_COMPONENTS=$seams \
             -Isrc -Itools tools/room_bundle_poc_gen.c tools/polar_baked_composite.c tools/room_mesh_bake.c -lm -o "$out/gen"
