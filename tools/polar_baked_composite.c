@@ -136,6 +136,33 @@ static uint8_t g_cache_valid[HW_TILES];
 static uint32_t g_frame_no;
 static uint8_t g_ready;
 
+/*
+ * Enclosed-cell hero dictionary.
+ *
+ * This is deliberately host-only policy wrapped around the ordinary tile
+ * cache.  The dictionary is learned from final, canonicalized 8x8 patterns,
+ * then pinned into the top VRAM slots.  Only cells whose sixty-four pixels all
+ * belong to one selected mesh owner, with no boundary-black pixel, may use it.
+ * That eligibility rule is the safety rail: silhouette, holes, grille-scale
+ * openings, boundary shading, background interaction and room shadows never
+ * enter the approximation path.
+ */
+#define CODEC_MAX_PATTERNS 32u
+typedef struct CodecSample {
+    uint8_t pix[PIXELS];
+    uint8_t palette;
+} CodecSample;
+static CodecSample *g_codec_samples;
+static uint32_t g_codec_samples_n,g_codec_samples_cap,g_codec_sample_total;
+static uint8_t g_codec_owner=0xffu;
+static uint8_t g_codec_target,g_codec_count,g_codec_training,g_codec_ready;
+static uint8_t g_codec_pix[CODEC_MAX_PATTERNS][PIXELS];
+static uint8_t g_codec_palette[CODEC_MAX_PATTERNS];
+static uint8_t g_codec_bootstrap;
+static uint32_t g_codec_cells,g_codec_error_sum;
+static uint8_t g_codec_error_max;
+static void codec_cache_reset(void);
+
 static TSPHostTileLoad g_loads[TSP_HOST_MAX_FRAME_LOADS];
 static uint16_t g_load_count;
 static uint16_t g_frame_unique;
@@ -996,6 +1023,7 @@ static void decode_word(uint16_t word,uint8_t sem[PIXELS],uint8_t mask[PIXELS]){
 void tsp_host_composite_reset_cache(void){
     g_ready=0u;
     ensure_init();
+    codec_cache_reset();
 }
 
 void tsp_host_composite_begin_frame(void){
@@ -1324,6 +1352,177 @@ static uint8_t point_tile_encode(const uint8_t ambient[PIXELS],
     return 1u;
 }
 
+static uint8_t codec_cell_eligible(uint16_t cell){
+    uint8_t i;
+    if(g_codec_owner==0xffu)return 0u;
+    for(i=0u;i<PIXELS;++i){
+        if(g_owner[cell][i]!=g_codec_owner)return 0u;
+        if(g_cells[cell][i]==SEM_BLACK)return 0u;
+    }
+    return 1u;
+}
+
+static uint16_t codec_distance(const uint8_t a[PIXELS],uint8_t ap,
+                               const uint8_t b[PIXELS],uint8_t bp){
+    uint16_t d=(uint16_t)(ap==bp?0u:24u);
+    uint8_t i;
+    for(i=0u;i<PIXELS;++i)if(a[i]!=b[i])++d;
+    return d;
+}
+
+static void codec_sample_push(const uint8_t pix[PIXELS],uint8_t palette){
+    CodecSample *p;
+    if(g_codec_samples_n==g_codec_samples_cap){
+        uint32_t cap=g_codec_samples_cap?g_codec_samples_cap*2u:4096u;
+        p=(CodecSample *)realloc(g_codec_samples,(size_t)cap*sizeof(CodecSample));
+        if(!p)die("hero codec sample allocation failed");
+        g_codec_samples=p;g_codec_samples_cap=cap;
+    }
+    memcpy(g_codec_samples[g_codec_samples_n].pix,pix,PIXELS);
+    g_codec_samples[g_codec_samples_n].palette=palette;
+    ++g_codec_samples_n;
+    ++g_codec_sample_total;
+}
+
+static uint8_t codec_nearest(const uint8_t pix[PIXELS],uint8_t palette,
+                             uint16_t *error){
+    uint8_t k,best=0u;
+    uint16_t bd=0xffffu;
+    for(k=0u;k<g_codec_count;++k){
+        uint16_t d=codec_distance(pix,palette,g_codec_pix[k],g_codec_palette[k]);
+        if(d<bd){bd=d;best=k;}
+    }
+    if(error)*error=bd;
+    return best;
+}
+
+static void codec_cache_reset(void){
+    uint8_t k;
+    if(!g_codec_ready||!g_codec_count){g_codec_bootstrap=0u;return;}
+    for(k=0u;k<g_codec_count;++k){
+        uint16_t slot=(uint16_t)(HW_TILES-g_codec_count+k);
+        cache_seed(slot,g_codec_pix[k]);
+    }
+    /* A cache reset models an independent route/bootstrap. Emit the pinned
+     * dictionary in that route's first tile packet so a cold ROM has the same
+     * resident state the host model assumes. */
+    g_codec_bootstrap=1u;
+}
+
+void tsp_host_composite_codec_disable(void){
+    free(g_codec_samples);
+    g_codec_samples=(CodecSample *)0;
+    g_codec_samples_n=0u;g_codec_samples_cap=0u;g_codec_sample_total=0u;
+    g_codec_owner=0xffu;g_codec_target=0u;g_codec_count=0u;
+    g_codec_training=0u;g_codec_ready=0u;g_codec_bootstrap=0u;
+    g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
+}
+
+void tsp_host_composite_codec_train_begin(uint8_t owner_sid,uint8_t patterns){
+    if(!patterns||patterns>CODEC_MAX_PATTERNS)
+        die("hero codec dictionary size outside 1..32");
+    free(g_codec_samples);
+    g_codec_samples=(CodecSample *)0;
+    g_codec_samples_n=0u;g_codec_samples_cap=0u;g_codec_sample_total=0u;
+    g_codec_owner=owner_sid;g_codec_target=patterns;g_codec_count=0u;
+    g_codec_training=1u;g_codec_ready=0u;g_codec_bootstrap=0u;
+    g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
+    tsp_host_composite_reset_cache();
+}
+
+void tsp_host_composite_codec_train_commit(void){
+    uint8_t k,iter;
+    if(!g_codec_training)die("hero codec commit without training");
+    if(!g_codec_samples_n)die("hero codec training found no enclosed cells");
+    g_codec_count=(uint8_t)(g_codec_samples_n<(uint32_t)g_codec_target?
+                            g_codec_samples_n:(uint32_t)g_codec_target);
+
+    /* Deterministic route-spread seeds.  Samples arrive in frame order, so
+     * midpoint quantiles give the first pass viewpoints from across the route
+     * instead of accidentally learning eight neighbours from one close-up. */
+    for(k=0u;k<g_codec_count;++k){
+        uint32_t idx=(uint32_t)(((uint64_t)(2u*k+1u)*g_codec_samples_n)/
+                                (uint64_t)(2u*g_codec_count));
+        if(idx>=g_codec_samples_n)idx=g_codec_samples_n-1u;
+        memcpy(g_codec_pix[k],g_codec_samples[idx].pix,PIXELS);
+        g_codec_palette[k]=g_codec_samples[idx].palette;
+    }
+
+    /* Three tiny Hamming k-modes passes.  This is an offline bake, so spending
+     * host cycles here is preferable to spending ROM or VBlank bandwidth. */
+    for(iter=0u;iter<3u;++iter){
+        static uint32_t hist[CODEC_MAX_PATTERNS][PIXELS][16];
+        static uint32_t pal_hist[CODEC_MAX_PATTERNS][2];
+        uint32_t si;
+        memset(hist,0,sizeof(hist));
+        memset(pal_hist,0,sizeof(pal_hist));
+        for(si=0u;si<g_codec_samples_n;++si){
+            uint8_t best=0u,j;
+            uint16_t bd=0xffffu;
+            for(j=0u;j<g_codec_count;++j){
+                uint16_t d=codec_distance(g_codec_samples[si].pix,
+                                          g_codec_samples[si].palette,
+                                          g_codec_pix[j],g_codec_palette[j]);
+                if(d<bd){bd=d;best=j;}
+            }
+            ++pal_hist[best][g_codec_samples[si].palette?1u:0u];
+            for(j=0u;j<PIXELS;++j){
+                uint8_t v=g_codec_samples[si].pix[j];
+                if(v<16u)++hist[best][j][v];
+            }
+        }
+        for(k=0u;k<g_codec_count;++k){
+            uint8_t raw[PIXELS],canon[PIXELS],i;
+            uint16_t attr;
+            for(i=0u;i<PIXELS;++i){
+                uint8_t v,bestv=0u;
+                uint32_t bestn=0u;
+                for(v=0u;v<16u;++v)if(hist[k][i][v]>bestn){
+                    bestn=hist[k][i][v];bestv=v;
+                }
+                raw[i]=bestn?bestv:g_codec_pix[k][i];
+            }
+            canonicalize(raw,canon,&attr);
+            memcpy(g_codec_pix[k],canon,PIXELS);
+            g_codec_palette[k]=(uint8_t)(pal_hist[k][1]>pal_hist[k][0]);
+        }
+    }
+
+    /* Collapse duplicate modes rather than wasting pinned VRAM slots. */
+    {
+        uint8_t outn=0u;
+        for(k=0u;k<g_codec_count;++k){
+            uint8_t q,dup=0u;
+            for(q=0u;q<outn;++q)
+                if(g_codec_palette[q]==g_codec_palette[k]&&
+                   memcmp(g_codec_pix[q],g_codec_pix[k],PIXELS)==0){
+                    dup=1u;break;
+                }
+            if(!dup){
+                if(outn!=k){
+                    memcpy(g_codec_pix[outn],g_codec_pix[k],PIXELS);
+                    g_codec_palette[outn]=g_codec_palette[k];
+                }
+                ++outn;
+            }
+        }
+        g_codec_count=outn;
+    }
+
+    g_codec_training=0u;g_codec_ready=1u;
+    g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
+    free(g_codec_samples);
+    g_codec_samples=(CodecSample *)0;
+    g_codec_samples_n=0u;g_codec_samples_cap=0u;
+    tsp_host_composite_reset_cache();
+}
+
+uint8_t tsp_host_composite_codec_pattern_count(void){return g_codec_count;}
+uint32_t tsp_host_composite_codec_sample_count(void){return g_codec_sample_total;}
+uint32_t tsp_host_composite_codec_cell_count(void){return g_codec_cells;}
+uint32_t tsp_host_composite_codec_error_sum(void){return g_codec_error_sum;}
+uint8_t tsp_host_composite_codec_error_max(void){return g_codec_error_max;}
+
 void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     FramePattern req[TSP_MAP_CELLS];
     int16_t htab[FRAME_HASH];
@@ -1338,6 +1537,19 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     memset(needed,0,sizeof(needed));
     g_load_count=0u;
 
+    if(g_codec_ready&&g_codec_bootstrap){
+        uint8_t k;
+        for(k=0u;k<g_codec_count;++k){
+            uint16_t slot=(uint16_t)(HW_TILES-g_codec_count+k);
+            if(g_load_count>=TSP_HOST_MAX_FRAME_LOADS)
+                die("hero codec bootstrap tile-load capacity exceeded");
+            g_loads[g_load_count].slot=slot;
+            encode_4bpp(g_codec_pix[k],g_loads[g_load_count].bytes);
+            ++g_load_count;++g_total_loads;
+        }
+        g_codec_bootstrap=0u;
+    }
+
     for(i=0u;i<TSP_MAP_CELLS;++i){
         uint8_t canon[PIXELS],encoded[PIXELS],use_lit_palette=0u;
         uint16_t attr,pos;
@@ -1347,6 +1559,24 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
         else memcpy(encoded,g_cells[i],PIXELS);
         canonicalize(encoded,canon,&attr);
         if(use_lit_palette)attr|=TSP_ATTR_PALETTE;
+
+        if(codec_cell_eligible(i)){
+            uint8_t pal=(uint8_t)((attr&TSP_ATTR_PALETTE)!=0u);
+            if(g_codec_training){
+                codec_sample_push(canon,pal);
+            }else if(g_codec_ready&&g_codec_count){
+                uint16_t err=0u;
+                uint8_t k=codec_nearest(canon,pal,&err);
+                memcpy(canon,g_codec_pix[k],PIXELS);
+                attr=(uint16_t)((attr&~TSP_ATTR_PALETTE)|
+                      (g_codec_palette[k]?TSP_ATTR_PALETTE:0u));
+                ++g_codec_cells;
+                g_codec_error_sum+=err;
+                if(err>g_codec_error_max)
+                    g_codec_error_max=(uint8_t)(err>255u?255u:err);
+            }
+        }
+
         h=fnv64(canon);pos=(uint16_t)h&(FRAME_HASH-1u);
         for(;;){
             int16_t q=htab[pos];
@@ -1378,9 +1608,11 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     for(i=0u;i<req_count;++i)if(req[i].slot==0xffffu){
         uint16_t s,chosen=0xffffu;
         uint32_t oldest=UINT32_MAX;
-        for(s=3u;s<HW_TILES;++s)if(!g_cache_valid[s]){chosen=s;break;}
+        uint16_t dynamic_limit=(g_codec_ready&&g_codec_count)?
+                               (uint16_t)(HW_TILES-g_codec_count):HW_TILES;
+        for(s=3u;s<dynamic_limit;++s)if(!g_cache_valid[s]){chosen=s;break;}
         if(chosen==0xffffu){
-            for(s=3u;s<HW_TILES;++s)if(!needed[s]&&g_cache_last[s]<=oldest){
+            for(s=3u;s<dynamic_limit;++s)if(!needed[s]&&g_cache_last[s]<=oldest){
                 oldest=g_cache_last[s];chosen=s;
             }
         }
