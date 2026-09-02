@@ -2208,7 +2208,7 @@ static void bake_doomguy_playable(const char *outdir){
     uint16_t state_count=0u,peak_patterns=0u;
     uint32_t sum_patterns=0u;
     uint16_t map[TSP_MAP_CELLS];
-    uint8_t dict_bytes[CODEC_MAX_PATTERNS][TSP_HOST_TILE_BYTES];
+    uint8_t dict_bytes[32u][TSP_HOST_TILE_BYTES];
     uint16_t dict_base;
 
     make_world(11u,&w);
