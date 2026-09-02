@@ -2018,6 +2018,9 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
 
     tsp_host_composite_set_scene(&w->scene);
     tsp_host_composite_reset_cache();
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+    if(bundle==11u)tsp_host_composite_codec_begin_route();
+#endif
 
     for(f=0u;f<ROUTE_FRAMES;++f){
         Pose p=route_pose_portals(f,bundle,entry_portal,exit_portal);
