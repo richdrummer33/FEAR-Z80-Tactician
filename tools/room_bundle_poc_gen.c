@@ -2162,6 +2162,204 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
     free(frames);
 }
 
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+/*
+ * Random-access playable hero chamber.
+ *
+ * Unlike the route pack, every pose is self-contained: before baking each pose
+ * the dynamic cache is reset, so ordinary patterns deterministically occupy
+ * slots 3..N while the eight hero-dictionary patterns remain pinned at the top
+ * of VRAM. Runtime may therefore relocate the ordinary contiguous block into
+ * either of two disjoint VRAM pools and alternate pools on every movement.
+ * The next camera image is uploaded entirely into slots the current image does
+ * not reference, then its name table is published atomically.
+ *
+ * Grid centre is Doomguy (78,24). An even 8x8 grid deliberately puts the hero
+ * between cells rather than on one; the existing 22-unit quality envelope
+ * removes the inner positions. The resulting forty legal positions x sixteen
+ * yaws = 640 free-order camera states.
+ */
+#define DOOM_PLAY_GRID_W 8u
+#define DOOM_PLAY_GRID_H 8u
+#define DOOM_PLAY_YAWS 16u
+#define DOOM_PLAY_STEP 8
+#define DOOM_PLAY_ORIGIN_X 50
+#define DOOM_PLAY_ORIGIN_Y (-4)
+#define DOOM_PLAY_POOL_A_BASE 3u
+#define DOOM_PLAY_POOL_SIZE 218u
+#define DOOM_PLAY_POOL_B_BASE (DOOM_PLAY_POOL_A_BASE+DOOM_PLAY_POOL_SIZE)
+#define DOOM_PLAY_DICT_TOP 448u
+
+static uint8_t doom_play_position_valid(uint8_t ix,uint8_t iy){
+    double x=(double)(DOOM_PLAY_ORIGIN_X+(int)ix*DOOM_PLAY_STEP);
+    double y=(double)(DOOM_PLAY_ORIGIN_Y+(int)iy*DOOM_PLAY_STEP);
+    double dx=x-78.0,dy=y-24.0;
+    return (uint8_t)(dx*dx+dy*dy >=
+                     (double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE*
+                     (double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE);
+}
+
+static void bake_doomguy_playable(const char *outdir){
+    World w;
+    FILE *pack,*manifest;
+    char path[512];
+    uint8_t lut[DOOM_PLAY_GRID_W*DOOM_PLAY_GRID_H];
+    uint8_t pos_count=0u,ix,iy,yaw_i,dict_count,k;
+    uint16_t state_count=0u,peak_patterns=0u;
+    uint32_t sum_patterns=0u;
+    uint16_t map[TSP_MAP_CELLS];
+    uint8_t dict_bytes[CODEC_MAX_PATTERNS][TSP_HOST_TILE_BYTES];
+    uint16_t dict_base;
+
+    make_world(11u,&w);
+    tsp_host_composite_codec_disable();
+    train_doomguy_codec(&w);
+    dict_count=tsp_host_composite_codec_pattern_count();
+    if(!dict_count||dict_count>32u)die("playable hero dictionary invalid");
+    dict_base=(uint16_t)(DOOM_PLAY_DICT_TOP-dict_count);
+    if(DOOM_PLAY_POOL_B_BASE+DOOM_PLAY_POOL_SIZE>dict_base)
+        die("playable hero VRAM pools overlap dictionary");
+
+    memset(lut,0xff,sizeof(lut));
+    for(iy=0u;iy<DOOM_PLAY_GRID_H;++iy)for(ix=0u;ix<DOOM_PLAY_GRID_W;++ix)
+        if(doom_play_position_valid(ix,iy))
+            lut[(uint16_t)iy*DOOM_PLAY_GRID_W+ix]=pos_count++;
+    state_count=(uint16_t)pos_count*DOOM_PLAY_YAWS;
+    if(pos_count!=40u||state_count!=640u)
+        die("playable hero grid cardinality changed unexpectedly");
+
+    for(k=0u;k<dict_count;++k)
+        tsp_host_composite_codec_pattern_4bpp(k,dict_bytes[k]);
+
+    snprintf(path,sizeof(path),"%s/doomguy_playable.pack",outdir);
+    pack=fopen(path,"wb");if(!pack)die("cannot create playable hero pack");
+    fwrite("DGP1",1,4,pack);
+    write_u16(pack,1u);
+    fputc(DOOM_PLAY_GRID_W,pack);
+    fputc(DOOM_PLAY_GRID_H,pack);
+    fputc(DOOM_PLAY_YAWS,pack);
+    fputc(pos_count,pack);
+    write_u16(pack,(uint16_t)(int16_t)DOOM_PLAY_ORIGIN_X);
+    write_u16(pack,(uint16_t)(int16_t)DOOM_PLAY_ORIGIN_Y);
+    fputc(DOOM_PLAY_STEP,pack);
+    fputc(16u,pack); /* eye z */
+    write_u16(pack,DOOM_PLAY_POOL_A_BASE);
+    write_u16(pack,DOOM_PLAY_POOL_B_BASE);
+    write_u16(pack,DOOM_PLAY_POOL_SIZE);
+    write_u16(pack,dict_base);
+    fputc(dict_count,pack);
+    fputc(0u,pack);
+    write_u16(pack,state_count);
+    fwrite(lut,1,sizeof(lut),pack);
+    for(k=0u;k<dict_count;++k)
+        fwrite(dict_bytes[k],1,TSP_HOST_TILE_BYTES,pack);
+
+    snprintf(path,sizeof(path),"%s/doomguy_playable_manifest.txt",outdir);
+    manifest=fopen(path,"w");if(!manifest)die("cannot create playable hero manifest");
+    fprintf(manifest,
+            "Doomguy playable random-access bake v1\n"
+            "grid=%ux%u step=%u origin=(%d,%d) positions=%u yaws=%u states=%u\n"
+            "quality_min_clearance=%.2f pool_a=%u pool_b=%u pool_size=%u dict_base=%u dict_count=%u\n",
+            (unsigned)DOOM_PLAY_GRID_W,(unsigned)DOOM_PLAY_GRID_H,
+            (unsigned)DOOM_PLAY_STEP,DOOM_PLAY_ORIGIN_X,DOOM_PLAY_ORIGIN_Y,
+            (unsigned)pos_count,(unsigned)DOOM_PLAY_YAWS,(unsigned)state_count,
+            (double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE,
+            (unsigned)DOOM_PLAY_POOL_A_BASE,(unsigned)DOOM_PLAY_POOL_B_BASE,
+            (unsigned)DOOM_PLAY_POOL_SIZE,(unsigned)dict_base,(unsigned)dict_count);
+
+    tsp_host_composite_set_scene(&w.scene);
+
+    for(iy=0u;iy<DOOM_PLAY_GRID_H;++iy)for(ix=0u;ix<DOOM_PLAY_GRID_W;++ix){
+        uint8_t ordinal=lut[(uint16_t)iy*DOOM_PLAY_GRID_W+ix];
+        if(ordinal==0xffu)continue;
+        for(yaw_i=0u;yaw_i<DOOM_PLAY_YAWS;++yaw_i){
+            Pose p;
+            const TSPHostTileLoad *loads;
+            uint16_t n,li,dyn_count=0u,s;
+            uint8_t present[DOOM_PLAY_POOL_SIZE];
+            uint8_t patterns[DOOM_PLAY_POOL_SIZE][TSP_HOST_TILE_BYTES];
+
+            p.x=(double)(DOOM_PLAY_ORIGIN_X+(int)ix*DOOM_PLAY_STEP);
+            p.y=(double)(DOOM_PLAY_ORIGIN_Y+(int)iy*DOOM_PLAY_STEP);
+            p.z=16.0;
+            p.yaw=(uint8_t)(yaw_i*16u);
+
+            memset(present,0,sizeof(present));
+            tsp_host_composite_reset_cache();
+            tsp_host_composite_codec_begin_route();
+            render_pose(&w,&p,map);
+            loads=tsp_host_composite_frame_loads();
+            n=tsp_host_composite_frame_load_count();
+
+            for(li=0u;li<n;++li){
+                uint16_t slot=loads[li].slot;
+                uint16_t q;
+                if(slot>=dict_base){
+                    if(slot>=DOOM_PLAY_DICT_TOP)
+                        die("playable hero emitted tile outside hardware VRAM");
+                    continue; /* resident dictionary, loaded once at boot */
+                }
+                if(slot<DOOM_PLAY_POOL_A_BASE)
+                    die("playable hero unexpectedly reloads a permanent base tile");
+                q=(uint16_t)(slot-DOOM_PLAY_POOL_A_BASE);
+                if(q>=DOOM_PLAY_POOL_SIZE)
+                    die("playable hero state exceeds one VRAM pool");
+                present[q]=1u;
+                memcpy(patterns[q],loads[li].bytes,TSP_HOST_TILE_BYTES);
+                if(q+1u>dyn_count)dyn_count=(uint16_t)(q+1u);
+            }
+            for(s=0u;s<dyn_count;++s)
+                if(!present[s])die("playable hero dynamic tile block is not contiguous");
+
+            /* Every ordinary reference must live inside this state's compact
+             * A-pool block. Dictionary/base references are shared resident. */
+            for(s=0u;s<TSP_MAP_CELLS;++s){
+                uint16_t id=(uint16_t)(map[s]&TSP_TILE_ID_MASK);
+                if(id>=DOOM_PLAY_POOL_A_BASE&&id<dict_base &&
+                   id>=DOOM_PLAY_POOL_A_BASE+dyn_count)
+                    die("playable hero map references unloaded dynamic slot");
+            }
+
+            write_u16(pack,dyn_count);
+            for(s=0u;s<TSP_MAP_CELLS;++s)write_u16(pack,map[s]);
+            for(s=0u;s<dyn_count;++s)
+                fwrite(patterns[s],1,TSP_HOST_TILE_BYTES,pack);
+
+            sum_patterns+=dyn_count;
+            if(dyn_count>peak_patterns)peak_patterns=dyn_count;
+
+            if(yaw_i==0u)
+                fprintf(manifest,"position=%u grid=(%u,%u) world=(%.0f,%.0f)\n",
+                        (unsigned)ordinal,(unsigned)ix,(unsigned)iy,p.x,p.y);
+        }
+    }
+
+    fprintf(manifest,
+            "state_pack=PASS peak_dynamic_patterns=%u mean_dynamic_patterns_x100=%lu "
+            "codec_cells=%lu codec_mean_hamming_x1000=%lu codec_max_hamming=%u\n",
+            (unsigned)peak_patterns,
+            (unsigned long)(state_count?((uint64_t)sum_patterns*100u)/state_count:0u),
+            (unsigned long)tsp_host_composite_codec_cell_count(),
+            (unsigned long)(tsp_host_composite_codec_cell_count()?
+                ((uint64_t)tsp_host_composite_codec_error_sum()*1000u)/
+                tsp_host_composite_codec_cell_count():0u),
+            (unsigned)tsp_host_composite_codec_error_max());
+    fprintf(manifest,"random_access_double_buffer=PASS\n");
+    fprintf(manifest,"quality_clearance_grid=PASS\n");
+    fprintf(manifest,"playable_states=%u\n",(unsigned)state_count);
+    fflush(pack);
+    fprintf(manifest,"pack_bytes=%ld\n",ftell(pack));
+    fclose(manifest);
+    fclose(pack);
+
+    printf("DOOM_PLAYABLE_PASS positions=%u states=%u peak_patterns=%u "
+           "mean_patterns_x100=%lu dict=%u\n",
+           (unsigned)pos_count,(unsigned)state_count,(unsigned)peak_patterns,
+           (unsigned long)(state_count?((uint64_t)sum_patterns*100u)/state_count:0u),
+           (unsigned)dict_count);
+}
+#endif
+
 int main(int argc,char **argv){
     const char *outdir;
     char path[512];
@@ -2220,6 +2418,13 @@ int main(int argc,char **argv){
         if(m.vertex_count!=4u||m.triangle_count!=4u||m.edge_count!=0u)
             die("indexed mesh ingestion self-test failed");
     }
+
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+    if(getenv("ROOM_BUNDLE_PLAYABLE")){
+        bake_doomguy_playable(outdir);
+        return 0;
+    }
+#endif
 
     snprintf(path,sizeof(path),"%s/room_bundle_poc.pack",outdir);
     pack=fopen(path,"wb");if(!pack)die("cannot create room bundle pack");
