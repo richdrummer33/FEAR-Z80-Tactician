@@ -5,11 +5,15 @@ on:
     branches:
       - experiment/gg-doomguy-glb-import
       - experiment/gg-normal-seam-lighting
+      - experiment/gg-doomguy-hero-codec
     paths:
       - ".github/workflows/doomguy-hybrid-lighting-sweep.yml"
       - "tools/room_mesh_bake.*"
       - "tools/polar_baked_composite.*"
       - "tools/glb_rmb/**"
+      - "tools/room_bundle_poc_gen.c"
+      - "tools/room_bundle_pack_to_c.py"
+      - "src/main_doomguy_viewer_gg.c"
   workflow_dispatch:
 
 # Replaces the old coarse lighting-proxy sweep. That sweep tuned the triangle
@@ -88,6 +92,7 @@ jobs:
           mkdir -p "$out"
           ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_CAPTURE_REVIEW=1 \
             ROOM_BUNDLE_CAPTURE_OWNER=1 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 \
+            ROOM_BUNDLE_ATOMIC_UPLOAD_CAP=48 \
             build/hero/room_bundle_poc_gen "$out"
           grep -q '^doomguy_hero_chamber=PASS$' "$out/room_bundle_poc_manifest.txt"
           grep -q '^independent_bundle_replay=PASS$' "$out/room_bundle_poc_manifest.txt"
@@ -162,6 +167,7 @@ jobs:
             tools/polar_baked_composite.c tools/room_mesh_bake.c \
             tools/room_bundle_poc_gen.c -lm -o build/hero-rom/room-bundle-gen
           ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=255 \
+            ROOM_BUNDLE_ATOMIC_UPLOAD_CAP=48 \
             build/hero-rom/room-bundle-gen build/hero-rom/host \
             | tee build/hero-rom/bundle-bake.txt
           python3 tools/room_bundle_pack_to_c.py \
