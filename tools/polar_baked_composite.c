@@ -1548,6 +1548,11 @@ void tsp_host_composite_codec_train_commit(void){
 }
 
 uint8_t tsp_host_composite_codec_pattern_count(void){return g_codec_count;}
+void tsp_host_composite_codec_pattern_4bpp(uint8_t index,
+                                           uint8_t out[TSP_HOST_TILE_BYTES]){
+    if(index>=g_codec_count)die("hero codec dictionary index out of range");
+    encode_4bpp(g_codec_pix[index],out);
+}
 uint32_t tsp_host_composite_codec_sample_count(void){return g_codec_sample_total;}
 uint32_t tsp_host_composite_codec_cell_count(void){return g_codec_cells;}
 uint32_t tsp_host_composite_codec_error_sum(void){return g_codec_error_sum;}
