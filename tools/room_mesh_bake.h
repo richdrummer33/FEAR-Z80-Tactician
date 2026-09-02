@@ -74,6 +74,12 @@ typedef struct RMBObject {
      * every stop carries a similar share of the surface. The thresholds
      * themselves are bake state, not authored data, and live with the bake. */
     uint8_t equalize;
+    /* Optional fraction of the object's brightness distribution reserved for
+     * the top ramp stop. Zero keeps equal quantiles. A small nonzero value
+     * (for example 0.10) prevents a front-lit hero from spending a fifth of
+     * its entire surface on the same near-white used by bright architecture,
+     * while preserving true highlights and all five geometric shade levels. */
+    double highlight_fraction;
     /* Crease emphasis. crease_coverage is the fraction of the surface that
      * receives it, taken as a percentile of the measured recess field, so the
      * control means "how much of the model reads as folded" rather than an
@@ -138,6 +144,8 @@ void rmb_set_object_smooth_shading(RMBScene *s,uint8_t object_id,uint8_t on);
 void rmb_set_object_ramp_shading(RMBScene *s,uint8_t object_id,
                                  uint8_t levels,uint8_t smooth);
 void rmb_set_object_ramp_equalize(RMBScene *s,uint8_t object_id,uint8_t on);
+void rmb_set_object_ramp_highlight_fraction(RMBScene *s,uint8_t object_id,
+                                            double fraction);
 void rmb_set_object_crease(RMBScene *s,uint8_t object_id,double coverage,
                            double depth);
 void rmb_set_object_ramp_dither(RMBScene *s,uint8_t object_id,uint8_t on);
