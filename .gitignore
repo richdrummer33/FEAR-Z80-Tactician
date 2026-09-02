@@ -67,6 +67,11 @@ build/*.png
 build/*.mp4
 build/libretro_*
 build/gearsystem_core_runner*
+# Bake/render scratch. The rules above only match build/ at the top level, but
+# the host bakers also write loose executables and per-configuration
+# subdirectories full of .ppm frames and .pack data. Nothing under build/ is
+# tracked; committed ROM snapshots live in roms/, not here.
+build/
 
 # Curated Game Gear ROM snapshots (*.gg) are intentionally tracked.
 # Do not add a global *.gg ignore rule.
