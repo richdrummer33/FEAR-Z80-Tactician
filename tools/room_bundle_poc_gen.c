@@ -1909,9 +1909,22 @@ static uint16_t schedule_bundle_tiles(FramePack frames[ROUTE_FRAMES],
         if(cap_env&&*cap_env){
             long cap=strtol(cap_env,(char **)0,10);
             if(cap<1||cap>512)die("ROOM_BUNDLE_ATOMIC_UPLOAD_CAP must be 1..512");
-            for(t=1u;t<ROUTE_FRAMES;++t)
-                if(frames[t].tile_loads>frames[t].tile_safe_preloads+(uint16_t)cap)
-                    die("bundle frame cannot be atomically staged within upload cap");
+            {
+                uint8_t bad=0u;
+                for(t=1u;t<ROUTE_FRAMES;++t)
+                    if(frames[t].tile_loads>frames[t].tile_safe_preloads+(uint16_t)cap){
+                        fprintf(stderr,
+                                "ATOMIC_BLOCK frame=%u loads=%u safe=%u unsafe=%u cap=%ld excess_unsafe=%u\n",
+                                (unsigned)t,
+                                (unsigned)frames[t].tile_loads,
+                                (unsigned)frames[t].tile_safe_preloads,
+                                (unsigned)(frames[t].tile_loads-frames[t].tile_safe_preloads),
+                                cap,
+                                (unsigned)(frames[t].tile_loads-frames[t].tile_safe_preloads-(uint16_t)cap));
+                        bad=1u;
+                    }
+                if(bad)die("bundle frame cannot be atomically staged within upload cap");
+            }
         }
     }
 
