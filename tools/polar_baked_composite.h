@@ -197,6 +197,9 @@ void tsp_host_composite_codec_disable(void);
  * a transition from the preceding independently baked route. */
 void tsp_host_composite_codec_begin_route(void);
 uint8_t tsp_host_composite_codec_pattern_count(void);
+/* Copy one resident dictionary pattern in native GG 4bpp byte layout. */
+void tsp_host_composite_codec_pattern_4bpp(uint8_t index,
+                                           uint8_t out[TSP_HOST_TILE_BYTES]);
 uint32_t tsp_host_composite_codec_sample_count(void);
 uint32_t tsp_host_composite_codec_cell_count(void);
 uint32_t tsp_host_composite_codec_error_sum(void);
