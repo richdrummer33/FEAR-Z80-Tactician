@@ -15,7 +15,7 @@ import argparse
 import math
 import pathlib
 
-from doomguy_playable_pack_to_c import parse_pack
+from doomguy_playable_pack_to_c import build_orbit_entries, parse_pack
 
 MAGENTA = (255, 0, 255)
 TOP_SHADE = (208, 224, 240)
@@ -92,23 +92,6 @@ def tone_error(rgb_a, rgb_b, mask_a, mask_b, w, h, dx):
     return different, overlap, mean_abs
 
 
-def orbit_entries(meta, lut):
-    cx = meta["origin_x"] + 0.5 * (meta["grid_w"] - 1) * meta["step"]
-    cy = meta["origin_y"] + 0.5 * (meta["grid_h"] - 1) * meta["step"]
-    out = []
-    for q, ordinal in enumerate(lut):
-        if ordinal == 0xFF:
-            continue
-        ix = q % meta["grid_w"]
-        iy = q // meta["grid_w"]
-        x = meta["origin_x"] + ix * meta["step"]
-        y = meta["origin_y"] + iy * meta["step"]
-        angle = math.atan2(y - cy, x - cx)
-        out.append((angle, ordinal, x, y))
-    out.sort()
-    return out
-
-
 def pct(n, d):
     return 100.0 * n / d if d else 0.0
 
@@ -121,7 +104,9 @@ def main():
     args = ap.parse_args()
 
     meta, lut, _dictionary, _states = parse_pack(args.pack)
-    orbit = orbit_entries(meta, lut)
+    packed_orbit = build_orbit_entries(meta, lut)
+    orbit = [(angle, ordinal, x, y)
+             for angle, _radius, ordinal, _state, x, y in packed_orbit]
     cap = pathlib.Path(args.capture_dir)
 
     frames = {}
