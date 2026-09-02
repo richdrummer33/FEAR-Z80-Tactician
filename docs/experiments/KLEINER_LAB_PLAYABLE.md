@@ -24,6 +24,13 @@ The intent is semantic reconstruction, not BSP fidelity:
 No Source texture is stored. Texture detail is deliberately pushed down to
 features that survive 160x144 output and the existing tile codec.
 
+For reproducible measurement, `tools/hl2_bsp_lab_extract.py` can read a local
+Source BSP and emit a crop-only OBJ/reference manifest. Running it against the
+supplied canonical BSP with the default crop selected 1,565 source faces,
+triangulated to 4,672 triangles across 60 texture/material names. The GG scene
+does not ship that geometry; those numbers are useful precisely because they
+show how much source description is being thrown away before the bake.
+
 ## Colour strategy
 
 The five-stop semantic brightness ramp remains intact, but the GG palettes are
