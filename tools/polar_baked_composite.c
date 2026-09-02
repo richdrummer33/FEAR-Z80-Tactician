@@ -166,6 +166,11 @@ static uint8_t g_codec_palette[CODEC_MAX_PATTERNS];
 static uint8_t g_codec_bootstrap;
 static uint32_t g_codec_cells,g_codec_error_sum;
 static uint8_t g_codec_error_max;
+/* Slots referenced by the last exported (therefore visible) frame.  Codec
+ * routes allocate misses copy-on-write around this set so a preload can never
+ * corrupt the complete frame that remains on screen. */
+static uint8_t g_codec_prev_slot[HW_TILES];
+static uint8_t g_codec_prev_valid;
 static void codec_cache_reset(void);
 
 static TSPHostTileLoad g_loads[TSP_HOST_MAX_FRAME_LOADS];
@@ -1434,6 +1439,13 @@ void tsp_host_composite_codec_disable(void){
     g_codec_owner=0xffu;g_codec_target=0u;g_codec_count=0u;
     g_codec_training=0u;g_codec_ready=0u;g_codec_bootstrap=0u;
     g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
+    memset(g_codec_prev_slot,0,sizeof(g_codec_prev_slot));
+    g_codec_prev_valid=0u;
+}
+
+void tsp_host_composite_codec_begin_route(void){
+    memset(g_codec_prev_slot,0,sizeof(g_codec_prev_slot));
+    g_codec_prev_valid=0u;
 }
 
 void tsp_host_composite_codec_train_begin(uint8_t owner_sid,uint8_t patterns){
@@ -1527,6 +1539,8 @@ void tsp_host_composite_codec_train_commit(void){
     g_codec_count=outn;
     g_codec_training=0u;g_codec_ready=1u;g_codec_bootstrap=1u;
     g_codec_cells=0u;g_codec_error_sum=0u;g_codec_error_max=0u;
+    memset(g_codec_prev_slot,0,sizeof(g_codec_prev_slot));
+    g_codec_prev_valid=0u;
     free(g_codec_samples);
     g_codec_samples=(CodecSample *)0;
     g_codec_samples_n=0u;g_codec_samples_cap=0u;
@@ -1650,7 +1664,29 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
         uint32_t oldest=UINT32_MAX;
         uint16_t dynamic_limit=(g_codec_ready&&g_codec_count)?
                                (uint16_t)(HW_TILES-g_codec_count):HW_TILES;
-        for(s=3u;s<dynamic_limit;++s)if(!g_cache_valid[s]){chosen=s;break;}
+        /* Copy-on-write on the quality-clamped codec route. A miss may
+         * use only a dynamic slot the previous visible frame did not reference.
+         * With 440 dynamic slots and at most 360 name-table cells this leaves
+         * at least eighty candidates even in the pathological all-unique case.
+         * Retained patterns still reuse their slot without an upload. */
+        for(s=3u;s<dynamic_limit;++s)
+            if(!g_cache_valid[s]&&
+               (!g_codec_ready||!g_codec_prev_valid||!g_codec_prev_slot[s])){
+                chosen=s;break;
+            }
+        if(chosen==0xffffu){
+            for(s=3u;s<dynamic_limit;++s)
+                if(!needed[s]&&
+                   (!g_codec_ready||!g_codec_prev_valid||!g_codec_prev_slot[s])&&
+                   g_cache_last[s]<=oldest){
+                    oldest=g_cache_last[s];chosen=s;
+                }
+        }
+        /* A route with more than the available copy-on-write headroom is not
+         * silently allowed to tear. The bake must fail so rate allocation can
+         * be revisited explicitly. */
+        if(chosen==0xffffu&&g_codec_ready&&g_codec_prev_valid)
+            die("hero codec copy-on-write VRAM headroom exhausted");
         if(chosen==0xffffu){
             for(s=3u;s<dynamic_limit;++s)if(!needed[s]&&g_cache_last[s]<=oldest){
                 oldest=g_cache_last[s];chosen=s;
@@ -1669,6 +1705,13 @@ void tsp_host_composite_export(uint16_t out[TSP_MAP_CELLS]){
     if(g_load_count>g_peak_loads)g_peak_loads=g_load_count;
     for(i=0u;i<TSP_MAP_CELLS;++i)
         out[i]=(uint16_t)(req[cell_req[i]].slot|cell_attr[i]);
+
+    if(g_codec_ready){
+        memset(g_codec_prev_slot,0,sizeof(g_codec_prev_slot));
+        for(i=0u;i<req_count;++i)
+            if(req[i].slot<HW_TILES)g_codec_prev_slot[req[i].slot]=1u;
+        g_codec_prev_valid=1u;
+    }
 }
 
 uint16_t tsp_host_composite_frame_load_count(void){return g_load_count;}
