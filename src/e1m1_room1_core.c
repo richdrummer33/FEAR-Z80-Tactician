@@ -1,4 +1,5 @@
 #include "e1m1_room1_core.h"
+#include "generated/e1m1_room1_exact_geometry.h"
 #include <string.h>
 
 #ifndef E1_PROFILE_HOOKS
@@ -20,81 +21,8 @@ volatile uint8_t g_ts_render_stage;
 #define E1_TURN_Q4 32
 #define E1_TURN_ACCEL_Q4 8
 
-typedef struct E1Surface {
-    int16_t x0,y0,x1,y1;
-    int8_t z0,z1;
-    int8_t shade_bias;
-    uint8_t flags;
-} E1Surface;
-
-#define E1_SURF_PORTAL 1u
-
-/*
- * E1M1 Room-1 live hardware proof.
- *
- * This first pass locks in the structural/vertical vocabulary extracted from
- * the Canvex E1M1 sector data while keeping the GG geometry deliberately tiny:
- * main floor 0, six 2-unit stair rises to a 14-unit landing, main ceiling 29,
- * raised landing ceiling 25, two pillars, and a 16-unit-high open doorway
- * throat. XY is the room-local simplified contour used for the first hardware
- * proof; the source-sector importer will replace these hand-packed XY values
- * without changing the runtime renderer contract.
- *
- * The east doorway terminator is a temporary portal plane. It is removed when
- * Room 2 is loaded so the same live renderer can recurse/stream beyond it.
- */
-static const E1Surface k_surfaces[] = {
-    /* Outer octagonal shell, east wall split around open doorway. */
-    {24,24,80,24, 0,29, 0,0},
-    {80,24,88,32, 0,29, 0,0},
-    {88,32,88,48, 0,29, 0,0},
-    {88,64,88,72, 0,29, 0,0},
-    {88,72,80,80, 0,29, 0,0},
-    {80,80,24,80, 0,29, 0,0},
-    {24,80,16,72, 0,29, 0,0},
-    {16,72,16,32, 0,29, 0,0},
-    {16,32,24,24, 0,29, 0,0},
-
-    /* Open doorway / Room-2 throat. */
-    {88,48,112,48, 0,16,-1,0},
-    {112,64,88,64, 0,16,-1,0},
-    {112,48,112,64, 0,16,-2,E1_SURF_PORTAL},
-
-    /* Raised shotgun landing: lower exposed sides + upper bulkhead transition. */
-    {24,32,44,32, 0,14, 0,0},
-    {24,48,24,32, 0,14, 0,0},
-    {44,32,44,48,12,14, 0,0},
-    {24,32,44,32,25,29,-1,0},
-    {24,48,24,32,25,29,-1,0},
-
-    /* Six actual stair risers, 2 world units each. */
-    {48,32,48,48,10,12, 1,0},
-    {52,32,52,48, 8,10, 1,0},
-    {56,32,56,48, 6, 8, 1,0},
-    {60,32,60,48, 4, 6, 1,0},
-    {64,32,64,48, 2, 4, 1,0},
-    {68,32,68,48, 0, 2, 1,0},
-
-    /* Stair side faces expose the stepped floor profile. */
-    {44,32,48,32, 0,12, 0,0},
-    {48,32,52,32, 0,10, 0,0},
-    {52,32,56,32, 0, 8, 0,0},
-    {56,32,60,32, 0, 6, 0,0},
-    {60,32,64,32, 0, 4, 0,0},
-    {64,32,68,32, 0, 2, 0,0},
-
-    /* Two square full-height pillars. */
-    {52,56,60,56, 0,29, 1,0},
-    {60,56,60,64, 0,29, 1,0},
-    {60,64,52,64, 0,29, 1,0},
-    {52,64,52,56, 0,29, 1,0},
-    {68,56,76,56, 0,29, 1,0},
-    {76,56,76,64, 0,29, 1,0},
-    {76,64,68,64, 0,29, 1,0},
-    {68,64,68,56, 0,29, 1,0},
-};
-
-#define E1_SURFACE_COUNT ((uint8_t)(sizeof(k_surfaces)/sizeof(k_surfaces[0])))
+typedef E1XSegment E1Surface;
+#define E1_SURFACE_COUNT E1X_SEGMENT_COUNT
 
 static const int8_t k_sin[256] = {
 0,3,6,9,12,16,19,22,25,28,31,34,37,40,43,46,49,51,54,57,60,63,65,68,71,73,76,78,81,83,85,88,
@@ -374,8 +302,10 @@ static uint8_t project_surface(const E1CameraCtx *cam,const E1Surface *w,
                                int16_t *sx0,int16_t *sx1,
                                uint8_t *iv0,uint8_t *iv1,
                                uint8_t *left_real,uint8_t *right_real) {
-    int16_t dx0=(int16_t)(w->x0-cam->px),dy0=(int16_t)(w->y0-cam->py);
-    int16_t dx1=(int16_t)(w->x1-cam->px),dy1=(int16_t)(w->y1-cam->py);
+    const E1XVertex *va=&k_e1x_vertices[w->a];
+    const E1XVertex *vb=&k_e1x_vertices[w->b];
+    int16_t dx0=(int16_t)va->x-cam->px,dy0=(int16_t)va->y-cam->py;
+    int16_t dx1=(int16_t)vb->x-cam->px,dy1=(int16_t)vb->y-cam->py;
     int16_t z0=(int16_t)(shr_signed((int16_t)(
         mul_s8_s8((int8_t)dx0,cam->cs)+mul_s8_s8((int8_t)dy0,cam->sn)),3)-cam->frac_z);
     int16_t x0=(int16_t)(shr_signed((int16_t)(
@@ -464,7 +394,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
      * a visible tile, so its expensive vertical raster loop is never entered.
      */
     for(si=0u;si<E1_SURFACE_COUNT;++si) {
-        const E1Surface *w=&k_surfaces[si];
+        const E1Surface *w=&k_e1x_segments[si];
         int16_t sx0,sx1;
         uint8_t iv0,iv1,left_real,right_real;
         int8_t c0,c1;
@@ -488,7 +418,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
             run->right_real=right_real;
         }
 
-        if(w->z0==0&&w->z1==29&&!(w->flags&E1_SURF_PORTAL)) {
+        if(w->z0==0&&w->z1==29) {
             int16_t span=(int16_t)(c1-c0+1);
             int16_t iq=(int16_t)iv0<<6,step=0;
             int8_t cc;
@@ -509,7 +439,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     E1_STAGE(4u);
     for(si=0u;si<run_count;++si) {
         const E1Run *run=&g_runs[si];
-        const E1Surface *w=&k_surfaces[run->sid];
+        const E1Surface *w=&k_e1x_segments[run->sid];
         int8_t cc;
         int16_t span=(int16_t)(run->c1-run->c0+1);
         int16_t iq=(int16_t)run->iv0<<6,step=0;
