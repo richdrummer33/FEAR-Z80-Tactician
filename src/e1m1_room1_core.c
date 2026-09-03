@@ -163,6 +163,33 @@ static int16_t shr_signed(int16_t v,uint8_t n) {
     return v>=0?(int16_t)(v>>n):(int16_t)-(((-v)>>n));
 }
 
+/* Z80-cheap multiplies. All hot-path geometry operands are genuinely 8-bit:
+ * Room-1 local delta XY is within +/-96, sin/cos is Q7, height deltas are
+ * within +/-29. Avoid SDCC's generic signed-long multiply helpers. */
+static uint16_t mul_u8_u8(uint8_t a,uint8_t b) {
+    uint16_t r=0u,x=a;
+    while(b) {
+        if(b&1u)r=(uint16_t)(r+x);
+        x=(uint16_t)(x<<1);
+        b>>=1;
+    }
+    return r;
+}
+
+static int16_t mul_s8_s8(int8_t a,int8_t b) {
+    uint8_t neg=(uint8_t)((a<0)^(b<0));
+    uint8_t ua=(uint8_t)(a<0?-a:a);
+    uint8_t ub=(uint8_t)(b<0?-b:b);
+    uint16_t r=mul_u8_u8(ua,ub);
+    return neg?-(int16_t)r:(int16_t)r;
+}
+
+static int16_t mul_s8_u8(int8_t a,uint8_t b) {
+    uint8_t ua=(uint8_t)(a<0?-a:a);
+    uint16_t r=mul_u8_u8(ua,b);
+    return a<0?-(int16_t)r:(int16_t)r;
+}
+
 static uint8_t point_in_outer(int16_t x,int16_t y) {
     if(x>=24&&x<=80&&y>=24&&y<=80)return 1u;
     if(x>=16&&x<24&&y>=32&&y<=72)return 1u;
@@ -238,10 +265,10 @@ void e1_room1_step(E1Room1State *s,uint8_t input) {
 
     sn=k_sin[s->yaw];
     cs=k_sin[(uint8_t)(s->yaw+64u)];
-    fdx=(int16_t)(((int16_t)s->speed_q4*cs)>>11);
-    fdy=(int16_t)(((int16_t)s->speed_q4*sn)>>11);
-    sdx=(int16_t)((-(int16_t)s->strafe_q4*sn)>>11);
-    sdy=(int16_t)(((int16_t)s->strafe_q4*cs)>>11);
+    fdx=shr_signed(mul_s8_s8((int8_t)s->speed_q4,cs),11);
+    fdy=shr_signed(mul_s8_s8((int8_t)s->speed_q4,sn),11);
+    sdx=shr_signed((int16_t)-mul_s8_s8((int8_t)s->strafe_q4,sn),11);
+    sdy=shr_signed(mul_s8_s8((int8_t)s->strafe_q4,cs),11);
     dx=(int16_t)((fdx+sdx)*s->speed_scale);
     dy=(int16_t)((fdy+sdy)*s->speed_scale);
 
@@ -318,10 +345,10 @@ static int16_t project_x(int16_t xq4,uint8_t inv) {
     if(ax>(uint16_t)(127u<<4))ax=(uint16_t)(127u<<4);
     xi=(uint16_t)(ax>>4);
     xf=(uint16_t)(ax&15u);
-    p=(uint16_t)(xi*inv);
+    p=mul_u8_u8((uint8_t)xi,inv);
     px=(int16_t)(p>>5);
     rem=(uint16_t)(p&31u);
-    extra=(uint16_t)(((rem<<4)+xf*inv)>>9);
+    extra=(uint16_t)(((rem<<4)+mul_u8_u8((uint8_t)xf,inv))>>9);
     px=(int16_t)(px+(int16_t)extra);
     if(neg)px=(int16_t)-px;
     return (int16_t)(80+px);
@@ -349,10 +376,14 @@ static uint8_t project_surface(const E1CameraCtx *cam,const E1Surface *w,
                                uint8_t *left_real,uint8_t *right_real) {
     int16_t dx0=(int16_t)(w->x0-cam->px),dy0=(int16_t)(w->y0-cam->py);
     int16_t dx1=(int16_t)(w->x1-cam->px),dy1=(int16_t)(w->y1-cam->py);
-    int16_t z0=(int16_t)((((int16_t)dx0*cam->cs+(int16_t)dy0*cam->sn)>>3)-cam->frac_z);
-    int16_t x0=(int16_t)(((-(int16_t)dx0*cam->sn+(int16_t)dy0*cam->cs)>>3)-cam->frac_x);
-    int16_t z1=(int16_t)((((int16_t)dx1*cam->cs+(int16_t)dy1*cam->sn)>>3)-cam->frac_z);
-    int16_t x1=(int16_t)(((-(int16_t)dx1*cam->sn+(int16_t)dy1*cam->cs)>>3)-cam->frac_x);
+    int16_t z0=(int16_t)(shr_signed((int16_t)(
+        mul_s8_s8((int8_t)dx0,cam->cs)+mul_s8_s8((int8_t)dy0,cam->sn)),3)-cam->frac_z);
+    int16_t x0=(int16_t)(shr_signed((int16_t)(
+        -mul_s8_s8((int8_t)dx0,cam->sn)+mul_s8_s8((int8_t)dy0,cam->cs)),3)-cam->frac_x);
+    int16_t z1=(int16_t)(shr_signed((int16_t)(
+        mul_s8_s8((int8_t)dx1,cam->cs)+mul_s8_s8((int8_t)dy1,cam->sn)),3)-cam->frac_z);
+    int16_t x1=(int16_t)(shr_signed((int16_t)(
+        -mul_s8_s8((int8_t)dx1,cam->sn)+mul_s8_s8((int8_t)dy1,cam->cs)),3)-cam->frac_x);
     uint8_t clip0=0u,clip1=0u;
 
     if(z0<E1_NEAR_Z_Q4&&z1<E1_NEAR_Z_Q4)return 0u;
@@ -405,8 +436,10 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     cam.py=(int16_t)(s->y_q4>>4);
     cam.sn=k_sin[s->yaw];
     cam.cs=k_sin[(uint8_t)(s->yaw+64u)];
-    cam.frac_z=shr_signed((int16_t)((int16_t)fx*cam.cs+(int16_t)fy*cam.sn),7);
-    cam.frac_x=shr_signed((int16_t)(-(int16_t)fx*cam.sn+(int16_t)fy*cam.cs),7);
+    cam.frac_z=shr_signed((int16_t)(
+        mul_s8_s8((int8_t)fx,cam.cs)+mul_s8_s8((int8_t)fy,cam.sn)),7);
+    cam.frac_x=shr_signed((int16_t)(
+        -mul_s8_s8((int8_t)fx,cam.sn)+mul_s8_s8((int8_t)fy,cam.cs)),7);
 
     E1_STAGE(1u);
     if(!g_base_ready) {
@@ -499,9 +532,9 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
 
             shade=shade_for(inv,w->shade_bias);
             top=(int16_t)(E1_HORIZON-
-                (((int16_t)w->z1-(s->z_q4>>4))*(int16_t)inv>>5));
+                shr_signed(mul_s8_u8((int8_t)((int16_t)w->z1-(s->z_q4>>4)),inv),5));
             bot=(int16_t)(E1_HORIZON-
-                (((int16_t)w->z0-(s->z_q4>>4))*(int16_t)inv>>5));
+                shr_signed(mul_s8_u8((int8_t)((int16_t)w->z0-(s->z_q4>>4)),inv),5));
             rt=row_floor(top);
             rb=row_floor(bot);
             if(rt>rb) {
