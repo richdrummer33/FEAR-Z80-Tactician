@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           make polar-test | tee build/e1m1-room1/standard-polar-regression.txt
-          grep -q 'PASS' build/e1m1-room1/standard-polar-regression.txt
+          grep -q 'frames=360' build/e1m1-room1/standard-polar-regression.txt
 
       - name: Install GBDK 4.5.0
         shell: bash
