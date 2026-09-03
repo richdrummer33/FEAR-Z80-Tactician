@@ -19,12 +19,15 @@ on:
       - "tools/iterative_solver.py"
       - "tools/solve_nested_distance_codec.py"
       - "tools/sweep_nested_distance_codec.py"
+      - "tools/resident_tile_dictionary.py"
+      - "tools/analyze_resident_lod_dictionary.py"
       - "tools/render_dense_corpus_sheets.py"
       - "tools/glb_rmb/**"
       - "tests/test_dense_corpus_reader.py"
       - "tests/test_nested_lod_core.py"
       - "tests/test_iterative_solver.py"
       - "tests/test_nested_distance_sweep.py"
+      - "tests/test_resident_tile_dictionary.py"
   workflow_dispatch:
 
 jobs:
@@ -56,6 +59,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_nested_lod_core.py' -v
           python3 -m unittest discover -s tests -p 'test_iterative_solver.py' -v
           python3 -m unittest discover -s tests -p 'test_nested_distance_sweep.py' -v
+          python3 -m unittest discover -s tests -p 'test_resident_tile_dictionary.py' -v
 
       - name: Warning-clean host build
         run: |
@@ -163,6 +167,20 @@ jobs:
           test -s build/corpus/nested-rd-table.tsv
           test "$(grep -c '^RD_SWEEP_RESULT ' build/corpus/nested-rd.txt)" = 20
 
+      - name: Resident LOD dictionary microscope
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_resident_lod_dictionary.py \
+            build/corpus/host/doomguy_dense_corpus.dhc \
+            --angles 0,64,128,192 --additions 32 \
+            --checkpoints 0,4,8,16,32 \
+            --summary-json build/corpus/resident-lod-dictionary.json \
+            | tee build/corpus/resident-lod-dictionary.txt
+          grep -q '^RESIDENT_LOD_DICTIONARY_PASS$' build/corpus/resident-lod-dictionary.txt
+          grep -q '^RESIDENT_LOD_DICTIONARY_SUMMARY ' build/corpus/resident-lod-dictionary.txt
+          test "$(grep -c '^RESIDENT_LOD_DICTIONARY_RESULT ' build/corpus/resident-lod-dictionary.txt)" = 4
+          test -s build/corpus/resident-lod-dictionary.json
+
       - name: Report card
         run: |
           set -euo pipefail
@@ -203,6 +221,8 @@ jobs:
             build/corpus/nested-rd-summary.json
             build/corpus/nested-rd-table.tsv
             build/corpus/nested-rd-traces/**
+            build/corpus/resident-lod-dictionary.txt
+            build/corpus/resident-lod-dictionary.json
             build/corpus/sheets/**
             build/corpus/normalized/**
             build/corpus/host/doomguy_dense_corpus_manifest.txt
