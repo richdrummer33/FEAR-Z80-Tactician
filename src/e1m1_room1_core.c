@@ -1,5 +1,6 @@
 #include "e1m1_room1_core.h"
 #include "generated/e1m1_room1_exact_geometry.h"
+#include "generated/e1m1_room1_exact_floor.h"
 #include <string.h>
 
 #ifndef E1_PROFILE_HOOKS
@@ -118,46 +119,44 @@ static int16_t mul_s8_u8(int8_t a,uint8_t b) {
     return a<0?-(int16_t)r:(int16_t)r;
 }
 
-static uint8_t point_in_outer(int16_t x,int16_t y) {
-    if(x>=24&&x<=80&&y>=24&&y<=80)return 1u;
-    if(x>=16&&x<24&&y>=32&&y<=72)return 1u;
-    if(x>80&&x<=88&&y>=32&&y<=72)return 1u;
-    if(x>=88&&x<=112&&y>=48&&y<=64)return 1u;
-    return 0u;
-}
-
-static uint8_t in_pillar(int16_t x,int16_t y) {
-    if(x>=52&&x<=60&&y>=56&&y<=64)return 1u;
-    if(x>=68&&x<=76&&y>=56&&y<=64)return 1u;
+static uint8_t floor_world(int16_t xq,int16_t yq,int8_t *z) {
+    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
+    uint16_t a,b,i;
+    if(x<E1X_WORLD_MIN_X||x>E1X_WORLD_MAX_X||
+       y<E1X_WORLD_MIN_Y||y>E1X_WORLD_MAX_Y)return 0u;
+    a=k_e1x_floor_row_off[(uint8_t)(y-E1X_WORLD_MIN_Y)];
+    b=k_e1x_floor_row_off[(uint8_t)(y-E1X_WORLD_MIN_Y+1)];
+    for(i=a;i<b;++i) {
+        const E1XFloorRun *r=&k_e1x_floor_runs[i];
+        if(x>=r->x0&&x<=r->x1) {
+            if(z)*z=r->z;
+            return 1u;
+        }
+    }
     return 0u;
 }
 
 uint8_t e1_room1_is_walkable_q4(int16_t xq,int16_t yq) {
-    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
-    if(x>=112)return 0u; /* temporary Room-2 portal terminator */
-    return (uint8_t)(point_in_outer(x,y)&&!in_pillar(x,y));
+    int8_t z;
+    if(!floor_world(xq,yq,&z))return 0u;
+    if(!floor_world((int16_t)(xq-E1X_PLAYER_RADIUS_Q4),yq,&z))return 0u;
+    if(!floor_world((int16_t)(xq+E1X_PLAYER_RADIUS_Q4),yq,&z))return 0u;
+    if(!floor_world(xq,(int16_t)(yq-E1X_PLAYER_RADIUS_Q4),&z))return 0u;
+    if(!floor_world(xq,(int16_t)(yq+E1X_PLAYER_RADIUS_Q4),&z))return 0u;
+    return 1u;
 }
 
 int16_t e1_room1_floor_z_q4(int16_t xq,int16_t yq) {
-    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
-    int16_t z=0;
-    if(y>=32&&y<=48) {
-        if(x>=24&&x<44)z=14;
-        else if(x<48)z=12;
-        else if(x<52)z=10;
-        else if(x<56)z=8;
-        else if(x<60)z=6;
-        else if(x<64)z=4;
-        else if(x<68)z=2;
-    }
-    return (int16_t)(z<<4);
+    int8_t z=0;
+    if(!floor_world(xq,yq,&z))return 0;
+    return (int16_t)z<<4;
 }
 
 void e1_room1_reset(E1Room1State *s) {
-    s->x_q4=(int16_t)(80<<4);
-    s->y_q4=(int16_t)(56<<4);
+    s->x_q4=(int16_t)(22<<4);
+    s->y_q4=(int16_t)(52<<4);
     s->z_q4=(int16_t)(E1_EYE_HEIGHT_Q4+e1_room1_floor_z_q4(s->x_q4,s->y_q4));
-    s->yaw=128u;
+    s->yaw=0u;
     s->speed_q4=0;
     s->strafe_q4=0;
     s->turn_q4=0;
