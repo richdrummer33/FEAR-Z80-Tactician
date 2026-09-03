@@ -285,6 +285,26 @@ static int16_t camera_z_shift(uint8_t inv,const TSPState *s){
 #endif
 static int16_t signed_q12(uint16_t v){v&=4095u;return v>=2048u?(int16_t)v-4096:(int16_t)v;}
 
+#ifdef TSPF_E1M1_ROOM1
+static void e1pf_load_pvs_selected(uint8_t gx,uint8_t gy,uint8_t yaw_bin,uint8_t out[8]){
+    uint8_t i;
+    uint16_t state;
+    if(gx>=E1PF_PVS_COLS||gy>=E1PF_PVS_ROWS){
+        for(i=0u;i<8u;++i)out[i]=0u;
+        return;
+    }
+    state=(uint16_t)((((uint16_t)(gy&(E1PF_PVS_ROWS_PER_BANK-1u))*E1PF_PVS_COLS+gx)<<4)
+                     +(yaw_bin&15u));
+    switch(gy>>2){
+        case 0u:e1pf_load_pvs_bank0(state,out);break;
+        case 1u:e1pf_load_pvs_bank1(state,out);break;
+        case 2u:e1pf_load_pvs_bank2(state,out);break;
+        case 3u:e1pf_load_pvs_bank3(state,out);break;
+        default:for(i=0u;i<8u;++i)out[i]=0u;break;
+    }
+}
+#endif
+
 #ifndef __SDCC
 static uint16_t base_word(uint8_t row){
     if(row<9u)return TSP_TILE_CEILING;
@@ -874,7 +894,7 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
             mask[7]=0x03u; /* 58 exact surfaces. */
         }else
 #endif
-            e1pf_load_pvs(gx,gy,(uint8_t)((s->yaw+8u)>>4)&15u,mask);
+            e1pf_load_pvs_selected(gx,gy,(uint8_t)(((s->yaw+8u)>>4)&15u),mask);
         for(bi=0u;bi<8u;++bi){
             uint8_t m=mask[bi];
             for(bit=0u;bit<8u&&m;++bit){
