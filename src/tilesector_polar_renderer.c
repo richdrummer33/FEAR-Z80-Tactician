@@ -15,6 +15,12 @@ BANKREF(tilesector_polar_renderer_bank)
 #include <string.h>
 #include "tilesector_polar.h"
 #include "generated/tilesector_polar_data.inc"
+#ifdef TSPF_E1M1_ROOM1
+#include "generated/e1m1_room1_exact_geometry.h"
+#include "generated/e1m1_room1_exact_floor.h"
+#include "e1m1_room1_polar_meta.h"
+#include "e1m1_room1_polar_pvs.h"
+#endif
 
 #ifndef TSPF_LOCAL_PROJECTION
 #define TSPF_LOCAL_PROJECTION 0
@@ -31,6 +37,11 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_HOST_PIXEL_COMPOSITE
 #define TSPF_HOST_PIXEL_COMPOSITE 0
 #endif
+#if defined(__SDCC) && defined(TSPF_E1M1_ROOM1) && !TSPF_FORCE_C_MATERIALIZER
+#define TSPF_E1M1_GG_FAST_ONLY 1
+#else
+#define TSPF_E1M1_GG_FAST_ONLY 0
+#endif
 #if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
@@ -45,7 +56,13 @@ void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
 #include "tilesector_polar_depthplane_lut.h"
 #endif
 
+#ifdef TSPF_E1M1_ROOM1
+#define TSPF_MAX_ACTIVE E1PF_SEGMENT_COUNT
+#define TSPF_WORLD_VERTEX_COUNT E1PF_VERTEX_COUNT
+#else
 #define TSPF_MAX_ACTIVE 20u
+#define TSPF_WORLD_VERTEX_COUNT 14u
+#endif
 #define TSPF_HORIZON 72
 #define TSPF_NEAR_Z_Q4 (10<<4)
 #define TSPF_FAR_Z_Q4  (127<<4)
@@ -55,6 +72,9 @@ void tsp_polar_nt_begin_frame(void);
 void tsp_polar_nt_end_frame(void);
 void tsp_polar_surface_column_fast(void);
 void tsp_polar_run_geometry_fast(void);
+#ifdef TSPF_E1M1_ROOM1
+void tsp_polar_run_zspan_fast(void);
+#endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
 #endif
@@ -80,9 +100,22 @@ uint8_t g_polar_run_left_real;
 uint8_t g_polar_run_right_real;
 int16_t g_polar_run_iq;
 int16_t g_polar_run_step;
+/* E1M1 arbitrary-height runs are affine in screen x too.  Production computes
+ * top/bottom screen-Y in Q6 once at each run endpoint; Z80 then only walks two
+ * Q6 accumulators instead of multiplying four z endpoints per coarse column. */
+int16_t g_polar_run_top_q6;
+int16_t g_polar_run_top_step_q6;
+int16_t g_polar_run_bot_q6;
+int16_t g_polar_run_bot_step_q6;
+/* Retained for the generic/reference E1 C path and diagnostics. */
+int16_t g_polar_run_z0_q4_rel;
+int16_t g_polar_run_z1_q4_rel;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
+#if defined(TSPF_E1M1_ROOM1) && !defined(__SDCC)
+uint8_t g_tspf_e1_host_all_segments;
+#endif
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
 volatile uint8_t g_tspf_stage;
 /* Compatibility marker for the existing Gearsystem stage profiler. */
@@ -133,11 +166,11 @@ static int8_t g_depth_nf_q7[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static int8_t g_depth_stepfac_q4[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static uint8_t g_depth_yaw_cache=0xffu;
 #endif
-/* Original polar-field design: connected spans share authored corners.
- * Compute each corner bearing at most once per rendered update. 14 vertices
- * need only 28 bytes plus a 16-bit validity mask. */
-uint16_t g_corner_bearing_q12[14];
-static uint16_t g_corner_bearing_valid;
+/* Connected spans share authored corners.  E1M1 raises the authored-corner
+ * count from fourteen to forty-four, so validity is a compact byte bitset
+ * rather than a hard-coded sixteen-bit mask. */
+uint16_t g_corner_bearing_q12[TSPF_WORLD_VERTEX_COUNT];
+static uint8_t g_corner_bearing_valid[(TSPF_WORLD_VERTEX_COUNT+7u)/8u];
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 /* Cell-local ROM projection field. The selected cell block is copied once on
  * cell transition; ordinary render updates consume only WRAM thereafter.
@@ -150,28 +183,113 @@ uint8_t g_proj_ly;
 static uint16_t g_proj_fallback_mask;
 static uint16_t g_proj_cached_gi=0xffffu;
 #endif
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 static const uint16_t k_corner_mask[14] = {
     0x0001u,0x0002u,0x0004u,0x0008u,0x0010u,0x0020u,0x0040u,
     0x0080u,0x0100u,0x0200u,0x0400u,0x0800u,0x1000u,0x2000u
 };
+#endif
 #ifndef __SDCC
 static uint8_t g_touched_bits[45];
 static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
 static uint16_t g_touched_count;
 static uint8_t g_map_ready;
+#ifdef TSPF_E1M1_ROOM1
+uint8_t g_e1_host_owner_bits[8];
+static uint8_t g_e1_host_owner_map[TSP_MAP_CELLS];
+static uint8_t g_e1_host_current_sid=0xffu;
+uint16_t g_e1_host_project_attempts;
+uint16_t g_e1_host_reject_degenerate;
+uint16_t g_e1_host_reject_frustum;
+uint16_t g_e1_host_reject_fog;
+uint16_t g_e1_host_project_accepts;
+#endif
 #endif
 
 static int8_t clamp_s8(int16_t v,int8_t lo,int8_t hi){if(v<lo)return lo;if(v>hi)return hi;return (int8_t)v;}
 static uint8_t clamp_u8i(int16_t v,uint8_t hi){if(v<0)return 0;if(v>hi)return hi;return (uint8_t)v;}
 static int16_t shr_signed(int16_t v,uint8_t n){return v>=0?(int16_t)(v>>n):(int16_t)-(((-v)>>n));}
+
+#if TSPF_E1M1_GG_FAST_ONLY
+/* Exact E1M1 screen-Y plane in Q6, using the current inverse-depth endpoint.
+ * zrel_q4 is always a multiple of four because authored heights are integral
+ * and stair-eye slew advances four Q4 ticks at a time.  Therefore:
+ *   pixel_offset_q6 = zrel_q4 * inv / 8
+ *                   = (abs(zrel_q4)>>2) * inv / 2
+ * which stays inside one 8x8->16 product. */
+static int16_t e1_screen_y_q6(int16_t zrel_q4,uint8_t inv){
+    uint16_t mag=(uint16_t)(zrel_q4<0?-zrel_q4:zrel_q4);
+    uint8_t q=(uint8_t)(mag>>2);
+    uint16_t prod=(uint16_t)q*(uint16_t)inv;
+    int16_t off=(int16_t)((prod+1u)>>1);
+    if(zrel_q4<0)off=(int16_t)-off;
+    return (int16_t)((72<<6)-off);
+}
+
+/* Signed Q6 delta times an unsigned Q8 reciprocal, rounded to nearest.
+ * Decompose into two 8x8 products so SDCC cannot introduce 32-bit helpers. */
+static int16_t e1_scale_s16_q8(int16_t v,uint8_t recip){
+    uint8_t neg=(uint8_t)(v<0);
+    uint16_t mag=(uint16_t)(neg?-v:v);
+    uint16_t lo=(uint16_t)(uint8_t)mag*(uint16_t)recip;
+    uint16_t hi=(uint16_t)(mag>>8)*(uint16_t)recip;
+    uint16_t q=(uint16_t)(hi+((lo+128u)>>8));
+    return neg?(int16_t)-q:(int16_t)q;
+}
+#endif
+
+static uint8_t world_vx(uint8_t vid){
+#ifdef TSPF_E1M1_ROOM1
+    return k_e1x_vertices[vid].x;
+#else
+    return k_tspf_vx[vid];
+#endif
+}
+static uint8_t world_vy(uint8_t vid){
+#ifdef TSPF_E1M1_ROOM1
+    return k_e1x_vertices[vid].y;
+#else
+    return k_tspf_vy[vid];
+#endif
+}
+static uint8_t world_seg_anchor(uint8_t sid){
+#ifdef TSPF_E1M1_ROOM1
+    return k_e1pf_seg_anchor[sid];
+#else
+    return k_tspf_seg_anchor[sid];
+#endif
+}
+static int8_t world_seg_nx(uint8_t sid){
+#ifdef TSPF_E1M1_ROOM1
+    return k_e1pf_nx_q5[sid];
+#else
+    return k_tspf_nx_q5[sid];
+#endif
+}
+static int8_t world_seg_ny(uint8_t sid){
+#ifdef TSPF_E1M1_ROOM1
+    return k_e1pf_ny_q5[sid];
+#else
+    return k_tspf_ny_q5[sid];
+#endif
+}
+static int8_t world_shade_bias(uint8_t sid){
+#ifdef TSPF_E1M1_ROOM1
+    return k_e1pf_shade_bias[sid];
+#else
+    return k_tspf_shade_bias[sid];
+#endif
+}
 /* Perspective vertical translation for a camera whose nominal eye is z=16.
  * Current projection maps a 32-unit wall to invz screen pixels, so moving the
  * eye by dz world units moves a surface by dz*invz/32 pixels. Stair heights
  * are integral world units; keeping dz small avoids any 32-bit helper on Z80. */
+#ifndef TSPF_E1M1_ROOM1
 static int16_t camera_z_shift(uint8_t inv,const TSPState *s){
     int16_t dz=(int16_t)((s->z_q4-TSP_EYE_HEIGHT_Q4)>>4);
     return shr_signed((int16_t)(dz*(int16_t)inv),5u);
 }
+#endif
 static int16_t signed_q12(uint16_t v){v&=4095u;return v>=2048u?(int16_t)v-4096:(int16_t)v;}
 
 #ifndef __SDCC
@@ -184,16 +302,23 @@ static void map_init(uint16_t *out){
     uint8_t r,c;
     for(r=0;r<TSP_ROWS;++r)for(c=0;c<TSP_COLS;++c)out[k_row_base[r]+c]=base_word(r);
     memset(g_touched_bits,0,sizeof(g_touched_bits));g_touched_count=0;g_map_ready=1u;
+#ifdef TSPF_E1M1_ROOM1
+    memset(g_e1_host_owner_map,0xff,sizeof(g_e1_host_owner_map));
+#endif
 }
 static void restore_touched(uint16_t *out){
     uint16_t i;
     for(i=0;i<g_touched_count;++i){
         uint16_t rc=g_touched_list[i];uint8_t r=(uint8_t)(rc>>8),c=(uint8_t)rc;uint16_t idx=k_row_base[r]+c;
         out[idx]=base_word(r);g_touched_bits[idx>>3]&=(uint8_t)~(1u<<(idx&7u));
+#ifdef TSPF_E1M1_ROOM1
+        g_e1_host_owner_map[idx]=0xffu;
+#endif
     }
     g_touched_count=0u;
 }
 #endif
+#if !TSPF_E1M1_GG_FAST_ONLY
 static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 #ifdef __SDCC
     /* AO/C fallback only. Fast geometry/shade assembly marks whole spans and
@@ -210,8 +335,12 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
     uint16_t idx=k_row_base[row]+col;uint8_t *b=&g_touched_bits[idx>>3];uint8_t m=(uint8_t)(1u<<(idx&7u));
     if(!(*b&m)){*b|=m;g_touched_list[g_touched_count++]=(uint16_t)(((uint16_t)row<<8)|col);}
     out[idx]=word;
+#ifdef TSPF_E1M1_ROOM1
+    g_e1_host_owner_map[idx]=g_e1_host_current_sid;
+#endif
 #endif
 }
+#endif
 
 void tsp_polar_renderer_reset(void) BANKED {
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
@@ -229,12 +358,22 @@ void tsp_polar_renderer_reset(void) BANKED {
 #endif
 }
 
-static uint8_t ao_class(uint8_t vid){return (uint8_t)((k_tspf_ao[vid>>2]>>((vid&3u)*2u))&3u);}
+#if !TSPF_E1M1_GG_FAST_ONLY
+static uint8_t ao_class(uint8_t vid){
+#ifdef TSPF_E1M1_ROOM1
+    (void)vid;return 0u; /* Room-1 AO is authored/baked later, never guessed at runtime. */
+#else
+    return (uint8_t)((k_tspf_ao[vid>>2]>>((vid&3u)*2u))&3u);
+#endif
+}
+#endif
+#ifndef TSPF_E1M1_ROOM1
 static uint8_t selector_pass(uint8_t sid,uint8_t lx,uint8_t ly){
     int16_t v=(int16_t)k_tspf_sel_a[sid]*(int16_t)lx+(int16_t)k_tspf_sel_b[sid]*(int16_t)ly+k_tspf_sel_c[sid];
     TSPF_SELECTOR_HIT();
     return (uint8_t)(((v>=0)?1u:0u)^k_tspf_sel_inv[sid]);
 }
+#endif
 
 static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4);
 
@@ -349,17 +488,12 @@ static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4){
 }
 #if !defined(__SDCC) || !TSPF_LOCAL_PROJECTION
 static uint16_t bearing_vertex_q12(uint8_t vid,const TSPState *s){
-    uint16_t mask=k_corner_mask[vid];
-    if(!(g_corner_bearing_valid&mask)){
-#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
-        uint16_t baked;
-        if(projection_bearing_q12(vid,s,&baked))g_corner_bearing_q12[vid]=baked;
-        else
-#endif
+    uint8_t bi=(uint8_t)(vid>>3),mask=(uint8_t)(1u<<(vid&7u));
+    if(!(g_corner_bearing_valid[bi]&mask)){
         g_corner_bearing_q12[vid]=bearing_q12(
-            (int16_t)((int16_t)k_tspf_vx[vid]<<4)-s->x_q4,
-            (int16_t)((int16_t)k_tspf_vy[vid]<<4)-s->y_q4);
-        g_corner_bearing_valid|=mask;
+            (int16_t)((int16_t)world_vx(vid)<<4)-s->x_q4,
+            (int16_t)((int16_t)world_vy(vid)<<4)-s->y_q4);
+        g_corner_bearing_valid[bi]|=mask;
     }
     return g_corner_bearing_q12[vid];
 }
@@ -377,36 +511,39 @@ static uint8_t inv_for_dq4(int16_t dq4){
     return (uint8_t)((int16_t)x0+shr_signed((int16_t)(d*(int16_t)f+(d>=0?8:-8)),4));
 }
 static int16_t wall_d_q4(uint8_t sid,uint8_t anchor_vid,const TSPState *s){
-    int8_t nx=k_tspf_nx_q5[sid],ny=k_tspf_ny_q5[sid];
+    int8_t nx=world_seg_nx(sid),ny=world_seg_ny(sid);
     /* Exact cardinal-wall identities. For +/-32 Q5 normals the original
      * multiply/shift expression reduces to one Q4 coordinate subtraction. */
     if(ny==0&&(nx==32||nx==-32)){
-        int16_t wall=(int16_t)((int16_t)k_tspf_vx[anchor_vid]<<4);
+        int16_t wall=(int16_t)((int16_t)world_vx(anchor_vid)<<4);
         return nx>0?(int16_t)(wall-s->x_q4):(int16_t)(s->x_q4-wall);
     }
     if(nx==0&&(ny==32||ny==-32)){
-        int16_t wall=(int16_t)((int16_t)k_tspf_vy[anchor_vid]<<4);
+        int16_t wall=(int16_t)((int16_t)world_vy(anchor_vid)<<4);
         return ny>0?(int16_t)(wall-s->y_q4):(int16_t)(s->y_q4-wall);
     }
     {
         int16_t xi=(int16_t)(s->x_q4>>4),yi=(int16_t)(s->y_q4>>4);uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
-        int16_t dx=(int16_t)k_tspf_vx[anchor_vid]-xi,dy=(int16_t)k_tspf_vy[anchor_vid]-yi;
+        int16_t dx=(int16_t)world_vx(anchor_vid)-xi,dy=(int16_t)world_vy(anchor_vid)-yi;
         int16_t whole=(int16_t)nx*dx+(int16_t)ny*dy;
         int16_t frac=(int16_t)nx*fx+(int16_t)ny*fy;
         return (int16_t)(shr_signed(whole,1)-shr_signed(frac,5));
     }
 }
 static uint8_t inv_at_invd(uint8_t sid,uint8_t invd,uint16_t world_bearing,int16_t rel){
-    uint8_t bi=(uint8_t)(world_bearing>>4);int8_t sn=(int8_t)k_tspf_sin_q7[bi],cs=(int8_t)k_tspf_sin_q7[(uint8_t)(bi+64u)],nx=k_tspf_nx_q5[sid],ny=k_tspf_ny_q5[sid];int16_t dot;uint16_t q,sec;
+    uint8_t bi=(uint8_t)(world_bearing>>4);int8_t sn=(int8_t)k_tspf_sin_q7[bi],cs=(int8_t)k_tspf_sin_q7[(uint8_t)(bi+64u)],nx=world_seg_nx(sid),ny=world_seg_ny(sid);int16_t dot;uint16_t q,sec;
     /* Exact cardinal-normal shortcuts: (+/-32 * trig) >> 5 == +/-trig.
      * The final magnitude discards normal sign, so no multiply is needed. */
     if(ny==0&&(nx==32||nx==-32)) dot=cs;
     else if(nx==0&&(ny==32||ny==-32)) dot=sn;
     else dot=shr_signed((int16_t)((int16_t)nx*cs+(int16_t)ny*sn),5);
-    if(dot<0)dot=(int16_t)-dot;if(dot>127)dot=127;
+    if(dot<0) dot=(int16_t)-dot;
+    if(dot>127) dot=127;
     q=((uint16_t)invd*(uint16_t)dot+64u)>>7;sec=k_tspf_sec_q7[(uint16_t)(rel<0?-rel:rel)];q=(q*sec+64u)>>7;return (uint8_t)(q>255u?255u:q);
 }
+#if !TSPF_E1M1_GG_FAST_ONLY
 static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else if(inv>=46u)s=1;else s=0;s=(int8_t)(s+bias);if(s<0)s=0;if(s>2)s=2;return (uint8_t)s;}
+#endif
 
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
 /* Straight-wall inverse camera depth is linear in screen x.  Use a compact
@@ -438,7 +575,15 @@ static uint8_t screen_depth_plane(uint8_t sid,uint8_t invd,uint8_t c0,uint8_t c1
 #endif
 
 static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
-    uint16_t w=k_tspf_keys[keyid];uint8_t sid=(uint8_t)(w&31u),v0=(uint8_t)((w>>5)&15u),v1=(uint8_t)((w>>9)&15u);uint16_t a0,a1,len,yawq;int16_t st,en,lo,hi;uint8_t x0,x1,invd;
+#ifdef TSPF_E1M1_ROOM1
+#ifndef __SDCC
+    ++g_e1_host_project_attempts;
+#endif
+    uint8_t sid=keyid,v0=k_e1pf_seg_v0[keyid],v1=k_e1pf_seg_v1[keyid];
+#else
+    uint16_t w=k_tspf_keys[keyid];uint8_t sid=(uint8_t)(w&31u),v0=(uint8_t)((w>>5)&15u),v1=(uint8_t)((w>>9)&15u);
+#endif
+    uint16_t a0,a1,len,yawq;int16_t st,en,lo,hi;uint8_t x0,x1,invd;
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
     a0=g_corner_bearing_q12[v0];
     a1=g_corner_bearing_q12[v1];
@@ -446,24 +591,65 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     a0=bearing_vertex_q12(v0,s);
     a1=bearing_vertex_q12(v1,s);
 #endif
-    len=(uint16_t)((a1-a0)&4095u);if(len==0u||len>=2048u)return 0u;yawq=(uint16_t)s->yaw<<4;st=signed_q12((uint16_t)(a0-yawq));en=(int16_t)(st+(int16_t)len);
+#ifdef TSPF_E1M1_ROOM1
+    {
+        int16_t d=signed_q12((uint16_t)(a1-a0));
+        if(!d){
+#ifndef __SDCC
+            ++g_e1_host_reject_degenerate;
+#endif
+            return 0u;
+        }
+        if(d<0){uint16_t ta=a0;a0=a1;a1=ta;{uint8_t tv=v0;v0=v1;v1=tv;}d=(int16_t)-d;}
+        len=(uint16_t)d;
+    }
+#else
+    len=(uint16_t)((a1-a0)&4095u);if(len==0u||len>=2048u)return 0u;
+#endif
+    yawq=(uint16_t)s->yaw<<4;st=signed_q12((uint16_t)(a0-yawq));en=(int16_t)(st+(int16_t)len);
     while(en<-512){st=(int16_t)(st+4096);en=(int16_t)(en+4096);}while(st>512){st=(int16_t)(st-4096);en=(int16_t)(en-4096);}
-    lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo)return 0u;x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
+    lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo){
+#ifdef TSPF_E1M1_ROOM1
+#ifndef __SDCC
+        ++g_e1_host_reject_frustum;
+#endif
+#endif
+        return 0u;
+    }x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
     r->sid=sid;r->v0=v0;r->v1=v1;r->x0=x0;r->x1=x1;r->left_real=(uint8_t)(lo==st);r->right_real=(uint8_t)(hi==en);
     r->depth_plane=0u;
-    invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
+    invd=inv_for_dq4(wall_d_q4(sid,world_seg_anchor(sid),s));
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if(g_tspf_appearance_mode<2u){
         uint8_t c0=(uint8_t)(x0>>3),c1=(uint8_t)(x1>>3);
-        if(c0>=TSP_COLS)c0=TSP_COLS-1u;if(c1>=TSP_COLS)c1=TSP_COLS-1u;
+        if(c0>=TSP_COLS) c0=TSP_COLS-1u;
+        if(c1>=TSP_COLS) c1=TSP_COLS-1u;
         if(c1>=c0&&screen_depth_plane(sid,invd,c0,c1,r))return 1u;
     }
 #endif
     r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+lo)&4095u,lo);
     r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+hi)&4095u,hi);
-    r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);return 1u;
+    r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
+#ifdef TSPF_E1M1_ROOM1
+    /* Quantized visibility fog: very distant runs are omitted entirely. The
+     * preceding band is shaded darker in the one-call GG path below. This is
+     * intentionally shared with the future shadow bake cutoff so far-away
+     * light topology never consumes ROM merely because a sliver is visible. */
+    if(r->inv0<E1PF_FOG_CULL_INV&&r->inv1<E1PF_FOG_CULL_INV){
+#ifndef __SDCC
+        ++g_e1_host_reject_fog;
+#endif
+        return 0u;
+    }
+    if(!k_e1pf_border_sides[sid]){r->left_real=0u;r->right_real=0u;}
+#ifndef __SDCC
+    ++g_e1_host_project_accepts;
+#endif
+#endif
+    return 1u;
 }
 
+#if !TSPF_E1M1_GG_FAST_ONLY
 static uint16_t edge_entry(uint8_t shade,int16_t local_left,int8_t slope,uint8_t bottom){
     uint16_t attr=0;uint8_t mag;int8_t off;if(bottom){local_left=(int16_t)(7-local_left);slope=(int8_t)-slope;attr=(uint16_t)(TSP_ATTR_FLIPY|TSP_ATTR_PALETTE);}if(slope<0){mag=(uint8_t)(-slope);local_left=(int16_t)(local_left-mag);attr|=TSP_ATTR_FLIPX;}else mag=(uint8_t)slope;if(mag>=TSP_EDGE_SLOPE_COUNT)mag=TSP_EDGE_SLOPE_COUNT-1u;off=clamp_s8(local_left,TSP_EDGE_OFF_MIN,(int8_t)(TSP_EDGE_OFF_MIN+TSP_EDGE_OFF_COUNT-1));return (uint16_t)(TSP_TILE_EDGE(shade,(uint8_t)(off-TSP_EDGE_OFF_MIN),mag)|attr);
 }
@@ -512,8 +698,52 @@ static void draw_edge(uint16_t *out,uint8_t col,int16_t yl,int16_t yr,uint8_t sh
 static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t shade,uint8_t border){
     int8_t r;if(first<0)first=0;if(last>=(int8_t)TSP_ROWS)last=(int8_t)(TSP_ROWS-1u);if(first>last)return;for(r=first;r<=last;++r)put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,border));
 }
+#endif
+
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPState *s){
-    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c,profile=k_tspf_profile[r->sid];int16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);
+#ifndef __SDCC
+#ifdef TSPF_E1M1_ROOM1
+    g_e1_host_current_sid=r->sid;
+#endif
+#endif
+#if TSPF_E1M1_GG_FAST_ONLY
+    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n;
+    int16_t z0,z1,top0,top1,bot0,bot1;
+    (void)out;
+    (void)cols;
+    if(c0>=TSP_COLS) c0=TSP_COLS-1u;
+    if(c1>=TSP_COLS) c1=TSP_COLS-1u;
+    if(c1<c0) return;
+    n=(uint8_t)(c1-c0+1u);
+
+    z0=(int16_t)(((int16_t)k_e1pf_z0[r->sid]<<4)-s->z_q4);
+    z1=(int16_t)(((int16_t)k_e1pf_z1[r->sid]<<4)-s->z_q4);
+    top0=e1_screen_y_q6(z1,r->inv0);
+    top1=e1_screen_y_q6(z1,r->inv1);
+    bot0=e1_screen_y_q6(z0,r->inv0);
+    bot1=e1_screen_y_q6(z0,r->inv1);
+
+    g_polar_run_profile=0xffu;
+    g_polar_mat_shade=(r->inv_mid<E1PF_FOG_SHADE_INV)?0u:1u;
+    g_polar_run_c0=c0;g_polar_run_c1=c1;
+    g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
+    g_polar_run_top_q6=top0;
+    g_polar_run_top_step_q6=e1_scale_s16_q8((int16_t)(top1-top0),k_col_recip_q8[n]);
+    g_polar_run_bot_q6=bot0;
+    g_polar_run_bot_step_q6=e1_scale_s16_q8((int16_t)(bot1-bot0),k_col_recip_q8[n]);
+    tsp_polar_run_zspan_fast();
+#else
+    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c;
+#ifdef TSPF_E1M1_ROOM1
+    uint8_t profile=0xffu;
+#else
+    uint8_t profile=k_tspf_profile[r->sid];
+#endif
+    int16_t iq,step;
+    if(c0>=TSP_COLS) c0=TSP_COLS-1u;
+    if(c1>=TSP_COLS) c1=TSP_COLS-1u;
+    if(c1<c0) return;
+    n=(uint8_t)(c1-c0+1u);
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if(g_tspf_appearance_mode<2u&&r->depth_plane){c0=r->c0;c1=r->c1;n=(uint8_t)(c1-c0+1u);iq=r->iq;step=r->step;}
     else
@@ -525,6 +755,19 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
      * fast paths; previously only mode 0 initialized it because nothing else
      * consumed this bridge field. */
     if(g_tspf_appearance_mode<2u) g_polar_run_profile=profile;
+#ifdef TSPF_E1M1_ROOM1
+    if(g_tspf_appearance_mode==0u){
+        g_polar_run_profile=0xffu;
+        g_polar_mat_shade=(r->inv_mid<E1PF_FOG_SHADE_INV)?0u:1u;
+        g_polar_run_c0=c0;g_polar_run_c1=c1;
+        g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
+        g_polar_run_iq=iq;g_polar_run_step=step;
+        g_polar_run_z0_q4_rel=(int16_t)(((int16_t)k_e1pf_z0[r->sid]<<4)-s->z_q4);
+        g_polar_run_z1_q4_rel=(int16_t)(((int16_t)k_e1pf_z1[r->sid]<<4)-s->z_q4);
+        tsp_polar_run_zspan_fast();
+        return;
+    }
+#else
     if(g_tspf_appearance_mode==0u && s->z_q4==TSP_EYE_HEIGHT_Q4){
         /* Preserve the zero-cost mature assembly run kernel on ordinary flat
          * floor states. Elevated states need asymmetric top/bottom projection,
@@ -536,14 +779,27 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
         return;
     }
 #endif
+#endif
     for(c=c0;c<=c1;++c){uint8_t invl=(uint8_t)clamp_u8i((iq+32)>>6,255u),invr=(uint8_t)clamp_u8i((iq+step+32)>>6,255u),mid=(uint8_t)(((uint16_t)invl+invr)>>1),hl=(uint8_t)(invl>>1),hr=(uint8_t)(invr>>1);int16_t tl=(int16_t)(TSPF_HORIZON-hl),tr=(int16_t)(TSPF_HORIZON-hr),bl=(int16_t)(TSPF_HORIZON+hl),br=(int16_t)(TSPF_HORIZON+hr);uint8_t border=0,shade,edge_shade;
         /* POLAR_STAGE21_FULL_SYMMETRY_A: match the mature GG FULL convention.
          * The 144-line viewport is centred on y=71.5, so exact mirror geometry
          * is top=71-half and bottom=72+half. Other profiles stay unchanged. */
+#ifdef TSPF_E1M1_ROOM1
+        {
+            int16_t dz0=(int16_t)(((int16_t)k_e1pf_z0[r->sid]<<4)-s->z_q4);
+            int16_t dz1=(int16_t)(((int16_t)k_e1pf_z1[r->sid]<<4)-s->z_q4);
+            int16_t iz0=shr_signed(dz0,4),iz1=shr_signed(dz1,4);
+            bl=(int16_t)(TSPF_HORIZON-shr_signed((int16_t)(iz0*(int16_t)invl),5));
+            br=(int16_t)(TSPF_HORIZON-shr_signed((int16_t)(iz0*(int16_t)invr),5));
+            tl=(int16_t)(TSPF_HORIZON-shr_signed((int16_t)(iz1*(int16_t)invl),5));
+            tr=(int16_t)(TSPF_HORIZON-shr_signed((int16_t)(iz1*(int16_t)invr),5));
+        }
+#else
         if(profile==TSP_PROFILE_FULL){tl--;tr--;}
+#endif
         if(c==c0&&r->left_real) border|=1u;
         if(c==c1&&r->right_real) border|=2u;
-        shade=g_tspf_appearance_mode?shade_for(mid,k_tspf_shade_bias[r->sid]):1u;edge_shade=shade;
+        shade=g_tspf_appearance_mode?shade_for(mid,world_shade_bias(r->sid)):1u;edge_shade=shade;
         if(g_tspf_appearance_mode>=2u&&border){uint8_t cls=0;if((border&1u)&&r->left_real)cls=ao_class(r->v0);if((border&2u)&&r->right_real){uint8_t q=ao_class(r->v1);if(q>cls)cls=q;}if(cls&&edge_shade) --edge_shade;}
         /* Profile is constant for the whole run. Compute both left/right
          * endpoints together instead of two generic helper calls per column. */
@@ -557,11 +813,13 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
         /* Camera elevation translates BOTH projected endpoints. Do this after
          * profile shaping: FULL/LINTEL/RAISED/RISER are absolute world-height
          * bands, and a raised eye moves every one of those bands consistently. */
+#ifndef TSPF_E1M1_ROOM1
         {
             int16_t zl=camera_z_shift(invl,s),zr=camera_z_shift(invr,s);
             tl=(int16_t)(tl+zl);bl=(int16_t)(bl+zl);
             tr=(int16_t)(tr+zr);br=(int16_t)(br+zr);
         }
+#endif
 #if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
         {
             uint8_t coarse0=(uint8_t)(c<<3),coarse1=(uint8_t)(coarse0+7u);
@@ -600,6 +858,7 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
         if(cols&&mid>cols[c].invz){cols[c].invz=mid;cols[c].wall_id=r->sid;cols[c].shade=shade;cols[c].top=clamp_u8i(tl,143u);cols[c].bottom=clamp_u8i(bl,143u);cols[c].top_step=clamp_s8((int16_t)(tr-tl),-7,7);cols[c].bottom_step=clamp_s8((int16_t)(br-bl),-7,7);}
         iq=(int16_t)(iq+step);
     }
+#endif
 }
 
 static void insert_run(uint8_t idx,uint8_t *count){
@@ -628,8 +887,21 @@ static void add_key(uint8_t key,const TSPState *s,uint8_t *count){
 }
 
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED {
-    uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0,i;uint16_t gi,off;const uint8_t *p,*b;
-    g_corner_bearing_valid=0u;
+#ifdef TSPF_E1M1_ROOM1
+    uint8_t gx,gy,count=0u,i;
+#else
+    uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0u,i;uint16_t gi,off;const uint8_t *p,*b;
+#endif
+    memset(g_corner_bearing_valid,0,sizeof(g_corner_bearing_valid));
+#ifndef __SDCC
+#ifdef TSPF_E1M1_ROOM1
+    g_e1_host_project_attempts=0u;
+    g_e1_host_reject_degenerate=0u;
+    g_e1_host_reject_frustum=0u;
+    g_e1_host_reject_fog=0u;
+    g_e1_host_project_accepts=0u;
+#endif
+#endif
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
     tsp_polar_nt_begin_frame();
@@ -642,7 +914,32 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_selector_tests=0u;
 #endif
-gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u||gy>=24u)goto done;gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);recipe=k_tspf_recipe_grid[gi];if(recipe==0xffu)goto done;lx=(uint8_t)((uint16_t)s->x_q4&63u);ly=(uint8_t)((uint16_t)s->y_q4&63u);
+#ifdef TSPF_E1M1_ROOM1
+    {
+        uint8_t mask[8],bi,bit;
+        int16_t wx=(int16_t)(s->x_q4>>4),wy=(int16_t)(s->y_q4>>4);
+        if(wx<E1X_WORLD_MIN_X||wy<E1X_WORLD_MIN_Y||wx>=E1X_WORLD_MAX_X||wy>=E1X_WORLD_MAX_Y)goto done;
+        gx=(uint8_t)((wx-E1X_WORLD_MIN_X)>>3);
+        gy=(uint8_t)((wy-E1X_WORLD_MIN_Y)>>3);
+#ifndef __SDCC
+        if(g_tspf_e1_host_all_segments){
+            for(bi=0u;bi<8u;++bi)mask[bi]=0xffu;
+            mask[7]=0x03u;
+        }else
+#endif
+            e1pf_load_pvs(gx,gy,(uint8_t)((s->yaw+8u)>>4)&15u,mask);
+        for(bi=0u;bi<8u;++bi){
+            uint8_t m=mask[bi];
+            for(bit=0u;bit<8u&&m;++bit){
+                if(m&(uint8_t)(1u<<bit)){
+                    uint8_t sid=(uint8_t)((bi<<3)+bit);
+                    if(sid<E1PF_SEGMENT_COUNT)add_key(sid,s,&count);
+                }
+            }
+        }
+    }
+#else
+    gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u||gy>=24u)goto done;gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);recipe=k_tspf_recipe_grid[gi];if(recipe==0xffu)goto done;lx=(uint8_t)((uint16_t)s->x_q4&63u);ly=(uint8_t)((uint16_t)s->y_q4&63u);
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if(g_tspf_appearance_mode<2u&&s->yaw!=g_depth_yaw_cache){
         tsp_polar_depthplane_load(s->yaw,g_depth_nf_q7,g_depth_stepfac_q4);
@@ -657,6 +954,7 @@ gx=(uint8_t)((uint16_t)s->x_q4>>6);gy=(uint8_t)((uint16_t)s->y_q4>>6);if(gx>=48u
 #endif
     off=k_tspf_recipe_off[recipe];p=&k_tspf_recipe_stream[off];base_id=*p++;cond_count=*p++;b=&k_tspf_base_stream[k_tspf_base_off[base_id]];i=*b++;for(;i;--i)add_key(*b++,s,&count);
     for(i=0;i<cond_count;++i){uint8_t key=*p++,sel=*p++;if(selector_pass(sel,lx,ly))add_key(key,s,&count);}
+#endif
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_active_runs=count;
 #endif
@@ -669,6 +967,17 @@ done:
 #endif
 #if !defined(__SDCC)
     g_tspf_touched_cells=g_touched_count;
+#ifdef TSPF_E1M1_ROOM1
+    {
+        uint16_t oi;
+        memset(g_e1_host_owner_bits,0,sizeof(g_e1_host_owner_bits));
+        for(oi=0u;oi<TSP_MAP_CELLS;++oi){
+            uint8_t sid=g_e1_host_owner_map[oi];
+            if(sid<E1PF_SEGMENT_COUNT)
+                g_e1_host_owner_bits[sid>>3]|=(uint8_t)(1u<<(sid&7u));
+        }
+    }
+#endif
 #elif TSPF_PROFILE_HOOKS
     g_tspf_touched_cells=0u;
 #endif

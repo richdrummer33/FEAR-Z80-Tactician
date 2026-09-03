@@ -17,6 +17,10 @@
         .globl  _g_polar_run_right_real
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
+        .globl  _g_polar_run_top_q6
+        .globl  _g_polar_run_top_step_q6
+        .globl  _g_polar_run_bot_q6
+        .globl  _g_polar_run_bot_step_q6
         .globl  _g_polar_nt_cov_cur
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
@@ -126,6 +130,138 @@ run_geom_done$:
         pop     hl
         pop     de
         pop     bc
+        ret
+
+; E1M1 arbitrary-height connected-run path.  A straight wall's inverse
+; depth is affine across screen x, and multiplying that plane by one authored
+; z endpoint is affine too.  C therefore supplies top/bottom screen-Y Q6
+; start+step once per run.  This loop performs only adds, Q6 rounding and the
+; existing final-owner materializer -- no per-column z multiplications.
+_tsp_polar_run_zspan_fast::
+        push    bc
+        push    de
+        push    hl
+
+        ld      a, (#_g_polar_run_c0)
+        ld      (#r_run_col$), a
+        ; C selects the quantized fog shade once per connected run.
+        ld      a, #0xff
+        ld      (#_g_polar_run_profile), a
+
+zrun_loop$:
+        ; Top left/right from one affine Q6 accumulator.
+        ld      hl, (#_g_polar_run_top_q6)
+        call    q6_round_s16$
+        ld      (#_g_polar_mat_top_l), hl
+        ld      hl, (#_g_polar_run_top_q6)
+        ld      de, (#_g_polar_run_top_step_q6)
+        add     hl, de
+        call    q6_round_s16$
+        ld      (#_g_polar_mat_top_r), hl
+
+        ; Bottom left/right from the second affine Q6 accumulator.
+        ld      hl, (#_g_polar_run_bot_q6)
+        call    q6_round_s16$
+        ld      (#_g_polar_mat_bot_l), hl
+        ld      hl, (#_g_polar_run_bot_q6)
+        ld      de, (#_g_polar_run_bot_step_q6)
+        add     hl, de
+        call    q6_round_s16$
+        ld      (#_g_polar_mat_bot_r), hl
+
+        xor     a
+        ld      (#_g_polar_mat_border), a
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c0)
+        cp      c
+        jr      nz, zrun_no_left_border$
+        ld      a, (#_g_polar_run_left_real)
+        or      a
+        jr      z, zrun_no_left_border$
+        ld      a, #1
+        ld      (#_g_polar_mat_border), a
+zrun_no_left_border$:
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      nz, zrun_border_done$
+        ld      a, (#_g_polar_run_right_real)
+        or      a
+        jr      z, zrun_border_done$
+        ld      a, (#_g_polar_mat_border)
+        or      #2
+        ld      (#_g_polar_mat_border), a
+zrun_border_done$:
+        ld      a, c
+        ld      (#_g_polar_mat_col), a
+        call    _tsp_polar_surface_column_fast
+
+        ; Advance both projected z planes to the next coarse column.
+        ld      hl, (#_g_polar_run_top_q6)
+        ld      de, (#_g_polar_run_top_step_q6)
+        add     hl, de
+        ld      (#_g_polar_run_top_q6), hl
+        ld      hl, (#_g_polar_run_bot_q6)
+        ld      de, (#_g_polar_run_bot_step_q6)
+        add     hl, de
+        ld      (#_g_polar_run_bot_q6), hl
+
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      z, zrun_done$
+        ld      a, c
+        inc     a
+        ld      (#r_run_col$), a
+        jp      zrun_loop$
+
+zrun_done$:
+        pop     hl
+        pop     de
+        pop     bc
+        ret
+
+; HL=signed Q6 screen coordinate. Return HL=nearest signed pixel, rounding
+; half values away from zero. This preserves the old zproj/horizon quantizer
+; while replacing four 8x8 multiplies per coarse column with shifts/adds.
+q6_round_s16$:
+        bit     7, h
+        jr      z, q6s_positive$
+        ; magnitude = -HL
+        xor     a
+        sub     l
+        ld      l, a
+        ld      a, #0
+        sbc     a, h
+        ld      h, a
+        ld      de, #32
+        add     hl, de
+        call    q6s_shift6$
+        ; restore negative sign
+        xor     a
+        sub     l
+        ld      l, a
+        ld      a, #0
+        sbc     a, h
+        ld      h, a
+        ret
+q6s_positive$:
+        ld      de, #32
+        add     hl, de
+q6s_shift6$:
+        srl     h
+        rr      l
+        srl     h
+        rr      l
+        srl     h
+        rr      l
+        srl     h
+        rr      l
+        srl     h
+        rr      l
+        srl     h
+        rr      l
         ret
 
 ; HL = signed Q6-ish accumulator + rounding bias. Return the exact C
