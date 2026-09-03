@@ -25,7 +25,7 @@ int main(void){
     TSPState p;
     uint16_t map[TSP_MAP_CELLS],prev[TSP_MAP_CELLS];
     uint8_t mask[8],i;
-    uint16_t changed=0u,walls;
+    uint16_t map_i,changed=0u,walls;
 
     e1_room1_reset(&e);
     if(e.x_q4!=(22<<4)||e.y_q4!=(52<<4)){die("wrong Room-1 reset");return 2;}
@@ -49,7 +49,8 @@ int main(void){
     to_polar(&e,&p);
     tsp_polar_render(&p,map,(TSPColumn *)0);
     changed=0u;
-    for(i=0u;i<TSP_MAP_CELLS;++i)if(map[i]!=prev[i])++changed;
+    for(map_i=0u;map_i<TSP_MAP_CELLS;++map_i)
+        if(map[map_i]!=prev[map_i])++changed;
     if(!changed){die("quarter-turn did not change retained name table");return 2;}
 
     /* Exact stair/floor oracle remains independent of the renderer transplant. */
