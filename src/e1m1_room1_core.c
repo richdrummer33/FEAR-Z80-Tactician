@@ -1,6 +1,16 @@
 #include "e1m1_room1_core.h"
 #include <string.h>
 
+#ifndef E1_PROFILE_HOOKS
+#define E1_PROFILE_HOOKS 0
+#endif
+#if E1_PROFILE_HOOKS
+volatile uint8_t g_ts_render_stage;
+#define E1_STAGE(v) do { g_ts_render_stage=(v); } while(0)
+#else
+#define E1_STAGE(v) ((void)0)
+#endif
+
 #define E1_HORIZON 72
 #define E1_NEAR_Z_Q4 (6<<4)
 #define E1_FAR_Z_Q4 (127<<4)
@@ -390,6 +400,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     E1CameraCtx cam;
     uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
 
+    E1_STAGE(2u);
     cam.px=(int16_t)(s->x_q4>>4);
     cam.py=(int16_t)(s->y_q4>>4);
     cam.sn=k_sin[s->yaw];
@@ -397,6 +408,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     cam.frac_z=shr_signed((int16_t)((int16_t)fx*cam.cs+(int16_t)fy*cam.sn),7);
     cam.frac_x=shr_signed((int16_t)(-(int16_t)fx*cam.sn+(int16_t)fy*cam.cs),7);
 
+    E1_STAGE(1u);
     if(!g_base_ready) {
         for(r=0u;r<E1_ROWS;++r) {
             for(c=0u;c<E1_COLS;++c) {
@@ -411,6 +423,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     memset(g_depth,0,sizeof(g_depth));
     memset(g_full_inv,0,sizeof(g_full_inv));
 
+    E1_STAGE(3u);
     /*
      * Project every surface exactly once. In the same pass establish the
      * nearest full-height occluder for each of the twenty hardware columns.
@@ -460,6 +473,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
         }
     }
 
+    E1_STAGE(4u);
     for(si=0u;si<run_count;++si) {
         const E1Run *run=&g_runs[si];
         const E1Surface *w=&k_surfaces[run->sid];
@@ -512,6 +526,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
             iq=(int16_t)(iq+step);
         }
     }
+    E1_STAGE(0u);
 }
 
 uint8_t e1_room1_surface_count(void) {
