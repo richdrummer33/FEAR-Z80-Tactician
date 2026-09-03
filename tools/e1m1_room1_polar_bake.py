@@ -200,6 +200,11 @@ def emit_meta(path,verts,segs):
     v0=[s[0] for s in segs]; v1=[s[1] for s in segs]
     z0=[s[2] for s in segs]; z1=[s[3] for s in segs]
     bias=[s[5] for s in segs]
+    # Side borders are useful silhouette/AO cues on real wall ends. On stair
+    # risers and other non-occluding floor/ceiling transitions they are mostly
+    # visual chatter, so the production path deliberately keeps only the
+    # horizontal projected z-span edges there.
+    border_sides=[1 if s[4] else 0 for s in segs]
     normals=[q5_normal(a,b,verts) for a,b,*_ in segs]
     nx=[q[0] for q in normals]; ny=[q[1] for q in normals]
     with path.open("w") as f:
@@ -207,6 +212,9 @@ def emit_meta(path,verts,segs):
         f.write("#ifndef E1M1_ROOM1_POLAR_META_H\n#define E1M1_ROOM1_POLAR_META_H\n")
         f.write("#include <stdint.h>\n")
         f.write("#define E1PF_VERTEX_COUNT 44u\n#define E1PF_SEGMENT_COUNT 58u\n")
+        f.write("#define E1PF_FOG_SHADE_INV 32u\n")
+        f.write("#define E1PF_FOG_CULL_INV 24u\n")
+        f.write("#define E1PF_SHADOW_CULL_WORLD 80u\n")
         emit_list(f,"uint8_t","k_e1pf_seg_v0",v0)
         emit_list(f,"uint8_t","k_e1pf_seg_v1",v1)
         emit_list(f,"uint8_t","k_e1pf_seg_anchor",v0)
@@ -215,6 +223,7 @@ def emit_meta(path,verts,segs):
         emit_list(f,"int8_t","k_e1pf_z0",z0)
         emit_list(f,"int8_t","k_e1pf_z1",z1)
         emit_list(f,"int8_t","k_e1pf_shade_bias",bias)
+        emit_list(f,"uint8_t","k_e1pf_border_sides",border_sides)
         f.write("#endif\n")
 
 def emit_pvs(header,source,masks):
