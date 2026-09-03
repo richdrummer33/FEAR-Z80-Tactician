@@ -27,8 +27,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/e1m1-room1
-          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc \
+          mkdir -p build/e1m1-room1/generated
+          python3 tools/e1m1_room1_pvs_gen.py \
+            --out build/e1m1-room1/generated/e1m1_room1_pvs.h \
+            | tee build/e1m1-room1/pvs-gen.txt
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -Isrc -Ibuild/e1m1-room1/generated \
             src/e1m1_room1_core.c \
             tests/test_e1m1_room1.c \
             -o build/e1m1-room1/test-e1m1-room1
@@ -52,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           LCC="$PWD/.toolchain/gbdk/bin/lcc"
-          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc -Wf--opt-code-speed)
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc -Ibuild/e1m1-room1/generated -Wf--opt-code-speed)
           OUT=build/e1m1-room1
 
           "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_e1m1_room1_gg.c
@@ -187,6 +191,8 @@ jobs:
             build/e1m1-room1/forward.ppm
             build/e1m1-room1/turn-right.ppm
             build/e1m1-room1/host-test.txt
+            build/e1m1-room1/pvs-gen.txt
+            build/e1m1-room1/generated/e1m1_room1_pvs.h
             build/e1m1-room1/boot.txt
             build/e1m1-room1/forward.txt
             build/e1m1-room1/turn-right.txt
