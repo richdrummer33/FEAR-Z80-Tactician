@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - experiment/gg-e1m1-room1
+  pull_request:
+    branches:
+      - integration/gg-stream-solid-flicker-validation
   workflow_dispatch:
 
 permissions:
