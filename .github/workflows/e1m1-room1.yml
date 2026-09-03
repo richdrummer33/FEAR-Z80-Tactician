@@ -1,9 +1,10 @@
-name: E1M1 Room 1 live GG proof
+name: E1M1 Room 1 - mature Polar transplant
 
 on:
   push:
     branches:
       - experiment/gg-e1m1-room1
+      - fix/gg-e1m1-room1-polar-transplant
   pull_request:
     branches:
       - integration/gg-stream-solid-flicker-validation
@@ -19,148 +20,183 @@ concurrency:
 jobs:
   live-room:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
-      - name: Host geometry, collision, stair and renderer acceptance
+      - name: Preserve exact Room-1 oracle
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/e1m1-room1/generated
-          python3 tools/e1m1_room1_pvs_gen.py \
-            --out build/e1m1-room1/generated/e1m1_room1_pvs.h \
-            | tee build/e1m1-room1/pvs-gen.txt
-          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
-            -Isrc -Ibuild/e1m1-room1/generated \
-            src/e1m1_room1_core.c \
-            tests/test_e1m1_room1.c \
-            -o build/e1m1-room1/test-e1m1-room1
-          build/e1m1-room1/test-e1m1-room1 \
-            | tee build/e1m1-room1/host-test.txt
-          grep -q 'E1M1_ROOM1_TEST_PASS' build/e1m1-room1/host-test.txt
+          OUT=build/e1m1-room1
+          REF="$OUT/reference-generated"
+          mkdir -p "$REF"
+          python3 tools/e1m1_room1_pvs_gen.py --out "$REF/e1m1_room1_pvs.h"             | tee "$OUT/reference-pvs-gen.txt"
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror             -Isrc -I"$REF"             src/e1m1_room1_core.c tests/test_e1m1_room1.c             -o "$OUT/test-e1m1-room1-reference"
+          "$OUT/test-e1m1-room1-reference" | tee "$OUT/reference-host-test.txt"
+          grep -q 'E1M1_ROOM1_TEST_PASS' "$OUT/reference-host-test.txt"
+
+      - name: Bake production Polar topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-room1
+          PROD="$OUT/production-generated"
+          mkdir -p "$PROD"
+          python3 tools/e1m1_room1_polar_bake.py --out-dir "$PROD"             | tee "$OUT/polar-bake.txt"
+          grep -q 'E1PF_BAKE_PASS' "$OUT/polar-bake.txt"
+          wc -c "$PROD/e1m1_room1_polar_pvs.c" "$PROD/e1m1_room1_polar_meta.h"             | tee "$OUT/polar-bake-size.txt"
+
+      - name: Host-test exact geometry through mature Polar renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-room1
+          PROD="$OUT/production-generated"
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror             -DTSPF_E1M1_ROOM1=1             -DTSPF_LOCAL_PROJECTION=0             -DTSPF_SCREEN_DEPTH_PLANE=0             -DTSPF_PROFILE_HOOKS=1             -Isrc -I"$PROD"             src/e1m1_room1_world.c             src/tilesector_polar_renderer.c             "$PROD/e1m1_room1_polar_pvs.c"             tests/test_e1m1_room1_polar.c             -o "$OUT/test-e1m1-room1-polar"
+          "$OUT/test-e1m1-room1-polar" | tee "$OUT/polar-host-test.txt"
+          grep -q 'E1M1_ROOM1_POLAR_TEST_PASS' "$OUT/polar-host-test.txt"
+
+      - name: Regression-test standard Polar renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-test | tee build/e1m1-room1/standard-polar-regression.txt
+          grep -q 'PASS' build/e1m1-room1/standard-polar-regression.txt
 
       - name: Install GBDK 4.5.0
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p .toolchain
-          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
-            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
-          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" \
-            | sha256sum -c -
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz"             | sha256sum -c -
           tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
-      - name: Build playable Room 1 Game Gear ROM
+      - name: Build mature-Polar Room 1 ROM
         shell: bash
         run: |
           set -euo pipefail
           LCC="$PWD/.toolchain/gbdk/bin/lcc"
-          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc -Ibuild/e1m1-room1/generated -Wf--opt-code-speed)
           OUT=build/e1m1-room1
+          PROD="$OUT/production-generated"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo32                  -Isrc -I"$PROD" -Wf--opt-code-speed                  -DTSPF_E1M1_ROOM1=1 -DTSPF_LOCAL_PROJECTION=0                  -DTSPF_SCREEN_DEPTH_PLANE=0 -DTSPF_PROFILE_HOOKS=0)
 
-          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_e1m1_room1_gg.c
-          "$LCC" "${FLAGS[@]}" -c -o "$OUT/core.o" src/e1m1_room1_core.c
-          "$LCC" "${FLAGS[@]}" -c -o "$OUT/vram.o" src/tilesector_vram_gg.s
-          "$LCC" "${FLAGS[@]}" -Wm-yS \
-            -o "$OUT/GG-E1M1-Room1.gg" \
-            "$OUT/main.o" "$OUT/core.o" "$OUT/vram.o"
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-main.o" src/main_e1m1_room1_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-world.o" src/e1m1_room1_world.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-renderer.o" src/tilesector_polar_renderer.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-pvs.o" "$PROD/e1m1_room1_polar_pvs.c"
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-ntstate.o" src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-materialize.o" src/tilesector_polar_materialize_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
 
-          wc -c "$OUT/GG-E1M1-Room1.gg" | tee "$OUT/ROM-size.txt"
-          sha256sum "$OUT/GG-E1M1-Room1.gg" | tee "$OUT/SHA256.txt"
+          "$LCC" "${FLAGS[@]}" -Wm-yS             -o "$OUT/GG-E1M1-Room1-Polar.gg"             "$OUT/polar-main.o" "$OUT/polar-world.o" "$OUT/polar-renderer.o"             "$OUT/polar-pvs.o" "$OUT/polar-ntstate.o"             "$OUT/polar-materialize.o" "$OUT/polar-ntupload.o"
+
+          wc -c "$OUT/GG-E1M1-Room1-Polar.gg" | tee "$OUT/polar-ROM-size.txt"
+          sha256sum "$OUT/GG-E1M1-Room1-Polar.gg" | tee "$OUT/polar-SHA256.txt"
+
+      - name: Build previous parallel renderer as control
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          OUT=build/e1m1-room1
+          REF="$OUT/reference-generated"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4                  -Isrc -I"$REF" -Wf--opt-code-speed)
+
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ref-main.o" src/main_e1m1_room1_reference_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ref-core.o" src/e1m1_room1_core.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ref-vram.o" src/tilesector_vram_gg.s
+          "$LCC" "${FLAGS[@]}" -Wm-yS             -o "$OUT/GG-E1M1-Room1-Reference.gg"             "$OUT/ref-main.o" "$OUT/ref-core.o" "$OUT/ref-vram.o"
+          wc -c "$OUT/GG-E1M1-Room1-Reference.gg" | tee "$OUT/reference-ROM-size.txt"
 
       - name: Build Gearsystem libretro proof runner
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 \
-            https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          git clone --depth 1 --branch 3.9.16             https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
-          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
-            -I.toolchain/Gearsystem/platforms/libretro \
-            tools/libretro_runner.cpp -ldl \
-            -o build/e1m1-room1/libretro_runner
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic             -I.toolchain/Gearsystem/platforms/libretro             tools/libretro_runner.cpp -ldl             -o build/e1m1-room1/libretro_runner
 
-      - name: Prove boot, free forward motion and smooth live turning
+      - name: Prove boot, traversal, strafe-ready movement and smooth turning
         shell: bash
         run: |
           set -euo pipefail
           OUT=build/e1m1-room1
-          ROM="$OUT/GG-E1M1-Room1.gg"
-          SYM="$OUT/GG-E1M1-Room1.sym"
+          ROM="$OUT/GG-E1M1-Room1-Polar.gg"
+          SYM="$OUT/GG-E1M1-Room1-Polar.sym"
           CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
 
           STATE_ADDR="$(awk '$2=="_g_e1m1_state"{split($1,a,":"); print a[2]; exit}' "$SYM")"
           test -n "$STATE_ADDR"
           echo "$STATE_ADDR" > "$OUT/state-address.txt"
 
-          "$OUT/libretro_runner" "$CORE" "$ROM" 120 \
-            "$OUT/boot.ppm" "$STATE_ADDR" 7 \
-            | tee "$OUT/boot.txt"
+          "$OUT/libretro_runner" "$CORE" "$ROM" 120             "$OUT/polar-boot.ppm" "$STATE_ADDR" 7             | tee "$OUT/polar-boot.txt"
 
-          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=30 \
-            "$OUT/libretro_runner" "$CORE" "$ROM" 600 \
-              "$OUT/forward.ppm" "$STATE_ADDR" 7 \
-              | tee "$OUT/forward.txt"
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=30             "$OUT/libretro_runner" "$CORE" "$ROM" 600               "$OUT/polar-forward.ppm" "$STATE_ADDR" 7               | tee "$OUT/polar-forward.txt"
 
-          LIBRETRO_JOYPAD_MASK=128 LIBRETRO_JOYPAD_AFTER_FRAME=30 \
-            "$OUT/libretro_runner" "$CORE" "$ROM" 300 \
-              "$OUT/turn-right.ppm" "$STATE_ADDR" 7 \
-              | tee "$OUT/turn-right.txt"
+          LIBRETRO_JOYPAD_MASK=128 LIBRETRO_JOYPAD_AFTER_FRAME=30             "$OUT/libretro_runner" "$CORE" "$ROM" 300               "$OUT/polar-turn-right.ppm" "$STATE_ADDR" 7               | tee "$OUT/polar-turn-right.txt"
 
           python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
           from pathlib import Path
           import re, struct
-
           root=Path("build/e1m1-room1")
-
           def state(name):
               text=(root/name).read_text()
               m=re.search(r"data=([0-9A-Fa-f]{14})",text)
-              if not m:
-                  raise SystemExit(f"missing state dump in {name}")
+              if not m: raise SystemExit(f"missing state dump in {name}")
               b=bytes.fromhex(m.group(1))
               x,y,z=struct.unpack("<hhh",b[:6])
               return x,y,z,b[6]
-
-          boot=state("boot.txt")
-          fwd=state("forward.txt")
-          right=state("turn-right.txt")
-
+          boot=state("polar-boot.txt")
+          fwd=state("polar-forward.txt")
+          right=state("polar-turn-right.txt")
           if fwd[:2] == boot[:2]:
-              raise SystemExit(f"FAIL: held UP did not move player: boot={boot} forward={fwd}")
+              raise SystemExit(f"FAIL held UP did not move player: boot={boot} forward={fwd}")
           if right[3] == boot[3]:
-              raise SystemExit(f"FAIL: held RIGHT did not change yaw: boot={boot} right={right}")
-
-          print("E1M1_ROOM1_EMULATOR_PASS")
+              raise SystemExit(f"FAIL held RIGHT did not change yaw: boot={boot} right={right}")
+          print("E1M1_ROOM1_POLAR_EMULATOR_PASS")
           print(f"boot_q4={boot}")
           print(f"forward_q4={fwd}")
           print(f"turn_right_q4={right}")
           PY
+          grep -q 'E1M1_ROOM1_POLAR_EMULATOR_PASS' "$OUT/emulator-proof.txt"
 
-          grep -q 'E1M1_ROOM1_EMULATOR_PASS' "$OUT/emulator-proof.txt"
+      - name: Control-group cadence comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-room1
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
 
-          LOOP_ADDR="$(awk '$2=="_g_e1m1_loop_count"{split($1,a,":"); print a[2]; exit}' "$SYM")"
-          test -n "$LOOP_ADDR"
-          "$OUT/libretro_runner" "$CORE" "$ROM" 600 \
-            "$OUT/cadence.ppm" "$LOOP_ADDR" 2 \
-            | tee "$OUT/cadence.txt"
+          for LABEL in Reference Polar; do
+            ROM="$OUT/GG-E1M1-Room1-$LABEL.gg"
+            SYM="$OUT/GG-E1M1-Room1-$LABEL.sym"
+            ADDR="$(awk '$2=="_g_e1m1_loop_count"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+            test -n "$ADDR"
+            "$OUT/libretro_runner" "$CORE" "$ROM" 600               "$OUT/cadence-$LABEL.ppm" "$ADDR" 2               | tee "$OUT/cadence-$LABEL.txt"
+          done
 
           python3 - <<'PY' | tee "$OUT/cadence-summary.txt"
           from pathlib import Path
           import re
-          text=Path("build/e1m1-room1/cadence.txt").read_text()
-          m=re.search(r"data=([0-9A-Fa-f]{4})",text)
-          if not m:
-              raise SystemExit("missing loop-count RAM dump")
-          b=bytes.fromhex(m.group(1))
-          loops=b[0] | (b[1]<<8)
-          hz=loops/10.0
-          print(f"E1M1_ROOM1_CADENCE loops_600_vblanks={loops} updates_per_second={hz:.2f}")
+          root=Path("build/e1m1-room1")
+          def loops(label):
+              t=(root/f"cadence-{label}.txt").read_text()
+              m=re.search(r"data=([0-9A-Fa-f]{4})",t)
+              if not m: raise SystemExit(f"missing loop counter for {label}")
+              b=bytes.fromhex(m.group(1))
+              return b[0] | (b[1]<<8)
+          ref=loops("Reference")
+          polar=loops("Polar")
+          print(f"E1M1_CADENCE reference_loops_600={ref} reference_hz={ref/10.0:.2f}")
+          print(f"E1M1_CADENCE polar_loops_600={polar} polar_hz={polar/10.0:.2f}")
+          if polar <= ref:
+              raise SystemExit(f"mature Polar transplant failed performance control: {polar} <= {ref}")
+          print(f"E1M1_POLAR_SPEEDUP x{polar/max(1,ref):.2f}")
           PY
 
-
-      - name: Package playable proof
+      - name: Package proof
         if: always()
         shell: bash
         run: |
@@ -168,6 +204,14 @@ jobs:
           OUT=build/e1m1-room1
           git rev-parse HEAD > "$OUT/COMMIT.txt"
           {
+            echo "Production architecture: exact E1M1 data -> baked 8x8/16-yaw visibility -> shared authored-corner projection -> one C/ASM crossing per run -> mature retained name-table materializer -> row-extent OTIR."
+            echo
+            echo "Performance/ROM guardrails:"
+            echo "  Far band: quantized darker shade below inverse-depth 32."
+            echo "  Visibility cull: omit runs when both endpoints fall below inverse-depth 24."
+            echo "  Future point-light/shadow bake cutoff: 80 world units."
+            echo "  Non-occluding stair/floor transition spans suppress vertical side-border/AO chatter."
+            echo
             echo "Controls:"
             echo "  D-pad up/down: forward/back"
             echo "  D-pad left/right: smooth turn"
@@ -178,31 +222,29 @@ jobs:
             echo "Room-2 doorway is intentionally terminated until the next room is loaded."
           } > "$OUT/README.txt"
 
-      - name: Upload E1M1 Room 1 ROM and emulator captures
+      - name: Upload E1M1 Room 1 ROM and validation artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: GG-E1M1-Room1-live
+          name: GG-E1M1-Room1-Polar
           path: |
-            build/e1m1-room1/GG-E1M1-Room1.gg
-            build/e1m1-room1/GG-E1M1-Room1.sym
-            build/e1m1-room1/GG-E1M1-Room1.map
-            build/e1m1-room1/boot.ppm
-            build/e1m1-room1/forward.ppm
-            build/e1m1-room1/turn-right.ppm
-            build/e1m1-room1/host-test.txt
-            build/e1m1-room1/pvs-gen.txt
-            build/e1m1-room1/generated/e1m1_room1_pvs.h
-            build/e1m1-room1/boot.txt
-            build/e1m1-room1/forward.txt
-            build/e1m1-room1/turn-right.txt
+            build/e1m1-room1/GG-E1M1-Room1-Polar.gg
+            build/e1m1-room1/GG-E1M1-Room1-Polar.sym
+            build/e1m1-room1/GG-E1M1-Room1-Polar.map
+            build/e1m1-room1/GG-E1M1-Room1-Reference.gg
+            build/e1m1-room1/polar-*.ppm
+            build/e1m1-room1/cadence-*.ppm
+            build/e1m1-room1/polar-bake.txt
+            build/e1m1-room1/polar-bake-size.txt
+            build/e1m1-room1/polar-host-test.txt
+            build/e1m1-room1/reference-host-test.txt
+            build/e1m1-room1/standard-polar-regression.txt
             build/e1m1-room1/emulator-proof.txt
-            build/e1m1-room1/cadence.txt
-            build/e1m1-room1/cadence-summary.txt
-            build/e1m1-room1/cadence.ppm
-            build/e1m1-room1/ROM-size.txt
-            build/e1m1-room1/SHA256.txt
+            build/e1m1-room1/cadence-*.txt
+            build/e1m1-room1/*ROM-size.txt
+            build/e1m1-room1/polar-SHA256.txt
             build/e1m1-room1/state-address.txt
+            build/e1m1-room1/production-generated/
             build/e1m1-room1/README.txt
             build/e1m1-room1/COMMIT.txt
           if-no-files-found: warn
