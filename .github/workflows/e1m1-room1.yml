@@ -98,6 +98,13 @@ jobs:
           wc -c "$OUT/GG-E1M1-Room1-Polar.gg" | tee "$OUT/polar-ROM-size.txt"
           sha256sum "$OUT/GG-E1M1-Room1-Polar.gg" | tee "$OUT/polar-SHA256.txt"
 
+          # Instrumented twin for cycle attribution only. Production remains
+          # zero-hook; this ROM is never the shipped/playable artifact.
+          PROFILE_FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo32                          -Isrc -I"$PROD" -Wf--opt-code-speed                          -DTSPF_E1M1_ROOM1=1 -DTSPF_LOCAL_PROJECTION=0                          -DTSPF_SCREEN_DEPTH_PLANE=0 -DTSPF_PROFILE_HOOKS=1                          -DE1_PROFILE_HOOKS=1)
+          "$LCC" "${PROFILE_FLAGS[@]}" -c -o "$OUT/profile-main.o" src/main_e1m1_room1_gg.c
+          "$LCC" "${PROFILE_FLAGS[@]}" -c -o "$OUT/profile-renderer.o" src/tilesector_polar_renderer.c
+          "$LCC" "${PROFILE_FLAGS[@]}" -Wm-yS             -o "$OUT/GG-E1M1-Room1-Polar-Profiled.gg"             "$OUT/profile-main.o" "$OUT/polar-world.o" "$OUT/profile-renderer.o"             "$OUT/polar-pvs.o" "$OUT/polar-tiles.o" "$OUT/polar-ntstate.o"             "$OUT/polar-materialize.o" "$OUT/polar-ntupload.o"
+
       - name: Build previous parallel renderer as control
         shell: bash
         run: |
@@ -117,9 +124,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch 3.9.16             https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
-          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic             -I.toolchain/Gearsystem/platforms/libretro             tools/libretro_runner.cpp -ldl             -o build/e1m1-room1/libretro_runner
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          cp build/libretro_runner build/e1m1-room1/libretro_runner
+
+      - name: Attribute mature-Polar update cost
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-room1
+          ./build/tilesector_profile_runner             "$OUT/GG-E1M1-Room1-Polar-Profiled.gg"             "$OUT/GG-E1M1-Room1-Polar-Profiled.sym"             12 2 | tee "$OUT/polar-phase-profile.txt"
 
       - name: Prove boot, traversal, strafe-ready movement and smooth turning
         shell: bash
@@ -247,6 +261,7 @@ jobs:
             build/e1m1-room1/cadence-*.txt
             build/e1m1-room1/*ROM-size.txt
             build/e1m1-room1/polar-SHA256.txt
+            build/e1m1-room1/polar-phase-profile.txt
             build/e1m1-room1/state-address.txt
             build/e1m1-room1/production-generated/
             build/e1m1-room1/README.txt
