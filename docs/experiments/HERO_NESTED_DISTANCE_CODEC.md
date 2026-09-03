@@ -174,3 +174,18 @@ edge samples.
 
 This is the point at which the experiment becomes the user's proposed
 **baked nested-sample co-design** rather than merely a downsampling comparison.
+
+
+### Learned-rank sanity pass
+
+A one-pass direct search over sixteen adjacent rank swaps was then enabled for
+the shared 8x8 Bayer permutation.  It accepted **zero** swaps:
+`12537 -> 12537` weighted multi-distance objective.
+
+That does **not** establish that Bayer is globally optimal.  It establishes a
+narrower and useful fact: with the master image frozen, the current
+pattern-class phase tables fixed during each candidate evaluation, and only
+small adjacent changes to the rank ordering allowed, there is no immediate
+downhill direction.  The next meaningful search effort belongs on the
+**co-design of the master pattern and selector together**, not on polishing a
+generic Bayer mask in isolation.
