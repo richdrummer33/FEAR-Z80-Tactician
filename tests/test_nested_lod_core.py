@@ -61,8 +61,8 @@ class NestedLodCoreTests(unittest.TestCase):
         target.set(3, 3, 5)
         phase, loss, _ = nlc.fit_global_phase(
             master, target, (0.0, 0.0), (0.0, 0.0), 1.0, 1.0,
-            phases=[(0, 0), (1, 0)])
-        self.assertEqual(phase, (1, 0))
+            phases=[(0, 0), (-1, 0)])
+        self.assertEqual(phase, (-1, 0))
         self.assertEqual(loss.silhouette_xor, 0)
 
     def test_distinct_tiles_ignores_empty_by_default(self):
