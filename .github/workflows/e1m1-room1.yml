@@ -124,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          bash tools/build_e1m1_profile_tools.sh "$PWD/.toolchain/Gearsystem"
           cp build/libretro_runner build/e1m1-room1/libretro_runner
 
       - name: Attribute mature-Polar update cost
