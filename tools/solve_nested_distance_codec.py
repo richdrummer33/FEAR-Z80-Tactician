@@ -68,7 +68,7 @@ class NestedDistanceProblem:
                  near_budget=192.0, near_lambda=4.0,
                  near_objective_weight=0.0,
                  pattern_penalty=0.0, selector_byte_penalty=0.0,
-                 proposal_limit=48):
+                 proposal_limit=48, proposal_class_limit=32):
         self.c = corpus
         self.angle = angle
         self.weights = LossWeights(silhouette_weight, shade_weight)
@@ -79,6 +79,8 @@ class NestedDistanceProblem:
         self.pattern_penalty = float(pattern_penalty)
         self.selector_byte_penalty = float(selector_byte_penalty)
         self.proposal_limit = int(proposal_limit)
+        self.proposal_class_limit = max(
+            self.proposal_limit, int(proposal_class_limit))
 
         if angle < 0 or angle >= corpus.angles:
             raise SystemExit(f"angle {angle} outside 0..{corpus.angles - 1}")
@@ -323,13 +325,31 @@ class NestedDistanceProblem:
             "occurrences": occurrence_count,
         }
 
+    def _class_far_upper_bound(self, state, key, demand):
+        """Cheap bound: current far cost is the most this class can possibly save."""
+        current = self._pattern_at(state, key)
+        total = 0.0
+        for pos, value in enumerate(current):
+            total += sum(
+                count * pixel_cost(value, wanted, self.weights)
+                for wanted, count in enumerate(demand[key][pos])
+            )
+        return total
+
     def main_proposals(self, state, model, iteration):
         demand = self._build_far_demand(model)
 
-        # Lagrangian sweep: same exact far objective, several different prices
-        # on spending near-view error.  The accepted mainline still obeys the
-        # hard near budget, so these are proposal generators rather than
-        # competing objective functions.
+        # Hungarian assignment is O(64^3) in Python.  Do not solve it for every
+        # class blindly.  Rank classes by a rigorous cheap upper bound on their
+        # possible far improvement (their entire current far error), scan the
+        # strongest subset first, and only broaden if that fails to fill the
+        # requested proposal set.
+        ranked_keys = sorted(
+            self.class_keys,
+            key=lambda key: (
+                -self._class_far_upper_bound(state, key, demand),
+                self.class_ids[key]))
+
         lambdas = []
         for value in (
                 self.near_lambda,
@@ -342,25 +362,43 @@ class NestedDistanceProblem:
 
         proposals = []
         seen = set()
-        for key in self.class_keys:
-            for proposal_lambda in lambdas:
-                p = self._assignment_proposal(
-                    state, key, demand, proposal_lambda)
-                if p is None:
-                    continue
-                sig = (p["class_id"], p["pattern"])
-                if sig in seen:
-                    continue
-                seen.add(sig)
-                proposals.append(p)
+        scanned = 0
+        target_scan = min(len(ranked_keys), self.proposal_class_limit)
 
-        # First try the largest predicted far wins; among similar wins prefer
-        # the candidate spending less near-view error.
+        while scanned < len(ranked_keys):
+            stop = min(len(ranked_keys), max(target_scan, scanned + 1))
+            for key in ranked_keys[scanned:stop]:
+                for proposal_lambda in lambdas:
+                    p = self._assignment_proposal(
+                        state, key, demand, proposal_lambda)
+                    if p is None:
+                        continue
+                    sig = (p["class_id"], p["pattern"])
+                    if sig in seen:
+                        continue
+                    seen.add(sig)
+                    proposals.append(p)
+            scanned = stop
+
+            if len(proposals) >= self.proposal_limit:
+                break
+            # The initial high-opportunity set was unusually barren. Broaden
+            # deterministically rather than silently missing lower-cost classes.
+            if scanned < len(ranked_keys):
+                target_scan = min(
+                    len(ranked_keys),
+                    max(scanned + 8, scanned * 2))
+
         proposals.sort(key=lambda p: (
             p["predicted_far_delta"],
             p["predicted_near_delta"],
             p["class_id"],
             -p["proposal_lambda"]))
+        self._last_proposal_scan = {
+            "classes_total": len(ranked_keys),
+            "classes_scanned": scanned,
+            "proposals_generated": len(proposals),
+        }
         return proposals[:self.proposal_limit]
 
     def after_iteration(self, best_eval, improved, iteration):
@@ -484,6 +522,8 @@ def main():
     ap.add_argument("--pattern-penalty", type=float, default=0.0)
     ap.add_argument("--selector-byte-penalty", type=float, default=0.0)
     ap.add_argument("--proposal-limit", type=int, default=48)
+    ap.add_argument("--proposal-class-limit", type=int, default=32,
+                    help="initial high-opportunity pattern classes to Hungarian-scan")
     ap.add_argument("--iterations", type=int, default=6)
     ap.add_argument("--patience", type=int, default=2)
     ap.add_argument("--escape-probes", type=int, default=2)
@@ -504,7 +544,7 @@ def main():
         args.silhouette_weight, args.shade_weight,
         args.near_budget, args.near_lambda, args.near_objective_weight,
         args.pattern_penalty, args.selector_byte_penalty,
-        args.proposal_limit)
+        args.proposal_limit, args.proposal_class_limit)
 
     journal = AtomicSolverJournal(
         args.status_json, args.trace_ndjson, echo=True)
