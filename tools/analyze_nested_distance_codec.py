@@ -17,9 +17,12 @@ import pathlib
 
 from analyze_doomguy_dense_corpus import Corpus, SHADE_RGB, write_ppm
 from nested_lod_core import (
-    LossWeights, Raster, compare, decode_with_global_phase,
-    decode_with_pattern_phases, distinct_tile_count, fit_global_phase,
-    fit_pattern_phases, phase_grid, refine_by_pattern_swaps, tile_classes,
+    LossWeights, Raster, bayer_rank_mask_8, compare,
+    decode_oracle_footprint, decode_with_global_phase,
+    decode_with_pattern_phases, decode_with_pattern_rank_phases,
+    distinct_tile_count, fit_global_phase, fit_pattern_phases,
+    fit_pattern_rank_phases, fit_rank_phase, phase_grid,
+    refine_by_pattern_swaps, refine_rank_mask, tile_classes,
 )
 
 
@@ -61,6 +64,8 @@ def main():
                     help="penalty for damaging the nearest oracle during refinement")
     ap.add_argument("--refine-passes", type=int, default=1)
     ap.add_argument("--refine-candidates", type=int, default=256)
+    ap.add_argument("--rank-refine-passes", type=int, default=0)
+    ap.add_argument("--rank-refine-candidates", type=int, default=16)
     ap.add_argument("--dump-dir")
     args = ap.parse_args()
 
@@ -76,6 +81,7 @@ def main():
     source_anchor = (master_sample.anchor_x, master_sample.anchor_y)
     source_radius = c.radii[0]
     class_map, class_origins = tile_classes(master_oracle)
+    rank_mask = bayer_rank_mask_8()
 
     print("NESTED_DISTANCE_CODEC v1")
     print(
@@ -104,11 +110,35 @@ def main():
             master, target, source_anchor, target_anchor,
             source_radius, radius, class_map, phases, weights)
 
+        # Strong nested-sampling tests.  The oracle-footprint model is not a
+        # codec; it measures whether the correct farther pixel is already
+        # present somewhere inside the close pixel footprint.  The rank models
+        # then ask how much of that latent information a fixed 8x8 rank field
+        # can recover with tiny global or per-shared-pattern phase selectors.
+        footprint_best = decode_oracle_footprint(
+            master, target, source_anchor, target_anchor,
+            source_radius, radius, weights)
+        footprint_loss = compare(footprint_best, target, weights)
+
+        rgp, rgl, rank_global_pred = fit_rank_phase(
+            master, target, source_anchor, target_anchor,
+            source_radius, radius, rank_mask, phases, weights)
+
+        rank_table, rpl, rank_pattern_pred = fit_pattern_rank_phases(
+            master, target, source_anchor, target_anchor,
+            source_radius, radius, class_map, rank_mask, phases, weights)
+
         nonempty_table = sum(1 for key in table if any(key))
         descriptor_bytes = nonempty_table * 2
+        rank_classes = sum(1 for key in rank_table if any(key))
         print(
             f"band={band} radius={radius:.3f} model=nearest "
             f"{fmt_loss(nearest_loss)} patterns={distinct_tile_count(nearest)}"
+        )
+        print(
+            f"band={band} radius={radius:.3f} model=oracle_footprint_bound "
+            f"{fmt_loss(footprint_loss)} "
+            f"patterns={distinct_tile_count(footprint_best)} side_info=UNBOUNDED"
         )
         print(
             f"band={band} radius={radius:.3f} model=global_phase phase={gp} "
@@ -120,9 +150,20 @@ def main():
             f"{fmt_loss(pl)} patterns={distinct_tile_count(pattern_pred)} "
             f"phase_classes={nonempty_table} descriptor_bytes={descriptor_bytes}"
         )
+        print(
+            f"band={band} radius={radius:.3f} model=rank_global phase={rgp} "
+            f"{fmt_loss(rgl)} patterns={distinct_tile_count(rank_global_pred)} "
+            f"rank_mask_bytes=48 descriptor_bytes=2"
+        )
+        print(
+            f"band={band} radius={radius:.3f} model=rank_pattern "
+            f"{fmt_loss(rpl)} patterns={distinct_tile_count(rank_pattern_pred)} "
+            f"phase_classes={rank_classes} descriptor_bytes={rank_classes * 2} "
+            f"rank_mask_bytes=48"
+        )
         levels.append({
             "band": band, "sample": s, "target": target, "radius": radius,
-            "anchor": target_anchor, "table": table,
+            "anchor": target_anchor, "table": table, "rank_table": rank_table,
         })
 
         if args.dump_dir:
@@ -131,6 +172,12 @@ def main():
             write_semantic_ppm(out / f"a{args.angle:03d}-b{band}-oracle.ppm", target)
             write_semantic_ppm(out / f"a{args.angle:03d}-b{band}-nearest.ppm", nearest)
             write_semantic_ppm(out / f"a{args.angle:03d}-b{band}-pattern.ppm", pattern_pred)
+            write_semantic_ppm(
+                out / f"a{args.angle:03d}-b{band}-footprint-bound.ppm",
+                footprint_best)
+            write_semantic_ppm(
+                out / f"a{args.angle:03d}-b{band}-rank-pattern.ppm",
+                rank_pattern_pred)
 
     def objective(candidate):
         # Preserve the close view strongly, but allow tiny spatial rearrangements
@@ -142,6 +189,57 @@ def main():
                 source_radius, level["radius"], class_map, level["table"])
             total += compare(pred, level["target"], weights).weighted
         return total
+
+    # Rank-field refinement is a separate generic search axis.  It cannot
+    # damage the near image because it changes only the sampling order, not the
+    # master pixels.  Adjacent rank swaps preserve every threshold as a nested
+    # prefix while letting the oracle train which sample wins a footprint.
+    if args.rank_refine_passes > 0 and args.rank_refine_candidates > 0:
+        def rank_objective(candidate_mask):
+            total = 0.0
+            for level in levels:
+                pred = decode_with_pattern_rank_phases(
+                    master, level["target"], source_anchor, level["anchor"],
+                    source_radius, level["radius"], class_map,
+                    level["rank_table"], candidate_mask)
+                total += compare(pred, level["target"], weights).weighted
+            return total
+
+        rank_before = rank_objective(rank_mask)
+        rank_mask, rank_history = refine_rank_mask(
+            rank_mask, rank_objective, args.rank_refine_passes,
+            args.rank_refine_candidates)
+        for level in levels:
+            table, _, _ = fit_pattern_rank_phases(
+                master, level["target"], source_anchor, level["anchor"],
+                source_radius, level["radius"], class_map, rank_mask,
+                phases, weights)
+            level["rank_table"] = table
+        rank_after = rank_objective(rank_mask)
+        print(
+            f"rank_refine passes={len(rank_history)} "
+            f"accepted_swaps={sum(h['accepted'] for h in rank_history)} "
+            f"objective_before={rank_before:.1f} objective_after={rank_after:.1f} "
+            f"rank_mask_bytes=48"
+        )
+        for level in levels:
+            pred = decode_with_pattern_rank_phases(
+                master, level["target"], source_anchor, level["anchor"],
+                source_radius, level["radius"], class_map,
+                level["rank_table"], rank_mask)
+            loss = compare(pred, level["target"], weights)
+            rank_classes = sum(1 for key in level["rank_table"] if any(key))
+            print(
+                f"band={level['band']} radius={level['radius']:.3f} "
+                f"model=rank_pattern_refined {fmt_loss(loss)} "
+                f"patterns={distinct_tile_count(pred)} "
+                f"phase_classes={rank_classes} descriptor_bytes={rank_classes * 2}"
+            )
+            if args.dump_dir:
+                write_semantic_ppm(
+                    pathlib.Path(args.dump_dir) /
+                    f"a{args.angle:03d}-b{level['band']}-rank-refined.ppm",
+                    pred)
 
     history = []
     if args.refine_passes > 0 and args.refine_candidates > 0:
