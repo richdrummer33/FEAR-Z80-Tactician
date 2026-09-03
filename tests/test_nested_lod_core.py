@@ -104,6 +104,20 @@ class NestedLodCoreTests(unittest.TestCase):
         self.assertEqual(sorted(refined), list(range(64)))
         self.assertTrue(history)
 
+    def test_local_pattern_phase_stays_inside_shared_tile(self):
+        master = nlc.Raster.blank(8, 8)
+        master.set(2, 3, 5)
+        target = nlc.Raster.blank(8, 8)
+        target.set(3, 3, 5)
+        class_map, origins = nlc.tile_classes(master)
+        table, loss, pred = nlc.fit_local_pattern_phases(
+            master, target, (0.0, 0.0), (0.0, 0.0), 1.0, 1.0,
+            class_map, origins, phases=[(0, 0), (-1, 0)])
+        key = class_map[(0, 0)]
+        self.assertEqual(table[key], (-1, 0))
+        self.assertEqual(loss.silhouette_xor, 0)
+        self.assertEqual(pred.at(3, 3), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
