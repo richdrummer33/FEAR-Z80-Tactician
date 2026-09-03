@@ -19,9 +19,10 @@ from analyze_doomguy_dense_corpus import Corpus, SHADE_RGB, write_ppm
 from nested_lod_core import (
     LossWeights, Raster, bayer_rank_mask_8, compare,
     decode_oracle_footprint, decode_with_global_phase,
-    decode_with_pattern_phases, decode_with_pattern_rank_phases,
-    distinct_tile_count, fit_global_phase, fit_pattern_phases,
-    fit_pattern_rank_phases, fit_rank_phase, phase_grid,
+    decode_with_local_pattern_phases, decode_with_pattern_phases,
+    decode_with_pattern_rank_phases, distinct_tile_count, fit_global_phase,
+    fit_local_pattern_phases, fit_pattern_phases, fit_pattern_rank_phases,
+    fit_rank_phase, phase_grid,
     refine_by_pattern_swaps, refine_rank_mask, tile_classes,
 )
 
@@ -110,6 +111,10 @@ def main():
             master, target, source_anchor, target_anchor,
             source_radius, radius, class_map, phases, weights)
 
+        local_table, local_loss, local_pred = fit_local_pattern_phases(
+            master, target, source_anchor, target_anchor,
+            source_radius, radius, class_map, class_origins, phases, weights)
+
         # Strong nested-sampling tests.  The oracle-footprint model is not a
         # codec; it measures whether the correct farther pixel is already
         # present somewhere inside the close pixel footprint.  The rank models
@@ -150,6 +155,12 @@ def main():
             f"{fmt_loss(pl)} patterns={distinct_tile_count(pattern_pred)} "
             f"phase_classes={nonempty_table} descriptor_bytes={descriptor_bytes}"
         )
+        local_classes = sum(1 for key in local_table if any(key))
+        print(
+            f"band={band} radius={radius:.3f} model=pattern_local_phase "
+            f"{fmt_loss(local_loss)} patterns={distinct_tile_count(local_pred)} "
+            f"phase_classes={local_classes} descriptor_bytes={local_classes * 2}"
+        )
         print(
             f"band={band} radius={radius:.3f} model=rank_global phase={rgp} "
             f"{fmt_loss(rgl)} patterns={distinct_tile_count(rank_global_pred)} "
@@ -163,7 +174,8 @@ def main():
         )
         levels.append({
             "band": band, "sample": s, "target": target, "radius": radius,
-            "anchor": target_anchor, "table": table, "rank_table": rank_table,
+            "anchor": target_anchor, "table": table,
+            "local_table": local_table, "rank_table": rank_table,
         })
 
         if args.dump_dir:
@@ -172,6 +184,9 @@ def main():
             write_semantic_ppm(out / f"a{args.angle:03d}-b{band}-oracle.ppm", target)
             write_semantic_ppm(out / f"a{args.angle:03d}-b{band}-nearest.ppm", nearest)
             write_semantic_ppm(out / f"a{args.angle:03d}-b{band}-pattern.ppm", pattern_pred)
+            write_semantic_ppm(
+                out / f"a{args.angle:03d}-b{band}-pattern-local.ppm",
+                local_pred)
             write_semantic_ppm(
                 out / f"a{args.angle:03d}-b{band}-footprint-bound.ppm",
                 footprint_best)
