@@ -71,6 +71,39 @@ class NestedLodCoreTests(unittest.TestCase):
         self.assertEqual(nlc.distinct_tile_count(r), 1)
         self.assertEqual(nlc.distinct_tile_count(r, include_empty=True), 2)
 
+    def test_bayer_rank_mask_is_complete_permutation(self):
+        mask = nlc.bayer_rank_mask_8()
+        self.assertEqual(len(mask), 64)
+        self.assertEqual(sorted(mask), list(range(64)))
+
+    def test_far_pixel_footprint_contains_multiple_master_samples(self):
+        fp = nlc.source_footprint(
+            4, 4, (0.0, 0.0), (0.0, 0.0), 24.0, 36.0)
+        self.assertGreater(len(fp), 1)
+
+    def test_oracle_footprint_bound_can_choose_existing_master_value(self):
+        master = nlc.Raster.blank(8, 8)
+        master.set(2, 2, 2)
+        master.set(3, 2, 5)
+        target = nlc.Raster.blank(8, 8)
+        # At equal radius the footprint is one pixel, so use a larger target
+        # radius to let the target sample see both nearby source values.
+        target.set(2, 2, 5)
+        pred = nlc.decode_oracle_footprint(
+            master, target, (0.0, 0.0), (0.0, 0.0), 1.0, 2.0)
+        self.assertEqual(pred.at(2, 2), 5)
+
+    def test_rank_refiner_preserves_permutation(self):
+        mask = nlc.bayer_rank_mask_8()
+
+        def objective(candidate):
+            return candidate[0]
+
+        refined, history = nlc.refine_rank_mask(
+            mask, objective, passes=1, candidate_limit=8)
+        self.assertEqual(sorted(refined), list(range(64)))
+        self.assertTrue(history)
+
 
 if __name__ == "__main__":
     unittest.main()
