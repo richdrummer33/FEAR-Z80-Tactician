@@ -1,0 +1,177 @@
+name: E1M1 Room 1 live GG proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-e1m1-room1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e1m1-room1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-room:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host geometry, collision, stair and renderer acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/e1m1-room1
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc \
+            src/e1m1_room1_core.c \
+            tests/test_e1m1_room1.c \
+            -o build/e1m1-room1/test-e1m1-room1
+          build/e1m1-room1/test-e1m1-room1 \
+            | tee build/e1m1-room1/host-test.txt
+          grep -q 'E1M1_ROOM1_TEST_PASS' build/e1m1-room1/host-test.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" \
+            | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build playable Room 1 Game Gear ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc -Wf--opt-code-speed)
+          OUT=build/e1m1-room1
+
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_e1m1_room1_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/core.o" src/e1m1_room1_core.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/vram.o" src/tilesector_vram_gg.s
+          "$LCC" "${FLAGS[@]}" -Wm-yS \
+            -o "$OUT/GG-E1M1-Room1.gg" \
+            "$OUT/main.o" "$OUT/core.o" "$OUT/vram.o"
+
+          wc -c "$OUT/GG-E1M1-Room1.gg" | tee "$OUT/ROM-size.txt"
+          sha256sum "$OUT/GG-E1M1-Room1.gg" | tee "$OUT/SHA256.txt"
+
+      - name: Build Gearsystem libretro proof runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 \
+            https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
+          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            -I.toolchain/Gearsystem/platforms/libretro \
+            tools/libretro_runner.cpp -ldl \
+            -o build/e1m1-room1/libretro_runner
+
+      - name: Prove boot, free forward motion and smooth live turning
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-room1
+          ROM="$OUT/GG-E1M1-Room1.gg"
+          SYM="$OUT/GG-E1M1-Room1.sym"
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+
+          STATE_ADDR="$(awk '$2=="_g_e1m1_state"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATE_ADDR"
+          echo "$STATE_ADDR" > "$OUT/state-address.txt"
+
+          "$OUT/libretro_runner" "$CORE" "$ROM" 120 \
+            "$OUT/boot.ppm" "$STATE_ADDR" 7 \
+            | tee "$OUT/boot.txt"
+
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=30 \
+            "$OUT/libretro_runner" "$CORE" "$ROM" 180 \
+              "$OUT/forward.ppm" "$STATE_ADDR" 7 \
+              | tee "$OUT/forward.txt"
+
+          LIBRETRO_JOYPAD_MASK=128 LIBRETRO_JOYPAD_AFTER_FRAME=30 \
+            "$OUT/libretro_runner" "$CORE" "$ROM" 120 \
+              "$OUT/turn-right.ppm" "$STATE_ADDR" 7 \
+              | tee "$OUT/turn-right.txt"
+
+          python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
+          from pathlib import Path
+          import re, struct
+
+          root=Path("build/e1m1-room1")
+
+          def state(name):
+              text=(root/name).read_text()
+              m=re.search(r"data=([0-9A-Fa-f]{14})",text)
+              if not m:
+                  raise SystemExit(f"missing state dump in {name}")
+              b=bytes.fromhex(m.group(1))
+              x,y,z=struct.unpack("<hhh",b[:6])
+              return x,y,z,b[6]
+
+          boot=state("boot.txt")
+          fwd=state("forward.txt")
+          right=state("turn-right.txt")
+
+          if fwd[:2] == boot[:2]:
+              raise SystemExit(f"FAIL: held UP did not move player: boot={boot} forward={fwd}")
+          if right[3] == boot[3]:
+              raise SystemExit(f"FAIL: held RIGHT did not change yaw: boot={boot} right={right}")
+
+          print("E1M1_ROOM1_EMULATOR_PASS")
+          print(f"boot_q4={boot}")
+          print(f"forward_q4={fwd}")
+          print(f"turn_right_q4={right}")
+          PY
+
+          grep -q 'E1M1_ROOM1_EMULATOR_PASS' "$OUT/emulator-proof.txt"
+
+      - name: Package playable proof
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-room1
+          git rev-parse HEAD > "$OUT/COMMIT.txt"
+          {
+            echo "Controls:"
+            echo "  D-pad up/down: forward/back"
+            echo "  D-pad left/right: smooth turn"
+            echo "  Button 1/B: strafe left"
+            echo "  Button 2/A: strafe right"
+            echo "  Start: movement speed scale"
+            echo
+            echo "Room-2 doorway is intentionally terminated until the next room is loaded."
+          } > "$OUT/README.txt"
+
+      - name: Upload E1M1 Room 1 ROM and emulator captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GG-E1M1-Room1-live
+          path: |
+            build/e1m1-room1/GG-E1M1-Room1.gg
+            build/e1m1-room1/GG-E1M1-Room1.sym
+            build/e1m1-room1/GG-E1M1-Room1.map
+            build/e1m1-room1/boot.ppm
+            build/e1m1-room1/forward.ppm
+            build/e1m1-room1/turn-right.ppm
+            build/e1m1-room1/host-test.txt
+            build/e1m1-room1/boot.txt
+            build/e1m1-room1/forward.txt
+            build/e1m1-room1/turn-right.txt
+            build/e1m1-room1/emulator-proof.txt
+            build/e1m1-room1/ROM-size.txt
+            build/e1m1-room1/SHA256.txt
+            build/e1m1-room1/state-address.txt
+            build/e1m1-room1/README.txt
+            build/e1m1-room1/COMMIT.txt
+          if-no-files-found: warn
+          retention-days: 30
