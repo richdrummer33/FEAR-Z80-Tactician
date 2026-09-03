@@ -113,6 +113,9 @@ int16_t g_polar_run_z1_q4_rel;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
+#if defined(TSPF_E1M1_ROOM1) && !defined(__SDCC)
+uint8_t g_tspf_e1_host_all_segments;
+#endif
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
 volatile uint8_t g_tspf_stage;
 /* Compatibility marker for the existing Gearsystem stage profiler. */
@@ -901,7 +904,13 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
         if(wx<E1X_WORLD_MIN_X||wy<E1X_WORLD_MIN_Y||wx>=E1X_WORLD_MAX_X||wy>=E1X_WORLD_MAX_Y)goto done;
         gx=(uint8_t)((wx-E1X_WORLD_MIN_X)>>3);
         gy=(uint8_t)((wy-E1X_WORLD_MIN_Y)>>3);
-        e1pf_load_pvs(gx,gy,(uint8_t)((s->yaw+8u)>>4)&15u,mask);
+#ifndef __SDCC
+        if(g_tspf_e1_host_all_segments){
+            for(bi=0u;bi<8u;++bi)mask[bi]=0xffu;
+            mask[7]=0x03u;
+        }else
+#endif
+            e1pf_load_pvs(gx,gy,(uint8_t)((s->yaw+8u)>>4)&15u,mask);
         for(bi=0u;bi<8u;++bi){
             uint8_t m=mask[bi];
             for(bit=0u;bit<8u&&m;++bit){
