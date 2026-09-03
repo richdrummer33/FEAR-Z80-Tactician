@@ -74,20 +74,6 @@ jobs:
           grep -q '^DOOM_DENSE_CORPUS_PASS samples=128 angles=32 bands=4 ' \
             build/fast-lab/bake.txt
 
-      - name: Cross-angle rate-distortion frontier
-        run: |
-          set -euo pipefail
-          python3 tools/sweep_nested_distance_codec.py \
-            build/fast-lab/host/doomguy_dense_corpus.dhc \
-            --angles 0,8,16,24 \
-            --budgets 0,64,128,192,320 \
-            --iterations 2 --patience 1 \
-            --proposal-limit 12 --escape-probes 1 --escape-steps 4 \
-            --summary-json build/fast-lab/rd-summary.json \
-            --table-tsv build/fast-lab/rd-table.tsv \
-            | tee build/fast-lab/rd.txt
-          grep -q '^RD_SWEEP_PASS$' build/fast-lab/rd.txt
-
       - name: Resident dictionary baseline
         run: |
           set -euo pipefail
@@ -109,6 +95,20 @@ jobs:
             --summary-json build/fast-lab/learned-resident.json \
             | tee build/fast-lab/learned-resident.txt
           grep -q '^LEARNED_RESIDENT_LOD_PASS$' build/fast-lab/learned-resident.txt
+
+      - name: Cross-angle rate-distortion frontier
+        run: |
+          set -euo pipefail
+          python3 tools/sweep_nested_distance_codec.py \
+            build/fast-lab/host/doomguy_dense_corpus.dhc \
+            --angles 0,8,16,24 \
+            --budgets 0,64,128,192,320 \
+            --iterations 2 --patience 1 \
+            --proposal-limit 12 --escape-probes 1 --escape-steps 4 \
+            --summary-json build/fast-lab/rd-summary.json \
+            --table-tsv build/fast-lab/rd-table.tsv \
+            | tee build/fast-lab/rd.txt
+          grep -q '^RD_SWEEP_PASS$' build/fast-lab/rd.txt
 
       - uses: actions/upload-artifact@v4
         with:
