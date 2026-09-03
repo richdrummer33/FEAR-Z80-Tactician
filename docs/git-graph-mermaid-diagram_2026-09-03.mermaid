@@ -1,0 +1,86 @@
+flowchart LR
+
+subgraph LIVE["LIVE RENDERER / HARDWARE-FIT OPTIMISATION"]
+direction LR
+
+A["🧭 NAME-TABLE NATIVE<br/><b>Stages 12–15</b><br/>• contiguous run pipeline<br/>• authoritative NT shadow + dirty bits<br/>• span-amortised bookkeeping<br/>✅ representation proved<br/>⚡✅ Stage12 ~7.93 upd/s high-water<br/>⚡⚠️ Stage14 ~7.53, but upload ~27.4K T/update<br/>🧬✅ foundation retained"]
+
+B["🧭 DIRECT OPAQUE<br/><b>Stage 16</b><br/>• run → direct NT materializer<br/>• bypass generic portal raster for FULL walls<br/>✅ works<br/>⚡❌ 7.37 upd/s<br/>🧬✅ mechanism survived"]
+
+S17["🧭 VISIBILITY EXPERIMENT<br/><b>Stage 17 run-envelope</b><br/>✅ works<br/>⚡❌ 6.63 upd/s<br/>🧬❌ dead-end branch"]
+
+C["🧭 COLUMN LIFETIME<br/><b>Stage 18</b><br/>• column-major 18-bit lifetime state<br/>✅ works<br/>⚡⚠️ 7.61 upd/s recovery<br/>🧬✅ retained"]
+
+D["🧭 VRAM + SHARED EDGES<br/><b>Stages 19–21</b><br/>• row-burst uploader: 13.6K T<br/>• dirty row extents: 9.2K T<br/>• symmetric FULL-wall edge identity/reuse<br/>✅ verified<br/>⚡✅ 7.79 → 7.90 → <b>8.15 upd/s</b><br/>🧬✅ major durable wins"]
+
+E["🧭 TEMPORAL / SHARED-SPAN REUSE<br/><b>Stages 22–25</b><br/>• retained quantized FULL descriptors<br/>• exact skip ~33.5%; edge-only ~59%<br/>• Stage23 edge-delta materialization<br/>• lifetime + 20-bit active mask<br/>✅ Stage22–23 clean<br/>⚠️ Stage24–25 later exposed latent runtime divergence<br/>⚡✅ Stage23 <b>8.39 upd/s</b><br/>⚡⚠️ Stage24/25 ~8.23–8.25<br/>🧬✅ core reuse survived"]
+
+SIDE["🧭 CANDIDATE BUILD<br/><b>Stages 26–27 side experiment</b><br/>• candidate envelope / phase ideas<br/>✅ Stage26 runs<br/>❓ Stage27 no equivalent runtime proof found<br/>⚡⚠️ Stage26 8.34 upd/s; no new high-water<br/>🧬❌ not on repair spine"]
+
+F["🧭 RUNTIME REPAIR + GATING<br/><b>Stages 28 → 32</b><br/>• sparse exception lifetime<br/>• inactive/stale ownership gates<br/>• deferred reconciliation<br/>• ROM-vs-native frame oracle<br/>• fixed register clobber + normal-path fallthrough<br/>✅ runtime equivalence repaired<br/>⚡✅ motion scenarios ~<b>10.06–10.47 upd/s</b><br/>• ~29.96 only trivial/static window<br/>🧬✅ launchpad for Polar"]
+
+A --> B
+B -.-> S17
+B --> C
+C --> D
+D --> E
+E -.-> SIDE
+E --> F
+end
+
+
+subgraph POLAR["POLAR / BAKE / COMPOSITING SHIFT"]
+direction LR
+
+P0["🧭 ADAPTIVE POLAR FIELD<br/><b>fresh Polar + hardware-fit recovery</b><br/>• polar runs + near→far ownership<br/>• reused Stage19 row bursts<br/>• projection-bank experiments<br/>⚠️ renderer ran, but early comparison = <b>0/120 exact</b><br/>⚡❓ 8.32 log was legacy/control baseline, not clean Polar win<br/>🧬↪️ architecture iterated heavily"]
+
+PB["🧭 POLAR RUN / DEPTH BAKE<br/>• baked run/depth-plane coefficients<br/>• ~109–169 KB experimental packs<br/>✅ host bake POC works<br/>⚡❓ no authoritative runtime gain measured here<br/>🧬✅ direct ancestor of transition replay"]
+
+PT["🧭 EXACT TRANSITION PATCHES<br/><b>major architecture win</b><br/>• replay baked name-table changes<br/>✅ <b>120/120 exact</b> vs host reference<br/>⚡✅ <b>48.26 upd/s</b><br/>• 74.2K T whole loop<br/>• ~87.35% less than 586K-T exact control<br/>🧬✅ persisted"]
+
+PC["🧭 EDGE OWNERSHIP REPAIR<br/>• cross-row 'chemtrail' fix<br/>• fixed edge materializer/manual proof<br/>✅ verified visually/runtime<br/>⚡❓ no isolated tick benchmark<br/>🧬✅ persisted"]
+
+PE["🧭 BAKED-EDGE COMPOSITE<br/>• exact edge + patch composition<br/>• production live/manual takeover proof<br/>✅ sampled frames <b>0 semantic-pixel mismatch</b><br/>⚡❓ final proof verifies cadence/sanity, not a clean update-T score<br/>🧬✅ becomes world/content backbone"]
+
+TX["🧭 PROJECTIVE TEXTURE<br/>• bounded baked texture replay<br/>• strip reuse / quantization / packing<br/>✅ exact-output checks pass<br/>⚡❓ final-head tick rate not established in reviewed proof<br/>🧬❌ side extension; world branch forks before it"]
+
+F --> P0
+P0 --> PB
+PB --> PT
+PT --> PC
+PC --> PE
+PE -.-> TX
+end
+
+
+subgraph WORLD["STREAMING WORLD / CONTENT / HERO SYSTEMS"]
+direction LR
+
+W["🧭 ROOM STREAMING<br/>• deterministic streamed-room bundles<br/>• large ROM banking<br/>✅ banks 4/63/64/127/191/254 executed correctly<br/>✅ gameplay proof generated<br/>⚡❓ emulator 60-Hz output ≠ renderer tick proof<br/>🧬✅ retained"]
+
+SOL["🧭 SOLID WORLD GEOMETRY<br/>• volumetric walls + window reveals<br/>• stairs / floor-height surfaces<br/>• host-baked lighting/shadows<br/>✅ multi-route bundle proof passes<br/>⚡❓ upload scheduling measured; CPU update rate not<br/>🧬✅ major common ancestor"]
+
+INT["🧭 INTEGRATION VALIDATION<br/>• streaming + solid walls + flicker/lighting<br/>• forward/backward route checks<br/>✅ integrated branch passes<br/>⚡❓ no authoritative tick benchmark<br/>🧬↪️ validation sibling"]
+
+HERO["🧭 HERO / MESH BAKE<br/>• Doomguy chamber + mesh shadows<br/>• GLB import + lighting proxy<br/>✅ chamber/shadow/replay proofs pass<br/>✅ GLB lineage subsequently feeds codec<br/>⚡❓ tile/load budgets measured, not CPU tick rate<br/>🧬✅ retained"]
+
+CODEC["🧭 HERO VIEW CODEC<br/>• baked view/state compression<br/>• tile lifetime + atomic upload scheduling<br/>• copy-on-write dynamic misses<br/>✅ bundle/route proofs pass<br/>⚡❓ throughput budgets quantified; no clean loop-T benchmark<br/>🧬✅ feeds playable renderer"]
+
+PLAY["🧭 RANDOM-ACCESS PLAYABLE<br/>• 40 positions × 16 headings = 640 states<br/>• D-pad movement + button strafe<br/>• random-access double buffering<br/>✅ 640-state bake + GG build/input proof<br/>⚡❓ emulator 60-Hz cadence not equivalent to update cost<br/>🧬✅ feeds later scenes"]
+
+K["🧭 KLEINER LAB<br/>• BSP-derived semantic room<br/>• same playable state machinery<br/>✅ GG ROM + movement runs pass<br/>⚡❓ no renderer tick profile<br/>🧬↪️ scene/application branch"]
+
+E1["🧭 E1M1 ROOM 1<br/>• exact collision + stair floor map<br/>• conservative generated PVS<br/>✅ host + emulator movement tests pass<br/>• PVS mean 30.2 candidates<br/>⚡❓ initial live branch lacked CPU update profile<br/>🧬✅ feeds Polar transplant"]
+
+E1P["🧭 E1M1 MATURE POLAR TRANSPLANT<br/>• Polar renderer ported to E1M1<br/>• final-owner PVS + granularity sweep<br/>✅ host/ROM/emulator functionality passes<br/>• exact-owner ideal mean ~8.45 rendered surfaces<br/>⚡❌ <b>1.76 upd/s</b> at reviewed head<br/>• render/build ~1.974M T<br/>• Q4 transform ~1.048M T<br/>• solid raster ~923K T<br/>🧬⚠️ current optimisation target"]
+
+PE --> W
+W --> SOL
+SOL -.-> INT
+SOL --> HERO
+HERO --> CODEC
+CODEC --> PLAY
+PLAY --> K
+SOL --> E1
+E1 --> E1P
+end
