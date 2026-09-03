@@ -48,6 +48,16 @@ jobs:
           grep -q 'E1PF_TILES_PASS' "$OUT/polar-tiles-bake.txt"
           wc -c "$PROD/e1m1_room1_polar_pvs.c" "$PROD/e1m1_room1_polar_meta.h"             "$PROD/e1m1_room1_polar_tiles.c" | tee "$OUT/polar-bake-size.txt"
 
+      - name: Sweep final-owner PVS granularity
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-room1
+          PROD="$OUT/production-generated"
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror             -DTSPF_E1M1_ROOM1=1             -DTSPF_LOCAL_PROJECTION=0             -DTSPF_SCREEN_DEPTH_PLANE=0             -DTSPF_PROFILE_HOOKS=1             -Isrc -I"$PROD"             src/e1m1_room1_world.c             src/tilesector_polar_renderer.c             "$PROD/e1m1_room1_polar_pvs.c"             tools/e1m1_owner_pvs_sweep.c             -o "$OUT/e1m1-owner-pvs-sweep"
+          "$OUT/e1m1-owner-pvs-sweep" | tee "$OUT/polar-owner-sweep.txt"
+          grep -q 'E1_OWNER_SWEEP_PASS' "$OUT/polar-owner-sweep.txt"
+
       - name: Host-test exact geometry through mature Polar renderer
         shell: bash
         run: |
@@ -252,6 +262,7 @@ jobs:
             build/e1m1-room1/cadence-*.ppm
             build/e1m1-room1/polar-bake.txt
             build/e1m1-room1/polar-bake-size.txt
+            build/e1m1-room1/polar-owner-sweep.txt
             build/e1m1-room1/polar-tiles-bake.txt
             build/e1m1-room1/polar-host-test.txt
             build/e1m1-room1/reference-host-test.txt
