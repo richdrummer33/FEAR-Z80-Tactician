@@ -571,3 +571,97 @@ def refine_rank_mask(rank_mask, objective, passes=1, candidate_limit=63):
         if not accepted:
             break
     return mask, history
+
+
+# ---------------------------------------------------------------------------
+# Dictionary-honest local pattern sampling
+
+
+def current_pattern_bank(master, class_to_origins, tile_size=8):
+    """Materialize one current canonical tile for each original stable class."""
+    bank = {}
+    for key, origins in class_to_origins.items():
+        tx, ty = origins[0]
+        bank[key] = tile_signature(master, tx, ty, tile_size)
+    return bank
+
+
+def _source_class_and_local(class_map, sx, sy, tile_size=8):
+    ix, iy = int(round(sx)), int(round(sy))
+    tx, ty = ix // tile_size, iy // tile_size
+    key = class_map.get((tx, ty), bytes(tile_size * tile_size))
+    return key, ix % tile_size, iy % tile_size
+
+
+def decode_with_local_pattern_phases(master, target_or_shape, source_anchor,
+                                     target_anchor, source_radius,
+                                     target_radius, class_map,
+                                     class_to_origins, table, tile_size=8):
+    """Sample only inside the canonical shared 8x8 pattern.
+
+    Unlike decode_with_pattern_phases, a phase cannot wander into a neighbouring
+    screen tile.  Therefore one class key plus one phase vector is sufficient
+    to reproduce the selected sample regardless of where the pattern occurs.
+    """
+    if isinstance(target_or_shape, Raster):
+        w, h = target_or_shape.width, target_or_shape.height
+    else:
+        w, h = target_or_shape
+    bank = current_pattern_bank(master, class_to_origins, tile_size)
+    zero_key = bytes(tile_size * tile_size)
+    out = Raster.blank(w, h)
+    for y in range(h):
+        for x in range(w):
+            sx, sy = projective_source_xy(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            key, lx, ly = _source_class_and_local(
+                class_map, sx, sy, tile_size)
+            dx, dy = table.get(key, table.get(zero_key, (0, 0)))
+            pattern = bank.get(key, zero_key)
+            px = (lx + dx) % tile_size
+            py = (ly + dy) % tile_size
+            out.set(x, y, pattern[py * tile_size + px])
+    return out
+
+
+def fit_local_pattern_phases(master, target, source_anchor, target_anchor,
+                             source_radius, target_radius, class_map,
+                             class_to_origins, phases=None,
+                             weights=LossWeights(), tile_size=8):
+    """Fit one tile-local phase per stable shared pattern class."""
+    phases = phases or phase_grid()
+    bank = current_pattern_bank(master, class_to_origins, tile_size)
+    zero_key = bytes(tile_size * tile_size)
+    groups = {}
+    for y in range(target.height):
+        for x in range(target.width):
+            sx, sy = projective_source_xy(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            key, lx, ly = _source_class_and_local(
+                class_map, sx, sy, tile_size)
+            groups.setdefault(key, []).append((lx, ly, target.at(x, y)))
+
+    table = {}
+    for key, items in groups.items():
+        pattern = bank.get(key, zero_key)
+        best_phase = phases[0]
+        best_cost = None
+        for dx, dy in phases:
+            cost = 0.0
+            for lx, ly, wanted in items:
+                px = (lx + dx) % tile_size
+                py = (ly + dy) % tile_size
+                got = pattern[py * tile_size + px]
+                cost += _pixel_cost(got, wanted, weights)
+            if best_cost is None or cost < best_cost:
+                best_cost = cost
+                best_phase = (dx, dy)
+        table[key] = best_phase
+
+    pred = decode_with_local_pattern_phases(
+        master, target, source_anchor, target_anchor,
+        source_radius, target_radius, class_map, class_to_origins,
+        table, tile_size)
+    return table, compare(pred, target, weights), pred
