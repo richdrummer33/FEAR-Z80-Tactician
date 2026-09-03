@@ -66,6 +66,7 @@ class NestedDistanceProblem:
     def __init__(self, corpus, angle=0, phase_radius=2,
                  silhouette_weight=12.0, shade_weight=1.0,
                  near_budget=192.0, near_lambda=4.0,
+                 near_objective_weight=0.0,
                  pattern_penalty=0.0, selector_byte_penalty=0.0,
                  proposal_limit=48):
         self.c = corpus
@@ -74,6 +75,7 @@ class NestedDistanceProblem:
         self.phases = phase_grid(phase_radius)
         self.near_budget = float(near_budget)
         self.near_lambda = float(near_lambda)
+        self.near_objective_weight = float(near_objective_weight)
         self.pattern_penalty = float(pattern_penalty)
         self.selector_byte_penalty = float(selector_byte_penalty)
         self.proposal_limit = int(proposal_limit)
@@ -166,7 +168,7 @@ class NestedDistanceProblem:
         patterns = distinct_tile_count(state)
         objective = (
             far_weighted
-            + self.near_lambda * near.weighted
+            + self.near_objective_weight * near.weighted
             + self.pattern_penalty * patterns
             + self.selector_byte_penalty * selector_bytes
         )
@@ -192,6 +194,8 @@ class NestedDistanceProblem:
         return {
             "selector_model": "whole-master-pattern-phase",
             "phase_candidates": len(self.phases),
+            "proposal_near_lambda": self.near_lambda,
+            "near_objective_weight": self.near_objective_weight,
             "distance_tables": [
                 {
                     "band": e["band"],
@@ -250,27 +254,28 @@ class NestedDistanceProblem:
         tx, ty = self.class_origins[key][0]
         return tile_signature(state, tx, ty)
 
-    def _assignment_proposal(self, state, key, demand):
+    def _assignment_proposal(self, state, key, demand, proposal_lambda):
         current = self._pattern_at(state, key)
         original = self.original_patterns[key]
         tokens = list(current)  # preserve exact current shade histogram
         occurrence_count = len(self.class_origins[key])
 
         cost = []
-        current_linear = 0.0
+        current_far = 0.0
+        current_near = 0.0
         for pos in range(64):
             row = []
             current_value = current[pos]
-            # Linear score of current placement for predicted improvement.
             far_now = sum(
                 count * pixel_cost(current_value, wanted, self.weights)
                 for wanted, count in enumerate(demand[key][pos])
             )
             near_now = (
-                occurrence_count * self.near_lambda
+                occurrence_count
                 * pixel_cost(current_value, original[pos], self.weights)
             )
-            current_linear += far_now + near_now
+            current_far += far_now
+            current_near += near_now
 
             for token_value in tokens:
                 far = sum(
@@ -278,35 +283,113 @@ class NestedDistanceProblem:
                     for wanted, count in enumerate(demand[key][pos])
                 )
                 near = (
-                    occurrence_count * self.near_lambda
+                    occurrence_count
                     * pixel_cost(token_value, original[pos], self.weights)
                 )
-                row.append(far + near)
+                row.append(far + proposal_lambda * near)
             cost.append(row)
 
-        assignment, best_linear = min_cost_assignment(cost)
+        assignment, _ = min_cost_assignment(cost)
         new_pattern = bytes(tokens[assignment[pos]] for pos in range(64))
         if new_pattern == current:
+            return None
+
+        new_far = 0.0
+        new_near = 0.0
+        for pos, value in enumerate(new_pattern):
+            new_far += sum(
+                count * pixel_cost(value, wanted, self.weights)
+                for wanted, count in enumerate(demand[key][pos])
+            )
+            new_near += (
+                occurrence_count
+                * pixel_cost(value, original[pos], self.weights)
+            )
+
+        far_delta = new_far - current_far
+        near_delta = new_near - current_near
+        # Mainline proposals exist to improve the actual constrained objective:
+        # farther-distance error.  Near quality is handled by the hard budget.
+        if far_delta >= -1e-9:
             return None
         return {
             "kind": "hungarian_pattern_reassignment",
             "key": key,
             "class_id": self.class_ids[key],
             "pattern": new_pattern,
-            "predicted_linear_delta": float(best_linear - current_linear),
+            "proposal_lambda": float(proposal_lambda),
+            "predicted_far_delta": float(far_delta),
+            "predicted_near_delta": float(near_delta),
             "occurrences": occurrence_count,
         }
 
     def main_proposals(self, state, model, iteration):
         demand = self._build_far_demand(model)
+
+        # Lagrangian sweep: same exact far objective, several different prices
+        # on spending near-view error.  The accepted mainline still obeys the
+        # hard near budget, so these are proposal generators rather than
+        # competing objective functions.
+        lambdas = []
+        for value in (
+                self.near_lambda,
+                self.near_lambda * 0.5,
+                self.near_lambda * 0.25,
+                0.0):
+            value = max(0.0, float(value))
+            if not any(abs(value - old) < 1e-12 for old in lambdas):
+                lambdas.append(value)
+
         proposals = []
+        seen = set()
         for key in self.class_keys:
-            p = self._assignment_proposal(state, key, demand)
-            if p is not None:
+            for proposal_lambda in lambdas:
+                p = self._assignment_proposal(
+                    state, key, demand, proposal_lambda)
+                if p is None:
+                    continue
+                sig = (p["class_id"], p["pattern"])
+                if sig in seen:
+                    continue
+                seen.add(sig)
                 proposals.append(p)
-        proposals.sort(
-            key=lambda p: (p["predicted_linear_delta"], p["class_id"]))
+
+        # First try the largest predicted far wins; among similar wins prefer
+        # the candidate spending less near-view error.
+        proposals.sort(key=lambda p: (
+            p["predicted_far_delta"],
+            p["predicted_near_delta"],
+            p["class_id"],
+            -p["proposal_lambda"]))
         return proposals[:self.proposal_limit]
+
+    def after_iteration(self, best_eval, improved, iteration):
+        """Bounded dead-band controller for proposal generation only.
+
+        The accepted objective never depends on this lambda.  It merely changes
+        how aggressively the next Hungarian pass is willing to rearrange the
+        close pattern while searching for a farther-distance win.
+        """
+        old = self.near_lambda
+        frac = best_eval.metrics.get("near_budget_fraction")
+        action = "hold"
+
+        if not improved and (frac is None or frac < 0.35) and old > 0.125:
+            self.near_lambda = max(0.125, old * 0.5)
+            action = "relax_near_price"
+        elif frac is not None and frac > 0.85 and old < 32.0:
+            self.near_lambda = min(32.0, old * 1.5)
+            action = "tighten_near_price"
+
+        changed = abs(self.near_lambda - old) > 1e-12
+        return {
+            "controller": "near-budget-deadband-v1",
+            "action": action,
+            "old_proposal_near_lambda": old,
+            "new_proposal_near_lambda": self.near_lambda,
+            "near_budget_fraction": frac,
+            "force_continue": changed,
+        }
 
     def escape_proposal(self, state, model, rng, iteration, probe, step):
         # A coordinated histogram-preserving shake, not a one-pixel mutation.
@@ -354,9 +437,12 @@ class NestedDistanceProblem:
             "class_id": proposal["class_id"],
             "occurrences": proposal.get("occurrences", 0),
         }
-        if "predicted_linear_delta" in proposal:
-            out["predicted_linear_delta"] = round(
-                proposal["predicted_linear_delta"], 4)
+        if "predicted_far_delta" in proposal:
+            out["predicted_far_delta"] = round(
+                proposal["predicted_far_delta"], 4)
+            out["predicted_near_delta"] = round(
+                proposal["predicted_near_delta"], 4)
+            out["proposal_lambda"] = proposal["proposal_lambda"]
         if "swaps" in proposal:
             out["swap_count"] = len(proposal["swaps"])
             out["swaps"] = proposal["swaps"]
@@ -391,7 +477,10 @@ def main():
     ap.add_argument("--silhouette-weight", type=float, default=12.0)
     ap.add_argument("--shade-weight", type=float, default=1.0)
     ap.add_argument("--near-budget", type=float, default=192.0)
-    ap.add_argument("--near-lambda", type=float, default=4.0)
+    ap.add_argument("--near-lambda", type=float, default=4.0,
+                    help="proposal-only Lagrange price on near-view damage")
+    ap.add_argument("--near-objective-weight", type=float, default=0.0,
+                    help="optional soft near penalty; hard near-budget still applies")
     ap.add_argument("--pattern-penalty", type=float, default=0.0)
     ap.add_argument("--selector-byte-penalty", type=float, default=0.0)
     ap.add_argument("--proposal-limit", type=int, default=48)
@@ -413,7 +502,7 @@ def main():
     problem = NestedDistanceProblem(
         c, args.angle, args.phase_radius,
         args.silhouette_weight, args.shade_weight,
-        args.near_budget, args.near_lambda,
+        args.near_budget, args.near_lambda, args.near_objective_weight,
         args.pattern_penalty, args.selector_byte_penalty,
         args.proposal_limit)
 
