@@ -246,15 +246,48 @@ static uint8_t inv_for_zq4(int16_t zq4) {
         shr_signed((int16_t)(d*frac+(d>=0?8:-8)),4));
 }
 
-static int16_t ratio_q8_signed(int16_t num,int16_t den) {
-    int32_t n=num,d=den;
-    if(!d)return 0;
-    return (int16_t)((n<<8)/d);
+static uint8_t ratio_q8(uint16_t a,uint16_t b) {
+    uint8_t i,q=0u;
+    uint16_t r=a;
+    if(b==0u||a==0u)return 0u;
+    if(a>=b)return 255u;
+    for(i=0u;i<8u;++i) {
+        r=(uint16_t)(r<<1);
+        q=(uint8_t)(q<<1);
+        if(r>=b) {
+            r=(uint16_t)(r-b);
+            q|=1u;
+        }
+    }
+    return q;
+}
+
+static int16_t scale_q8_s16(int16_t v,uint8_t q8) {
+    uint16_t a=(uint16_t)(v<0?-v:v);
+    uint16_t hi=(uint16_t)(a>>8);
+    uint16_t lo=(uint16_t)(a&255u);
+    uint16_t out=(uint16_t)(hi*q8+((lo*q8)>>8));
+    return v<0?-(int16_t)out:(int16_t)out;
 }
 
 static int16_t project_x(int16_t xq4,uint8_t inv) {
-    int32_t p=(int32_t)xq4*(int32_t)inv;
-    return (int16_t)(80+(p>>9));
+    uint16_t ax,xi,xf,p,rem,extra;
+    int16_t px;
+    uint8_t neg=0u;
+    if(xq4<0) {
+        neg=1u;
+        ax=(uint16_t)(-xq4);
+    } else ax=(uint16_t)xq4;
+    if(ax>(uint16_t)(127u<<4))ax=(uint16_t)(127u<<4);
+    xi=(uint16_t)(ax>>4);
+    xf=(uint16_t)(ax&15u);
+    p=(uint16_t)(xi*inv);
+    px=(int16_t)(p>>5);
+    rem=(uint16_t)(p&31u);
+    extra=(uint16_t)(((rem<<4)+xf*inv)>>9);
+    px=(int16_t)(px+(int16_t)extra);
+    if(neg)px=(int16_t)-px;
+    return (int16_t)(80+px);
 }
 
 static int8_t col_floor(int16_t px) {
@@ -292,16 +325,16 @@ static uint8_t project_surface(const E1Room1State *s,const E1Surface *w,
 
     if(z0<E1_NEAR_Z_Q4&&z1<E1_NEAR_Z_Q4)return 0u;
     if(z0<E1_NEAR_Z_Q4) {
-        int16_t q=ratio_q8_signed((int16_t)(E1_NEAR_Z_Q4-z0),
-                                  (int16_t)(z1-z0));
-        x0=(int16_t)(x0+(((int32_t)(x1-x0)*q)>>8));
+        uint8_t q=ratio_q8((uint16_t)(E1_NEAR_Z_Q4-z0),
+                           (uint16_t)(z1-z0));
+        x0=(int16_t)(x0+scale_q8_s16((int16_t)(x1-x0),q));
         z0=E1_NEAR_Z_Q4;
         clip0=1u;
     }
     if(z1<E1_NEAR_Z_Q4) {
-        int16_t q=ratio_q8_signed((int16_t)(E1_NEAR_Z_Q4-z1),
-                                  (int16_t)(z0-z1));
-        x1=(int16_t)(x1+(((int32_t)(x0-x1)*q)>>8));
+        uint8_t q=ratio_q8((uint16_t)(E1_NEAR_Z_Q4-z1),
+                           (uint16_t)(z0-z1));
+        x1=(int16_t)(x1+scale_q8_s16((int16_t)(x0-x1),q));
         z1=E1_NEAR_Z_Q4;
         clip1=1u;
     }
