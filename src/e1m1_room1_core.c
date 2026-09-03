@@ -124,7 +124,16 @@ typedef struct E1CameraCtx {
     int8_t sn,cs;
 } E1CameraCtx;
 
+typedef struct E1Run {
+    uint8_t sid;
+    int8_t c0,c1;
+    uint8_t iv0,iv1;
+    uint8_t left_real,right_real;
+} E1Run;
+
 static uint8_t g_depth[E1_MAP_CELLS];
+static uint8_t g_full_inv[E1_COLS];
+static E1Run g_runs[E1_SURFACE_COUNT];
 static uint16_t g_base_map[E1_MAP_CELLS];
 static uint8_t g_base_ready;
 
@@ -377,7 +386,7 @@ static uint8_t project_surface(const E1CameraCtx *cam,const E1Surface *w,
 }
 
 void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
-    uint8_t r,c,si;
+    uint8_t r,c,si,run_count=0u;
     E1CameraCtx cam;
     uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
 
@@ -400,41 +409,87 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     }
     memcpy(out,g_base_map,sizeof(g_base_map));
     memset(g_depth,0,sizeof(g_depth));
+    memset(g_full_inv,0,sizeof(g_full_inv));
 
+    /*
+     * Project every surface exactly once. In the same pass establish the
+     * nearest full-height occluder for each of the twenty hardware columns.
+     * Any partial/full surface behind that per-column depth cannot contribute
+     * a visible tile, so its expensive vertical raster loop is never entered.
+     */
     for(si=0u;si<E1_SURFACE_COUNT;++si) {
         const E1Surface *w=&k_surfaces[si];
         int16_t sx0,sx1;
         uint8_t iv0,iv1,left_real,right_real;
-        int8_t c0,c1,cc;
-        int16_t span,iq,step;
+        int8_t c0,c1;
 
         if(!project_surface(&cam,w,&sx0,&sx1,&iv0,&iv1,
                             &left_real,&right_real))continue;
-
         c0=col_floor(sx0);
         c1=col_floor(sx1);
         if(c0<0)c0=0;
         if(c1>=(int8_t)E1_COLS)c1=(int8_t)(E1_COLS-1u);
         if(c1<c0)continue;
 
-        span=(int16_t)(c1-c0+1);
-        iq=(int16_t)iv0<<6;
+        {
+            E1Run *run=&g_runs[run_count++];
+            run->sid=si;
+            run->c0=c0;
+            run->c1=c1;
+            run->iv0=iv0;
+            run->iv1=iv1;
+            run->left_real=left_real;
+            run->right_real=right_real;
+        }
+
+        if(w->z0==0&&w->z1==29&&!(w->flags&E1_SURF_PORTAL)) {
+            int16_t span=(int16_t)(c1-c0+1);
+            int16_t iq=(int16_t)iv0<<6,step=0;
+            int8_t cc;
+            if(span>1) {
+                uint8_t d=(uint8_t)(span-1);
+                step=shr_signed((int16_t)(
+                    ((int16_t)iv1-(int16_t)iv0)*k_span_recip_q8[d]),2);
+            }
+            for(cc=c0;cc<=c1;++cc) {
+                uint8_t inv=(uint8_t)((iq+32)>>6);
+                if(inv>g_full_inv[(uint8_t)cc])
+                    g_full_inv[(uint8_t)cc]=inv;
+                iq=(int16_t)(iq+step);
+            }
+        }
+    }
+
+    for(si=0u;si<run_count;++si) {
+        const E1Run *run=&g_runs[si];
+        const E1Surface *w=&k_surfaces[run->sid];
+        int8_t cc;
+        int16_t span=(int16_t)(run->c1-run->c0+1);
+        int16_t iq=(int16_t)run->iv0<<6,step=0;
+
         if(span>1) {
-            uint8_t denom=(uint8_t)(span-1);
+            uint8_t d=(uint8_t)(span-1);
             step=shr_signed((int16_t)(
-                ((int16_t)iv1-(int16_t)iv0)*k_span_recip_q8[denom]),2);
-        } else step=0;
+                ((int16_t)run->iv1-(int16_t)run->iv0)*k_span_recip_q8[d]),2);
+        }
 
-        for(cc=c0;cc<=c1;++cc) {
-            uint8_t inv=(uint8_t)((iq+32)>>6);
-            uint8_t shade=shade_for(inv,w->shade_bias);
-            uint8_t border=0u;
-            int16_t top=(int16_t)(E1_HORIZON-
+        for(cc=run->c0;cc<=run->c1;++cc) {
+            uint8_t inv=(uint8_t)((iq+32)>>6),shade,border=0u;
+            int16_t top,bot;
+            int8_t rt,rb,rr;
+
+            if(inv<g_full_inv[(uint8_t)cc]) {
+                iq=(int16_t)(iq+step);
+                continue;
+            }
+
+            shade=shade_for(inv,w->shade_bias);
+            top=(int16_t)(E1_HORIZON-
                 (((int16_t)w->z1-(s->z_q4>>4))*(int16_t)inv>>5));
-            int16_t bot=(int16_t)(E1_HORIZON-
+            bot=(int16_t)(E1_HORIZON-
                 (((int16_t)w->z0-(s->z_q4>>4))*(int16_t)inv>>5));
-            int8_t rt=row_floor(top),rb=row_floor(bot),rr;
-
+            rt=row_floor(top);
+            rb=row_floor(bot);
             if(rt>rb) {
                 int8_t t=rt;
                 rt=rb;
@@ -442,9 +497,8 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
             }
             if(rt<0)rt=0;
             if(rb>=(int8_t)E1_ROWS)rb=(int8_t)(E1_ROWS-1u);
-
-            if(cc==c0&&left_real)border|=1u;
-            if(cc==c1&&right_real)border|=2u;
+            if(cc==run->c0&&run->left_real)border|=1u;
+            if(cc==run->c1&&run->right_real)border|=2u;
 
             for(rr=rt;rr<=rb;++rr) {
                 uint16_t idx=k_row_base[(uint8_t)rr]+(uint8_t)cc;
