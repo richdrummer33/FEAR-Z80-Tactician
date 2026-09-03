@@ -372,7 +372,20 @@ class StableAlternatingSolver:
                     if promoted:
                         break
 
+            feedback = {}
+            if hasattr(self.problem, "after_iteration"):
+                feedback = self.problem.after_iteration(
+                    best, improved or escaped, iteration) or {}
+                self.journal.publish(
+                    "feedback_control", iteration, 0, current, best,
+                    feedback, cfg)
+
             if best.objective < iter_start_best - self.epsilon:
+                stagnant = 0
+            elif feedback.get("force_continue", False):
+                # A bounded controller changed a search parameter.  Give that
+                # new setting one complete alternating pass before declaring
+                # convergence.
                 stagnant = 0
             else:
                 stagnant += 1
