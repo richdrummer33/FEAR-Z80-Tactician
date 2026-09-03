@@ -29,7 +29,7 @@ FOV_HALF=math.radians(45.0)
 YAW_HALF_BUCKET=math.pi/16.0
 CONE_HALF=FOV_HALF+YAW_HALF_BUCKET+math.radians(2.0)
 UNIFORM_RAYS=56
-DEPTH_LAYERS=8
+DEPTH_LAYERS=2
 NEAR_ALWAYS=4.0
 EYE_HEIGHT=5.0
 SCREEN_Y=(4.0,20.0,36.0,52.0,68.0,76.0,92.0,116.0,140.0)
@@ -271,6 +271,8 @@ def main():
 
     print(f"E1PF_BAKE_PASS cells={COLS*ROWS} yaw_bins={YAW_BINS} masks={len(masks)}")
     print(f"candidate_count mean={sum(counts)/len(counts):.2f} min={min(counts)} max={max(counts)}")
+    spawn_i=(((3*COLS)+0)*YAW_BINS)+0
+    print(f"spawn_candidate_count={counts[spawn_i]}")
     print(f"pvs_bytes={len(masks)*MASK_BYTES} empty_unwalkable_masks={empty}")
     print(f"depth_layers={DEPTH_LAYERS} uniform_rays={UNIFORM_RAYS} cone_half_deg={math.degrees(CONE_HALF):.2f}")
 
