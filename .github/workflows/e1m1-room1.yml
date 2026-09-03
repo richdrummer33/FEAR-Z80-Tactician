@@ -65,17 +65,22 @@ jobs:
           wc -c "$OUT/GG-E1M1-Room1.gg" | tee "$OUT/ROM-size.txt"
           sha256sum "$OUT/GG-E1M1-Room1.gg" | tee "$OUT/SHA256.txt"
 
+          PFLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc -Wf--opt-code-speed -DE1_PROFILE_HOOKS=1)
+          "$LCC" "${PFLAGS[@]}" -c -o "$OUT/profile-main.o" src/main_e1m1_room1_gg.c
+          "$LCC" "${PFLAGS[@]}" -c -o "$OUT/profile-core.o" src/e1m1_room1_core.c
+          "$LCC" "${PFLAGS[@]}" -c -o "$OUT/profile-vram.o" src/tilesector_vram_gg.s
+          "$LCC" "${PFLAGS[@]}" -Wm-yS \
+            -o "$OUT/GG-E1M1-Room1-profile.gg" \
+            "$OUT/profile-main.o" "$OUT/profile-core.o" "$OUT/profile-vram.o"
+
       - name: Build Gearsystem libretro proof runner
         shell: bash
         run: |
           set -euo pipefail
           git clone --depth 1 --branch 3.9.16 \
             https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          make -C .toolchain/Gearsystem/platforms/libretro -j"$(nproc)"
-          g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic \
-            -I.toolchain/Gearsystem/platforms/libretro \
-            tools/libretro_runner.cpp -ldl \
-            -o build/e1m1-room1/libretro_runner
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          cp build/libretro_runner build/e1m1-room1/libretro_runner
 
       - name: Prove boot, free forward motion and smooth live turning
         shell: bash
@@ -155,6 +160,12 @@ jobs:
           print(f"E1M1_ROOM1_CADENCE loops_600_vblanks={loops} updates_per_second={hz:.2f}")
           PY
 
+          ./build/tilesector_profile_runner \
+            "$OUT/GG-E1M1-Room1-profile.gg" \
+            "$OUT/GG-E1M1-Room1-profile.sym" \
+            8 2 demo "$OUT/profile-map.bin" \
+            | tee "$OUT/profile.txt"
+
       - name: Package playable proof
         if: always()
         shell: bash
@@ -182,6 +193,9 @@ jobs:
             build/e1m1-room1/GG-E1M1-Room1.gg
             build/e1m1-room1/GG-E1M1-Room1.sym
             build/e1m1-room1/GG-E1M1-Room1.map
+            build/e1m1-room1/GG-E1M1-Room1-profile.gg
+            build/e1m1-room1/GG-E1M1-Room1-profile.sym
+            build/e1m1-room1/profile.txt
             build/e1m1-room1/boot.ppm
             build/e1m1-room1/forward.ppm
             build/e1m1-room1/turn-right.ppm
