@@ -231,10 +231,12 @@ static int8_t world_shade_bias(uint8_t sid){
  * Current projection maps a 32-unit wall to invz screen pixels, so moving the
  * eye by dz world units moves a surface by dz*invz/32 pixels. Stair heights
  * are integral world units; keeping dz small avoids any 32-bit helper on Z80. */
+#ifndef TSPF_E1M1_ROOM1
 static int16_t camera_z_shift(uint8_t inv,const TSPState *s){
     int16_t dz=(int16_t)((s->z_q4-TSP_EYE_HEIGHT_Q4)>>4);
     return shr_signed((int16_t)(dz*(int16_t)inv),5u);
 }
+#endif
 static int16_t signed_q12(uint16_t v){v&=4095u;return v>=2048u?(int16_t)v-4096:(int16_t)v;}
 
 #ifndef __SDCC
