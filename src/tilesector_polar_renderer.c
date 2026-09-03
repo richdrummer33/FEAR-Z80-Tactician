@@ -17,6 +17,7 @@ BANKREF(tilesector_polar_renderer_bank)
 #include "generated/tilesector_polar_data.inc"
 #ifdef TSPF_E1M1_ROOM1
 #include "generated/e1m1_room1_exact_geometry.h"
+#include "generated/e1m1_room1_exact_floor.h"
 #include "e1m1_room1_polar_meta.h"
 #include "e1m1_room1_polar_pvs.h"
 #endif
@@ -471,7 +472,8 @@ static uint8_t inv_at_invd(uint8_t sid,uint8_t invd,uint16_t world_bearing,int16
     if(ny==0&&(nx==32||nx==-32)) dot=cs;
     else if(nx==0&&(ny==32||ny==-32)) dot=sn;
     else dot=shr_signed((int16_t)((int16_t)nx*cs+(int16_t)ny*sn),5);
-    if(dot<0)dot=(int16_t)-dot;if(dot>127)dot=127;
+    if(dot<0) dot=(int16_t)-dot;
+    if(dot>127) dot=127;
     q=((uint16_t)invd*(uint16_t)dot+64u)>>7;sec=k_tspf_sec_q7[(uint16_t)(rel<0?-rel:rel)];q=(q*sec+64u)>>7;return (uint8_t)(q>255u?255u:q);
 }
 static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else if(inv>=46u)s=1;else s=0;s=(int8_t)(s+bias);if(s<0)s=0;if(s>2)s=2;return (uint8_t)s;}
@@ -538,7 +540,8 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if(g_tspf_appearance_mode<2u){
         uint8_t c0=(uint8_t)(x0>>3),c1=(uint8_t)(x1>>3);
-        if(c0>=TSP_COLS)c0=TSP_COLS-1u;if(c1>=TSP_COLS)c1=TSP_COLS-1u;
+        if(c0>=TSP_COLS) c0=TSP_COLS-1u;
+        if(c1>=TSP_COLS) c1=TSP_COLS-1u;
         if(c1>=c0&&screen_depth_plane(sid,invd,c0,c1,r))return 1u;
     }
 #endif
@@ -612,7 +615,10 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
     uint8_t profile=k_tspf_profile[r->sid];
 #endif
     int16_t iq,step;
-    if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);
+    if(c0>=TSP_COLS) c0=TSP_COLS-1u;
+    if(c1>=TSP_COLS) c1=TSP_COLS-1u;
+    if(c1<c0) return;
+    n=(uint8_t)(c1-c0+1u);
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if(g_tspf_appearance_mode<2u&&r->depth_plane){c0=r->c0;c1=r->c1;n=(uint8_t)(c1-c0+1u);iq=r->iq;step=r->step;}
     else
