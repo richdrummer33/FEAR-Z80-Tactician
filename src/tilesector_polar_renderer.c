@@ -168,10 +168,12 @@ uint8_t g_proj_ly;
 static uint16_t g_proj_fallback_mask;
 static uint16_t g_proj_cached_gi=0xffffu;
 #endif
+#if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 static const uint16_t k_corner_mask[14] = {
     0x0001u,0x0002u,0x0004u,0x0008u,0x0010u,0x0020u,0x0040u,
     0x0080u,0x0100u,0x0200u,0x0400u,0x0800u,0x1000u,0x2000u
 };
+#endif
 #ifndef __SDCC
 static uint8_t g_touched_bits[45];
 static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
@@ -297,11 +299,13 @@ static uint8_t ao_class(uint8_t vid){
     return (uint8_t)((k_tspf_ao[vid>>2]>>((vid&3u)*2u))&3u);
 #endif
 }
+#ifndef TSPF_E1M1_ROOM1
 static uint8_t selector_pass(uint8_t sid,uint8_t lx,uint8_t ly){
     int16_t v=(int16_t)k_tspf_sel_a[sid]*(int16_t)lx+(int16_t)k_tspf_sel_b[sid]*(int16_t)ly+k_tspf_sel_c[sid];
     TSPF_SELECTOR_HIT();
     return (uint8_t)(((v>=0)?1u:0u)^k_tspf_sel_inv[sid]);
 }
+#endif
 
 static uint16_t bearing_q12(int16_t dxq4,int16_t dyq4);
 
@@ -735,7 +739,11 @@ static void add_key(uint8_t key,const TSPState *s,uint8_t *count){
 }
 
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED {
-    uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0,i;uint16_t gi,off;const uint8_t *p,*b;
+#ifdef TSPF_E1M1_ROOM1
+    uint8_t gx,gy,count=0u,i;
+#else
+    uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0u,i;uint16_t gi,off;const uint8_t *p,*b;
+#endif
     memset(g_corner_bearing_valid,0,sizeof(g_corner_bearing_valid));
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
