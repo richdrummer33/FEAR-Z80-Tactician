@@ -35,7 +35,8 @@ int main(void){
     if(e.z_q4!=(19<<4)){die("reset must preserve exact start floor + five-unit eye");return 2;}
     if(!e1_room1_is_walkable_q4(e.x_q4,e.y_q4)){die("spawn not walkable");return 2;}
 
-    e1pf_load_pvs(0u,3u,0u,mask);
+    e1pf_load_pvs((uint8_t)((22-E1X_WORLD_MIN_X)>>E1PF_PVS_CELL_SHIFT),
+                    (uint8_t)((52-E1X_WORLD_MIN_Y)>>E1PF_PVS_CELL_SHIFT),0u,mask);
     for(i=0u;i<8u;++i)changed|=mask[i];
     if(!changed){die("baked PVS returned empty spawn-area mask");return 2;}
 
