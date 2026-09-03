@@ -77,6 +77,7 @@ int main(int argc,char **argv){
     unsigned spawn_count=0u;
     FILE *hf,*sf;
     TSPState p;
+    uint16_t map[TSP_MAP_CELLS];
 
     if(argc!=3){
         fprintf(stderr,"usage: %s OUT_HEADER OUT_SOURCE\n",argv[0]);
@@ -110,7 +111,7 @@ int main(int argc,char **argv){
                             uint8_t yaw=(uint8_t)((int)(yb*16u)+yaw_off[yi]);
                             to_polar(xq,yq,yaw,&p);
                             tsp_polar_renderer_reset();
-                            tsp_polar_render(&p,(uint16_t[ TSP_MAP_CELLS ]){0},(TSPColumn *)0);
+                            tsp_polar_render(&p,map,(TSPColumn *)0);
                             for(bi=0u;bi<8u;++bi)owner_union[bi]|=g_e1_host_owner_bits[bi];
                         }
                     }
@@ -128,7 +129,7 @@ int main(int argc,char **argv){
                             uint8_t yaw=(uint8_t)((int)(yb*16u)+yaw_off[yi]);
                             to_polar(xq,yq,yaw,&p);
                             tsp_polar_renderer_reset();
-                            tsp_polar_render(&p,(uint16_t[ TSP_MAP_CELLS ]){0},(TSPColumn *)0);
+                            tsp_polar_render(&p,map,(TSPColumn *)0);
                             for(bi=0u;bi<8u;++bi)owner_union[bi]|=g_e1_host_owner_bits[bi];
                         }
                     }
