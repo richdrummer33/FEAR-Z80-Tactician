@@ -141,8 +141,7 @@ _tsp_polar_run_zspan_fast::
 
         ld      a, (#_g_polar_run_c0)
         ld      (#r_run_col$), a
-        ld      a, #1
-        ld      (#_g_polar_mat_shade), a
+        ; C selects the quantized fog shade once per connected run.
         ld      a, #0xff
         ld      (#_g_polar_run_profile), a
 
