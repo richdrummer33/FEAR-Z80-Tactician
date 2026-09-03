@@ -195,6 +195,9 @@ static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking 
 static uint16_t g_touched_count;
 static uint8_t g_map_ready;
 #ifdef TSPF_E1M1_ROOM1
+uint8_t g_e1_host_owner_bits[8];
+static uint8_t g_e1_host_owner_map[TSP_MAP_CELLS];
+static uint8_t g_e1_host_current_sid=0xffu;
 uint16_t g_e1_host_project_attempts;
 uint16_t g_e1_host_reject_degenerate;
 uint16_t g_e1_host_reject_frustum;
@@ -299,12 +302,18 @@ static void map_init(uint16_t *out){
     uint8_t r,c;
     for(r=0;r<TSP_ROWS;++r)for(c=0;c<TSP_COLS;++c)out[k_row_base[r]+c]=base_word(r);
     memset(g_touched_bits,0,sizeof(g_touched_bits));g_touched_count=0;g_map_ready=1u;
+#ifdef TSPF_E1M1_ROOM1
+    memset(g_e1_host_owner_map,0xff,sizeof(g_e1_host_owner_map));
+#endif
 }
 static void restore_touched(uint16_t *out){
     uint16_t i;
     for(i=0;i<g_touched_count;++i){
         uint16_t rc=g_touched_list[i];uint8_t r=(uint8_t)(rc>>8),c=(uint8_t)rc;uint16_t idx=k_row_base[r]+c;
         out[idx]=base_word(r);g_touched_bits[idx>>3]&=(uint8_t)~(1u<<(idx&7u));
+#ifdef TSPF_E1M1_ROOM1
+        g_e1_host_owner_map[idx]=0xffu;
+#endif
     }
     g_touched_count=0u;
 }
@@ -326,6 +335,9 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
     uint16_t idx=k_row_base[row]+col;uint8_t *b=&g_touched_bits[idx>>3];uint8_t m=(uint8_t)(1u<<(idx&7u));
     if(!(*b&m)){*b|=m;g_touched_list[g_touched_count++]=(uint16_t)(((uint16_t)row<<8)|col);}
     out[idx]=word;
+#ifdef TSPF_E1M1_ROOM1
+    g_e1_host_owner_map[idx]=g_e1_host_current_sid;
+#endif
 #endif
 }
 #endif
@@ -689,6 +701,11 @@ static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t
 #endif
 
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPState *s){
+#ifndef __SDCC
+#ifdef TSPF_E1M1_ROOM1
+    g_e1_host_current_sid=r->sid;
+#endif
+#endif
 #if TSPF_E1M1_GG_FAST_ONLY
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n;
     int16_t z0,z1,top0,top1,bot0,bot1;
@@ -950,6 +967,17 @@ done:
 #endif
 #if !defined(__SDCC)
     g_tspf_touched_cells=g_touched_count;
+#ifdef TSPF_E1M1_ROOM1
+    {
+        uint16_t oi;
+        memset(g_e1_host_owner_bits,0,sizeof(g_e1_host_owner_bits));
+        for(oi=0u;oi<TSP_MAP_CELLS;++oi){
+            uint8_t sid=g_e1_host_owner_map[oi];
+            if(sid<E1PF_SEGMENT_COUNT)
+                g_e1_host_owner_bits[sid>>3]|=(uint8_t)(1u<<(sid&7u));
+        }
+    }
+#endif
 #elif TSPF_PROFILE_HOOKS
     g_tspf_touched_cells=0u;
 #endif
