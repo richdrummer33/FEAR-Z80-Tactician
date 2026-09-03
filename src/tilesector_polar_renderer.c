@@ -94,10 +94,10 @@ uint8_t g_polar_run_left_real;
 uint8_t g_polar_run_right_real;
 int16_t g_polar_run_iq;
 int16_t g_polar_run_step;
-#ifdef TSPF_E1M1_ROOM1
+/* Present in every GG build because the shared materializer exports the E1M1
+ * z-span entry point even when the standard Polar world does not call it. */
 int16_t g_polar_run_z0_q4_rel;
 int16_t g_polar_run_z1_q4_rel;
-#endif
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
