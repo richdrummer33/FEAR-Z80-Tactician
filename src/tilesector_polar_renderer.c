@@ -100,25 +100,13 @@ uint8_t g_polar_run_left_real;
 uint8_t g_polar_run_right_real;
 int16_t g_polar_run_iq;
 int16_t g_polar_run_step;
-/* E1M1 arbitrary-height runs are affine in screen x too.  Production computes
- * top/bottom screen-Y in Q6 once at each run endpoint; Z80 then only walks two
- * Q6 accumulators instead of multiplying four z endpoints per coarse column. */
-int16_t g_polar_run_top_q6;
-int16_t g_polar_run_top_step_q6;
-int16_t g_polar_run_bot_q6;
-int16_t g_polar_run_bot_step_q6;
-/* Retained for the generic/reference E1 C path and diagnostics. */
+/* Present in every GG build because the shared materializer exports the E1M1
+ * z-span entry point even when the standard Polar world does not call it. */
 int16_t g_polar_run_z0_q4_rel;
 int16_t g_polar_run_z1_q4_rel;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
-#if defined(TSPF_E1M1_ROOM1) && !defined(__SDCC)
-/* Host-only oracle switch.  CI renders every sampled pose twice: once through
- * the baked PVS and once with all 58 exact segments admitted.  Production GG
- * never carries this branch or byte. */
-uint8_t g_tspf_e1_host_all_segments;
-#endif
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
 volatile uint8_t g_tspf_stage;
 /* Compatibility marker for the existing Gearsystem stage profiler. */
@@ -203,34 +191,6 @@ static int8_t clamp_s8(int16_t v,int8_t lo,int8_t hi){if(v<lo)return lo;if(v>hi)
 static uint8_t clamp_u8i(int16_t v,uint8_t hi){if(v<0)return 0;if(v>hi)return hi;return (uint8_t)v;}
 static int16_t shr_signed(int16_t v,uint8_t n){return v>=0?(int16_t)(v>>n):(int16_t)-(((-v)>>n));}
 
-#if TSPF_E1M1_GG_FAST_ONLY
-/* Exact E1M1 screen-Y plane in Q6, using the current inverse-depth endpoint.
- * zrel_q4 is always a multiple of four because authored heights are integral
- * and stair-eye slew advances four Q4 ticks at a time.  Therefore:
- *   pixel_offset_q6 = zrel_q4 * inv / 8
- *                   = (abs(zrel_q4)>>2) * inv / 2
- * which stays inside one 8x8->16 product. */
-static int16_t e1_screen_y_q6(int16_t zrel_q4,uint8_t inv){
-    uint16_t mag=(uint16_t)(zrel_q4<0?-zrel_q4:zrel_q4);
-    uint8_t q=(uint8_t)(mag>>2);
-    uint16_t prod=(uint16_t)q*(uint16_t)inv;
-    int16_t off=(int16_t)((prod+1u)>>1);
-    if(zrel_q4<0)off=(int16_t)-off;
-    return (int16_t)((72<<6)-off);
-}
-
-/* Signed Q6 delta times an unsigned Q8 reciprocal, rounded to nearest.
- * Decompose into two 8x8 products so SDCC cannot introduce 32-bit helpers. */
-static int16_t e1_scale_s16_q8(int16_t v,uint8_t recip){
-    uint8_t neg=(uint8_t)(v<0);
-    uint16_t mag=(uint16_t)(neg?-v:v);
-    uint16_t lo=(uint16_t)(uint8_t)mag*(uint16_t)recip;
-    uint16_t hi=(uint16_t)(mag>>8)*(uint16_t)recip;
-    uint16_t q=(uint16_t)(hi+((lo+128u)>>8));
-    return neg?(int16_t)-q:(int16_t)q;
-}
-#endif
-
 static uint8_t world_vx(uint8_t vid){
 #ifdef TSPF_E1M1_ROOM1
     return k_e1x_vertices[vid].x;
@@ -284,26 +244,6 @@ static int16_t camera_z_shift(uint8_t inv,const TSPState *s){
 }
 #endif
 static int16_t signed_q12(uint16_t v){v&=4095u;return v>=2048u?(int16_t)v-4096:(int16_t)v;}
-
-#ifdef TSPF_E1M1_ROOM1
-static void e1pf_load_pvs_selected(uint8_t gx,uint8_t gy,uint8_t yaw_bin,uint8_t out[8]){
-    uint8_t i;
-    uint16_t state;
-    if(gx>=E1PF_PVS_COLS||gy>=E1PF_PVS_ROWS){
-        for(i=0u;i<8u;++i)out[i]=0u;
-        return;
-    }
-    state=(uint16_t)((((uint16_t)(gy&(E1PF_PVS_ROWS_PER_BANK-1u))*E1PF_PVS_COLS+gx)<<4)
-                     +(yaw_bin&15u));
-    switch(gy>>2){
-        case 0u:e1pf_load_pvs_bank0(state,out);break;
-        case 1u:e1pf_load_pvs_bank1(state,out);break;
-        case 2u:e1pf_load_pvs_bank2(state,out);break;
-        case 3u:e1pf_load_pvs_bank3(state,out);break;
-        default:for(i=0u;i<8u;++i)out[i]=0u;break;
-    }
-}
-#endif
 
 #ifndef __SDCC
 static uint16_t base_word(uint8_t row){
@@ -684,29 +624,24 @@ static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPState *s){
 #if TSPF_E1M1_GG_FAST_ONLY
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n;
-    int16_t z0,z1,top0,top1,bot0,bot1;
+    int16_t iq,step;
     (void)out;
     (void)cols;
     if(c0>=TSP_COLS) c0=TSP_COLS-1u;
     if(c1>=TSP_COLS) c1=TSP_COLS-1u;
     if(c1<c0) return;
     n=(uint8_t)(c1-c0+1u);
-
-    z0=(int16_t)(((int16_t)k_e1pf_z0[r->sid]<<4)-s->z_q4);
-    z1=(int16_t)(((int16_t)k_e1pf_z1[r->sid]<<4)-s->z_q4);
-    top0=e1_screen_y_q6(z1,r->inv0);
-    top1=e1_screen_y_q6(z1,r->inv1);
-    bot0=e1_screen_y_q6(z0,r->inv0);
-    bot1=e1_screen_y_q6(z0,r->inv1);
+    iq=(int16_t)r->inv0<<6;
+    step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);
+    step=shr_signed(step,2);
 
     g_polar_run_profile=0xffu;
     g_polar_mat_shade=(r->inv_mid<E1PF_FOG_SHADE_INV)?0u:1u;
     g_polar_run_c0=c0;g_polar_run_c1=c1;
     g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
-    g_polar_run_top_q6=top0;
-    g_polar_run_top_step_q6=e1_scale_s16_q8((int16_t)(top1-top0),k_col_recip_q8[n]);
-    g_polar_run_bot_q6=bot0;
-    g_polar_run_bot_step_q6=e1_scale_s16_q8((int16_t)(bot1-bot0),k_col_recip_q8[n]);
+    g_polar_run_iq=iq;g_polar_run_step=step;
+    g_polar_run_z0_q4_rel=(int16_t)(((int16_t)k_e1pf_z0[r->sid]<<4)-s->z_q4);
+    g_polar_run_z1_q4_rel=(int16_t)(((int16_t)k_e1pf_z1[r->sid]<<4)-s->z_q4);
     tsp_polar_run_zspan_fast();
 #else
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c;
@@ -886,15 +821,9 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
         uint8_t mask[8],bi,bit;
         int16_t wx=(int16_t)(s->x_q4>>4),wy=(int16_t)(s->y_q4>>4);
         if(wx<E1X_WORLD_MIN_X||wy<E1X_WORLD_MIN_Y||wx>=E1X_WORLD_MAX_X||wy>=E1X_WORLD_MAX_Y)goto done;
-        gx=(uint8_t)((wx-E1X_WORLD_MIN_X)>>E1PF_PVS_CELL_SHIFT);
-        gy=(uint8_t)((wy-E1X_WORLD_MIN_Y)>>E1PF_PVS_CELL_SHIFT);
-#ifndef __SDCC
-        if(g_tspf_e1_host_all_segments){
-            for(bi=0u;bi<8u;++bi)mask[bi]=0xffu;
-            mask[7]=0x03u; /* 58 exact surfaces. */
-        }else
-#endif
-            e1pf_load_pvs_selected(gx,gy,(uint8_t)(((s->yaw+8u)>>4)&15u),mask);
+        gx=(uint8_t)((wx-E1X_WORLD_MIN_X)>>3);
+        gy=(uint8_t)((wy-E1X_WORLD_MIN_Y)>>3);
+        e1pf_load_pvs(gx,gy,(uint8_t)((s->yaw+8u)>>4)&15u,mask);
         for(bi=0u;bi<8u;++bi){
             uint8_t m=mask[bi];
             for(bit=0u;bit<8u&&m;++bit){
