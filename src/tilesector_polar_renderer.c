@@ -191,6 +191,13 @@ static uint8_t g_touched_bits[45];
 static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
 static uint16_t g_touched_count;
 static uint8_t g_map_ready;
+#ifdef TSPF_E1M1_ROOM1
+uint16_t g_e1_host_project_attempts;
+uint16_t g_e1_host_reject_degenerate;
+uint16_t g_e1_host_reject_frustum;
+uint16_t g_e1_host_reject_fog;
+uint16_t g_e1_host_project_accepts;
+#endif
 #endif
 
 static int8_t clamp_s8(int16_t v,int8_t lo,int8_t hi){if(v<lo)return lo;if(v>hi)return hi;return (int8_t)v;}
@@ -554,6 +561,9 @@ static uint8_t screen_depth_plane(uint8_t sid,uint8_t invd,uint8_t c0,uint8_t c1
 
 static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
 #ifdef TSPF_E1M1_ROOM1
+#ifndef __SDCC
+    ++g_e1_host_project_attempts;
+#endif
     uint8_t sid=keyid,v0=k_e1pf_seg_v0[keyid],v1=k_e1pf_seg_v1[keyid];
 #else
     uint16_t w=k_tspf_keys[keyid];uint8_t sid=(uint8_t)(w&31u),v0=(uint8_t)((w>>5)&15u),v1=(uint8_t)((w>>9)&15u);
@@ -569,7 +579,12 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
 #ifdef TSPF_E1M1_ROOM1
     {
         int16_t d=signed_q12((uint16_t)(a1-a0));
-        if(!d)return 0u;
+        if(!d){
+#ifndef __SDCC
+            ++g_e1_host_reject_degenerate;
+#endif
+            return 0u;
+        }
         if(d<0){uint16_t ta=a0;a0=a1;a1=ta;{uint8_t tv=v0;v0=v1;v1=tv;}d=(int16_t)-d;}
         len=(uint16_t)d;
     }
@@ -578,7 +593,14 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
 #endif
     yawq=(uint16_t)s->yaw<<4;st=signed_q12((uint16_t)(a0-yawq));en=(int16_t)(st+(int16_t)len);
     while(en<-512){st=(int16_t)(st+4096);en=(int16_t)(en+4096);}while(st>512){st=(int16_t)(st-4096);en=(int16_t)(en-4096);}
-    lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo)return 0u;x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
+    lo=st<-512?-512:st;hi=en>512?512:en;if(hi<=lo){
+#ifdef TSPF_E1M1_ROOM1
+#ifndef __SDCC
+        ++g_e1_host_reject_frustum;
+#endif
+#endif
+        return 0u;
+    }x0=angle_x(lo);x1=angle_x(hi);if(x1<x0){uint8_t t=x0;x0=x1;x1=t;}if(x1==x0&&x1<159u)++x1;
     r->sid=sid;r->v0=v0;r->v1=v1;r->x0=x0;r->x1=x1;r->left_real=(uint8_t)(lo==st);r->right_real=(uint8_t)(hi==en);
     r->depth_plane=0u;
     invd=inv_for_dq4(wall_d_q4(sid,world_seg_anchor(sid),s));
@@ -598,8 +620,16 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
      * preceding band is shaded darker in the one-call GG path below. This is
      * intentionally shared with the future shadow bake cutoff so far-away
      * light topology never consumes ROM merely because a sliver is visible. */
-    if(r->inv0<E1PF_FOG_CULL_INV&&r->inv1<E1PF_FOG_CULL_INV)return 0u;
+    if(r->inv0<E1PF_FOG_CULL_INV&&r->inv1<E1PF_FOG_CULL_INV){
+#ifndef __SDCC
+        ++g_e1_host_reject_fog;
+#endif
+        return 0u;
+    }
     if(!k_e1pf_border_sides[sid]){r->left_real=0u;r->right_real=0u;}
+#ifndef __SDCC
+    ++g_e1_host_project_accepts;
+#endif
 #endif
     return 1u;
 }
@@ -843,6 +873,15 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
     uint8_t gx,gy,lx,ly,recipe,base_id,cond_count,count=0u,i;uint16_t gi,off;const uint8_t *p,*b;
 #endif
     memset(g_corner_bearing_valid,0,sizeof(g_corner_bearing_valid));
+#ifndef __SDCC
+#ifdef TSPF_E1M1_ROOM1
+    g_e1_host_project_attempts=0u;
+    g_e1_host_reject_degenerate=0u;
+    g_e1_host_reject_frustum=0u;
+    g_e1_host_reject_fog=0u;
+    g_e1_host_project_accepts=0u;
+#endif
+#endif
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
     tsp_polar_nt_begin_frame();
