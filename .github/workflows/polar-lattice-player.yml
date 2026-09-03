@@ -1,0 +1,261 @@
+name: Polar full lattice + manual player
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-lattice-player
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lattice-player:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force true manual control from boot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/main_tilesector_polar_gg.c')
+          s=p.read_text()
+          old='tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          new='tsp_reset(&g_state);g_state.manual=1u;tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          if s.count(old) != 1:
+              raise SystemExit('manual-boot patch anchor missing/ambiguous')
+          p.write_text(s.replace(old,new))
+          print('MANUAL_FROM_BOOT=1; scripted/demo rail disabled')
+          PY
+
+      - name: Host Polar acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-test | tee build/polar-host-test.txt
+
+      - name: Full exact two-room lattice bake
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/lattice-player
+          make polar-transition-bake
+          ./build/polar_transition_bake \
+            --appearance 0 --yaw-step 1 \
+            --emit build/lattice-player/polar-transitions-full.ptp \
+            | tee build/lattice-player/full-lattice-report.txt
+          sha256sum build/lattice-player/polar-transitions-full.ptp \
+            | tee build/lattice-player/full-lattice-sha256.txt
+          gzip -9 -c build/lattice-player/polar-transitions-full.ptp \
+            > build/lattice-player/polar-transitions-full.ptp.gz
+          python3 - <<'PY' | tee build/lattice-player/hardware-fit.txt
+          from pathlib import Path
+          raw=Path('build/lattice-player/polar-transitions-full.ptp').stat().st_size
+          gz=Path('build/lattice-player/polar-transitions-full.ptp.gz').stat().st_size
+          cap=4*1024*1024
+          print(f'exact_lattice_raw_bytes={raw}')
+          print(f'exact_lattice_gzip9_bytes={gz}')
+          print(f'standard_4MiB_cart_bytes={cap}')
+          print(f'raw_over_4MiB={raw/cap:.2f}x')
+          print(f'gzip_over_4MiB={gz/cap:.2f}x')
+          print('NOTE: PTP1 is an exact final-name-table transition atlas; it is baked/proved here as the correctness and entropy reference, not linked into the ROM when it exceeds normal cartridge space.')
+          PY
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build optimized true-player ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/lattice-player
+          clean_polar() {
+            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+                  build/tilesector_polar_renderer_gg.o build/tilesector_polar_projection_gg.o \
+                  build/tilesector_polar_proj_bank*.o build/tilesector_polar_depthplane_gg.o \
+                  build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o \
+                  build/tilesector_polar_ntupload_raw_gg.o build/tilesector_polar_ntupload_profiled_gg.o \
+                  build/gg-tilesector-polar.*
+          }
+
+          # Use every hardware-fit acceleration already available at the exact-transition
+          # commit: baked local projection, baked screen-depth plane, speed-biased SDCC,
+          # banked field data, mature dirty-row uploader. No scripted patch player is linked.
+          clean_polar
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 \
+            POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar 2>&1 | tee build/lattice-player/build-profiled.txt
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-tilesector-polar.$ext" ] || cp "build/gg-tilesector-polar.$ext" "build/lattice-player/player-profiled.$ext"
+          done
+
+          clean_polar
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=0 \
+            POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar 2>&1 | tee build/lattice-player/build-raw.txt
+          for ext in gg sym map noi cdb ihx; do
+            [ ! -f "build/gg-tilesector-polar.$ext" ] || cp "build/gg-tilesector-polar.$ext" "build/lattice-player/player-raw.$ext"
+          done
+          sha256sum build/lattice-player/player-raw.gg | tee build/lattice-player/player-raw.sha256
+          wc -c build/lattice-player/player-raw.gg | tee build/lattice-player/player-raw.bytes
+
+      - name: Extend external profiler with directional and strafe scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/tilesector_profile_runner.cpp')
+          s=p.read_text()
+          old='if(scenario!="demo" && scenario!="roomA-turn") {'
+          new='if(scenario!="demo" && scenario!="roomA-turn" && scenario!="roomA-forward" && scenario!="roomA-back" && scenario!="roomA-button1" && scenario!="roomA-button2") {'
+          if s.count(old) != 1:
+              raise SystemExit('scenario allow-list patch anchor missing')
+          s=s.replace(old,new)
+          old2='if(scenario=="roomA-turn")\n        core.KeyPressed(Joypad_1,Key_Right);'
+          new2='''if(scenario=="roomA-turn") core.KeyPressed(Joypad_1,Key_Right);\n    else if(scenario=="roomA-forward") core.KeyPressed(Joypad_1,Key_Up);\n    else if(scenario=="roomA-back") core.KeyPressed(Joypad_1,Key_Down);\n    else if(scenario=="roomA-button1") core.KeyPressed(Joypad_1,Key_1);\n    else if(scenario=="roomA-button2") core.KeyPressed(Joypad_1,Key_2);'''
+          if s.count(old2) != 1:
+              raise SystemExit('input injection patch anchor missing')
+          p.write_text(s.replace(old2,new2))
+          print('PLAYER_INPUT_SCENARIOS=idle,forward,back,turn,button1,button2')
+          PY
+
+      - name: Build Gearsystem profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove no rail and real GG-control movement
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/lattice-player/player-profiled.gg
+          SYM=build/lattice-player/player-profiled.sym
+          mkdir -p build/lattice-player/input-proof
+          for scenario in demo roomA-forward roomA-back roomA-turn roomA-button1 roomA-button2; do
+            ./build/tilesector_profile_runner "$ROM" "$SYM" 28 2 "$scenario" \
+              | tee "build/lattice-player/input-proof/${scenario}.txt"
+          done
+
+          python3 - <<'PY' | tee build/lattice-player/input-proof-summary.txt
+          from pathlib import Path
+          import re
+          root=Path('build/lattice-player/input-proof')
+          def motion(name):
+              t=(root/f'{name}.txt').read_text()
+              a=re.search(r'motion start x=([-0-9.]+) y=([-0-9.]+) yaw=(\d+)',t)
+              b=re.search(r'motion last\s+x=([-0-9.]+) y=([-0-9.]+) yaw=(\d+)',t)
+              if not a or not b: raise SystemExit(f'missing motion records for {name}')
+              return tuple(map(float,a.groups()[:2]))+(int(a.group(3)),), tuple(map(float,b.groups()[:2]))+(int(b.group(3)),)
+          def moved_xy(a,b): return abs(a[0]-b[0])>0.01 or abs(a[1]-b[1])>0.01
+          idle0,idle1=motion('demo')
+          f0,f1=motion('roomA-forward')
+          b0,b1=motion('roomA-back')
+          t0,t1=motion('roomA-turn')
+          k10,k11=motion('roomA-button1')
+          k20,k21=motion('roomA-button2')
+          if moved_xy(idle0,idle1) or idle0[2]!=idle1[2]: raise SystemExit('FAIL: no-input state moved; scripted rail still active')
+          if not moved_xy(f0,f1): raise SystemExit('FAIL: forward input did not move')
+          if not moved_xy(b0,b1): raise SystemExit('FAIL: backward input did not move')
+          if t0[2]==t1[2]: raise SystemExit('FAIL: directional turn input did not rotate')
+          if not moved_xy(k10,k11): raise SystemExit('FAIL: button 1 did not produce strafe movement')
+          if not moved_xy(k20,k21): raise SystemExit('FAIL: button 2 did not produce strafe movement')
+          print('NO_RAIL_IDLE_STABLE=PASS',idle0,idle1)
+          print('FORWARD=PASS',f0,f1)
+          print('BACK=PASS',b0,b1)
+          print('TURN=PASS',t0,t1)
+          print('BUTTON1_STRAFE=PASS',k10,k11)
+          print('BUTTON2_STRAFE=PASS',k20,k21)
+          print('TRUE_PLAYER_CONTROL=PASS')
+          PY
+
+      - name: Profile representative manual movement
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/lattice-player/player-profiled.gg
+          SYM=build/lattice-player/player-profiled.sym
+          for scenario in roomA-turn roomA-forward roomA-button1; do
+            ./build/tilesector_profile_runner "$ROM" "$SYM" 120 8 "$scenario" \
+              | tee "build/lattice-player/profile-${scenario}.txt"
+          done
+          python3 - <<'PY' | tee build/lattice-player/manual-performance-summary.txt
+          from pathlib import Path
+          import re
+          vals=[]
+          for name in ('roomA-turn','roomA-forward','roomA-button1'):
+              t=Path(f'build/lattice-player/profile-{name}.txt').read_text()
+              m=re.search(r'loop\s+avg=\s*([0-9.]+) T .*?->\s*([0-9.]+) updates/s',t)
+              if not m: raise SystemExit(f'missing loop result for {name}')
+              vals.append((name,float(m.group(1)),float(m.group(2))))
+          for n,t,fps in vals: print(f'{n}: mean_loop={t:.1f} T effective_updates_per_s={fps:.3f}')
+          mean=sum(v[2] for v in vals)/len(vals)
+          print(f'representative_manual_mean_effective_updates_per_s={mean:.3f}')
+          print('Terminology: this is measured effective rendered update rate, not a fixed-frequency 48.26 Hz clock.')
+          PY
+
+      - name: Summarize build
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== POLAR FULL-LATTICE / TRUE PLAYER BUILD ==='
+            echo 'base=fbbbf860d1b4568fa9e076bf3223405a0458b4d6'
+            echo 'manual_from_boot=1'
+            echo 'scripted_patch_player_linked=0'
+            echo 'runtime=baked local-projection field + baked screen-depth plane + live Polar compositor + dirty-row upload'
+            cat build/lattice-player/player-raw.bytes
+            cat build/lattice-player/player-raw.sha256
+            echo
+            cat build/lattice-player/input-proof-summary.txt
+            echo
+            cat build/lattice-player/manual-performance-summary.txt
+            echo
+            cat build/lattice-player/hardware-fit.txt
+          } | tee build/lattice-player/SUMMARY.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-full-lattice-true-player
+          path: |
+            build/lattice-player/player-raw.gg
+            build/lattice-player/player-raw.sym
+            build/lattice-player/player-raw.map
+            build/lattice-player/player-raw.sha256
+            build/lattice-player/player-raw.bytes
+            build/lattice-player/player-profiled.gg
+            build/lattice-player/player-profiled.sym
+            build/lattice-player/full-lattice-report.txt
+            build/lattice-player/full-lattice-sha256.txt
+            build/lattice-player/polar-transitions-full.ptp.gz
+            build/lattice-player/hardware-fit.txt
+            build/lattice-player/input-proof/
+            build/lattice-player/input-proof-summary.txt
+            build/lattice-player/profile-*.txt
+            build/lattice-player/manual-performance-summary.txt
+            build/lattice-player/build-*.txt
+            build/lattice-player/SUMMARY.txt
+            build/polar-host-test.txt
+          retention-days: 30
