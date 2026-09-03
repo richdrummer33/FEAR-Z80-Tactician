@@ -542,7 +542,16 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
 #endif
     r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+lo)&4095u,lo);
     r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+hi)&4095u,hi);
-    r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);return 1u;
+    r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
+#ifdef TSPF_E1M1_ROOM1
+    /* Quantized visibility fog: very distant runs are omitted entirely. The
+     * preceding band is shaded darker in the one-call GG path below. This is
+     * intentionally shared with the future shadow bake cutoff so far-away
+     * light topology never consumes ROM merely because a sliver is visible. */
+    if(r->inv0<E1PF_FOG_CULL_INV&&r->inv1<E1PF_FOG_CULL_INV)return 0u;
+    if(!k_e1pf_border_sides[sid]){r->left_real=0u;r->right_real=0u;}
+#endif
+    return 1u;
 }
 
 static uint16_t edge_entry(uint8_t shade,int16_t local_left,int8_t slope,uint8_t bottom){
@@ -614,6 +623,7 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
 #ifdef TSPF_E1M1_ROOM1
     if(g_tspf_appearance_mode==0u){
         g_polar_run_profile=0xffu;
+        g_polar_mat_shade=(r->inv_mid<E1PF_FOG_SHADE_INV)?0u:1u;
         g_polar_run_c0=c0;g_polar_run_c1=c1;
         g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
         g_polar_run_iq=iq;g_polar_run_step=step;
