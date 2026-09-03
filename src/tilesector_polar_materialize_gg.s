@@ -17,6 +17,8 @@
         .globl  _g_polar_run_right_real
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
+        .globl  _g_polar_run_z0_q4_rel
+        .globl  _g_polar_run_z1_q4_rel
         .globl  _g_polar_nt_cov_cur
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
@@ -126,6 +128,190 @@ run_geom_done$:
         pop     hl
         pop     de
         pop     bc
+        ret
+
+; E1M1 arbitrary-height connected-run path. C crosses the ABI once per run:
+; XY projection supplies c0/c1 and Q6 inverse-depth start+step, while the exact
+; Doom sector span is supplied as signed camera-relative Q4 z0/z1. Z80 walks
+; every coarse column and feeds the same retained/final-owner column emitter.
+_tsp_polar_run_zspan_fast::
+        push    bc
+        push    de
+        push    hl
+
+        ld      a, (#_g_polar_run_c0)
+        ld      (#r_run_col$), a
+        ld      a, #1
+        ld      (#_g_polar_mat_shade), a
+        ld      a, #0xff
+        ld      (#_g_polar_run_profile), a
+
+zrun_loop$:
+        ld      hl, (#_g_polar_run_iq)
+        ld      de, #32
+        add     hl, de
+        call    q6_round_u8$
+        ld      (#r_run_invl$), a
+
+        ld      hl, (#_g_polar_run_iq)
+        ld      de, (#_g_polar_run_step)
+        add     hl, de
+        ld      de, #32
+        add     hl, de
+        call    q6_round_u8$
+        ld      (#r_run_invr$), a
+
+        ; top-left = horizon - project(z1-eye, inv_left)
+        ld      hl, (#_g_polar_run_z1_q4_rel)
+        ld      a, (#r_run_invl$)
+        call    zproj_q4$
+        call    horizon_minus_hl$
+        ld      (#_g_polar_mat_top_l), hl
+
+        ; bottom-left = horizon - project(z0-eye, inv_left)
+        ld      hl, (#_g_polar_run_z0_q4_rel)
+        ld      a, (#r_run_invl$)
+        call    zproj_q4$
+        call    horizon_minus_hl$
+        ld      (#_g_polar_mat_bot_l), hl
+
+        ; top-right
+        ld      hl, (#_g_polar_run_z1_q4_rel)
+        ld      a, (#r_run_invr$)
+        call    zproj_q4$
+        call    horizon_minus_hl$
+        ld      (#_g_polar_mat_top_r), hl
+
+        ; bottom-right
+        ld      hl, (#_g_polar_run_z0_q4_rel)
+        ld      a, (#r_run_invr$)
+        call    zproj_q4$
+        call    horizon_minus_hl$
+        ld      (#_g_polar_mat_bot_r), hl
+
+        xor     a
+        ld      (#_g_polar_mat_border), a
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c0)
+        cp      c
+        jr      nz, zrun_no_left_border$
+        ld      a, (#_g_polar_run_left_real)
+        or      a
+        jr      z, zrun_no_left_border$
+        ld      a, #1
+        ld      (#_g_polar_mat_border), a
+zrun_no_left_border$:
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      nz, zrun_border_done$
+        ld      a, (#_g_polar_run_right_real)
+        or      a
+        jr      z, zrun_border_done$
+        ld      a, (#_g_polar_mat_border)
+        or      #2
+        ld      (#_g_polar_mat_border), a
+zrun_border_done$:
+        ld      a, c
+        ld      (#_g_polar_mat_col), a
+        call    _tsp_polar_surface_column_fast
+
+        ld      hl, (#_g_polar_run_iq)
+        ld      de, (#_g_polar_run_step)
+        add     hl, de
+        ld      (#_g_polar_run_iq), hl
+
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      z, zrun_done$
+        ld      a, c
+        inc     a
+        ld      (#r_run_col$), a
+        jp      zrun_loop$
+
+zrun_done$:
+        pop     hl
+        pop     de
+        pop     bc
+        ret
+
+; HL=signed camera-relative Q4 height, A=inverse depth.
+; E1M1 z deltas stay inside +/-29 world units. All authored heights and the
+; interpolated stair eye are multiples of four Q4 ticks, so abs(dz)>>1 fits in
+; one byte and (abs(dz)>>1)*inv>>8 is exactly dz*inv>>9 without 32-bit math.
+zproj_q4$:
+        push    bc
+        push    de
+        ld      c, a
+        ld      a, h
+        and     #0x80
+        jr      z, zproj_positive$
+        ld      a, #1
+        ld      (#r_z_sign$), a
+        xor     a
+        sub     l
+        ld      l, a
+        ld      a, #0
+        sbc     a, h
+        ld      h, a
+        jr      zproj_abs_ready$
+zproj_positive$:
+        xor     a
+        ld      (#r_z_sign$), a
+zproj_abs_ready$:
+        srl     h
+        rr      l
+        ld      a, h
+        or      a
+        jr      z, zproj_byte_ready$
+        ld      l, #255
+zproj_byte_ready$:
+        ld      a, l
+        call    mul_u8_c_hl$
+        bit     7, l
+        jr      z, zproj_rounded$
+        inc     h
+zproj_rounded$:
+        ld      l, h
+        ld      h, #0
+        ld      a, (#r_z_sign$)
+        or      a
+        jr      z, zproj_done$
+        xor     a
+        sub     l
+        ld      l, a
+        ld      a, #0
+        sbc     a, h
+        ld      h, a
+zproj_done$:
+        pop     de
+        pop     bc
+        ret
+
+; A unsigned multiplicand, C unsigned multiplier -> HL 16-bit product.
+mul_u8_c_hl$:
+        ld      e, a
+        ld      d, #0
+        ld      hl, #0
+        ld      b, #8
+mul_u8_loop$:
+        srl     c
+        jr      nc, mul_u8_noadd$
+        add     hl, de
+mul_u8_noadd$:
+        sla     e
+        rl      d
+        djnz    mul_u8_loop$
+        ret
+
+; Convert signed projected offset in HL to absolute screen Y: 72-HL.
+horizon_minus_hl$:
+        ex      de, hl
+        ld      hl, #72
+        or      a
+        sbc     hl, de
         ret
 
 ; HL = signed Q6-ish accumulator + rounding bias. Return the exact C
@@ -1272,6 +1458,8 @@ r_run_invl$:
 r_run_invr$:
         .ds     1
 r_run_half$:
+        .ds     1
+r_z_sign$:
         .ds     1
 r_clip_first$:
         .ds     1
