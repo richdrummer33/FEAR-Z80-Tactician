@@ -136,6 +136,25 @@ jobs:
 
           grep -q 'E1M1_ROOM1_EMULATOR_PASS' "$OUT/emulator-proof.txt"
 
+          LOOP_ADDR="$(awk '$2=="_g_e1m1_loop_count"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$LOOP_ADDR"
+          "$OUT/libretro_runner" "$CORE" "$ROM" 600 \
+            "$OUT/cadence.ppm" "$LOOP_ADDR" 2 \
+            | tee "$OUT/cadence.txt"
+
+          python3 - <<'PY' | tee "$OUT/cadence-summary.txt"
+          from pathlib import Path
+          import re
+          text=Path("build/e1m1-room1/cadence.txt").read_text()
+          m=re.search(r"data=([0-9A-Fa-f]{4})",text)
+          if not m:
+              raise SystemExit("missing loop-count RAM dump")
+          b=bytes.fromhex(m.group(1))
+          loops=b[0] | (b[1]<<8)
+          hz=loops/10.0
+          print(f"E1M1_ROOM1_CADENCE loops_600_vblanks={loops} updates_per_second={hz:.2f}")
+          PY
+
       - name: Package playable proof
         if: always()
         shell: bash
@@ -171,6 +190,9 @@ jobs:
             build/e1m1-room1/forward.txt
             build/e1m1-room1/turn-right.txt
             build/e1m1-room1/emulator-proof.txt
+            build/e1m1-room1/cadence.txt
+            build/e1m1-room1/cadence-summary.txt
+            build/e1m1-room1/cadence.ppm
             build/e1m1-room1/ROM-size.txt
             build/e1m1-room1/SHA256.txt
             build/e1m1-room1/state-address.txt
