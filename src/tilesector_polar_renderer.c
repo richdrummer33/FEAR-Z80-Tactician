@@ -608,7 +608,9 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
     uint8_t profile=0xffu;
 #else
     uint8_t profile=k_tspf_profile[r->sid];
-#endifint16_t iq,step;if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);
+#endif
+    int16_t iq,step;
+    if(c0>=TSP_COLS)c0=TSP_COLS-1;if(c1>=TSP_COLS)c1=TSP_COLS-1;if(c1<c0)return;n=(uint8_t)(c1-c0+1u);
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if(g_tspf_appearance_mode<2u&&r->depth_plane){c0=r->c0;c1=r->c1;n=(uint8_t)(c1-c0+1u);iq=r->iq;step=r->step;}
     else
@@ -678,11 +680,13 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
         /* Camera elevation translates BOTH projected endpoints. Do this after
          * profile shaping: FULL/LINTEL/RAISED/RISER are absolute world-height
          * bands, and a raised eye moves every one of those bands consistently. */
+#ifndef TSPF_E1M1_ROOM1
         {
             int16_t zl=camera_z_shift(invl,s),zr=camera_z_shift(invr,s);
             tl=(int16_t)(tl+zl);bl=(int16_t)(bl+zl);
             tr=(int16_t)(tr+zr);br=(int16_t)(br+zr);
         }
+#endif
 #if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
         {
             uint8_t coarse0=(uint8_t)(c<<3),coarse1=(uint8_t)(coarse0+7u);
@@ -799,7 +803,6 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
     tsp_polar_projection_eval_fast();
     if(g_proj_fallback_mask)projection_eval_fallback(s);
 #endif
-#ifndef TSPF_E1M1_ROOM1
     off=k_tspf_recipe_off[recipe];p=&k_tspf_recipe_stream[off];base_id=*p++;cond_count=*p++;b=&k_tspf_base_stream[k_tspf_base_off[base_id]];i=*b++;for(;i;--i)add_key(*b++,s,&count);
     for(i=0;i<cond_count;++i){uint8_t key=*p++,sel=*p++;if(selector_pass(sel,lx,ly))add_key(key,s,&count);}
 #endif
