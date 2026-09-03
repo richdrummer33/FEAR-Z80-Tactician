@@ -1,6 +1,7 @@
 #include "e1m1_room1_core.h"
 #include "generated/e1m1_room1_exact_geometry.h"
 #include "generated/e1m1_room1_exact_floor.h"
+#include "e1m1_room1_pvs.h"
 #include <string.h>
 
 #ifndef E1_PROFILE_HOOKS
@@ -70,6 +71,7 @@ typedef struct E1Run {
     uint8_t left_real,right_real;
 } E1Run;
 
+volatile uint8_t g_e1m1_candidate_count;
 static uint8_t g_depth[E1_MAP_CELLS];
 static uint8_t g_full_inv[E1_COLS];
 static E1Run g_runs[E1_SURFACE_COUNT];
@@ -357,10 +359,26 @@ static uint8_t project_surface(const E1CameraCtx *cam,const E1Surface *w,
 
 void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     uint8_t r,c,si,run_count=0u;
+    const uint8_t *pvs;
     E1CameraCtx cam;
     uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
 
     E1_STAGE(2u);
+    {
+        int16_t xi=(int16_t)(s->x_q4>>4),yi=(int16_t)(s->y_q4>>4);
+        uint8_t gx,gy,yb;
+        uint16_t mi;
+        if(xi<E1X_WORLD_MIN_X)xi=E1X_WORLD_MIN_X;
+        if(yi<E1X_WORLD_MIN_Y)yi=E1X_WORLD_MIN_Y;
+        if(xi>=E1X_WORLD_MAX_X)xi=(int16_t)(E1X_WORLD_MAX_X-1);
+        if(yi>=E1X_WORLD_MAX_Y)yi=(int16_t)(E1X_WORLD_MAX_Y-1);
+        gx=(uint8_t)((xi-E1X_WORLD_MIN_X)>>3);
+        gy=(uint8_t)((yi-E1X_WORLD_MIN_Y)>>3);
+        yb=(uint8_t)(s->yaw>>4);
+        mi=(uint16_t)((((uint16_t)gy*E1X_PVS_CELL_COLS+gx)*
+                       E1X_PVS_YAW_BINS+yb)*E1X_PVS_MASK_BYTES);
+        pvs=&k_e1x_pvs[mi];
+    }
     cam.px=(int16_t)(s->x_q4>>4);
     cam.py=(int16_t)(s->y_q4>>4);
     cam.sn=k_sin[s->yaw];
@@ -392,8 +410,12 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
      * Any partial/full surface behind that per-column depth cannot contribute
      * a visible tile, so its expensive vertical raster loop is never entered.
      */
+    g_e1m1_candidate_count=0u;
     for(si=0u;si<E1_SURFACE_COUNT;++si) {
-        const E1Surface *w=&k_e1x_segments[si];
+        const E1Surface *w;
+        if(!(pvs[si>>3]&(uint8_t)(1u<<(si&7u))))continue;
+        ++g_e1m1_candidate_count;
+        w=&k_e1x_segments[si];
         int16_t sx0,sx1;
         uint8_t iv0,iv1,left_real,right_real;
         int8_t c0,c1;
