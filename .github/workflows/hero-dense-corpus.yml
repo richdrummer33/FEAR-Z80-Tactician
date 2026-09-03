@@ -112,6 +112,7 @@ jobs:
           python3 tools/analyze_nested_distance_codec.py \
             build/corpus/host/doomguy_dense_corpus.dhc \
             --angle 0 --refine-passes 1 --refine-candidates 64 \
+            --rank-refine-passes 1 --rank-refine-candidates 16 \
             --dump-dir build/corpus/nested-distance \
             | tee build/corpus/nested-distance.txt
           grep -q '^NESTED_DISTANCE_CODEC v1$' build/corpus/nested-distance.txt
