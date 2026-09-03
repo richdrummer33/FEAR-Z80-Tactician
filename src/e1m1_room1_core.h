@@ -48,5 +48,6 @@ uint8_t e1_room1_is_walkable_q4(int16_t x_q4,int16_t y_q4);
 int16_t e1_room1_floor_z_q4(int16_t x_q4,int16_t y_q4);
 void e1_room1_render(const E1Room1State *s,uint16_t out_map[E1_MAP_CELLS]);
 uint8_t e1_room1_surface_count(void);
+extern volatile uint8_t g_e1m1_candidate_count;
 
 #endif
