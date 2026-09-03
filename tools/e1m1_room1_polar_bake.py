@@ -252,15 +252,7 @@ def emit_pvs(header,out_dir,masks):
         f.write(f"#define E1PF_PVS_BANK_COUNT {bank_count}u\n")
         for bank in range(bank_count):
             f.write(f"void e1pf_load_pvs_bank{bank}(uint16_t state,uint8_t out[8]) BANKED;\n")
-        f.write("static inline void e1pf_load_pvs(uint8_t gx,uint8_t gy,uint8_t yaw_bin,uint8_t out[8]){\n")
-        f.write("    uint8_t i; uint16_t state;\n")
-        f.write("    if(gx>=E1PF_PVS_COLS||gy>=E1PF_PVS_ROWS){for(i=0u;i<8u;++i)out[i]=0u;return;}\n")
-        f.write("    state=(uint16_t)((((uint16_t)(gy&(E1PF_PVS_ROWS_PER_BANK-1u))*E1PF_PVS_COLS+gx)<<4)+(yaw_bin&15u));\n")
-        f.write("    switch(gy>>2){\n")
-        for bank in range(bank_count):
-            f.write(f"      case {bank}u:e1pf_load_pvs_bank{bank}(state,out);break;\n")
-        f.write("      default:for(i=0u;i<8u;++i)out[i]=0u;break;\n")
-        f.write("    }\n}\n#endif\n")
+        f.write("#endif\n")
 
     sizes=[]
     for bank in range(bank_count):
