@@ -157,51 +157,7 @@ jobs:
             --table-tsv build/corpus/nested-rd-table.tsv \
             --trace-dir build/corpus/nested-rd-traces \
             | tee build/corpus/nested-rd.txt
-          grep -q '^RD_SWEEP_PASS        run: |
-          set -euo pipefail
-          build/corpus/corpus-analyze \
-            build/corpus/host/doomguy_dense_corpus.dhc \
-            | tee build/corpus/report.txt
-          # Four bands times five predictors, on adjacent steps and on both
-          # anchor placements. If a predictor stops being measured the report
-          # is no longer a comparison.
-          test "$(grep -c ' adjacent mask_pct_mean=' build/corpus/report.txt)" = 20
-          test "$(grep -c 'placement=greedy' build/corpus/report.txt)" = 220
-          test "$(grep -c 'placement=uniform' build/corpus/report.txt)" = 220
-          # The farthest band must still rotate inside one VBlank's worth of
-          # pattern uploads; that is the headroom the playable ROM depends on.
-          grep -q '^band=3 adjacent_step .* steps_over_vblank_budget=0/256 ' \
-            build/corpus/report.txt
-
-      - name: Contact sheets
-        run: |
-          set -euo pipefail
-          python3 tools/render_dense_corpus_sheets.py \
-            build/corpus/host/doomguy_dense_corpus.dhc build/corpus/sheets
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hero-dense-corpus
-          path: |
-            build/corpus/bake.txt
-            build/corpus/read.txt
-            build/corpus/report.txt
-            build/corpus/nested-distance.txt
-            build/corpus/nested-distance/**
-            build/corpus/nested-solver.txt
-            build/corpus/nested-solver-status.json
-            build/corpus/nested-solver-trace.ndjson
-            build/corpus/nested-solver/**
-            build/corpus/nested-rd.txt
-            build/corpus/nested-rd-summary.json
-            build/corpus/nested-rd-table.tsv
-            build/corpus/nested-rd-traces/**
-            build/corpus/sheets/**
-            build/corpus/normalized/**
-            build/corpus/host/doomguy_dense_corpus_manifest.txt
-            build/corpus/host/corpus-*.ppm
-          if-no-files-found: error
- build/corpus/nested-rd.txt
+          grep -q '^RD_SWEEP_PASS$' build/corpus/nested-rd.txt
           grep -q '^RD_SWEEP_SUMMARY ' build/corpus/nested-rd.txt
           test -s build/corpus/nested-rd-summary.json
           test -s build/corpus/nested-rd-table.tsv
@@ -243,6 +199,10 @@ jobs:
             build/corpus/nested-solver-status.json
             build/corpus/nested-solver-trace.ndjson
             build/corpus/nested-solver/**
+            build/corpus/nested-rd.txt
+            build/corpus/nested-rd-summary.json
+            build/corpus/nested-rd-table.tsv
+            build/corpus/nested-rd-traces/**
             build/corpus/sheets/**
             build/corpus/normalized/**
             build/corpus/host/doomguy_dense_corpus_manifest.txt
