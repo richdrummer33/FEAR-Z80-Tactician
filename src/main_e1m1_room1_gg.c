@@ -2,6 +2,16 @@
 #include <gbdk/platform.h>
 #include "e1m1_room1_core.h"
 
+#ifndef E1_PROFILE_HOOKS
+#define E1_PROFILE_HOOKS 0
+#endif
+#if E1_PROFILE_HOOKS
+volatile uint8_t g_ts_prof_phase;
+#define E1_PHASE(v) do { g_ts_prof_phase=(v); } while(0)
+#else
+#define E1_PHASE(v) ((void)0)
+#endif
+
 #define C_BLACK   0u
 #define C_CEIL    1u
 #define C_FLOOR   2u
@@ -131,14 +141,21 @@ void main(void) {
     e1_room1_render(&g_e1m1_state,g_map);
     ts_upload_dirty_map_fast();
     g_e1m1_loop_count=0u;
+    E1_PHASE(0u);
     DISPLAY_ON;
 
     for(;;) {
-        uint8_t input=read_input();
+        uint8_t input;
+        E1_PHASE(1u);
+        input=read_input();
         e1_room1_step(&g_e1m1_state,input);
+        E1_PHASE(2u);
         e1_room1_render(&g_e1m1_state,g_map);
+        E1_PHASE(3u);
         vsync();
+        E1_PHASE(4u);
         ts_upload_dirty_map_fast();
+        E1_PHASE(5u);
         ++g_e1m1_loop_count;
     }
 }
