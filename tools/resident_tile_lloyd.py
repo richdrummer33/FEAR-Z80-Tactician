@@ -74,6 +74,37 @@ def refine_learned_dictionary(demands, dictionary, fixed_count,
 
         candidate = list(current)
         changed = 0
+
+        # Classic dead-cluster repair. A learned slot can initially be worse
+        # than every fixed near/empty entry and therefore receive no demands.
+        # Reseed such slots from the currently worst represented demands so
+        # they get a chance to become useful on the next assignment pass.
+        empty_entries = [
+            j for j in range(fixed_count, len(candidate))
+            if not buckets[j]
+        ]
+        ranked_demands = sorted(
+            range(len(demands)),
+            key=lambda i: (score["matches"][i]["cost"], i),
+            reverse=True)
+        used_seeds = set()
+        for j in empty_entries:
+            seed = None
+            for i in ranked_demands:
+                if score["matches"][i]["cost"] <= 0:
+                    break
+                pattern = bytes(demands[i]["pattern"])
+                if allow_flips:
+                    pattern = canonical_pattern(pattern)
+                if pattern in used_seeds:
+                    continue
+                used_seeds.add(pattern)
+                seed = pattern
+                break
+            if seed is not None and seed != candidate[j]:
+                candidate[j] = seed
+                changed += 1
+
         for j in range(fixed_count, len(candidate)):
             assigned = buckets[j]
             if not assigned:
