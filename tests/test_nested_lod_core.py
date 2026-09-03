@@ -78,13 +78,13 @@ class NestedLodCoreTests(unittest.TestCase):
 
     def test_far_pixel_footprint_contains_multiple_master_samples(self):
         fp = nlc.source_footprint(
-            4, 4, (0.0, 0.0), (0.0, 0.0), 24.0, 36.0)
+            1, 1, (0.0, 0.0), (0.0, 0.0), 24.0, 36.0)
         self.assertGreater(len(fp), 1)
 
     def test_oracle_footprint_bound_can_choose_existing_master_value(self):
         master = nlc.Raster.blank(8, 8)
-        master.set(2, 2, 2)
-        master.set(3, 2, 5)
+        master.set(3, 3, 2)
+        master.set(4, 4, 5)
         target = nlc.Raster.blank(8, 8)
         # At equal radius the footprint is one pixel, so use a larger target
         # radius to let the target sample see both nearby source values.
