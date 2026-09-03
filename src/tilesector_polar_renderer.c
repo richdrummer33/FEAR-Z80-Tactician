@@ -37,6 +37,11 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_HOST_PIXEL_COMPOSITE
 #define TSPF_HOST_PIXEL_COMPOSITE 0
 #endif
+#if defined(__SDCC) && defined(TSPF_E1M1_ROOM1) && !TSPF_FORCE_C_MATERIALIZER
+#define TSPF_E1M1_GG_FAST_ONLY 1
+#else
+#define TSPF_E1M1_GG_FAST_ONLY 0
+#endif
 #if !defined(__SDCC) && TSPF_HOST_PIXEL_COMPOSITE
 void tsp_host_composite_write(uint8_t row,uint8_t col,uint16_t word);
 void tsp_host_composite_surface(uint8_t col,uint8_t clip_x0,uint8_t clip_x1,
@@ -260,6 +265,7 @@ static void restore_touched(uint16_t *out){
     g_touched_count=0u;
 }
 #endif
+#if !TSPF_E1M1_GG_FAST_ONLY
 static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
 #ifdef __SDCC
     /* AO/C fallback only. Fast geometry/shade assembly marks whole spans and
@@ -278,6 +284,7 @@ static void put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){
     out[idx]=word;
 #endif
 }
+#endif
 
 void tsp_polar_renderer_reset(void) BANKED {
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
@@ -295,6 +302,7 @@ void tsp_polar_renderer_reset(void) BANKED {
 #endif
 }
 
+#if !TSPF_E1M1_GG_FAST_ONLY
 static uint8_t ao_class(uint8_t vid){
 #ifdef TSPF_E1M1_ROOM1
     (void)vid;return 0u; /* Room-1 AO is authored/baked later, never guessed at runtime. */
@@ -302,6 +310,7 @@ static uint8_t ao_class(uint8_t vid){
     return (uint8_t)((k_tspf_ao[vid>>2]>>((vid&3u)*2u))&3u);
 #endif
 }
+#endif
 #ifndef TSPF_E1M1_ROOM1
 static uint8_t selector_pass(uint8_t sid,uint8_t lx,uint8_t ly){
     int16_t v=(int16_t)k_tspf_sel_a[sid]*(int16_t)lx+(int16_t)k_tspf_sel_b[sid]*(int16_t)ly+k_tspf_sel_c[sid];
@@ -476,7 +485,9 @@ static uint8_t inv_at_invd(uint8_t sid,uint8_t invd,uint16_t world_bearing,int16
     if(dot>127) dot=127;
     q=((uint16_t)invd*(uint16_t)dot+64u)>>7;sec=k_tspf_sec_q7[(uint16_t)(rel<0?-rel:rel)];q=(q*sec+64u)>>7;return (uint8_t)(q>255u?255u:q);
 }
+#if !TSPF_E1M1_GG_FAST_ONLY
 static uint8_t shade_for(uint8_t inv,int8_t bias){int8_t s;if(inv>=82u)s=2;else if(inv>=46u)s=1;else s=0;s=(int8_t)(s+bias);if(s<0)s=0;if(s>2)s=2;return (uint8_t)s;}
+#endif
 
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
 /* Straight-wall inverse camera depth is linear in screen x.  Use a compact
@@ -559,6 +570,7 @@ static uint8_t project_key(uint8_t keyid,const TSPState *s,PolarRun *r){
     return 1u;
 }
 
+#if !TSPF_E1M1_GG_FAST_ONLY
 static uint16_t edge_entry(uint8_t shade,int16_t local_left,int8_t slope,uint8_t bottom){
     uint16_t attr=0;uint8_t mag;int8_t off;if(bottom){local_left=(int16_t)(7-local_left);slope=(int8_t)-slope;attr=(uint16_t)(TSP_ATTR_FLIPY|TSP_ATTR_PALETTE);}if(slope<0){mag=(uint8_t)(-slope);local_left=(int16_t)(local_left-mag);attr|=TSP_ATTR_FLIPX;}else mag=(uint8_t)slope;if(mag>=TSP_EDGE_SLOPE_COUNT)mag=TSP_EDGE_SLOPE_COUNT-1u;off=clamp_s8(local_left,TSP_EDGE_OFF_MIN,(int8_t)(TSP_EDGE_OFF_MIN+TSP_EDGE_OFF_COUNT-1));return (uint16_t)(TSP_TILE_EDGE(shade,(uint8_t)(off-TSP_EDGE_OFF_MIN),mag)|attr);
 }
@@ -607,7 +619,31 @@ static void draw_edge(uint16_t *out,uint8_t col,int16_t yl,int16_t yr,uint8_t sh
 static void draw_full(uint16_t *out,uint8_t col,int8_t first,int8_t last,uint8_t shade,uint8_t border){
     int8_t r;if(first<0)first=0;if(last>=(int8_t)TSP_ROWS)last=(int8_t)(TSP_ROWS-1u);if(first>last)return;for(r=first;r<=last;++r)put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,border));
 }
+#endif
+
 static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPState *s){
+#if TSPF_E1M1_GG_FAST_ONLY
+    uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n;
+    int16_t iq,step;
+    (void)out;
+    (void)cols;
+    if(c0>=TSP_COLS) c0=TSP_COLS-1u;
+    if(c1>=TSP_COLS) c1=TSP_COLS-1u;
+    if(c1<c0) return;
+    n=(uint8_t)(c1-c0+1u);
+    iq=(int16_t)r->inv0<<6;
+    step=(int16_t)(((int16_t)r->inv1-(int16_t)r->inv0)*(int16_t)k_col_recip_q8[n]);
+    step=shr_signed(step,2);
+
+    g_polar_run_profile=0xffu;
+    g_polar_mat_shade=(r->inv_mid<E1PF_FOG_SHADE_INV)?0u:1u;
+    g_polar_run_c0=c0;g_polar_run_c1=c1;
+    g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
+    g_polar_run_iq=iq;g_polar_run_step=step;
+    g_polar_run_z0_q4_rel=(int16_t)(((int16_t)k_e1pf_z0[r->sid]<<4)-s->z_q4);
+    g_polar_run_z1_q4_rel=(int16_t)(((int16_t)k_e1pf_z1[r->sid]<<4)-s->z_q4);
+    tsp_polar_run_zspan_fast();
+#else
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c;
 #ifdef TSPF_E1M1_ROOM1
     uint8_t profile=0xffu;
@@ -733,6 +769,7 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
         if(cols&&mid>cols[c].invz){cols[c].invz=mid;cols[c].wall_id=r->sid;cols[c].shade=shade;cols[c].top=clamp_u8i(tl,143u);cols[c].bottom=clamp_u8i(bl,143u);cols[c].top_step=clamp_s8((int16_t)(tr-tl),-7,7);cols[c].bottom_step=clamp_s8((int16_t)(br-bl),-7,7);}
         iq=(int16_t)(iq+step);
     }
+#endif
 }
 
 static void insert_run(uint8_t idx,uint8_t *count){
