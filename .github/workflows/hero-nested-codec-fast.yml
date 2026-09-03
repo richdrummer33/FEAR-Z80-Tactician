@@ -64,6 +64,7 @@ jobs:
       - name: Bake representative distance corpus
         run: |
           set -euo pipefail
+          mkdir -p build/fast-lab/host
           ROOM_BUNDLE_HERO_CORPUS=1 \
           HERO_CORPUS_ANGLES=32 \
           HERO_CORPUS_BANDS=24,28,32,36 \
