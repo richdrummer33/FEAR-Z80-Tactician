@@ -1,0 +1,124 @@
+name: Hero nested distance codec fast lab
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-nested-codec-fast.yml"
+      - "tools/iterative_solver.py"
+      - "tools/nested_lod_core.py"
+      - "tools/solve_nested_distance_codec.py"
+      - "tools/sweep_nested_distance_codec.py"
+      - "tools/resident_tile_dictionary.py"
+      - "tools/resident_tile_lloyd.py"
+      - "tools/analyze_resident_lod_dictionary.py"
+      - "tools/analyze_resident_lod_learning.py"
+      - "tests/test_iterative_solver.py"
+      - "tests/test_nested_lod_core.py"
+      - "tests/test_nested_distance_sweep.py"
+      - "tests/test_resident_tile_dictionary.py"
+      - "tests/test_resident_tile_lloyd.py"
+  workflow_dispatch:
+
+jobs:
+  fast-lab:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/fast-lab tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/fast-lab/import.json
+
+      - name: Nested codec unit tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_nested_lod_core.py' -v
+          python3 -m unittest discover -s tests -p 'test_iterative_solver.py' -v
+          python3 -m unittest discover -s tests -p 'test_nested_distance_sweep.py' -v
+          python3 -m unittest discover -s tests -p 'test_resident_tile_dictionary.py' -v
+          python3 -m unittest discover -s tests -p 'test_resident_tile_lloyd.py' -v
+
+      - name: Build 32-angle oracle baker
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/fast-lab/corpus-bake
+
+      - name: Bake representative distance corpus
+        run: |
+          set -euo pipefail
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/fast-lab/corpus-bake build/fast-lab/host \
+            | tee build/fast-lab/bake.txt
+          grep -q '^DOOM_DENSE_CORPUS_PASS samples=128 angles=32 bands=4 ' \
+            build/fast-lab/bake.txt
+
+      - name: Cross-angle rate-distortion frontier
+        run: |
+          set -euo pipefail
+          python3 tools/sweep_nested_distance_codec.py \
+            build/fast-lab/host/doomguy_dense_corpus.dhc \
+            --angles 0,8,16,24 \
+            --budgets 0,64,128,192,320 \
+            --iterations 2 --patience 1 \
+            --proposal-limit 12 --escape-probes 1 --escape-steps 4 \
+            --summary-json build/fast-lab/rd-summary.json \
+            --table-tsv build/fast-lab/rd-table.tsv \
+            | tee build/fast-lab/rd.txt
+          grep -q '^RD_SWEEP_PASS$' build/fast-lab/rd.txt
+
+      - name: Resident dictionary baseline
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_resident_lod_dictionary.py \
+            build/fast-lab/host/doomguy_dense_corpus.dhc \
+            --angles 0,8,16,24 --additions 32 \
+            --checkpoints 0,4,8,16,32 \
+            --summary-json build/fast-lab/resident.json \
+            | tee build/fast-lab/resident.txt
+          grep -q '^RESIDENT_LOD_DICTIONARY_PASS$' build/fast-lab/resident.txt
+
+      - name: Learned resident dictionary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_resident_lod_learning.py \
+            build/fast-lab/host/doomguy_dense_corpus.dhc \
+            --angles 0,8,16,24 --additions 4,8,16,32 \
+            --lloyd-iterations 4 \
+            --summary-json build/fast-lab/learned-resident.json \
+            | tee build/fast-lab/learned-resident.txt
+          grep -q '^LEARNED_RESIDENT_LOD_PASS$' build/fast-lab/learned-resident.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-nested-distance-fast-lab
+          path: |
+            build/fast-lab/bake.txt
+            build/fast-lab/rd.txt
+            build/fast-lab/rd-summary.json
+            build/fast-lab/rd-table.tsv
+            build/fast-lab/resident.txt
+            build/fast-lab/resident.json
+            build/fast-lab/learned-resident.txt
+            build/fast-lab/learned-resident.json
+          if-no-files-found: error
