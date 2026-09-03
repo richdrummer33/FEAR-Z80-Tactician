@@ -100,12 +100,12 @@ jobs:
             | tee "$OUT/boot.txt"
 
           LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=30 \
-            "$OUT/libretro_runner" "$CORE" "$ROM" 180 \
+            "$OUT/libretro_runner" "$CORE" "$ROM" 600 \
               "$OUT/forward.ppm" "$STATE_ADDR" 7 \
               | tee "$OUT/forward.txt"
 
           LIBRETRO_JOYPAD_MASK=128 LIBRETRO_JOYPAD_AFTER_FRAME=30 \
-            "$OUT/libretro_runner" "$CORE" "$ROM" 120 \
+            "$OUT/libretro_runner" "$CORE" "$ROM" 300 \
               "$OUT/turn-right.ppm" "$STATE_ADDR" 7 \
               | tee "$OUT/turn-right.txt"
 
