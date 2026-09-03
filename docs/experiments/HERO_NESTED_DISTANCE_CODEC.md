@@ -302,3 +302,68 @@ The next research axis is therefore the rate/distortion envelope itself:
 repeat across several near budgets and angles, then graduate the representation
 from the optimistic whole-master phase selector to the hardware-oriented
 neighbourhood-to-resident-pattern dictionary synthesis.
+
+
+## Rate/distortion + hardware-native follow-up
+
+Two additional microscopes now sit on top of the stable co-design solver.
+
+### Cross-angle rate/distortion sweep
+
+`tools/sweep_nested_distance_codec.py` repeats the identical constrained solve
+over representative angular views and nearest-view error budgets.  It does not
+change the decoder or objective between points.
+
+The sweep continuously rewrites one compact JSON document and also emits TSV.
+For every angle it reports the nondominated frontier:
+
+- actual nearest-view damage spent;
+- nearest silhouette damage;
+- farther-distance weighted oracle error;
+- absolute and percentage improvement from the zero-budget baseline;
+- pattern count and selector byte estimate;
+- per-distance silhouette/shade/churn metrics.
+
+The first CI sweep uses angles 0 / 64 / 128 / 192 and budgets
+0 / 64 / 128 / 192 / 320.  Its purpose is to answer whether the first
+co-design win is structurally repeatable and where the useful knee in the
+near-quality/far-reuse trade lies.
+
+### Resident 8x8 dictionary microscope
+
+`tools/resident_tile_dictionary.py` and
+`tools/analyze_resident_lod_dictionary.py` translate the question to the
+actual Mode-4 graphic atom.
+
+For one angle, band zero supplies the near resident 8x8 vocabulary.  Farther
+independent oracle tiles are then matched against that vocabulary. H/V flips
+are free.  An implicit empty pattern allows a tiny far feature to disappear
+when the silhouette cost says that is preferable.
+
+The analyzer then greedily adds the currently worst-represented far oracle tile
+and measures the improvement after each addition. This is not the proposed
+shipping codec. It is a direct VRAM question:
+
+> if the near vocabulary stays resident, how many additional 32-byte patterns
+> are required before far-distance demand becomes cheap?
+
+Dictionary growth is incremental, so each newly added pattern is compared only
+against the current far demands rather than rescoring the entire dictionary.
+
+A second staged module, `tools/resident_tile_lloyd.py`, goes beyond literal
+oracle additions. The near entries remain fixed while learned extra LOD entries
+are allowed to become the best shared 8x8 compromise for all far cells assigned
+to them. This is monotonic Lloyd-style discrete vector quantization with free
+H/V flips. Every learned result is still one ordinary Game Gear pattern and
+requires only a name-table reference at runtime.
+
+This deliberately forms a ladder:
+
+1. near resident vocabulary only;
+2. near vocabulary + literal far oracle additions;
+3. near vocabulary + learned shared far-LOD patterns;
+4. later: co-design the near vocabulary itself with these resident far demands.
+
+That final stage is the hardware-native version of the nested-sample idea:
+offline intelligence changes the shared puzzle pieces; target hardware merely
+selects the resulting resident 8x8 pattern IDs.
