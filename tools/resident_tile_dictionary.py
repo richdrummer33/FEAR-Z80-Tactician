@@ -142,36 +142,40 @@ def greedy_dictionary_growth(demands, base_dictionary, additions,
                              weights=TileWeights(), allow_flips=True):
     """Add the currently worst represented oracle pattern per step.
 
-    Candidate additions are exact demand patterns, canonicalized under free
-    flips.  This gives an easy-to-interpret upper bound on how many extra
-    resident patterns buy substantial far-LOD fidelity before any co-design.
+    Matching is updated incrementally: after the initial base-vocabulary pass,
+    each new resident candidate is compared once against every demand rather
+    than rescoring the whole dictionary. This keeps larger offline sweeps cheap.
     """
     dictionary = dedupe_patterns(base_dictionary, modulo_flips=allow_flips)
     zero = bytes(PIXELS)
-    # Empty is useful as an implicit "drop this hero cell" option and costs no
-    # additional patterned artwork. Keep it resident logically at index zero.
     if zero not in dictionary:
         dictionary.insert(0, zero)
     base_count = len(dictionary)
 
-    history = []
     score = score_demands(demands, dictionary, weights, allow_flips)
-    history.append({
-        "additions": 0,
-        "dictionary_count": len(dictionary),
-        "total_cost": score["total_cost"],
-        "mean_cost": score["mean_cost"],
-        "exact_fraction": score["exact_fraction"],
-        "added_from_demand": None,
-    })
+    current_matches = list(score["matches"])
 
+    def snapshot(step, added_from):
+        total = sum(m["cost"] for m in current_matches)
+        exact = sum(1 for m in current_matches if m["cost"] == 0)
+        return {
+            "additions": step,
+            "dictionary_count": len(dictionary),
+            "total_cost": total,
+            "mean_cost": total / len(demands) if demands else 0.0,
+            "exact_fraction": exact / len(demands) if demands else 1.0,
+            "added_from_demand": added_from,
+        }
+
+    history = [snapshot(0, None)]
     known = {
         canonical_pattern(p) if allow_flips else bytes(p)
         for p in dictionary
     }
+
     for step in range(1, additions + 1):
         ranked = sorted(
-            enumerate(score["matches"]),
+            enumerate(current_matches),
             key=lambda pair: (pair[1]["cost"], pair[0]),
             reverse=True)
         chosen = None
@@ -187,21 +191,47 @@ def greedy_dictionary_growth(demands, base_dictionary, additions,
         demand_i, pattern = chosen
         dictionary.append(pattern)
         known.add(pattern)
-        score = score_demands(demands, dictionary, weights, allow_flips)
-        history.append({
-            "additions": step,
-            "dictionary_count": len(dictionary),
-            "total_cost": score["total_cost"],
-            "mean_cost": score["mean_cost"],
-            "exact_fraction": score["exact_fraction"],
-            "added_from_demand": demand_i,
-        })
-        if score["total_cost"] <= 0.0:
+        new_index = len(dictionary) - 1
+        variants = transforms(pattern) if allow_flips else [
+            (False, False, pattern)]
+
+        for i, demand in enumerate(demands):
+            best = current_matches[i]
+            for fh, fv, rendered in variants:
+                cost = pattern_cost(rendered, demand["pattern"], weights)
+                key = (cost, new_index, int(fv), int(fh))
+                old_key = (
+                    best["cost"], best["dictionary_index"],
+                    int(best["flip_v"]), int(best["flip_h"]))
+                if key < old_key:
+                    best = {
+                        "demand_index": i,
+                        "cost": cost,
+                        "dictionary_index": new_index,
+                        "flip_h": fh,
+                        "flip_v": fv,
+                    }
+            current_matches[i] = best
+
+        history.append(snapshot(step, demand_i))
+        if history[-1]["total_cost"] <= 0.0:
             break
 
+    total = sum(m["cost"] for m in current_matches)
+    exact = sum(1 for m in current_matches if m["cost"] == 0)
+    final_score = {
+        "total_cost": total,
+        "mean_cost": total / len(demands) if demands else 0.0,
+        "exact_count": exact,
+        "exact_fraction": exact / len(demands) if demands else 1.0,
+        "worst": (
+            max(current_matches, key=lambda m: (m["cost"], m["demand_index"]))
+            if current_matches else None),
+        "matches": current_matches,
+    }
     return {
         "base_count_with_implicit_empty": base_count,
         "dictionary": dictionary,
         "history": history,
-        "final_score": score,
+        "final_score": final_score,
     }
