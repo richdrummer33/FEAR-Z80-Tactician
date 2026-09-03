@@ -866,8 +866,8 @@ void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColum
         uint8_t mask[8],bi,bit;
         int16_t wx=(int16_t)(s->x_q4>>4),wy=(int16_t)(s->y_q4>>4);
         if(wx<E1X_WORLD_MIN_X||wy<E1X_WORLD_MIN_Y||wx>=E1X_WORLD_MAX_X||wy>=E1X_WORLD_MAX_Y)goto done;
-        gx=(uint8_t)((wx-E1X_WORLD_MIN_X)>>3);
-        gy=(uint8_t)((wy-E1X_WORLD_MIN_Y)>>3);
+        gx=(uint8_t)((wx-E1X_WORLD_MIN_X)>>E1PF_PVS_CELL_SHIFT);
+        gy=(uint8_t)((wy-E1X_WORLD_MIN_Y)>>E1PF_PVS_CELL_SHIFT);
 #ifndef __SDCC
         if(g_tspf_e1_host_all_segments){
             for(bi=0u;bi<8u;++bi)mask[bi]=0xffu;
