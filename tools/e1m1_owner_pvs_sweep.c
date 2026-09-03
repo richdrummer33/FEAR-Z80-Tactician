@@ -116,6 +116,8 @@ int main(void){
     uint16_t yaw16;
     uint8_t ci;
     uint32_t samples=0u;
+    uint64_t exact_owner_sum=0u;
+    uint8_t exact_owner_min=64u,exact_owner_max=0u,spawn_exact=0u;
 
     for(ci=0u;ci<8u;++ci)cfg_init(&cfgs[ci],cells[ci],yaws[ci]);
 
@@ -134,6 +136,13 @@ int main(void){
                 uint64_t m;
                 render_owner(xq,yq,(uint8_t)yaw16,map);
                 m=owner_mask();
+                {
+                    uint8_t pc=pop64(m);
+                    exact_owner_sum+=pc;
+                    if(pc<exact_owner_min)exact_owner_min=pc;
+                    if(pc>exact_owner_max)exact_owner_max=pc;
+                    if(xq==(22<<4)&&yq==(52<<4)&&yaw16==0u)spawn_exact=pc;
+                }
                 for(ci=0u;ci<8u;++ci)
                     cfgs[ci].masks[cfg_index(&cfgs[ci],xq,yq,(uint8_t)yaw16)]|=m;
                 ++samples;
@@ -142,6 +151,10 @@ int main(void){
     }
     g_tspf_e1_host_all_segments=0u;
 
+    printf("E1_OWNER_EXACT rendered_states=%lu mean=%.2f min=%u max=%u spawn=%u\n",
+           (unsigned long)samples,
+           samples?(double)exact_owner_sum/(double)samples:0.0,
+           (unsigned)exact_owner_min,(unsigned)exact_owner_max,(unsigned)spawn_exact);
     printf("E1_OWNER_SWEEP_PASS rendered_states=%lu pos_step_q4=8 yaw_step=4\n",
            (unsigned long)samples);
     for(ci=0u;ci<8u;++ci){report(&cfgs[ci]);free(cfgs[ci].masks);}
