@@ -21,6 +21,8 @@ on:
       - "tools/sweep_nested_distance_codec.py"
       - "tools/resident_tile_dictionary.py"
       - "tools/analyze_resident_lod_dictionary.py"
+      - "tools/resident_tile_lloyd.py"
+      - "tools/analyze_resident_lod_learning.py"
       - "tools/render_dense_corpus_sheets.py"
       - "tools/glb_rmb/**"
       - "tests/test_dense_corpus_reader.py"
@@ -28,6 +30,7 @@ on:
       - "tests/test_iterative_solver.py"
       - "tests/test_nested_distance_sweep.py"
       - "tests/test_resident_tile_dictionary.py"
+      - "tests/test_resident_tile_lloyd.py"
   workflow_dispatch:
 
 jobs:
@@ -60,6 +63,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_iterative_solver.py' -v
           python3 -m unittest discover -s tests -p 'test_nested_distance_sweep.py' -v
           python3 -m unittest discover -s tests -p 'test_resident_tile_dictionary.py' -v
+          python3 -m unittest discover -s tests -p 'test_resident_tile_lloyd.py' -v
 
       - name: Warning-clean host build
         run: |
@@ -181,6 +185,20 @@ jobs:
           test "$(grep -c '^RESIDENT_LOD_DICTIONARY_RESULT ' build/corpus/resident-lod-dictionary.txt)" = 4
           test -s build/corpus/resident-lod-dictionary.json
 
+      - name: Learned resident LOD dictionary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_resident_lod_learning.py \
+            build/corpus/host/doomguy_dense_corpus.dhc \
+            --angles 0,64,128,192 --additions 4,8,16,32 \
+            --lloyd-iterations 4 \
+            --summary-json build/corpus/learned-resident-lod.json \
+            | tee build/corpus/learned-resident-lod.txt
+          grep -q '^LEARNED_RESIDENT_LOD_PASS$' build/corpus/learned-resident-lod.txt
+          grep -q '^LEARNED_RESIDENT_LOD_SUMMARY ' build/corpus/learned-resident-lod.txt
+          test "$(grep -c '^LEARNED_RESIDENT_LOD_RESULT ' build/corpus/learned-resident-lod.txt)" = 4
+          test -s build/corpus/learned-resident-lod.json
+
       - name: Report card
         run: |
           set -euo pipefail
@@ -223,6 +241,8 @@ jobs:
             build/corpus/nested-rd-traces/**
             build/corpus/resident-lod-dictionary.txt
             build/corpus/resident-lod-dictionary.json
+            build/corpus/learned-resident-lod.txt
+            build/corpus/learned-resident-lod.json
             build/corpus/sheets/**
             build/corpus/normalized/**
             build/corpus/host/doomguy_dense_corpus_manifest.txt
