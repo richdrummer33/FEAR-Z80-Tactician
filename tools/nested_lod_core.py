@@ -325,3 +325,249 @@ def refine_by_pattern_swaps(master, class_to_origins, objective,
         if not accepted:
             break
     return history
+
+
+# ---------------------------------------------------------------------------
+# Ranked-footprint sampling
+#
+# A target pixel covers an area in the close master, not one mathematical point.
+# These helpers ask whether a deterministic rank field can pick a representative
+# sample from that footprint.  This is deliberately analogous to ordered/blue-
+# noise rank masks, but the objective is supplied by the caller so the same
+# machinery can later learn Doomguy-specific masks.
+
+
+def bayer_rank_mask_8():
+    """Return the canonical 8x8 Bayer ordering as ranks 0..63.
+
+    The absolute ordering matters; thresholding any prefix gives a nested sample
+    set.  The codec uses the same ordering as a deterministic representative
+    selector inside a projectively enlarged source footprint.
+    """
+    m = [[0]]
+    while len(m) < 8:
+        n = len(m)
+        out = [[0] * (n * 2) for _ in range(n * 2)]
+        for y in range(n):
+            for x in range(n):
+                v = m[y][x] * 4
+                out[y][x] = v
+                out[y][x + n] = v + 2
+                out[y + n][x] = v + 3
+                out[y + n][x + n] = v + 1
+        m = out
+    return [m[y][x] for y in range(8) for x in range(8)]
+
+
+def source_footprint(tx, ty, source_anchor, target_anchor,
+                     source_radius, target_radius):
+    """Integer master pixels covered by one target pixel's pinhole footprint."""
+    ratio = float(target_radius) / float(source_radius)
+    if ratio <= 0:
+        raise ValueError("radii must be positive")
+    lx = source_anchor[0] + ((tx - 0.5) - target_anchor[0]) * ratio
+    rx = source_anchor[0] + ((tx + 0.5) - target_anchor[0]) * ratio
+    ly = source_anchor[1] + ((ty - 0.5) - target_anchor[1]) * ratio
+    ry = source_anchor[1] + ((ty + 0.5) - target_anchor[1]) * ratio
+    x0 = int(__import__("math").ceil(min(lx, rx)))
+    x1 = int(__import__("math").floor(max(lx, rx)))
+    y0 = int(__import__("math").ceil(min(ly, ry)))
+    y1 = int(__import__("math").floor(max(ly, ry)))
+    if x1 < x0 or y1 < y0:
+        sx, sy = projective_source_xy(
+            tx, ty, source_anchor, target_anchor, source_radius, target_radius)
+        return [(round(sx), round(sy))]
+    return [(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
+
+
+def _pixel_cost(got, wanted, weights):
+    if bool(got) != bool(wanted):
+        return weights.silhouette
+    if got:
+        return weights.shade * abs(int(got) - int(wanted))
+    return 0.0
+
+
+def decode_oracle_footprint(master, target, source_anchor, target_anchor,
+                            source_radius, target_radius,
+                            weights=LossWeights()):
+    """Uncompressed lower bound: best existing master sample per target pixel.
+
+    This deliberately uses the target oracle to choose among source samples and
+    is therefore NOT a codec.  It answers a more fundamental question: is the
+    information needed by the farther rendering already present somewhere in
+    the close pixel footprint, or would the master itself have to change?
+    """
+    out = Raster.blank(target.width, target.height)
+    for y in range(target.height):
+        for x in range(target.width):
+            wanted = target.at(x, y)
+            best_v = 0
+            best = None
+            for sx, sy in source_footprint(
+                    x, y, source_anchor, target_anchor,
+                    source_radius, target_radius):
+                got = master.at(sx, sy)
+                cost = _pixel_cost(got, wanted, weights)
+                if best is None or cost < best:
+                    best = cost
+                    best_v = got
+            out.set(x, y, best_v)
+    return out
+
+
+def _rank_at(mask, x, y, phase):
+    size = int(round(len(mask) ** 0.5))
+    if size * size != len(mask):
+        raise ValueError("rank mask must be square")
+    dx, dy = phase
+    return mask[((y + dy) % size) * size + ((x + dx) % size)]
+
+
+def _rank_pick(master, coords, mask, phase, center):
+    """Pick the lowest-ranked source sample; distance breaks periodic ties."""
+    best = None
+    best_xy = coords[0]
+    cx, cy = center
+    for sx, sy in coords:
+        rank = _rank_at(mask, sx, sy, phase)
+        tie = (sx - cx) * (sx - cx) + (sy - cy) * (sy - cy)
+        key = (rank, tie, sy, sx)
+        if best is None or key < best:
+            best = key
+            best_xy = (sx, sy)
+    return master.at(*best_xy)
+
+
+def decode_with_rank_mask(master, target_shape, source_anchor, target_anchor,
+                          source_radius, target_radius, rank_mask,
+                          phase=(0, 0)):
+    """Downsample by selecting the lowest-ranked master sample per footprint."""
+    w, h = target_shape
+    out = Raster.blank(w, h)
+    for y in range(h):
+        for x in range(w):
+            coords = source_footprint(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            center = projective_source_xy(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            out.set(x, y, _rank_pick(master, coords, rank_mask, phase, center))
+    return out
+
+
+def fit_rank_phase(master, target, source_anchor, target_anchor,
+                   source_radius, target_radius, rank_mask,
+                   phases=None, weights=LossWeights()):
+    """Fit one tiny global phase for a fixed rank mask at this distance."""
+    size = int(round(len(rank_mask) ** 0.5))
+    phases = phases or [(x, y) for y in range(size) for x in range(size)]
+    best_phase = None
+    best_loss = None
+    best_pred = None
+    for phase in phases:
+        pred = decode_with_rank_mask(
+            master, (target.width, target.height), source_anchor, target_anchor,
+            source_radius, target_radius, rank_mask, phase)
+        loss = compare(pred, target, weights)
+        if best_loss is None or loss.weighted < best_loss.weighted:
+            best_phase, best_loss, best_pred = phase, loss, pred
+    return best_phase, best_loss, best_pred
+
+
+def decode_with_pattern_rank_phases(master, target_or_shape, source_anchor,
+                                    target_anchor, source_radius, target_radius,
+                                    class_map, table, rank_mask, tile_size=8):
+    if isinstance(target_or_shape, Raster):
+        w, h = target_or_shape.width, target_or_shape.height
+    else:
+        w, h = target_or_shape
+    out = Raster.blank(w, h)
+    zero_key = bytes(tile_size * tile_size)
+    for y in range(h):
+        for x in range(w):
+            center = projective_source_xy(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            key = _class_for_source_xy(class_map, center[0], center[1], tile_size)
+            phase = table.get(key, table.get(zero_key, (0, 0)))
+            coords = source_footprint(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            out.set(x, y, _rank_pick(master, coords, rank_mask, phase, center))
+    return out
+
+
+def fit_pattern_rank_phases(master, target, source_anchor, target_anchor,
+                            source_radius, target_radius, class_map, rank_mask,
+                            phases=None, weights=LossWeights(), tile_size=8):
+    """Fit one rank-mask phase per shared master pattern class and distance."""
+    size = int(round(len(rank_mask) ** 0.5))
+    phases = phases or [(x, y) for y in range(size) for x in range(size)]
+    groups = {}
+    for y in range(target.height):
+        for x in range(target.width):
+            center = projective_source_xy(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            key = _class_for_source_xy(class_map, center[0], center[1], tile_size)
+            coords = source_footprint(
+                x, y, source_anchor, target_anchor,
+                source_radius, target_radius)
+            groups.setdefault(key, []).append(
+                (coords, center, target.at(x, y)))
+
+    table = {}
+    for key, items in groups.items():
+        best_phase = phases[0]
+        best_cost = None
+        for phase in phases:
+            cost = 0.0
+            for coords, center, wanted in items:
+                got = _rank_pick(master, coords, rank_mask, phase, center)
+                cost += _pixel_cost(got, wanted, weights)
+            if best_cost is None or cost < best_cost:
+                best_cost = cost
+                best_phase = phase
+        table[key] = best_phase
+
+    pred = decode_with_pattern_rank_phases(
+        master, target, source_anchor, target_anchor,
+        source_radius, target_radius, class_map, table, rank_mask, tile_size)
+    return table, compare(pred, target, weights), pred
+
+
+def refine_rank_mask(rank_mask, objective, passes=1, candidate_limit=63):
+    """Direct-search a rank permutation by swapping adjacent rank values.
+
+    Swapping rank k with k+1 preserves a complete 0..N-1 permutation and makes
+    the smallest possible change to every threshold prefix.  The optimizer is
+    callback-driven for the same reason as pattern refinement: the search
+    engine does not know Doomguy, DHC1, or how a rank field is decoded.
+    """
+    mask = list(rank_mask)
+    if sorted(mask) != list(range(len(mask))):
+        raise ValueError("rank mask must be a permutation 0..N-1")
+    score = float(objective(mask))
+    history = []
+    for p in range(passes):
+        accepted = 0
+        tested = 0
+        for rank in range(min(len(mask) - 1, candidate_limit)):
+            ia = mask.index(rank)
+            ib = mask.index(rank + 1)
+            mask[ia], mask[ib] = mask[ib], mask[ia]
+            trial = float(objective(mask))
+            tested += 1
+            if trial + 1e-9 < score:
+                score = trial
+                accepted += 1
+            else:
+                mask[ia], mask[ib] = mask[ib], mask[ia]
+        history.append(
+            {"pass": p, "accepted": accepted, "score": score,
+             "candidates": tested})
+        if not accepted:
+            break
+    return mask, history
