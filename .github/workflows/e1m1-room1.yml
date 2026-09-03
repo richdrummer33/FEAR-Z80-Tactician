@@ -45,7 +45,9 @@ jobs:
           mkdir -p "$PROD"
           python3 tools/e1m1_room1_polar_bake.py --out-dir "$PROD"             | tee "$OUT/polar-bake.txt"
           grep -q 'E1PF_BAKE_PASS' "$OUT/polar-bake.txt"
-          wc -c "$PROD/e1m1_room1_polar_pvs.c" "$PROD/e1m1_room1_polar_meta.h"             | tee "$OUT/polar-bake-size.txt"
+          python3 tools/e1m1_room1_polar_tiles_gen.py --out-dir "$PROD" --bank 18             | tee "$OUT/polar-tiles-bake.txt"
+          grep -q 'E1PF_TILES_PASS' "$OUT/polar-tiles-bake.txt"
+          wc -c "$PROD/e1m1_room1_polar_pvs.c" "$PROD/e1m1_room1_polar_meta.h"             "$PROD/e1m1_room1_polar_tiles.c" | tee "$OUT/polar-bake-size.txt"
 
       - name: Host-test exact geometry through mature Polar renderer
         shell: bash
@@ -86,11 +88,12 @@ jobs:
           "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-world.o" src/e1m1_room1_world.c
           "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-renderer.o" src/tilesector_polar_renderer.c
           "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-pvs.o" "$PROD/e1m1_room1_polar_pvs.c"
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-tiles.o" "$PROD/e1m1_room1_polar_tiles.c"
           "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-ntstate.o" src/tilesector_polar_ntstate_gg.s
           "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-materialize.o" src/tilesector_polar_materialize_gg.s
           "$LCC" "${FLAGS[@]}" -c -o "$OUT/polar-ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
 
-          "$LCC" "${FLAGS[@]}" -Wm-yS             -o "$OUT/GG-E1M1-Room1-Polar.gg"             "$OUT/polar-main.o" "$OUT/polar-world.o" "$OUT/polar-renderer.o"             "$OUT/polar-pvs.o" "$OUT/polar-ntstate.o"             "$OUT/polar-materialize.o" "$OUT/polar-ntupload.o"
+          "$LCC" "${FLAGS[@]}" -Wm-yS             -o "$OUT/GG-E1M1-Room1-Polar.gg"             "$OUT/polar-main.o" "$OUT/polar-world.o" "$OUT/polar-renderer.o"             "$OUT/polar-pvs.o" "$OUT/polar-tiles.o" "$OUT/polar-ntstate.o"             "$OUT/polar-materialize.o" "$OUT/polar-ntupload.o"
 
           wc -c "$OUT/GG-E1M1-Room1-Polar.gg" | tee "$OUT/polar-ROM-size.txt"
           sha256sum "$OUT/GG-E1M1-Room1-Polar.gg" | tee "$OUT/polar-SHA256.txt"
@@ -236,6 +239,7 @@ jobs:
             build/e1m1-room1/cadence-*.ppm
             build/e1m1-room1/polar-bake.txt
             build/e1m1-room1/polar-bake-size.txt
+            build/e1m1-room1/polar-tiles-bake.txt
             build/e1m1-room1/polar-host-test.txt
             build/e1m1-room1/reference-host-test.txt
             build/e1m1-room1/standard-polar-regression.txt
