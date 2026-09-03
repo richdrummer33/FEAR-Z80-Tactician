@@ -2537,6 +2537,222 @@ static void bake_doomguy_playable(const char *outdir){
            (unsigned long)(state_count?((uint64_t)sum_patterns*100u)/state_count:0u),
            (unsigned)dict_count);
 }
+
+/* ---------------------------------------------------------------------------
+ * Dense hero-only view corpus  (DHC1)
+ *
+ * The playable pack stores whole chamber states: "camera state 173 in the
+ * room". A view codec cannot be designed against that, because every measured
+ * difference between two neighbouring samples mixes three unrelated causes:
+ *
+ *   1. the hero genuinely turned (appearance),
+ *   2. the camera stood somewhere else on an 8-unit lattice (placement),
+ *   3. the aim yaw was quantized to 16 steps, so the hero slid up to 11 deg
+ *      off centre (framing).
+ *
+ * Causes 2 and 3 are artefacts of the walkable grid, not of the object. This
+ * corpus removes both analytically instead of searching them out afterwards:
+ *
+ *   * the camera orbits the authored hero pivot on an exact circle, so the
+ *     forward depth of the pivot equals the band radius for every sample;
+ *   * the angle count divides 256, so the aim yaw lands exactly on a hardware
+ *     yaw step and the pivot projects to screen x = 80.0 with zero residual;
+ *   * therefore the placement anchor is known in closed form rather than
+ *     estimated, and every remaining pixel difference is appearance.
+ *
+ * Each record is object-only: the owner-resolved crop of the hero, its bbox,
+ * and its anchor. Room pixels cannot contaminate it, and the corpus stays
+ * usable if the chamber is re-authored around the statue.
+ *
+ * The tile codec is deliberately disabled while capturing. The corpus is the
+ * appearance signal a codec has to compress; quantizing it first would mean
+ * measuring last year's dictionary rather than this year's geometry.
+ */
+#define HERO_CORPUS_MAX_BANDS 8u
+/* Authored hero pivot: centre of the plinth top, which is where the feet sit.
+ * Feet, not head or arms -- it is the one landmark that does not move as the
+ * figure is viewed from a different side. */
+#define HERO_CORPUS_PIVOT_X 78.0
+#define HERO_CORPUS_PIVOT_Y 24.0
+#define HERO_CORPUS_PIVOT_Z 3.0
+/* Matches the playable pack's eye height so the corpus describes the geometry
+ * the runtime will actually have to draw. */
+#define HERO_CORPUS_EYE_Z 16.0
+#define HERO_CORPUS_OWNER 0x81u
+
+static void write_i16(FILE *f,int16_t v){write_u16(f,(uint16_t)v);}
+static void write_i32(FILE *f,int32_t v){write_u32(f,(uint32_t)v);}
+
+static unsigned corpus_env_uint(const char *name,unsigned fallback,
+                                unsigned allow_zero){
+    const char *v=getenv(name);
+    long n;
+    if(!v||!*v)return fallback;
+    n=strtol(v,NULL,10);
+    if(n<0||(n==0&&!allow_zero))
+        die("hero corpus: non-positive count in environment override");
+    return (unsigned)n;
+}
+
+static unsigned corpus_parse_bands(double *out){
+    const char *v=getenv("HERO_CORPUS_BANDS");
+    unsigned n=0u;
+    if(!v||!*v){
+        /* Inside the chamber the statue sits 38 units from the nearest wall
+         * plane and 43 from the nearest pillar, so 36 is the largest radius
+         * whose whole orbit stays in open air. 24 is just inside the closest
+         * legal walkable position (23.32), which is the tightest framing the
+         * shipping game can produce. */
+        out[0]=24.0;out[1]=28.0;out[2]=32.0;out[3]=36.0;
+        return 4u;
+    }
+    while(*v){
+        char *end;
+        double r=strtod(v,&end);
+        if(end==v)die("hero corpus: malformed HERO_CORPUS_BANDS");
+        if(n>=HERO_CORPUS_MAX_BANDS)die("hero corpus: too many distance bands");
+        if(r<8.0||r>36.0)
+            die("hero corpus: band radius leaves the open chamber annulus");
+        out[n++]=r;
+        v=end;
+        while(*v==','||*v==' ')++v;
+    }
+    if(!n)die("hero corpus: empty HERO_CORPUS_BANDS");
+    return n;
+}
+
+static void bake_hero_dense_corpus(const char *outdir){
+    World w;
+    FILE *pack,*manifest;
+    char path[512];
+    double radius[HERO_CORPUS_MAX_BANDS];
+    unsigned bands=corpus_parse_bands(radius);
+    unsigned angles=corpus_env_uint("HERO_CORPUS_ANGLES",256u,0u);
+    unsigned preview_every=corpus_env_uint("HERO_CORPUS_PREVIEW_EVERY",32u,1u);
+    unsigned band,a;
+    uint32_t total_pixels=0u,payload_bytes=0u;
+    uint16_t min_pixels=0xffffu,max_pixels=0u;
+    uint8_t min_w=255u,max_w=0u,min_h=255u,max_h=0u;
+
+    if(angles>256u||(256u%angles)!=0u)
+        die("hero corpus: angle count must divide 256 so aim stays exact");
+
+    make_world(11u,&w);
+    /* Raw appearance, not codec output. */
+    tsp_host_composite_codec_disable();
+    tsp_host_composite_set_tile_limit(448u);
+    tsp_host_composite_set_scene(&w.scene);
+
+    snprintf(path,sizeof(path),"%s/doomguy_dense_corpus.dhc",outdir);
+    pack=fopen(path,"wb");
+    if(!pack)die("cannot create hero dense corpus");
+    snprintf(path,sizeof(path),"%s/doomguy_dense_corpus_manifest.txt",outdir);
+    manifest=fopen(path,"w");
+    if(!manifest)die("cannot create hero dense corpus manifest");
+
+    fwrite("DHC1",1,4,pack);
+    write_u16(pack,1u);
+    fputc(160,pack);
+    fputc(144,pack);
+    write_u16(pack,(uint16_t)angles);
+    fputc((int)bands,pack);
+    fputc((int)HERO_CORPUS_OWNER,pack);
+    write_i32(pack,(int32_t)lround(HERO_CORPUS_PIVOT_X*256.0));
+    write_i32(pack,(int32_t)lround(HERO_CORPUS_PIVOT_Y*256.0));
+    write_i32(pack,(int32_t)lround(HERO_CORPUS_PIVOT_Z*256.0));
+    write_i32(pack,(int32_t)lround(HERO_CORPUS_EYE_Z*256.0));
+    write_u16(pack,(uint16_t)lround(80.0*256.0/256.0)); /* focal, whole units */
+    for(band=0u;band<HERO_CORPUS_MAX_BANDS;++band)
+        write_u32(pack,band<bands?(uint32_t)lround(radius[band]*256.0):0u);
+
+    fprintf(manifest,
+            "Doomguy dense hero view corpus v1\n"
+            "angles=%u bands=%u owner=0x%02x pivot=(%.1f,%.1f,%.1f) eye_z=%.1f\n",
+            angles,bands,(unsigned)HERO_CORPUS_OWNER,
+            HERO_CORPUS_PIVOT_X,HERO_CORPUS_PIVOT_Y,HERO_CORPUS_PIVOT_Z,
+            HERO_CORPUS_EYE_Z);
+
+    for(band=0u;band<bands;++band){
+        double r=radius[band];
+        double anchor_y=72.0-(HERO_CORPUS_PIVOT_Z-HERO_CORPUS_EYE_Z)*80.0/r;
+        fprintf(manifest,"band=%u radius=%.3f anchor=(80.000,%.3f)\n",
+                band,r,anchor_y);
+        tsp_host_composite_reset_cache();
+        for(a=0u;a<angles;++a){
+            unsigned step=256u/angles;
+            double theta=(2.0*PI*(double)a)/(double)angles;
+            Pose p;
+            uint16_t dummy[TSP_MAP_CELLS];
+            uint8_t x0=0u,y0=0u,x1=0u,y1=0u,cw,ch,px,py;
+            uint16_t pixels;
+
+            p.x=HERO_CORPUS_PIVOT_X+r*cos(theta);
+            p.y=HERO_CORPUS_PIVOT_Y+r*sin(theta);
+            p.z=HERO_CORPUS_EYE_Z;
+            /* Exact opposite of the orbit angle: the pivot lands on the view
+             * axis, so its screen x is 80.0 with no rounding residual. */
+            p.yaw=(uint8_t)(((a*step)+128u)&255u);
+
+            render_pose(&w,&p,dummy);
+            pixels=tsp_host_composite_owner_bounds(HERO_CORPUS_OWNER,
+                                                   &x0,&y0,&x1,&y1);
+            if(!pixels)die("hero corpus: sample cannot see the hero");
+            if(x0==0u||y0==0u||x1>=159u||y1>=143u)
+                die("hero corpus: band radius clips the hero at a screen edge");
+
+            cw=(uint8_t)(x1-x0+1u);
+            ch=(uint8_t)(y1-y0+1u);
+            write_u16(pack,(uint16_t)a);
+            fputc((int)band,pack);
+            fputc((int)p.yaw,pack);
+            write_i32(pack,(int32_t)lround(p.x*256.0));
+            write_i32(pack,(int32_t)lround(p.y*256.0));
+            write_i16(pack,(int16_t)lround(80.0*256.0));
+            write_i16(pack,(int16_t)lround(anchor_y*256.0));
+            fputc(x0,pack);fputc(y0,pack);fputc(x1,pack);fputc(y1,pack);
+            write_u16(pack,pixels);
+            for(py=y0;py<=y1;++py)for(px=x0;px<=x1;++px)
+                fputc(tsp_host_composite_owner_sample(HERO_CORPUS_OWNER,px,py),
+                      pack);
+
+            total_pixels+=pixels;
+            payload_bytes+=(uint32_t)cw*(uint32_t)ch;
+            if(pixels<min_pixels)min_pixels=pixels;
+            if(pixels>max_pixels)max_pixels=pixels;
+            if(cw<min_w)min_w=cw;
+            if(cw>max_w)max_w=cw;
+            if(ch<min_h)min_h=ch;
+            if(ch>max_h)max_h=ch;
+
+            if(preview_every&&(a%preview_every)==0u){
+                char preview[512];
+                snprintf(preview,sizeof(preview),
+                         "%s/corpus-b%u-a%03u.ppm",outdir,band,a);
+                if(!tsp_host_composite_write_owner_contrast_ppm(
+                       preview,HERO_CORPUS_OWNER))
+                    die("cannot write hero corpus preview");
+            }
+        }
+    }
+
+    fprintf(manifest,
+            "samples=%u owned_pixels_min=%u mean=%lu max=%u\n"
+            "crop_w=%u..%u crop_h=%u..%u payload_bytes=%lu\n",
+            angles*bands,(unsigned)min_pixels,
+            (unsigned long)(total_pixels/(angles*bands)),(unsigned)max_pixels,
+            (unsigned)min_w,(unsigned)max_w,(unsigned)min_h,(unsigned)max_h,
+            (unsigned long)payload_bytes);
+    fflush(pack);
+    fprintf(manifest,"corpus_bytes=%ld\n",ftell(pack));
+    fclose(manifest);
+    fclose(pack);
+
+    printf("DOOM_DENSE_CORPUS_PASS samples=%u angles=%u bands=%u "
+           "owned_pixels_mean=%lu crop=%ux%u..%ux%u\n",
+           angles*bands,angles,bands,
+           (unsigned long)(total_pixels/(angles*bands)),
+           (unsigned)min_w,(unsigned)min_h,(unsigned)max_w,(unsigned)max_h);
+}
 #endif
 
 int main(int argc,char **argv){
@@ -2601,6 +2817,10 @@ int main(int argc,char **argv){
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
     if(getenv("ROOM_BUNDLE_PLAYABLE")){
         bake_doomguy_playable(outdir);
+        return 0;
+    }
+    if(getenv("ROOM_BUNDLE_HERO_CORPUS")){
+        bake_hero_dense_corpus(outdir);
         return 0;
     }
 #endif

@@ -225,6 +225,12 @@ uint16_t tsp_host_composite_lit_owner_pixel_count(uint8_t sid);
  * zero means the owner is fully outside the view or occluded. */
 uint16_t tsp_host_composite_owner_bounds(uint8_t sid,uint8_t *x0,uint8_t *y0,
                                          uint8_t *x1,uint8_t *y1);
+/* One owner-resolved semantic sample, in exactly the form the owner contrast
+ * preview would draw it. Returns 0 when the pixel is not owned by sid, else
+ * 1+v where v is the final 0..7 semantic index. Biasing by one keeps "not
+ * owned" distinguishable from SEM_BLACK, so a corpus crop is self-describing
+ * without a separate mask plane. */
+uint8_t tsp_host_composite_owner_sample(uint8_t sid,uint8_t sx,uint8_t sy);
 int tsp_host_composite_write_ppm(const char *path);
 /* Diagnostics: same preview but masked to one owner id, so a histogram
  * measures a single object's shade distribution. */

@@ -1841,6 +1841,19 @@ int tsp_host_composite_write_owner_ppm(const char *path,uint8_t sid){
     fclose(f);return 1;
 }
 
+uint8_t tsp_host_composite_owner_sample(uint8_t sid,uint8_t sx,uint8_t sy){
+    uint16_t cell,pi;
+    uint8_t v;
+    if(sx>=160u||sy>=144u)return 0u;
+    cell=(uint16_t)(sy>>3)*TSP_COLS+(uint16_t)(sx>>3);
+    pi=(uint16_t)(sy&7u)*8u+(uint16_t)(sx&7u);
+    if(g_owner[cell][pi]!=sid)return 0u;
+    v=g_cells[cell][pi];
+    if(g_lighting_stage>=TSP_HOST_LIGHT_HARD&&g_lit[cell][pi])v=lit_semantic(v);
+    if(v>7u)v=0u;
+    return (uint8_t)(v+1u);
+}
+
 int tsp_host_composite_write_owner_mask_pgm(const char *path,uint8_t sid){
     FILE *f=fopen(path,"wb");
     uint16_t y,x;
