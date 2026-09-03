@@ -108,7 +108,25 @@ static const uint8_t k_invz[128] = {
 23,23,22,22,22,22,22,22,21,21,21,21,21,20,20,20
 };
 
+static const uint16_t k_row_base[E1_ROWS] = {
+    0u,20u,40u,60u,80u,100u,120u,140u,160u,
+    180u,200u,220u,240u,260u,280u,300u,320u,340u
+};
+
+static const uint8_t k_span_recip_q8[21] = {
+    0u,255u,128u,85u,64u,51u,43u,36u,32u,28u,26u,
+    23u,21u,20u,18u,17u,16u,15u,14u,13u,13u
+};
+
+typedef struct E1CameraCtx {
+    int16_t px,py;
+    int16_t frac_z,frac_x;
+    int8_t sn,cs;
+} E1CameraCtx;
+
 static uint8_t g_depth[E1_MAP_CELLS];
+static uint16_t g_base_map[E1_MAP_CELLS];
+static uint8_t g_base_ready;
 
 static int16_t slew(int16_t cur,int16_t target,int16_t step) {
     if(cur<target) {
@@ -306,21 +324,16 @@ static uint8_t shade_for(uint8_t inv,int8_t bias) {
     return (uint8_t)shade;
 }
 
-static uint8_t project_surface(const E1Room1State *s,const E1Surface *w,
+static uint8_t project_surface(const E1CameraCtx *cam,const E1Surface *w,
                                int16_t *sx0,int16_t *sx1,
                                uint8_t *iv0,uint8_t *iv1,
                                uint8_t *left_real,uint8_t *right_real) {
-    int16_t px=(int16_t)(s->x_q4>>4),py=(int16_t)(s->y_q4>>4);
-    uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
-    int8_t sn=k_sin[s->yaw],cs=k_sin[(uint8_t)(s->yaw+64u)];
-    int16_t frac_z=shr_signed((int16_t)((int16_t)fx*cs+(int16_t)fy*sn),7);
-    int16_t frac_x=shr_signed((int16_t)(-(int16_t)fx*sn+(int16_t)fy*cs),7);
-    int16_t dx0=(int16_t)(w->x0-px),dy0=(int16_t)(w->y0-py);
-    int16_t dx1=(int16_t)(w->x1-px),dy1=(int16_t)(w->y1-py);
-    int16_t z0=(int16_t)((((int16_t)dx0*cs+(int16_t)dy0*sn)>>3)-frac_z);
-    int16_t x0=(int16_t)(((-(int16_t)dx0*sn+(int16_t)dy0*cs)>>3)-frac_x);
-    int16_t z1=(int16_t)((((int16_t)dx1*cs+(int16_t)dy1*sn)>>3)-frac_z);
-    int16_t x1=(int16_t)(((-(int16_t)dx1*sn+(int16_t)dy1*cs)>>3)-frac_x);
+    int16_t dx0=(int16_t)(w->x0-cam->px),dy0=(int16_t)(w->y0-cam->py);
+    int16_t dx1=(int16_t)(w->x1-cam->px),dy1=(int16_t)(w->y1-cam->py);
+    int16_t z0=(int16_t)((((int16_t)dx0*cam->cs+(int16_t)dy0*cam->sn)>>3)-cam->frac_z);
+    int16_t x0=(int16_t)(((-(int16_t)dx0*cam->sn+(int16_t)dy0*cam->cs)>>3)-cam->frac_x);
+    int16_t z1=(int16_t)((((int16_t)dx1*cam->cs+(int16_t)dy1*cam->sn)>>3)-cam->frac_z);
+    int16_t x1=(int16_t)(((-(int16_t)dx1*cam->sn+(int16_t)dy1*cam->cs)>>3)-cam->frac_x);
     uint8_t clip0=0u,clip1=0u;
 
     if(z0<E1_NEAR_Z_Q4&&z1<E1_NEAR_Z_Q4)return 0u;
@@ -365,15 +378,28 @@ static uint8_t project_surface(const E1Room1State *s,const E1Surface *w,
 
 void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
     uint8_t r,c,si;
+    E1CameraCtx cam;
+    uint8_t fx=(uint8_t)(s->x_q4&15),fy=(uint8_t)(s->y_q4&15);
 
-    for(r=0u;r<E1_ROWS;++r) {
-        for(c=0u;c<E1_COLS;++c) {
-            uint16_t idx=(uint16_t)r*E1_COLS+c;
-            out[idx]=(r<9u)?E1_TILE_CEILING:
-                     (r==9u?E1_TILE_HORIZON:E1_TILE_FLOOR);
-            g_depth[idx]=0u;
+    cam.px=(int16_t)(s->x_q4>>4);
+    cam.py=(int16_t)(s->y_q4>>4);
+    cam.sn=k_sin[s->yaw];
+    cam.cs=k_sin[(uint8_t)(s->yaw+64u)];
+    cam.frac_z=shr_signed((int16_t)((int16_t)fx*cam.cs+(int16_t)fy*cam.sn),7);
+    cam.frac_x=shr_signed((int16_t)(-(int16_t)fx*cam.sn+(int16_t)fy*cam.cs),7);
+
+    if(!g_base_ready) {
+        for(r=0u;r<E1_ROWS;++r) {
+            for(c=0u;c<E1_COLS;++c) {
+                uint16_t idx=k_row_base[r]+c;
+                g_base_map[idx]=(r<9u)?E1_TILE_CEILING:
+                                (r==9u?E1_TILE_HORIZON:E1_TILE_FLOOR);
+            }
         }
+        g_base_ready=1u;
     }
+    memcpy(out,g_base_map,sizeof(g_base_map));
+    memset(g_depth,0,sizeof(g_depth));
 
     for(si=0u;si<E1_SURFACE_COUNT;++si) {
         const E1Surface *w=&k_surfaces[si];
@@ -382,7 +408,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
         int8_t c0,c1,cc;
         int16_t span,iq,step;
 
-        if(!project_surface(s,w,&sx0,&sx1,&iv0,&iv1,
+        if(!project_surface(&cam,w,&sx0,&sx1,&iv0,&iv1,
                             &left_real,&right_real))continue;
 
         c0=col_floor(sx0);
@@ -393,8 +419,11 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
 
         span=(int16_t)(c1-c0+1);
         iq=(int16_t)iv0<<6;
-        step=span>1?
-            (int16_t)((((int16_t)iv1-(int16_t)iv0)<<6)/(span-1)):0;
+        if(span>1) {
+            uint8_t denom=(uint8_t)(span-1);
+            step=shr_signed((int16_t)(
+                ((int16_t)iv1-(int16_t)iv0)*k_span_recip_q8[denom]),2);
+        } else step=0;
 
         for(cc=c0;cc<=c1;++cc) {
             uint8_t inv=(uint8_t)((iq+32)>>6);
@@ -418,7 +447,7 @@ void e1_room1_render(const E1Room1State *s,uint16_t out[E1_MAP_CELLS]) {
             if(cc==c1&&right_real)border|=2u;
 
             for(rr=rt;rr<=rb;++rr) {
-                uint16_t idx=(uint16_t)rr*E1_COLS+(uint8_t)cc;
+                uint16_t idx=k_row_base[(uint8_t)rr]+(uint8_t)cc;
                 if(inv>=g_depth[idx]) {
                     uint8_t cap=(rr==rt)?E1_CAP_TOP:
                                 ((rr==rb)?E1_CAP_BOTTOM:E1_CAP_NONE);
