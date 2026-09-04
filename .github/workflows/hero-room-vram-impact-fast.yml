@@ -1,0 +1,74 @@
+name: Hero resident LOD room VRAM impact
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-room-vram-impact-fast.yml"
+  workflow_dispatch:
+
+jobs:
+  room-vram-impact:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Measure lit-room cache pressure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/room-vram-impact
+          printf 'tile_limit\treserved_patterns\treserved_bytes\tbundle\troute\ttile_loads\traw_peak\tscheduled_peak\tscheduled_budget\tatomic_unsafe_peak\tchanged_words\n' \
+            > build/room-vram-impact/summary.tsv
+
+          for limit in 448 416 384 352; do
+            reserved=$((448-limit))
+            out="build/room-vram-impact/limit-${limit}"
+            mkdir -p "$out/host"
+
+            # Build-time instrumentation only: use the production compositor
+            # unchanged except for its effective background-pattern capacity.
+            # This exactly models permanently reserving the top N slots for a
+            # resident hero LOD dictionary while leaving the room baker/runtime
+            # algorithm otherwise identical.
+            sed "s/static uint16_t g_hw_tile_limit=HW_TILES;/static uint16_t g_hw_tile_limit=${limit}u;/" \
+              tools/polar_baked_composite.c > "$out/polar_baked_composite_limit.c"
+
+            cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc -Itools \
+              "$out/polar_baked_composite_limit.c" \
+              tools/room_mesh_bake.c tools/room_bundle_poc_gen.c \
+              -lm -o "$out/room-bake"
+
+            # Bundle zero is the canonical coarse-lattice lit room. Bake both
+            # directions so room motion/cast-light churn is represented.
+            ROOM_BUNDLE_ONLY=0 "$out/room-bake" "$out/host" \
+              | tee "$out/run.txt"
+
+            grep '^ROOM_BUNDLE_STATS ' "$out/run.txt" | while read -r line; do
+              bundle="$(sed -n 's/.*bundle=\([0-9]*\).*/\1/p' <<<"$line")"
+              route="$(sed -n 's/.*route=\([^ ]*\).*/\1/p' <<<"$line")"
+              tile_loads="$(sed -n 's/.*tile_loads=\([0-9]*\).*/\1/p' <<<"$line")"
+              raw_peak="$(sed -n 's/.*raw_peak=\([0-9]*\).*/\1/p' <<<"$line")"
+              scheduled_peak="$(sed -n 's/.*scheduled_peak=\([0-9]*\).*/\1/p' <<<"$line")"
+              scheduled_budget="$(sed -n 's/.*scheduled_budget=\([0-9]*\).*/\1/p' <<<"$line")"
+              atomic_unsafe_peak="$(sed -n 's/.*atomic_unsafe_peak=\([0-9]*\).*/\1/p' <<<"$line")"
+              changed_words="$(sed -n 's/.*changed_words=\([0-9]*\).*/\1/p' <<<"$line")"
+              printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                "$limit" "$reserved" "$((reserved*32))" "$bundle" "$route" \
+                "$tile_loads" "$raw_peak" "$scheduled_peak" "$scheduled_budget" \
+                "$atomic_unsafe_peak" "$changed_words" \
+                >> build/room-vram-impact/summary.tsv
+            done
+          done
+
+          cat build/room-vram-impact/summary.tsv
+          test "$(wc -l < build/room-vram-impact/summary.tsv)" -eq 9
+          echo ROOM_VRAM_IMPACT_PASS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-room-vram-impact
+          path: build/room-vram-impact/**
+          if-no-files-found: error
