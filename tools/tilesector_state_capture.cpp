@@ -62,13 +62,13 @@ static bool press_scenario(GearsystemCore& core,const std::string& scenario) {
 
 static int vblank_sequence(int argc,char**argv) {
     if(argc<9) {
-        std::fprintf(stderr,"usage: %s rom.gg rom.sym --vblank-sequence scenario frames warmup_vblanks frame_prefix state.csv\n",argv[0]);
+        std::fprintf(stderr,"usage: %s rom.gg rom.sym --vblank-sequence scenario frames settle_vblanks frame_prefix state.csv\n",argv[0]);
         return 2;
     }
     const char* rom=argv[1]; const char* sym=argv[2];
     const std::string scenario=argv[4];
     const unsigned frames=(unsigned)std::strtoul(argv[5],nullptr,0);
-    const unsigned warmup=(unsigned)std::strtoul(argv[6],nullptr,0);
+    const unsigned settle=(unsigned)std::strtoul(argv[6],nullptr,0);
     const std::string prefix=argv[7]; const char* csv_path=argv[8];
     if(!frames) return 2;
 
@@ -87,10 +87,25 @@ static int vblank_sequence(int argc,char**argv) {
     std::vector<s16> audio(16384); int samples=0;
     Memory* mem=core.GetMemory();
 
-    /* Warm up with no external input so baseline and lit evidence begin from
-     * the same stable displayed room state. This is a presentation capture,
-     * not a profiler run: one sample is one real emulated display VBlank. */
-    for(unsigned i=0;i<warmup;++i) {
+    /* Tile upload + first renderer boot is much longer than a handful of display
+     * frames. Wait for the profiled main loop itself to prove that initialization
+     * is complete, then give the display a short neutral settle period. */
+    unsigned boot_vblanks=0u;
+    const unsigned boot_limit=1200u;
+    bool booted=false;
+    while(boot_vblanks<boot_limit) {
+        samples=0; core.RunToVBlank(fb.data(),audio.data(),&samples,nullptr,true); ++boot_vblanks;
+        if(have_loops) booted=(rd16(mem,loops)>=2u);
+        else booted=(rd16(mem,state)!=0u || rd16(mem,(u16)(state+2u))!=0u);
+        if(booted) break;
+    }
+    if(!booted) {
+        std::fprintf(stderr,"ROM did not reach initialized main loop after %u VBlanks; x=%d y=%d phase=%u loops=%u\n",
+                     boot_vblanks,(int16_t)rd16(mem,state),(int16_t)rd16(mem,(u16)(state+2u)),
+                     have_phase?mem->DebugRetrieve(phase):0u,have_loops?rd16(mem,loops):0u);
+        return 5;
+    }
+    for(unsigned i=0;i<settle;++i) {
         samples=0; core.RunToVBlank(fb.data(),audio.data(),&samples,nullptr,true);
     }
     if(!press_scenario(core,scenario)) {
@@ -119,15 +134,15 @@ static int vblank_sequence(int argc,char**argv) {
         const uint64_t mh=map_hash(mem,map,have_map);
         if(i==0u){first_x=xq;first_y=yq;first_yaw=yaw;}
         last_x=xq;last_y=yq;last_yaw=yaw;
-        csv << i << ',' << (warmup+i+1u) << ',' << xq << ',' << yq << ','
+        csv << i << ',' << (boot_vblanks+settle+i+1u) << ',' << xq << ',' << yq << ','
             << (xq/16.0) << ',' << (yq/16.0) << ',' << (unsigned)yaw << ','
             << speed << ',' << turn << ',' << p << ',' << lc << ',' << dw << ',';
         char hs[32]; std::snprintf(hs,sizeof(hs),"%016llX",(unsigned long long)mh); csv << hs << '\n';
     }
-    std::printf("vblank-sequence scenario=%s frames=%u warmup=%u screen=%dx%d start=(%.2f,%.2f,%u) end=(%.2f,%.2f,%u) csv=%s prefix=%s\n",
-                scenario.c_str(),frames,warmup,ri.screen_width,ri.screen_height,
+    std::printf("vblank-sequence scenario=%s frames=%u boot_vblanks=%u settle=%u screen=%dx%d start=(%.2f,%.2f,%u) end=(%.2f,%.2f,%u) loops=%u csv=%s prefix=%s\n",
+                scenario.c_str(),frames,boot_vblanks,settle,ri.screen_width,ri.screen_height,
                 first_x/16.0,first_y/16.0,(unsigned)first_yaw,
-                last_x/16.0,last_y/16.0,(unsigned)last_yaw,csv_path,prefix.c_str());
+                last_x/16.0,last_y/16.0,(unsigned)last_yaw,have_loops?rd16(mem,loops):0u,csv_path,prefix.c_str());
     return 0;
 }
 
@@ -136,7 +151,7 @@ int main(int argc,char**argv) {
         return vblank_sequence(argc,argv);
     if(argc<5) {
         std::fprintf(stderr,"usage: %s rom.gg rom.sym demo_ticks out.ppm\n",argv[0]);
-        std::fprintf(stderr,"   or: %s rom.gg rom.sym --vblank-sequence scenario frames warmup_vblanks frame_prefix state.csv\n",argv[0]);
+        std::fprintf(stderr,"   or: %s rom.gg rom.sym --vblank-sequence scenario frames settle_vblanks frame_prefix state.csv\n",argv[0]);
         return 2;
     }
     const char* rom=argv[1]; const char* sym=argv[2];
