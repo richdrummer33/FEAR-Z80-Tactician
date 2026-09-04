@@ -1,0 +1,84 @@
+name: Hero shared LOD vocabulary fast lab
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-shared-lod-fast.yml"
+      - "tools/shared_resident_lod.py"
+      - "tools/analyze_shared_resident_lod.py"
+      - "tools/resident_tile_dictionary.py"
+      - "tools/resident_tile_lloyd.py"
+      - "tests/test_shared_resident_lod.py"
+  workflow_dispatch:
+
+jobs:
+  shared-lod:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/shared-lod tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/shared-lod/import.json
+
+      - name: Shared dictionary unit tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_shared_resident_lod.py' -v
+
+      - name: Build representative oracle baker
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/shared-lod/corpus-bake
+
+      - name: Bake 32-angle four-distance corpus
+        run: |
+          set -euo pipefail
+          mkdir -p build/shared-lod/host
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/shared-lod/corpus-bake build/shared-lod/host \
+            | tee build/shared-lod/bake.txt
+          grep -q '^DOOM_DENSE_CORPUS_PASS samples=128 angles=32 bands=4 ' \
+            build/shared-lod/bake.txt
+
+      - name: Shared cardinal LOD vocabulary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_shared_resident_lod.py \
+            build/shared-lod/host/doomguy_dense_corpus.dhc \
+            --angles 0,8,16,24 \
+            --additions 8,16,32,64 \
+            --lloyd-iterations 4 \
+            --summary-json build/shared-lod/cardinal.json \
+            | tee build/shared-lod/cardinal.txt
+          grep -q '^SHARED_RESIDENT_LOD_PASS$' build/shared-lod/cardinal.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-shared-lod-fast-lab
+          path: |
+            build/shared-lod/bake.txt
+            build/shared-lod/cardinal.txt
+            build/shared-lod/cardinal.json
+          if-no-files-found: error
