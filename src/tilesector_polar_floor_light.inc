@@ -60,6 +60,19 @@ static uint8_t fl_ratio_q8(uint16_t n,uint16_t d){
     return ratio_q8_exact((uint8_t)n,(uint8_t)d);
 }
 
+/* Floor-light camera depth is Q2. Passing f_q2<<2 through the generic Q4
+ * inverse-depth interpolator means its 4-bit fraction can only be 0,4,8,12.
+ * Collapse that exactly to a 2-bit interpolation: the old numerator is
+ * 4*(d*r +/- 2), so signed /16 is identical to signed /4 here. */
+static uint8_t fl_inv_for_fq2(int16_t fq2){
+    uint16_t a=(uint16_t)fq2;uint8_t z,r,x0,x1;int16_t d,m;
+    if(a<=40u)return 255u;
+    if(a>=508u)return k_fl_invz[127];
+    z=(uint8_t)(a>>2);r=(uint8_t)(a&3u);x0=k_fl_invz[z];x1=k_fl_invz[(uint8_t)(z+1u)];d=(int16_t)x1-(int16_t)x0;
+    if(!r)m=0;else if(r==1u)m=d;else if(r==2u)m=(int16_t)(d+d);else m=(int16_t)(d+d+d);
+    return (uint8_t)((int16_t)x0+shr_signed((int16_t)(m+(d>=0?2:-2)),2));
+}
+
 /* signed-16 * unsigned-Q8 without a 32-bit multiply. */
 static int16_t fl_mul_s16_q8(int16_t v,uint8_t t){
     uint16_t a=fl_abs16(v),q;
@@ -152,7 +165,7 @@ static TSPFloorLightScreenV fl_project(const TSPFloorLightCamV *v,uint8_t floor_
     if(as>af)as=af;
     r=fl_ratio_q8(as,af);xo=(int16_t)(((uint16_t)r*80u+128u)>>8);
     o.x=v->s_q2<0?(int16_t)(80-xo):(int16_t)(80+xo);if(o.x>159)o.x=159;
-    inv=inv_for_dq4((int16_t)(v->f_q2<<2));
+    inv=fl_inv_for_fq2(v->f_q2);
     if(floor_z)yo=(int16_t)(((uint16_t)inv*3u+4u)>>3);else yo=(int16_t)((inv+1u)>>1);
     o.y=(int16_t)(72+yo);if(o.y>143)o.y=143;
     return o;
