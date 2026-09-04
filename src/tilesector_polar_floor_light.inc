@@ -12,7 +12,7 @@
 typedef struct TSPFloorLightCamV { int16_t f_q2,s_q2; } TSPFloorLightCamV;
 typedef struct TSPFloorLightScreenV { int16_t x,y; } TSPFloorLightScreenV;
 typedef struct TSPFloorLightPolyDef { const int16_t *xy_q2;uint8_t count,floor_z; } TSPFloorLightPolyDef;
-typedef struct TSPFloorLightEdgeDef { int16_t ax_q2,ay_q2,bx_q2,by_q2;uint8_t floor_z,owner_poly; } TSPFloorLightEdgeDef;
+typedef struct TSPFloorLightEdgeDef { uint8_t va,vb,floor_z; } TSPFloorLightEdgeDef;
 
 /* Oracle polygons, rounded to quarter-world-unit Q2. */
 static const int16_t k_fl_poly_a0[] = {320,144,320,64,251,64};
@@ -25,8 +25,7 @@ static const TSPFloorLightPolyDef k_fl_poly[4] = {
 };
 /* Only edges internal to the receiver need a partial light/shadow tile. */
 static const TSPFloorLightEdgeDef k_fl_edge[4] = {
-    {251,64,320,144,0u,0u},{320,256,265,320,0u,1u},
-    {448,144,580,52,4u,2u},{562,336,448,256,4u,3u}
+    {2u,0u,0u},{2u,0u,0u},{2u,3u,4u},{1u,2u,4u}
 };
 
 #define TSP_FL_MAX_VERTS 8u
@@ -42,6 +41,10 @@ static TSPFloorLightScreenV g_fl_sp0[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp1[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp2[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp3[TSP_FL_MAX_VERTS];
+static TSPFloorLightCamV g_fl_edge_ca[4];
+static TSPFloorLightCamV g_fl_edge_cb[4];
+static int16_t g_fl_cam_x_q2,g_fl_cam_y_q2;
+static int8_t g_fl_cam_sn_q5,g_fl_cam_cs_q5;
 
 static uint16_t fl_abs16(int16_t v){return (uint16_t)(v<0?-v:v);}
 
@@ -87,18 +90,20 @@ static uint8_t fl_clip_plane(const TSPFloorLightCamV *in,uint8_t n,TSPFloorLight
     return m;
 }
 
-static void fl_world_to_cam(int16_t x_q2,int16_t y_q2,const TSPState *s,TSPFloorLightCamV *o){
-    int16_t cx=shr_signed(s->x_q4,2),cy=shr_signed(s->y_q4,2);
-    int16_t dx=(int16_t)(x_q2-cx),dy=(int16_t)(y_q2-cy);
-    int8_t sn=(int8_t)shr_signed((int16_t)k_tspf_sin_q7[s->yaw],2);
-    int8_t cs=(int8_t)shr_signed((int16_t)k_tspf_sin_q7[(uint8_t)(s->yaw+64u)],2);
-    o->f_q2=shr_signed((int16_t)((int16_t)(dx*cs)+(int16_t)(dy*sn)),5);
-    o->s_q2=shr_signed((int16_t)((int16_t)(-dx*sn)+(int16_t)(dy*cs)),5);
+static void fl_world_to_cam(int16_t x_q2,int16_t y_q2,TSPFloorLightCamV *o){
+    int16_t dx=(int16_t)(x_q2-g_fl_cam_x_q2),dy=(int16_t)(y_q2-g_fl_cam_y_q2);
+    o->f_q2=shr_signed((int16_t)((int16_t)(dx*g_fl_cam_cs_q5)+(int16_t)(dy*g_fl_cam_sn_q5)),5);
+    o->s_q2=shr_signed((int16_t)((int16_t)(-dx*g_fl_cam_sn_q5)+(int16_t)(dy*g_fl_cam_cs_q5)),5);
 }
 
-static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,const TSPState *s){
-    uint8_t i,n=pd->count;
-    for(i=0u;i<n;++i)fl_world_to_cam(pd->xy_q2[(uint8_t)(i+i)],pd->xy_q2[(uint8_t)(i+i+1u)],s,&g_fl_clip_a[i]);
+static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
+    uint8_t i,n=pd->count;const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];
+    for(i=0u;i<n;++i)fl_world_to_cam(pd->xy_q2[(uint8_t)(i+i)],pd->xy_q2[(uint8_t)(i+i+1u)],&g_fl_clip_a[i]);
+    /* The cast edge is already a boundary of its owner polygon. Keep its raw
+     * camera-space endpoints before Sutherland-Hodgman mutates the scratch, so
+     * the edge pass does not transform the same world vertices a second time. */
+    g_fl_edge_ca[edge_id]=g_fl_clip_a[ed->va];
+    g_fl_edge_cb[edge_id]=g_fl_clip_a[ed->vb];
     n=fl_clip_plane(g_fl_clip_a,n,g_fl_clip_b,0u);if(!n)return 0u;
     n=fl_clip_plane(g_fl_clip_b,n,g_fl_clip_a,1u);if(!n)return 0u;
     n=fl_clip_plane(g_fl_clip_a,n,g_fl_clip_b,2u);if(!n)return 0u;
@@ -126,8 +131,8 @@ static TSPFloorLightScreenV fl_project(const TSPFloorLightCamV *v,uint8_t floor_
     return o;
 }
 
-static uint8_t fl_project_poly(const TSPFloorLightPolyDef *pd,const TSPState *s,TSPFloorLightScreenV *dst){
-    uint8_t i,n=fl_clip_poly(pd,s);for(i=0u;i<n;++i)dst[i]=fl_project(&g_fl_clip_b[i],pd->floor_z);return n;
+static uint8_t fl_project_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id,TSPFloorLightScreenV *dst){
+    uint8_t i,n=fl_clip_poly(pd,edge_id);for(i=0u;i<n;++i)dst[i]=fl_project(&g_fl_clip_b[i],pd->floor_z);return n;
 }
 
 static uint8_t fl_cell_unclaimed(uint8_t row,uint8_t col){
@@ -150,9 +155,8 @@ static int16_t fl_line_y_at(const TSPFloorLightScreenV *a,const TSPFloorLightScr
     if(!dx)return a->y;t=fl_ratio_q8(nx,dx);return (int16_t)(a->y+fl_mul_s16_q8((int16_t)(b->y-a->y),t));
 }
 
-static void fl_draw_cast_edge(const TSPFloorLightEdgeDef *ed,const TSPFloorLightScreenV *poly,uint8_t pn,const TSPState *s){
-    TSPFloorLightCamV ca,cb;TSPFloorLightScreenV a,b,t;int16_t cross,dxh,dyh;uint8_t i,c,c0,c1,shadow_below=0u;
-    fl_world_to_cam(ed->ax_q2,ed->ay_q2,s,&ca);fl_world_to_cam(ed->bx_q2,ed->by_q2,s,&cb);
+static void fl_draw_cast_edge(uint8_t edge_id,const TSPFloorLightScreenV *poly,uint8_t pn){
+    const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];TSPFloorLightCamV ca=g_fl_edge_ca[edge_id],cb=g_fl_edge_cb[edge_id];TSPFloorLightScreenV a,b,t;int16_t cross,dxh,dyh;uint8_t i,c,c0,c1,shadow_below=0u;
     if(!fl_clip_line(&ca,&cb))return;a=fl_project(&ca,ed->floor_z);b=fl_project(&cb,ed->floor_z);
     if(a.x>b.x){t=a;a=b;b=t;}if((int16_t)(b.x-a.x)<2)return;
     /* Find any clipped polygon vertex clearly off the cast line. Halving the
@@ -190,16 +194,21 @@ static void fl_fill_poly(const TSPFloorLightScreenV *p,uint8_t n){
     }
 }
 
-static void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS]){
+void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS]) BANKED {
     uint8_t n0,n1,n2,n3;g_fl_out_map=out_map;
-    n0=fl_project_poly(&k_fl_poly[0],s,g_fl_sp0);
-    n1=fl_project_poly(&k_fl_poly[1],s,g_fl_sp1);
-    n2=fl_project_poly(&k_fl_poly[2],s,g_fl_sp2);
-    n3=fl_project_poly(&k_fl_poly[3],s,g_fl_sp3);
-    if(n0>=3u)fl_draw_cast_edge(&k_fl_edge[0],g_fl_sp0,n0,s);
-    if(n1>=3u)fl_draw_cast_edge(&k_fl_edge[1],g_fl_sp1,n1,s);
-    if(n2>=3u)fl_draw_cast_edge(&k_fl_edge[2],g_fl_sp2,n2,s);
-    if(n3>=3u)fl_draw_cast_edge(&k_fl_edge[3],g_fl_sp3,n3,s);
+    /* Camera origin and yaw are frame constants. Cache them once instead of
+     * repeating shifts and sine-table reads for every light vertex. */
+    g_fl_cam_x_q2=shr_signed(s->x_q4,2);g_fl_cam_y_q2=shr_signed(s->y_q4,2);
+    g_fl_cam_sn_q5=(int8_t)shr_signed((int16_t)k_tspf_sin_q7[s->yaw],2);
+    g_fl_cam_cs_q5=(int8_t)shr_signed((int16_t)k_tspf_sin_q7[(uint8_t)(s->yaw+64u)],2);
+    n0=fl_project_poly(&k_fl_poly[0],0u,g_fl_sp0);
+    n1=fl_project_poly(&k_fl_poly[1],1u,g_fl_sp1);
+    n2=fl_project_poly(&k_fl_poly[2],2u,g_fl_sp2);
+    n3=fl_project_poly(&k_fl_poly[3],3u,g_fl_sp3);
+    if(n0>=3u)fl_draw_cast_edge(0u,g_fl_sp0,n0);
+    if(n1>=3u)fl_draw_cast_edge(1u,g_fl_sp1,n1);
+    if(n2>=3u)fl_draw_cast_edge(2u,g_fl_sp2,n2);
+    if(n3>=3u)fl_draw_cast_edge(3u,g_fl_sp3,n3);
     if(n0>=3u)fl_fill_poly(g_fl_sp0,n0);
     if(n1>=3u)fl_fill_poly(g_fl_sp1,n1);
     if(n2>=3u)fl_fill_poly(g_fl_sp2,n2);
@@ -207,3 +216,4 @@ static void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CEL
 }
 
 #endif /* __SDCC */
+
