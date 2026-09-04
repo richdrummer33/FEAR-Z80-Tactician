@@ -1,0 +1,68 @@
+name: Hero hierarchical sprite LOD
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-hierarchical-sprite-lod-fast.yml"
+      - "tools/analyze_hierarchical_sprite_lod.py"
+  workflow_dispatch:
+
+jobs:
+  hierarchical-sprite-lod:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/hier-sprite/host tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/hier-sprite/import.json
+
+      - name: Bake 32-angle corpus
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/hier-sprite/corpus-bake
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/hier-sprite/corpus-bake build/hier-sprite/host \
+            | tee build/hier-sprite/bake.txt
+
+      - name: Train nested far core and mid refinements
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_hierarchical_sprite_lod.py \
+            build/hier-sprite/host/doomguy_dense_corpus.dhc \
+            --far-band 3 --mid-band 2 \
+            --core-patterns 16 --refinement-patterns 16,48 \
+            --lloyd-iterations 4 \
+            --summary-json build/hier-sprite/result.json \
+            | tee build/hier-sprite/result.txt
+          grep -q '^HIERARCHICAL_SPRITE_LOD_PASS$' build/hier-sprite/result.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-hierarchical-sprite-lod
+          path: |
+            build/hier-sprite/bake.txt
+            build/hier-sprite/result.txt
+            build/hier-sprite/result.json
+          if-no-files-found: error
