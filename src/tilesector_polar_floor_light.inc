@@ -54,6 +54,7 @@ static TSPFloorLightCamV g_fl_edge_cb[4];
 static TSPFloorLightScreenV g_fl_edge_sa[4];
 static TSPFloorLightScreenV g_fl_edge_sb[4];
 static uint8_t g_fl_edge_screen_mask[4];
+static uint8_t g_fl_edge_inside_mask[4];
 static int16_t g_fl_cam_x_q2,g_fl_cam_y_q2;
 static int8_t g_fl_cam_sn_q5,g_fl_cam_cs_q5;
 
@@ -142,6 +143,12 @@ static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
      * the edge pass does not transform the same world vertices a second time. */
     g_fl_edge_ca[edge_id]=g_fl_clip_a[ed->va];
     g_fl_edge_cb[edge_id]=g_fl_clip_a[ed->vb];
+    /* Coordinate equality after Q8 clipping is not sufficient to prove an
+     * original endpoint survived: a rounded intersection can land back on the
+     * outside endpoint. Record true half-plane membership independently. */
+    g_fl_edge_inside_mask[edge_id]=0u;
+    if(fl_plane_eval(&g_fl_edge_ca[edge_id],0u)>=0&&fl_plane_eval(&g_fl_edge_ca[edge_id],1u)>=0&&fl_plane_eval(&g_fl_edge_ca[edge_id],2u)>=0)g_fl_edge_inside_mask[edge_id]|=1u;
+    if(fl_plane_eval(&g_fl_edge_cb[edge_id],0u)>=0&&fl_plane_eval(&g_fl_edge_cb[edge_id],1u)>=0&&fl_plane_eval(&g_fl_edge_cb[edge_id],2u)>=0)g_fl_edge_inside_mask[edge_id]|=2u;
     src=g_fl_clip_a;dst=g_fl_clip_b;
     for(plane=0u;plane<3u;++plane){
         cls=fl_classify_plane(src,n,plane);
@@ -178,12 +185,12 @@ static TSPFloorLightScreenV fl_project(const TSPFloorLightCamV *v,uint8_t floor_
 }
 
 static uint8_t fl_project_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id,TSPFloorLightScreenV *dst){
-    uint8_t i,n=fl_clip_poly(pd,edge_id),mask=0u;TSPFloorLightScreenV q;
+    uint8_t i,n=fl_clip_poly(pd,edge_id),mask=0u,eligible=g_fl_edge_inside_mask[edge_id];TSPFloorLightScreenV q;
     for(i=0u;i<n;++i){
         const TSPFloorLightCamV *v=&g_fl_project_src[i];
         q=fl_project(v,pd->floor_z);dst[i]=q;
-        if(v->f_q2==g_fl_edge_ca[edge_id].f_q2&&v->s_q2==g_fl_edge_ca[edge_id].s_q2){g_fl_edge_sa[edge_id]=q;mask|=1u;}
-        if(v->f_q2==g_fl_edge_cb[edge_id].f_q2&&v->s_q2==g_fl_edge_cb[edge_id].s_q2){g_fl_edge_sb[edge_id]=q;mask|=2u;}
+        if((eligible&1u)&&v->f_q2==g_fl_edge_ca[edge_id].f_q2&&v->s_q2==g_fl_edge_ca[edge_id].s_q2){g_fl_edge_sa[edge_id]=q;mask|=1u;}
+        if((eligible&2u)&&v->f_q2==g_fl_edge_cb[edge_id].f_q2&&v->s_q2==g_fl_edge_cb[edge_id].s_q2){g_fl_edge_sb[edge_id]=q;mask|=2u;}
     }
     g_fl_edge_screen_mask[edge_id]=mask;return n;
 }
