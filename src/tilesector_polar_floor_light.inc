@@ -41,6 +41,7 @@ static const TSPFloorLightEdgeDef k_fl_edge[4] = {
 static uint16_t *g_fl_out_map;
 static TSPFloorLightCamV g_fl_clip_a[TSP_FL_MAX_VERTS];
 static TSPFloorLightCamV g_fl_clip_b[TSP_FL_MAX_VERTS];
+static int16_t g_fl_plane_eval_cache[TSP_FL_MAX_VERTS];
 static const TSPFloorLightCamV *g_fl_project_src;
 static TSPFloorLightScreenV g_fl_sp0[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp1[TSP_FL_MAX_VERTS];
@@ -96,30 +97,29 @@ static TSPFloorLightCamV fl_lerp_cross(const TSPFloorLightCamV *a,const TSPFloor
     return o;
 }
 
-static uint8_t fl_clip_plane(const TSPFloorLightCamV *in,uint8_t n,TSPFloorLightCamV *out,uint8_t plane){
+/* Classification already needs each signed plane distance. Cache those exact
+ * int16 values so a straddling Sutherland-Hodgman pass does not evaluate the
+ * same plane equation again. Vertex order/interpolation/rounding are unchanged. */
+static uint8_t fl_classify_plane(const TSPFloorLightCamV *in,uint8_t n,uint8_t plane){
+    uint8_t i,inside=0u,outside=0u;int16_t e;
+    for(i=0u;i<n;++i){
+        e=fl_plane_eval(&in[i],plane);g_fl_plane_eval_cache[i]=e;
+        if(e>=0)inside=1u;else outside=1u;
+    }
+    if(!inside)return 0u;if(!outside)return 1u;return 2u;
+}
+
+static uint8_t fl_clip_plane_cached(const TSPFloorLightCamV *in,uint8_t n,TSPFloorLightCamV *out){
     uint8_t i,m=0u,ia,ib;TSPFloorLightCamV a,b;int16_t ea,eb;
     if(!n)return 0u;
-    a=in[(uint8_t)(n-1u)];ea=fl_plane_eval(&a,plane);ia=(uint8_t)(ea>=0);
+    a=in[(uint8_t)(n-1u)];ea=g_fl_plane_eval_cache[(uint8_t)(n-1u)];ia=(uint8_t)(ea>=0);
     for(i=0u;i<n;++i){
-        b=in[i];eb=fl_plane_eval(&b,plane);ib=(uint8_t)(eb>=0);
+        b=in[i];eb=g_fl_plane_eval_cache[i];ib=(uint8_t)(eb>=0);
         if(ia!=ib&&m<TSP_FL_MAX_VERTS)out[m++]=fl_lerp_cross(&a,&b,ea,eb);
         if(ib&&m<TSP_FL_MAX_VERTS)out[m++]=b;
         a=b;ea=eb;ia=ib;
     }
     return m;
-}
-
-/* 0 = wholly outside, 1 = wholly inside, 2 = straddles.  The old path always
- * copied every polygon through all three Sutherland-Hodgman planes. Static
- * shadow polygons are frequently wholly inside one or more planes, so classify
- * first and only materialize a clipped copy when an actual crossing exists. */
-static uint8_t fl_classify_plane(const TSPFloorLightCamV *in,uint8_t n,uint8_t plane){
-    uint8_t i,inside=0u,outside=0u;
-    for(i=0u;i<n;++i){
-        if(fl_plane_eval(&in[i],plane)>=0)inside=1u;else outside=1u;
-        if(inside&&outside)return 2u;
-    }
-    return inside?1u:0u;
 }
 
 static void fl_world_to_cam(int16_t x_q2,int16_t y_q2,TSPFloorLightCamV *o){
@@ -147,7 +147,7 @@ static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
         if(cls!=1u)g_fl_edge_no_clip[edge_id]=0u;
         if(!cls){g_fl_project_src=src;return 0u;}
         if(cls==2u){
-            n=fl_clip_plane(src,n,dst,plane);if(!n){g_fl_project_src=src;return 0u;}
+            n=fl_clip_plane_cached(src,n,dst);if(!n){g_fl_project_src=src;return 0u;}
             src=dst;
             tmp=dst;dst=(tmp==g_fl_clip_a)?g_fl_clip_b:g_fl_clip_a;
         }
