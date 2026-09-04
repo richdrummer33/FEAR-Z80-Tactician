@@ -1,0 +1,79 @@
+name: Hero strict shared LOD distance bands
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-strict-lod-bands-fast.yml"
+  workflow_dispatch:
+
+jobs:
+  strict-band:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: far-only
+            bands: "3"
+          - label: midfar
+            bands: "2,3"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/strict-${{ matrix.label }}/host tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/strict-${{ matrix.label }}/import.json
+
+      - name: Bake 32-angle four-distance corpus
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm \
+            -o build/strict-${{ matrix.label }}/corpus-bake
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/strict-${{ matrix.label }}/corpus-bake \
+            build/strict-${{ matrix.label }}/host \
+            | tee build/strict-${{ matrix.label }}/bake.txt
+
+      - name: Strict shared-only vocabulary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_strict_shared_resident_lod.py \
+            build/strict-${{ matrix.label }}/host/doomguy_dense_corpus.dhc \
+            --angles 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 \
+            --bands '${{ matrix.bands }}' \
+            --additions 16,32,64 \
+            --lloyd-iterations 4 \
+            --summary-json build/strict-${{ matrix.label }}/result.json \
+            | tee build/strict-${{ matrix.label }}/result.txt
+          grep -q '^STRICT_SHARED_RESIDENT_LOD_PASS$' \
+            build/strict-${{ matrix.label }}/result.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-strict-shared-lod-${{ matrix.label }}
+          path: |
+            build/strict-${{ matrix.label }}/bake.txt
+            build/strict-${{ matrix.label }}/result.txt
+            build/strict-${{ matrix.label }}/result.json
+          if-no-files-found: error
