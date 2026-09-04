@@ -1,0 +1,246 @@
+name: Polar lattice lighting fusion probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-lattice-lighting-fusion
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fusion-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force true manual control and mature name-table placement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/main_tilesector_polar_gg.c')
+          s=p.read_text()
+          old='tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          new='tsp_reset(&g_state);g_state.manual=1u;tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          if s.count(old) != 1:
+              raise SystemExit('manual-boot patch anchor missing/ambiguous')
+          s=s.replace(old,new)
+          old2='DISPLAY_OFF;HIDE_SPRITES;'
+          new2='DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;'
+          if old2 in s:
+              s=s.replace(old2,new2,1)
+          elif 'R2_MAP_0x3800' not in s:
+              raise SystemExit('name-table placement patch anchor missing')
+          p.write_text(s)
+          print('MANUAL_FROM_BOOT=1')
+          print('NAME_TABLE_0x3800=1')
+          PY
+
+      - name: Host Polar acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-test | tee build/polar-host-test.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build profiled true-player lattice ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/lattice-lighting
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+                build/tilesector_polar_renderer_gg.o build/tilesector_polar_projection_gg.o \
+                build/tilesector_polar_proj_bank*.o build/tilesector_polar_depthplane_gg.o \
+                build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o \
+                build/tilesector_polar_ntupload_raw_gg.o build/tilesector_polar_ntupload_profiled_gg.o \
+                build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 \
+            POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar 2>&1 | tee build/lattice-lighting/build-profiled.txt
+          cp build/gg-tilesector-polar.gg build/lattice-lighting/player-profiled.gg
+          cp build/gg-tilesector-polar.sym build/lattice-lighting/player-profiled.sym
+          [ ! -f build/gg-tilesector-polar.map ] || cp build/gg-tilesector-polar.map build/lattice-lighting/player-profiled.map
+          sha256sum build/lattice-lighting/player-profiled.gg | tee build/lattice-lighting/player-profiled.sha256
+          wc -c build/lattice-lighting/player-profiled.gg | tee build/lattice-lighting/player-profiled.bytes
+
+      - name: Extend profiler with real player-input scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/tilesector_profile_runner.cpp')
+          s=p.read_text()
+          old='if(scenario!="demo" && scenario!="roomA-turn") {'
+          new='if(scenario!="demo" && scenario!="roomA-turn" && scenario!="roomA-forward" && scenario!="roomA-back" && scenario!="roomA-button1" && scenario!="roomA-button2") {'
+          if s.count(old) != 1:
+              raise SystemExit('scenario allow-list patch anchor missing')
+          s=s.replace(old,new)
+          old2='if(scenario=="roomA-turn")\n        core.KeyPressed(Joypad_1,Key_Right);'
+          new2='''if(scenario=="roomA-turn") core.KeyPressed(Joypad_1,Key_Right);\n    else if(scenario=="roomA-forward") core.KeyPressed(Joypad_1,Key_Up);\n    else if(scenario=="roomA-back") core.KeyPressed(Joypad_1,Key_Down);\n    else if(scenario=="roomA-button1") core.KeyPressed(Joypad_1,Key_1);\n    else if(scenario=="roomA-button2") core.KeyPressed(Joypad_1,Key_2);'''
+          if s.count(old2) != 1:
+              raise SystemExit('input injection patch anchor missing')
+          p.write_text(s.replace(old2,new2))
+          PY
+
+      - name: Build Gearsystem profiler tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove no rail and real player movement
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/lattice-lighting/player-profiled.gg
+          SYM=build/lattice-lighting/player-profiled.sym
+          mkdir -p build/lattice-lighting/input-proof
+          for scenario in demo roomA-forward roomA-back roomA-turn roomA-button1 roomA-button2; do
+            ./build/tilesector_profile_runner "$ROM" "$SYM" 28 2 "$scenario" \
+              | tee "build/lattice-lighting/input-proof/${scenario}.txt"
+          done
+          python3 - <<'PY' | tee build/lattice-lighting/input-proof-summary.txt
+          from pathlib import Path
+          import re
+          root=Path('build/lattice-lighting/input-proof')
+          def motion(name):
+              t=(root/f'{name}.txt').read_text()
+              a=re.search(r'motion start x=([-0-9.]+) y=([-0-9.]+) yaw=(\d+)',t)
+              b=re.search(r'motion last\s+x=([-0-9.]+) y=([-0-9.]+) yaw=(\d+)',t)
+              if not a or not b: raise SystemExit(f'missing motion records for {name}')
+              return tuple(map(float,a.groups()[:2]))+(int(a.group(3)),), tuple(map(float,b.groups()[:2]))+(int(b.group(3)),)
+          def moved_xy(a,b): return abs(a[0]-b[0])>0.01 or abs(a[1]-b[1])>0.01
+          pairs={n:motion(n) for n in ('demo','roomA-forward','roomA-back','roomA-turn','roomA-button1','roomA-button2')}
+          a,b=pairs['demo']
+          if moved_xy(a,b) or a[2]!=b[2]: raise SystemExit('FAIL: scripted rail still active')
+          for n in ('roomA-forward','roomA-back','roomA-button1','roomA-button2'):
+              a,b=pairs[n]
+              if not moved_xy(a,b): raise SystemExit(f'FAIL: {n} did not move')
+          a,b=pairs['roomA-turn']
+          if a[2]==b[2]: raise SystemExit('FAIL: turn did not rotate')
+          print('TRUE_PLAYER_CONTROL=PASS')
+          for n,(a,b) in pairs.items(): print(n,a,b)
+          PY
+
+      - name: Cycle-profile representative real movement
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/lattice-lighting/player-profiled.gg
+          SYM=build/lattice-lighting/player-profiled.sym
+          for scenario in roomA-turn roomA-forward roomA-button1; do
+            ./build/tilesector_profile_runner "$ROM" "$SYM" 120 8 "$scenario" \
+              | tee "build/lattice-lighting/profile-${scenario}.txt"
+          done
+          python3 - <<'PY' | tee build/lattice-lighting/manual-performance-summary.txt
+          from pathlib import Path
+          import re
+          vals=[]
+          for name in ('roomA-turn','roomA-forward','roomA-button1'):
+              t=Path(f'build/lattice-lighting/profile-{name}.txt').read_text()
+              m=re.search(r'loop\s+avg=\s*([0-9.]+) T .*?->\s*([0-9.]+) updates/s',t)
+              if not m: raise SystemExit(f'missing loop result for {name}')
+              vals.append((name,float(m.group(1)),float(m.group(2))))
+          for n,t,fps in vals: print(f'{n}: mean_loop={t:.1f} T effective_updates_per_s={fps:.3f}')
+          mean=sum(v[2] for v in vals)/len(vals)
+          print(f'representative_manual_mean_effective_updates_per_s={mean:.3f}')
+          print('This is cycle-derived rendered update rate, NOT host emulator video cadence.')
+          PY
+
+      - name: Preserve focused branch diffs against mature lighting checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin experiment/gg-polar-portal-penumbra:refs/remotes/origin/penumbra
+          {
+            echo '=== SELECTIVE LIGHTING DIFF STAT ==='
+            git diff --stat HEAD..origin/penumbra -- \
+              tools/polar_baked_composite.c tools/polar_baked_composite.h tools/polar_baked_lighting_data.h \
+              src/tilesector_polar_renderer.c src/main_tilesector_polar_gg.c
+            echo
+            echo '=== NAME-TABLE ENTRYPOINT DIFF ==='
+            git diff HEAD..origin/penumbra -- src/main_tilesector_polar_gg.c
+          } > build/lattice-lighting/lighting-branch-diff.txt
+
+      - name: Install analysis packages
+        shell: bash
+        run: |
+          python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+
+      - name: Sweep arbitrary cameras through mature light oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/lattice_light_fusion_probe.py \
+            --out build/lattice-lighting/oracle \
+            --step 8 --yaw-step 16 \
+            --baseline-perf build/lattice-lighting/manual-performance-summary.txt \
+            | tee build/lattice-lighting/oracle-run.txt
+          if command -v ffmpeg >/dev/null 2>&1; then
+            ffmpeg -y -framerate 20 -i build/lattice-lighting/oracle/video_frames/%04d.png \
+              -c:v libx264 -pix_fmt yuv420p -crf 18 \
+              build/lattice-lighting/oracle/free-camera-lighting-probe.mp4
+          else
+            echo 'ffmpeg unavailable; PNG frame sequence retained.'
+          fi
+
+      - name: Summarize fusion probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== POLAR LATTICE + LIGHTING FUSION PROBE ==='
+            echo 'branch=experiment/gg-polar-lattice-lighting-fusion'
+            echo 'runtime baseline=baked local projection + baked screen-depth plane + live Polar compositor'
+            echo 'lighting pass in this job=host arbitrary-camera representation/oracle probe; NOT yet linked to GG runtime'
+            echo
+            cat build/lattice-lighting/player-profiled.bytes
+            cat build/lattice-lighting/player-profiled.sha256
+            echo
+            cat build/lattice-lighting/input-proof-summary.txt
+            echo
+            cat build/lattice-lighting/manual-performance-summary.txt
+            echo
+            cat build/lattice-lighting/oracle/SUMMARY.txt
+          } | tee build/lattice-lighting/SUMMARY.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-lattice-lighting-fusion-probe
+          path: |
+            build/lattice-lighting/player-profiled.gg
+            build/lattice-lighting/player-profiled.sym
+            build/lattice-lighting/player-profiled.map
+            build/lattice-lighting/player-profiled.sha256
+            build/lattice-lighting/player-profiled.bytes
+            build/lattice-lighting/build-profiled.txt
+            build/lattice-lighting/input-proof/
+            build/lattice-lighting/input-proof-summary.txt
+            build/lattice-lighting/profile-*.txt
+            build/lattice-lighting/manual-performance-summary.txt
+            build/lattice-lighting/lighting-branch-diff.txt
+            build/lattice-lighting/oracle/
+            build/lattice-lighting/oracle-run.txt
+            build/lattice-lighting/SUMMARY.txt
+            build/polar-host-test.txt
+          retention-days: 30
