@@ -1,17 +1,38 @@
 #!/usr/bin/env python3
 """Generate a Game Gear runtime pack from the hierarchical sprite LOD solve.
 
-Default physical sprite pattern layout assumes the SMS/GG sprite pattern table
-at VRAM 0x2000 and a single background name table at 0x3800:
+Two modes, selected by --mode.
 
-  sprite tile 160..175 -> VRAM 0x3400..0x35ff -> mid refinement (16 tiles)
-  sprite tile 176..191 -> VRAM 0x3600..0x37ff -> far core       (16 tiles)
-  background tile 0..415 remains available to the live room renderer
-  name table begins at VRAM 0x3800
+flat (default, shipped policy): one vocabulary trained jointly on mid+far
+demands, resident once at boot, used unchanged by both distance bands. This
+mode exists because measurement showed a SHARED dictionary beats two
+independent per-band dictionaries of the same combined size at every budget
+tested (64..192 patterns) -- mid and far views of the same object share
+structure a split budget cannot amortize. See
+docs/experiments/HERO_HIERARCHICAL_SPRITE_LOD.md for the sweep.
 
-Thus R=36 can conceptually reserve only the top 16 tiles, while R=32 enables
-another 16 immediately below.  The first proof bakes the room against the full
-32-tile reservation so no allocator mutation is required at runtime.
+nested (retained for comparison / the original small-scale ROM proof): a
+small far-only core plus a mid-only refinement prefix loaded on distance
+approach. Measurement showed its penalty against a same-size flat dictionary
+tracks the ABSOLUTE size of the frozen core (1.8-3.5% at 16, 7-12% at 32-64),
+so it only pays off while deliberately kept small -- worth keeping as a
+reference point, not as the default.
+
+Physical layout assumes the SMS/GG sprite pattern table at VRAM 0x2000 and a
+single background name table at 0x3800, which is what caps ANY resident
+sprite vocabulary at 192 patterns: sprite tile id N reads unified pattern
+tile 256+N, and the name table begins at unified tile 448, so id 191 (unified
+tile 447) is the last one that does not read into the name table.
+
+  flat,   N patterns: sprite tile (192-N)..191 -> VRAM (0x3800-N*32)..0x37ff
+  nested, core+refine: sprite tile 176..191 core, 160..175 refinement
+                        (the original small-scale split, unchanged)
+
+  background tile 0..(448-reserved-1) remains available to the live room
+  renderer; reserved = flat patterns, or core+refinement patterns in nested
+  mode. docs/experiments/HERO_HIERARCHICAL_SPRITE_LOD.md has the measured
+  room-VRAM-pressure curve up to 288 reserved patterns (scheduled peak stays
+  under the ~48-pattern/VBlank ceiling throughout).
 """
 
 import argparse
@@ -93,23 +114,7 @@ def view_records(groups, score, core_count, wanted_band, staged=False):
     return records
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("corpus")
-    ap.add_argument("outdir")
-    ap.add_argument("--angles", type=int, default=32)
-    ap.add_argument("--far-band", type=int, default=3)
-    ap.add_argument("--mid-band", type=int, default=2)
-    ap.add_argument("--core-patterns", type=int, default=16)
-    ap.add_argument("--refinement-patterns", type=int, default=16)
-    ap.add_argument("--lloyd-iterations", type=int, default=4)
-    ap.add_argument("--core-sprite-base", type=int, default=176)
-    ap.add_argument("--refine-sprite-base", type=int, default=160)
-    args = ap.parse_args()
-
-    c = Corpus(args.corpus)
-    if args.angles > c.angles:
-        raise SystemExit("requested angles exceed corpus")
+def build_nested(args, c):
     angles = list(range(args.angles))
     weights = TileWeights(12.0, 1.0)
 
@@ -268,6 +273,192 @@ void hero_lod_apply_view(uint8_t band,uint8_t angle) BANKED {{
         json.dumps(report, sort_keys=True, indent=2) + "\n")
     print("HERO_SPRITE_LOD_PACK " + json.dumps(report, sort_keys=True))
     print("HERO_SPRITE_LOD_PACK_PASS")
+
+
+def build_flat(args, c):
+    """One vocabulary, trained jointly on mid+far demands, used unchanged by
+    both bands. No core/refinement split, no distance-triggered pattern
+    upload: hero_lod_load_vocabulary() runs once at boot and every later
+    angle or mid/far distance change is sprite attribute writes only.
+
+    192 patterns (6144 bytes) is the largest that fits this VRAM layout:
+    sprite tile id N reads unified pattern tile 256+N, and the name table
+    begins at unified tile 448, so id 191 is the last one that does not read
+    into it. See the module docstring.
+    """
+    if args.flat_patterns < 1 or args.flat_patterns > 192:
+        raise SystemExit(
+            f"--flat-patterns={args.flat_patterns} outside 1..192; 192 is "
+            "the sprite-base-0x2000/name-table-0x3800 VRAM ceiling")
+    sprite_base = args.flat_sprite_base
+    if sprite_base is None:
+        sprite_base = 192 - args.flat_patterns
+    if sprite_base < 0 or sprite_base + args.flat_patterns > 192:
+        raise SystemExit(
+            f"--flat-sprite-base={sprite_base} with "
+            f"--flat-patterns={args.flat_patterns} reads past sprite tile "
+            "191 into the name table")
+
+    angles = list(range(args.angles))
+    weights = TileWeights(12.0, 1.0)
+
+    midfar_groups, _ = build_groups(c, angles, [args.mid_band, args.far_band])
+    far_groups, _ = build_groups(c, angles, [args.far_band])
+
+    result = learn(midfar_groups, args.flat_patterns, weights,
+                   args.lloyd_iterations)
+    dictionary = dedupe_patterns(result["shared"], modulo_flips=False)
+    if len(dictionary) != args.flat_patterns:
+        raise SystemExit(
+            f"vocabulary deduped from {args.flat_patterns} to "
+            f"{len(dictionary)} patterns")
+    midfar_score = result["final_score"]
+    far_score = score_groups(far_groups, dictionary, weights,
+                             allow_flips=False)
+
+    far_records = view_records(
+        far_groups, far_score, 0, args.far_band, staged=False)
+    mid_records = view_records(
+        midfar_groups, midfar_score, 0, args.mid_band, staged=False)
+
+    raw_patterns = b"".join(planar_4bpp(p) for p in dictionary)
+
+    views = []
+    for band, source in ((args.far_band, far_records),
+                         (args.mid_band, mid_records)):
+        for angle in angles:
+            views.append((band, angle, source.get((band, angle), [])))
+
+    offsets = [0]
+    records = bytearray()
+    max_sprites = 0
+    for _, _, recs in views:
+        max_sprites = max(max_sprites, len(recs))
+        for x, y, logical in recs:
+            if x < 0 or x > 255 or y < 0 or y > 255:
+                raise SystemExit(f"sprite coordinate outside byte range: {x},{y}")
+            records += bytes((x, y, logical))
+        offsets.append(len(records))
+
+    outdir = pathlib.Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    header = f"""#ifndef HERO_SPRITE_LOD_PACK_H
+#define HERO_SPRITE_LOD_PACK_H
+
+#include <stdint.h>
+
+#define HERO_LOD_ANGLE_COUNT {len(angles)}u
+#define HERO_LOD_FAR_BAND {args.far_band}u
+#define HERO_LOD_MID_BAND {args.mid_band}u
+#define HERO_LOD_FLAT_COUNT {len(dictionary)}u
+#define HERO_LOD_FLAT_SPRITE_BASE {sprite_base}u
+#define HERO_LOD_MAX_SPRITES {max_sprites}u
+
+void hero_lod_load_vocabulary(void) BANKED;
+void hero_lod_apply_view(uint8_t band,uint8_t angle) BANKED;
+uint8_t hero_lod_view_sprite_count(uint8_t band,uint8_t angle) BANKED;
+
+#endif
+"""
+    (outdir / "hero_sprite_lod_pack.h").write_text(header)
+
+    source = f"""/* GENERATED flat hierarchical hero LOD pack: one shared vocabulary. */
+#include <stdint.h>
+#include <gbdk/platform.h>
+#include "hero_sprite_lod_pack.h"
+
+#pragma bank 255
+BANKREF(hero_sprite_lod_pack)
+
+extern uint8_t g_hero_lod_last_count;
+
+{c_u8_array("k_patterns", raw_patterns)}
+{c_u16_array("k_view_offsets", offsets)}
+{c_u8_array("k_view_records", records)}
+
+static uint8_t view_index(uint8_t band,uint8_t angle){{
+    angle=(uint8_t)(angle%HERO_LOD_ANGLE_COUNT);
+    if(band==HERO_LOD_FAR_BAND)return angle;
+    return (uint8_t)(HERO_LOD_ANGLE_COUNT+angle);
+}}
+
+void hero_lod_load_vocabulary(void) BANKED {{
+    set_sprite_4bpp_data(HERO_LOD_FLAT_SPRITE_BASE,HERO_LOD_FLAT_COUNT,
+                         k_patterns);
+}}
+
+uint8_t hero_lod_view_sprite_count(uint8_t band,uint8_t angle) BANKED {{
+    uint8_t vi=view_index(band,angle);
+    uint16_t a=k_view_offsets[vi],b=k_view_offsets[(uint8_t)(vi+1u)];
+    return (uint8_t)((b-a)/3u);
+}}
+
+void hero_lod_apply_view(uint8_t band,uint8_t angle) BANKED {{
+    uint8_t vi=view_index(band,angle),i=0u;
+    uint16_t p=k_view_offsets[vi],end=k_view_offsets[(uint8_t)(vi+1u)];
+    while(p<end && i<64u){{
+        uint8_t x=k_view_records[p++];
+        uint8_t y=k_view_records[p++];
+        uint8_t logical=k_view_records[p++];
+        set_sprite_tile(i,(uint8_t)(HERO_LOD_FLAT_SPRITE_BASE+logical));
+        move_sprite(i,(uint8_t)(DEVICE_SPRITE_PX_OFFSET_X+x),
+                      (uint8_t)(DEVICE_SPRITE_PX_OFFSET_Y+y));
+        ++i;
+    }}
+    while(i<g_hero_lod_last_count)hide_sprite(i++);
+    g_hero_lod_last_count=hero_lod_view_sprite_count(band,angle);
+}}
+"""
+    (outdir / "hero_sprite_lod_pack.c").write_text(source)
+
+    report = {
+        "mode": "flat",
+        "angles": len(angles),
+        "flat_patterns": len(dictionary),
+        "pattern_bytes": len(raw_patterns),
+        "map_bytes": len(records) + len(offsets) * 2,
+        "record_bytes": len(records),
+        "offset_bytes": len(offsets) * 2,
+        "max_sprites": max_sprites,
+        "far_mean_cost": far_score["mean_cost"],
+        "midfar_mean_cost": midfar_score["mean_cost"],
+        "flat_sprite_base": sprite_base,
+        "room_background_tile_limit": 448 - len(dictionary),
+    }
+    import json
+    (outdir / "hero_sprite_lod_pack.json").write_text(
+        json.dumps(report, sort_keys=True, indent=2) + "\n")
+    print("HERO_SPRITE_LOD_PACK " + json.dumps(report, sort_keys=True))
+    print("HERO_SPRITE_LOD_PACK_PASS")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("corpus")
+    ap.add_argument("outdir")
+    ap.add_argument("--angles", type=int, default=32)
+    ap.add_argument("--far-band", type=int, default=3)
+    ap.add_argument("--mid-band", type=int, default=2)
+    ap.add_argument("--lloyd-iterations", type=int, default=4)
+    ap.add_argument("--mode", choices=("flat", "nested"), default="flat")
+    # flat mode
+    ap.add_argument("--flat-patterns", type=int, default=192)
+    ap.add_argument("--flat-sprite-base", type=int, default=None)
+    # nested mode (original small-scale proof; kept for comparison)
+    ap.add_argument("--core-patterns", type=int, default=16)
+    ap.add_argument("--refinement-patterns", type=int, default=16)
+    ap.add_argument("--core-sprite-base", type=int, default=176)
+    ap.add_argument("--refine-sprite-base", type=int, default=160)
+    args = ap.parse_args()
+
+    c = Corpus(args.corpus)
+    if args.angles > c.angles:
+        raise SystemExit("requested angles exceed corpus")
+
+    if args.mode == "flat":
+        build_flat(args, c)
+    else:
+        build_nested(args, c)
 
 
 if __name__ == "__main__":

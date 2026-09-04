@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - temp/hero-nested-distance-codec-lab
+      - temp/hero-lod-shape-objective
     paths:
       - ".github/workflows/hero-hierarchical-sprite-lod-fast.yml"
       - "tools/analyze_hierarchical_sprite_lod.py"
@@ -51,15 +52,22 @@ jobs:
             build/hier-sprite/corpus-bake build/hier-sprite/host \
             | tee build/hier-sprite/bake.txt
 
-      - name: Train nested far core and mid refinements
+      - name: Train the shared flat vocabulary (shipped policy)
         run: |
           set -euo pipefail
+          # 192 is the largest vocabulary this VRAM layout can hold (sprite
+          # tile id N reads unified pattern tile 256+N; the name table begins
+          # at unified tile 448). --assert-far-silhouette-pct guards against
+          # the far view regressing back toward the pre-fix blocky-outline
+          # result (measured 17.22% at 16 patterns, 8.64% at 192).
           python3 tools/analyze_hierarchical_sprite_lod.py \
             build/hier-sprite/host/doomguy_dense_corpus.dhc \
             --far-band 3 --mid-band 2 \
-            --core-patterns 16 --refinement-patterns 16,48 \
+            --flat-patterns 64,128,192 --core-patterns 0 \
             --lloyd-iterations 4 \
             --summary-json build/hier-sprite/result.json \
+            --assert-far-silhouette-pct 10.0 \
+            --assert-resident-bytes-max 6144 \
             | tee build/hier-sprite/result.txt
           grep -q '^HIERARCHICAL_SPRITE_LOD_PASS$' build/hier-sprite/result.txt
 

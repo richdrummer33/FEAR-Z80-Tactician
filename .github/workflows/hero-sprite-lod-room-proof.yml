@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - temp/hero-nested-distance-codec-lab
+      - temp/hero-lod-shape-objective
     paths:
       - ".github/workflows/hero-sprite-lod-room-proof.yml"
       - "src/main_hero_sprite_lod_room_gg.c"

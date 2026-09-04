@@ -2,88 +2,148 @@
 
 Status: temporary experiment branch. Not merged.
 
-> **Correction, later pass.** Every cost figure below was produced with a shade
-> distance that measured semantic indices in enum order rather than brightness
-> order, which priced the darkest-to-brightest swap as the cheapest possible
-> move. That is what made the rendered far views read as speckle. See
-> `HERO_LOD_SHADE_METRIC.md`. The architecture and the sprite/VRAM/runtime
-> figures below all survive; the absolute error numbers were re-measured after
-> the fix and are restated here:
->
-> | | before (broken metric) | after (corrected) |
-> |---|---:|---:|
-> | far core 16, R=36 mean cost | 109.967 | 111.989 |
-> | nested 16+16, mid/far mean cost | 100.763 | 99.611 |
-> | hierarchy penalty at 32 total | 2.085% | 3.531% |
-> | hierarchy penalty at 64 total | 3.071% | 1.796% |
-> | far sprite refs mean / max | 28.81 / 36 | 28.0 / 35 |
-> | mid/far sprite refs mean / max | 32.97 / 47 | 32.6 / 45 |
->
-> The costs are in different units before and after, so only the penalties and
-> the reference counts are directly comparable. The separate finding that the
-> 16-pattern core is undersized relative to the measured room headroom is in
-> the same document.
+> **Correction, later pass.** Every cost figure in the original version of this
+> document was produced with a shade distance that measured semantic indices
+> in enum order rather than brightness order, which priced the darkest-to-
+> brightest swap as the cheapest possible move. That is what made the
+> rendered far views read as speckle. See `HERO_LOD_SHADE_METRIC.md`.
+
+> **Second pass: the architecture changed.** The originally proposed small
+> nested core (16 patterns) plus a mid-band refinement prefix was measured
+> against the room's actual VRAM headroom and found badly undersized -- the
+> room stays safe reserving up to 288 patterns (scheduled peak 36 of the
+> roughly 48 ceiling), so there was no reason to keep the hero vocabulary at
+> 16. Growing it exposed a second, more useful finding: **one vocabulary
+> trained jointly on mid+far demands beats two independently-sized
+> dictionaries of the same combined budget, at every size tested.** The mid
+> and far views of the same object share enough structure that a shared
+> dictionary amortizes it; splitting the budget re-learns that structure
+> twice. The shipped policy is therefore a single flat vocabulary, not a
+> nested core/refinement pair. The nested scheme is kept as a measured
+> comparison point, not deleted.
 
 ## Executive result
 
-The distance codec has converged on a hardware-oriented hybrid rather than a
-single representation for every range.
+- Near (R<32): keep the high-detail/co-designed hero path, unchanged.
+- Mid (R=32) and far (R=36): **one shared 192-pattern transparent-sprite
+  vocabulary**, trained jointly on both bands, resident once at boot.
+- Angle changes AND mid/far distance changes are both sprite-attribute
+  rewrites only. There is no second load stage, because there is nothing
+  left to load.
+- 192 patterns (6,144 bytes) is not an arbitrary choice: it is the largest
+  vocabulary this VRAM layout can hold. Sprite tile id N reads unified
+  pattern tile 256+N (sprite pattern base 0x2000), and the background name
+  table begins at unified tile 448, so tile 191 is the last sprite id that
+  does not read into it.
+- The lit room remains an independently rendered background plane, now
+  capped at 256 background patterns (448 - 192 reserved). Measured scheduled
+  peak: 33 pattern uploads per route frame, against the roughly 48 ceiling.
 
-- Near: keep the high-detail/co-designed hero path.
-- Mid (measured R=32): transparent 8x8 sprite representation using a shared
-  resident vocabulary.
-- Far (measured R=36): the same sprite representation, but only a 16-pattern
-  core vocabulary is required.
-- Approaching from far to mid enables an additional refinement prefix; changing
-  viewing angle does not require replacing pattern graphics.
-- The lit room remains an independently rendered background plane.
+The transparent sprite plane is still the reason this composes with the room
+at all: an object-only background tile has no alpha, so its zero pixels
+would overwrite the live room behind Doomguy. Sprite colour zero is
+transparent.
 
-The transparent sprite plane is important. An object-only background tile has
-no alpha, so its zero pixels would overwrite the live room behind Doomguy.
-Sprite colour zero is transparent and therefore makes the object-only shared
-vocabulary composable with the room without generating hero+room boundary
-patterns.
+## Shared vs. dedicated: the measurement that picked the architecture
 
-## Measured hierarchical codebook
+Before committing to "one big shared vocabulary", the alternative was tested
+directly: two independent dictionaries, one trained only on far (R=36)
+demands and one only on mid (R=32) demands, sized so their combined bytes
+matched the shared vocabulary at the same total budget. All four numbers
+below are on the full 32-angle corpus.
 
-32 angular views, R=32/R=36 corpus.
+| total bytes | shared far sil.% | dedicated far sil.% | shared mid sil.% | dedicated mid sil.% |
+|---:|---:|---:|---:|---:|
+| 2,048 | 12.27 | 14.34 | 11.17 | 12.38 |
+| 3,072 | 10.96 | 13.39 | 9.89 | 11.38 |
+| 4,096 | 10.10 | 12.03 | 8.88 | 10.47 |
+| 5,120 | 9.36 | 11.29 | 8.24 | 9.68 |
+| 6,144 | 8.64 | 10.25 | 7.55 | 9.04 |
 
-Far core:
+Shared wins outright at every budget, on both bands. Splitting the budget
+does not buy specialization worth having; it just throws away the structure
+mid and far have in common.
 
-- 16 patterns = 512 bytes pattern graphics.
-- R=36 mean weighted pattern error: 109.967.
-- Equivalent upper-bound interpretation if all error were silhouette:
-  9.16 mismatched pixels per used 8x8 pattern. Real error is a mixture of
-  silhouette and shade error, so this is only a scale indicator.
-- Mean 28.81 sprite references per view, max 36.
-- Mean SAT payload ~87.4 bytes per view, max 109.
-- Naive 32-angle map table: 2,798 bytes.
+This also means the ORIGINAL "hierarchy penalty" measurement -- how much a
+small nested core costs versus a same-size flat dictionary -- was measuring
+the wrong tradeoff. The relevant comparison was never "nested vs flat at a
+fixed small size", it was "one shared dictionary vs two split dictionaries at
+the size the hardware can actually afford". Once asked that way, the answer
+was one-sided.
 
-Far core + 16 mid refinements:
+## Measured hierarchical codebook: what a small core costs when kept small
 
-- 32 total patterns = 1,024 bytes pattern graphics.
-- Nested mid/far mean weighted error: 100.763.
-- Best independently trained flat 32-pattern dictionary: 98.705.
-- Hierarchy penalty: only 2.085%.
-- Mean 32.97 sprite references per view, max 47.
-- Mean SAT payload ~99.9 bytes per view, max 142.
-- Naive 64-view R32/R36 map table: 6,394 bytes.
+Retained for reference, since the finding above only makes sense next to it.
+Nesting a small far-only core inside a larger mid/far dictionary costs a
+penalty that tracks the ABSOLUTE size of the frozen core, not its share of
+the total budget (measured, corrected metric, full 32-angle corpus):
 
-Far core + 48 mid refinements:
+| far core | total patterns | penalty vs. best flat dictionary of the same total size |
+|---:|---:|---:|
+| 16 | 32 | 3.53% |
+| 16 | 64 | 1.80% |
+| 32 | 64 | 7.59% |
+| 32 | 128 | 7.18% |
+| 64 | 128 | 11.87% |
 
-- 64 total patterns = 2,048 bytes pattern graphics.
-- Nested mid/far mean weighted error: 91.133.
-- Flat 64-pattern dictionary: 88.418.
-- Hierarchy penalty: 3.071%.
+A small core (16) nests almost for free. A core large enough to be useful on
+its own (32-64) pays 7-12% to stay nested. Since the hardware can afford one
+large shared vocabulary outright, this tradeoff no longer needs to be paid at
+all -- it is documented here so a future change that reintroduces a small
+resident "always on" core (for a use case nesting genuinely serves, such as a
+third, even-farther band) has the real cost in front of it.
 
-This is strong evidence that a prefix/nested vocabulary is practical: the far
-representation can keep only a small core while the medium representation adds
-more visual information, with very little loss versus optimizing each total
-vocabulary independently.
+## Shipped vocabulary: quality vs. size
+
+Shared vocabulary, trained jointly on R=32+R=36 demands, scored separately per
+band, full 32-angle corpus, corrected (brightness-order) shade metric:
+
+| patterns | bytes | room scheduled peak | far silhouette err% | far gross tonal err | mid silhouette err% |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 512 | 22 | 17.22 | 86 | -- |
+| 64 | 2,048 | 23 | 12.27 | 273 | 11.65 |
+| 96 | 3,072 | 24 | 10.96 | 448 | 10.35 |
+| 128 | 4,096 | 26 | 10.10 | 416 | 9.41 |
+| 160 | 5,120 | 27 | 9.36 | 389 | 8.73 |
+| **192** | **6,144** | **29** | **8.64** | **421** | **8.02** |
+| 224\* | 7,168 | 31 | 8.11 | 308 | 7.49 |
+| 256\* | 8,192 | 33 | 7.68 | 311 | 7.13 |
+
+\* Beyond the current 192-pattern hardware ceiling; would need a different
+sprite-base/name-table layout. Diminishing returns are already visible by
+192 (each +32 patterns buys roughly 0.5-0.7 points), so this was not pursued.
+
+192 was shipped: it is the largest the current VRAM layout can hold, room
+impact stays comfortably safe (scheduled peak 29 of ~48), and the visual
+result at that size resolves the specific defect that motivated this pass --
+see below.
+
+## The visual proof
+
+The original small (16-pattern) far core produced blocky, rectangular
+extrusions on the worst-error views: the raised-arm/rifle silhouette at one
+extreme angle, and a filled-in gap between the legs at another. Both are
+angles where a fine limb crosses open space, which is exactly where a tiny
+shared vocabulary runs out of shapes to represent it with.
+
+Reconstructed at 16 / 64 / 192 shared patterns, same four worst-offender
+angles, against the independently-rendered oracle:
+
+```
+oracle -> 16p/512B -> 64p/2048B -> 192p/6144B
+```
+
+At 16 patterns the arm reads as a stub and the leg gap is filled solid. At 64
+both are recognizable but soft. At 192 the silhouette is close to the oracle
+and both defects are gone. Diagnostic images are generated by
+`tools/diagnose_lod_shade_metric.py` and the worst-offender ladders in
+`build/hier/diag/` during development; the CI workflow uploads equivalent
+artifacts from a fresh bake.
 
 ## Sprite footprint
 
-Best phase is chosen offline per view.
+Best phase is chosen offline per view. This is unaffected by vocabulary size
+-- footprint is how the FIGURE tiles, not how many distinct patterns back it.
 
 8x8 sprite coverage:
 
@@ -101,13 +161,16 @@ Best phase is chosen offline per view.
 
 R=32 is therefore the clean first 8x8 sprite handoff. R=28 remains an
 interesting later 8x16 experiment but consumes the complete eight-sprite
-scanline allowance in the worst views.
+scanline allowance in the worst views. The measured max of 8 sprites on a
+scanline at R=24/R=28 is already at the GG/SMS hardware limit; this is a
+pre-existing constraint of the object's own silhouette, not something the
+vocabulary size changes.
 
 ## VRAM impact on the independently lit room
 
-The room compositor was rebaked with reduced effective background tile capacity
-while preserving all other room/content logic. The ordinary one-name-table
-capacity is 448 patterns.
+The room compositor was rebaked with reduced effective background tile
+capacity while preserving all other room/content logic. The ordinary
+one-name-table capacity is 448 patterns.
 
 Two-route total pattern loads and scheduled peak:
 
@@ -119,89 +182,70 @@ Two-route total pattern loads and scheduled peak:
 | 352 | 96 / 3 KiB | 6,001 | 24 |
 | 320 | 128 / 4 KiB | 6,060 | 26 |
 | 288 | 160 / 5 KiB | 6,137 | 28 |
+| **256** | **192 / 6 KiB** | **~6,200** | **33** |
 
-Name-table changed words remained 10,560 in all variants. Even the 288-pattern
-room cache remains well below the roughly 48 pattern-upload/VBlank target in
-this room.
+(256/192 row measured locally with the same harness as the workflow; see
+`hero-room-vram-impact-fast.yml`, which now sweeps this point in CI.)
 
-For the proposed single-page sprite LOD mode, the interesting point is 416:
-a permanently resident 32-pattern hero dictionary raises total room pattern
-loads by only ~0.86% and the route peak from 21 to 22.
-
-A 16-pattern far-only core would reserve only 512 bytes and should sit between
-the 448 and 416 cases; it has not yet required a separate cache-pressure run.
+Name-table changed words remain constant across all variants. Even reserving
+the full 192-pattern shipped vocabulary, the room stays well below the
+roughly 48 pattern-upload/VBlank target -- nineteen pattern-loads of margin
+remain at the measured peak.
 
 ## Comparison with the earlier per-angle 32-pattern result
 
-Earlier experiment:
+Earlier experiment (superseded, kept for scale contrast):
 
 - 32 extra patterns (1 KiB) tailored to one angle.
 - Approximately 43% average reduction in far-tile error across four tested
   angles compared with using only that angle's near vocabulary.
-- Strong local quality, but each angular sector wants its own dictionary.
+- Strong local quality, but each angular sector wants its own dictionary --
+  32 angles x 1 KiB = 32 KiB of pattern dictionaries in ROM, and changing
+  angular sectors could require replacing up to 32 patterns live.
 
-Consequences if naively scaled:
+Shipped shared approach:
 
-- 32 angles x 1 KiB = 32 KiB of pattern dictionaries in ROM.
-- 256 angles x 1 KiB = 256 KiB.
-- Only 1 KiB need be in VRAM at once, but changing angular sectors can require
-  replacing up to 32 patterns (1,024 bytes).
-- A 32-pattern hero swap plus a busy ~21-pattern room frame exceeds the rough
-  48-pattern combined target, so it needs prefetching/scheduling or multiple
-  frames.
+- One 192-pattern / 6 KiB vocabulary covers every tested angle at both R=32
+  and R=36.
+- Angle changes AND mid/far distance changes require zero pattern uploads.
+- Per-view state is sprite references/positions only: mean SAT payload
+  ~93.7-117.2 bytes per view (far/mid), well inside a single VBlank's
+  transfer budget.
 
-Current hierarchical shared approach:
-
-- Far graphics vocabulary is 512 bytes once for all 32 tested angles.
-- Mid/far graphics vocabulary is 1 KiB once for all 32 tested angles.
-- Angle changes require no pattern uploads once the current distance prefix is
-  resident.
-- R=36 -> R=32 requires only the new 16-pattern / 512-byte refinement prefix.
-  This transition is distance-driven and can be prefetched over approaching
-  frames rather than paid on every turn.
-- Per-view state becomes sprite references/positions. Current naive tables are
-  ~2.8 KiB for 32 far views and ~6.4 KiB for 64 R32/R36 views before delta or
-  angular thinning compression.
-- Runtime hero work is roughly 90-105 bytes of sprite-attribute state per view,
-  not kilobytes of pattern pixels.
-
-The trade is image fidelity: a global shared vocabulary cannot match a
-separately tailored per-angle codebook at the same pattern count. The measured
-advantage is instead ROM scaling, virtually zero angle-dependent pattern
-bandwidth, and clean compositing with a live room.
+The trade is the same as before, just at a size that no longer bites: a
+shared vocabulary cannot match a codebook retrained per angle at equal
+pattern count. The measured advantage is ROM scaling, zero angle- or
+distance-dependent pattern bandwidth, and clean compositing with a live room.
 
 ## Z80 / VDP interpretation
 
-After loading the active prefix:
-
 - No image reconstruction, filtering, wavelet decode, or pixel synthesis runs
   on the Z80.
-- Angle change is lookup + sprite attribute updates.
-- Far view averages ~87 bytes of sprite attribute payload.
-- Mid/far view averages ~100 bytes in the 32-pattern hierarchical case.
-- Pattern data is loaded only at LOD threshold transitions.
-- The expensive solver, VQ, phase selection and nested dictionary design remain
-  PC-side baking work.
-
-The first R=32 refinement load is 16 patterns / 512 bytes. The measured room at
-a 416-pattern cache peaks around 22 pattern uploads per route frame, so sixteen
-additional hero pattern uploads still fit beneath the rough 48-pattern count
-budget in isolation (22 + 16 = 38). A shipping implementation should still
-schedule the refinement load during VBlank or prefetch it across several
-frames rather than call a bulk VRAM upload at an arbitrary display time.
+- Angle change AND mid/far distance change are both lookup + sprite attribute
+  updates -- `hero_lod_apply_view(band, angle)`, one call, no branch on
+  "do I need to load anything".
+- The entire 192-pattern / 6,144-byte vocabulary loads once, at boot, with
+  the display blanked (`hero_lod_load_vocabulary()`), so it costs zero
+  visible-frame bandwidth.
+- The expensive solver, VQ, and vocabulary training remain PC-side baking
+  work; see `tools/analyze_hierarchical_sprite_lod.py` and
+  `tools/build_hierarchical_sprite_lod_pack.py --mode flat`.
 
 ## Lighting / room integration
+
+Unchanged from the nested-scheme analysis:
 
 The room remains the background renderer and keeps its baked/coarse-lattice
 lighting, cast shadows and dirty name-table/tile updates.
 
-The current hero sprite corpus contains the hero's authored/baked semantic
-shading; it does not yet dynamically inherit arbitrary room light direction.
-The immediate integration options are:
+The hero sprite corpus contains the hero's authored/baked semantic shading;
+it does not yet dynamically inherit arbitrary room light direction. The
+immediate integration options are:
 
-1. preserve the hero's baked/ambient semantic shading while room lighting moves;
+1. preserve the hero's baked/ambient semantic shading while room lighting
+   moves;
 2. palette-transform the hero for cheap global brightness changes;
-3. later train direction-class or light-class versions of the small resident
+3. later train direction-class or light-class versions of the shared
    dictionary if directional relighting is worth the extra vocabulary.
 
 World-space floor/cast shadow should remain a room/background effect. It is
@@ -210,22 +254,33 @@ vocabulary.
 
 Foreground occlusion is a separate integration constraint. Sprites naturally
 compose over the background, but room surfaces which must pass in front of
-Doomguy need priority/clipping handling. The first proof deliberately places
+Doomguy need priority/clipping handling. The proof deliberately places
 Doomguy in an open room region; general occlusion is not yet claimed solved.
 
-## Proposed runtime policy
+## Shipped runtime policy
 
-A practical first hierarchy is:
+- R < ~32: high-detail background/dynamic hero path, unchanged.
+- R >= ~32 (both mid and far bands): the same 192-pattern / 6,144-byte
+  transparent sprite vocabulary, loaded once at boot.
+- Angle changes: sprite map/reference changes only.
+- Mid/far distance changes: sprite map/reference changes only -- there is no
+  "approach the boundary, prefetch a refinement layer" step, because nothing
+  needs to be prefetched.
+- World-space floor/cast shadow stays a room effect, independent of hero
+  view.
 
-- R < ~32: high-detail background/dynamic hero path.
-- R ~= 32: load/enable 16 refinement patterns, 32-pattern transparent sprite
-  vocabulary total.
-- R ~= 36 and beyond: use only the 16-pattern / 512-byte far core.
-- Angle changes at R>=32: sprite map changes only; no pattern graphics swap.
-- As the player approaches the R32 threshold: prefetch refinement patterns.
-- As the player recedes: refinement slots may eventually be released back to
-  the room cache if/when the runtime allocator supports that dynamic handoff.
+Runtime source: `src/main_hero_sprite_lod_flat_room_gg.c`. The original
+nested-scheme proof (`src/main_hero_sprite_lod_room_gg.c`, 16+16 patterns)
+is kept unmodified as a comparison ROM; both build and run in CI.
 
-This is structurally the original nested-distance idea at the hardware level:
-coarse information persists, and additional visual vocabulary is layered in as
-projected detail becomes useful.
+## Future work, not attempted here
+
+- **Beyond 192 patterns** needs a different VRAM layout (moving the name
+  table, or reworking how the background renderer's own 448-tile budget is
+  numbered). The quality curve above shows real but shrinking returns past
+  this point (224: 8.11%, 256: 7.68%); worth revisiting only if a specific
+  view is still found wanting after 192 ships.
+- **A third, farther band** (R>36) is exactly the case where a small nested
+  "always resident" core would pay for itself again, since the penalty table
+  above shows a 16-pattern core nests almost for free. Not measured yet
+  because the current chamber's orbit tops out at R=36.

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - temp/hero-nested-distance-codec-lab
+      - temp/hero-lod-shape-objective
     paths:
       - ".github/workflows/hero-room-vram-impact-fast.yml"
   workflow_dispatch:
@@ -27,7 +28,11 @@ jobs:
           # 384 = current playable proof before any hero dictionary because a
           # second name table occupies 0x3000..0x37ff.
           # 352/320/288 then model dual-page + 32/64/96 resident hero patterns.
-          for limit in 448 416 384 352 320 288; do
+          # 256 is the shipped flat hero LOD vocabulary's reservation (192
+          # patterns): the largest that fits before sprite tile addressing
+          # (base 0x2000) reads into the 0x3800 name table. See
+          # docs/experiments/HERO_HIERARCHICAL_SPRITE_LOD.md.
+          for limit in 448 416 384 352 320 288 256; do
             reserved=$((448-limit))
             out="build/room-vram-impact/limit-${limit}"
             mkdir -p "$out/host"
@@ -61,7 +66,7 @@ jobs:
           done
 
           cat build/room-vram-impact/summary.tsv
-          test "$(wc -l < build/room-vram-impact/summary.tsv)" -eq 13
+          test "$(wc -l < build/room-vram-impact/summary.tsv)" -eq 15
           echo ROOM_VRAM_IMPACT_PASS
 
       - uses: actions/upload-artifact@v4

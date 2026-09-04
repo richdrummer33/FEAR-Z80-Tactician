@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - temp/hero-nested-distance-codec-lab
+      - temp/hero-lod-shape-objective
     paths:
       - ".github/workflows/hero-hierarchical-lod-composite-video.yml"
       - "tools/render_hierarchical_lod_video.py"
@@ -58,7 +59,7 @@ jobs:
           python3 tools/render_hierarchical_lod_video.py \
             build/lod-video/host/doomguy_dense_corpus.dhc \
             build/lod-video/render \
-            --core-patterns 16 --refinement-patterns 16 \
+            --flat-patterns 192 \
             --lloyd-iterations 4 \
             | tee build/lod-video/render.txt
           grep -q '^HIERARCHICAL_LOD_VIDEO_FRAMES_PASS$' build/lod-video/render.txt

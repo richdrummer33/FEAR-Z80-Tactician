@@ -1,0 +1,188 @@
+name: Hero flat sprite LOD lit-room ROM
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+      - temp/hero-lod-shape-objective
+    paths:
+      - ".github/workflows/hero-sprite-lod-flat-room-proof.yml"
+      - "src/main_hero_sprite_lod_flat_room_gg.c"
+      - "tools/build_hierarchical_sprite_lod_pack.py"
+      - "tools/analyze_hierarchical_sprite_lod.py"
+      - "tools/resident_tile_dictionary.py"
+      - "tools/resident_tile_lloyd.py"
+      - "tools/shared_resident_lod.py"
+  workflow_dispatch:
+
+jobs:
+  rom-proof:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/hero-room-flat/hero-host build/hero-room-flat/room-host \
+                   build/hero-room-flat/generated-hero build/hero-room-flat/generated-room \
+                   tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/hero-room-flat/import.json
+
+      - name: Bake hero oracle corpus and flat runtime pack
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/hero-room-flat/hero-bake
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/hero-room-flat/hero-bake build/hero-room-flat/hero-host \
+            | tee build/hero-room-flat/hero-bake.txt
+
+          # 192 patterns is the largest shared vocabulary this VRAM layout can
+          # hold: sprite tile id N reads unified pattern tile 256+N, and the
+          # name table begins at unified tile 448.
+          python3 tools/build_hierarchical_sprite_lod_pack.py \
+            build/hero-room-flat/hero-host/doomguy_dense_corpus.dhc \
+            build/hero-room-flat/generated-hero \
+            --mode flat --angles 32 --flat-patterns 192 \
+            | tee build/hero-room-flat/hero-pack.txt
+          grep -q '^HERO_SPRITE_LOD_PACK_PASS$' build/hero-room-flat/hero-pack.txt
+          python3 - <<'PY'
+          import json
+          report = json.load(open(
+              "build/hero-room-flat/generated-hero/hero_sprite_lod_pack.json"))
+          assert report["flat_patterns"] == 192, report
+          assert report["room_background_tile_limit"] == 256, report
+          PY
+
+      - name: Bake lit room with 192 hero patterns reserved
+        run: |
+          set -euo pipefail
+          sed 's/static uint16_t g_hw_tile_limit=HW_TILES;/static uint16_t g_hw_tile_limit=256u;/' \
+            tools/polar_baked_composite.c \
+            > build/hero-room-flat/polar_baked_composite_256.c
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc -Itools \
+            build/hero-room-flat/polar_baked_composite_256.c \
+            tools/room_mesh_bake.c tools/room_bundle_poc_gen.c \
+            -lm -o build/hero-room-flat/room-bake
+          ROOM_BUNDLE_ONLY=0 \
+            build/hero-room-flat/room-bake build/hero-room-flat/room-host \
+            | tee build/hero-room-flat/room-bake.txt
+          # Even reserving 192 hero patterns the room must stay well below the
+          # roughly 48-pattern/VBlank ceiling (measured scheduled_peak=33).
+          ! grep -qE 'scheduled_peak=(4[89]|[5-9][0-9]|[0-9]{3,})' \
+            build/hero-room-flat/room-bake.txt
+          python3 tools/room_bundle_pack_to_c.py \
+            build/hero-room-flat/room-host/room_bundle_poc.pack \
+            build/hero-room-flat/room-host/room_bundle_poc_canonical.bin \
+            build/hero-room-flat/generated-room \
+            | tee build/hero-room-flat/room-cgen.txt
+
+      - name: Install GBDK 4.5.0
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo 'd7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz' | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build Game Gear proof ROM
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          HGEN="$PWD/build/hero-room-flat/generated-hero"
+          RGEN="$PWD/build/hero-room-flat/generated-room"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 \
+                 -Isrc -I"$HGEN" -I"$RGEN")
+          OBJS=()
+
+          "$LCC" "${FLAGS[@]}" -c -o build/hero-room-flat/main.o \
+            src/main_hero_sprite_lod_flat_room_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o build/hero-room-flat/ntstate.o \
+            src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o build/hero-room-flat/ntupload.o \
+            src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o build/hero-room-flat/hero-pack.o \
+            "$HGEN/hero_sprite_lod_pack.c"
+          "$LCC" "${FLAGS[@]}" -c -o build/hero-room-flat/room-dispatch.o \
+            "$RGEN/room_bundle_poc_dispatch.c"
+          OBJS+=(build/hero-room-flat/main.o build/hero-room-flat/ntstate.o \
+                 build/hero-room-flat/ntupload.o build/hero-room-flat/hero-pack.o \
+                 build/hero-room-flat/room-dispatch.o)
+
+          for src in "$RGEN"/room_bundle_poc_data_bank*.c; do
+            base="$(basename "${src%.c}")"
+            obj="build/hero-room-flat/${base}.o"
+            "$LCC" "${FLAGS[@]}" -c -o "$obj" "$src"
+            OBJS+=("$obj")
+          done
+
+          "$LCC" "${FLAGS[@]}" -Wm-yS \
+            -o build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
+            "${OBJS[@]}"
+          wc -c build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
+            | tee build/hero-room-flat/ROM-size.txt
+          sha256sum build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
+            | tee build/hero-room-flat/SHA256.txt
+
+          for sym in _main _set_sprite_4bpp_data _move_sprite; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' \
+              build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym)"
+            test -n "$tok"
+            printf '%s %s\n' "$sym" "$tok"
+          done | tee build/hero-room-flat/SYMBOLS.txt
+
+      - name: Run in Gearsystem and capture orbit
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 \
+            https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          mkdir -p build/hero-room-flat/captures
+          ROM=build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg
+          SYM=build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          STATUS="$(awk '$2=="_g_hero_lod_room_status"{split($1,a,":");print a[2];exit}' "$SYM")"
+          test -n "$STATUS"
+          LIBRETRO_CAPTURE_DIR=build/hero-room-flat/captures \
+          LIBRETRO_CAPTURE_EVERY=30 \
+            ./build/libretro_runner "$CORE" "$ROM" 480 \
+            build/hero-room-flat/final.ppm "$STATUS" 8 \
+            | tee build/hero-room-flat/emulator.txt
+          test "$(find build/hero-room-flat/captures -name 'frame_*.ppm' | wc -l)" -ge 12
+          grep -q 'RAM addr=' build/hero-room-flat/emulator.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-flat-sprite-lod-room-proof
+          path: |
+            build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg
+            build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym
+            build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.map
+            build/hero-room-flat/hero-pack.txt
+            build/hero-room-flat/generated-hero/hero_sprite_lod_pack.json
+            build/hero-room-flat/room-bake.txt
+            build/hero-room-flat/ROM-size.txt
+            build/hero-room-flat/SHA256.txt
+            build/hero-room-flat/SYMBOLS.txt
+            build/hero-room-flat/emulator.txt
+            build/hero-room-flat/final.ppm
+            build/hero-room-flat/captures/**
+          if-no-files-found: error

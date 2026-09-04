@@ -5,10 +5,12 @@ Output is a sequence of annotated PNG frames suitable for FFmpeg.  Every band
 uses the same 32 quantized angular views from the DHC1 corpus.
 
 - R24/R28: high-detail independent oracle/reference path.
-- R32: hierarchical transparent-sprite reconstruction using far core + 16
-  refinement patterns.
-- R36: hierarchical transparent-sprite reconstruction using the 16-pattern
-  far core only.
+- R32/R36: hierarchical transparent-sprite reconstruction from ONE shared
+  vocabulary trained jointly on both bands' demands. Measurement showed this
+  beats splitting the same total budget into two independent per-band
+  dictionaries at every size tested -- the two distance bands share enough
+  structure that a shared vocabulary amortizes it, while a split budget
+  re-learns it twice. See docs/experiments/HERO_HIERARCHICAL_SPRITE_LOD.md.
 
 The tool also writes compact JSON metrics used verbatim for the on-frame text.
 No temporal interpolation is performed; the video workflow controls how long
@@ -23,7 +25,7 @@ import statistics
 from PIL import Image, ImageDraw, ImageFont
 
 from analyze_doomguy_dense_corpus import Corpus, SHADE_RGB
-from analyze_hierarchical_sprite_lod import learn, with_fixed_base
+from analyze_hierarchical_sprite_lod import learn
 from analyze_hero_sprite_footprint import best_tiling
 from analyze_resident_lod_dictionary import sample_raster
 from analyze_sprite_resident_lod import build_groups
@@ -184,8 +186,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("corpus")
     ap.add_argument("outdir")
-    ap.add_argument("--core-patterns", type=int, default=16)
-    ap.add_argument("--refinement-patterns", type=int, default=16)
+    ap.add_argument("--flat-patterns", type=int, default=192)
     ap.add_argument("--lloyd-iterations", type=int, default=4)
     args = ap.parse_args()
 
@@ -199,28 +200,21 @@ def main():
     weights = TileWeights(12.0, 1.0)
     angles = list(range(c.angles))
 
-    far_groups, _ = build_groups(c, angles, [3])
-    core_result = learn(far_groups, args.core_patterns,
-                        weights, args.lloyd_iterations)
-    core = core_result["shared"]
-    far_score = score_groups(far_groups, core, weights, allow_flips=False)
-
     midfar_groups, _ = build_groups(c, angles, [2, 3])
-    staged_groups = with_fixed_base(midfar_groups, core)
-    extra_result = learn(staged_groups, args.refinement_patterns,
-                         weights, args.lloyd_iterations)
-    extras = extra_result["shared"]
-    staged_score = score_groups(staged_groups, extras,
+    flat_result = learn(midfar_groups, args.flat_patterns,
+                        weights, args.lloyd_iterations)
+    vocabulary = flat_result["shared"]
+    midfar_score = score_groups(midfar_groups, vocabulary,
                                 weights, allow_flips=False)
 
     metrics = {
-        "schema": "hierarchical-lod-video-v1",
+        "schema": "hierarchical-lod-video-v2",
         "angles": c.angles,
         "angle_step_deg": 360.0 / c.angles,
         "distances": [],
         "room_reference": {
-            "background_cache_with_32_hero_patterns": 416,
-            "measured_room_scheduled_peak": 22,
+            "background_cache_with_192_hero_patterns": 256,
+            "measured_room_scheduled_peak": 33,
             "approx_pattern_upload_ceiling": 48,
         },
     }
@@ -228,9 +222,9 @@ def main():
     footprint = [sprite_footprint_metrics(c, b) for b in range(4)]
     bbox = [bbox_metrics(c.band(b)) for b in range(4)]
 
-    # Band-specific codec measurements from the actual hierarchical solve.
-    far_band = score_band(far_groups, far_score, 3)
-    mid_band = score_band(staged_groups, staged_score, 2)
+    # Band-specific codec measurements sliced from the one joint solve.
+    far_band = score_band(midfar_groups, midfar_score, 3)
+    mid_band = score_band(midfar_groups, midfar_score, 2)
 
     distance_metrics = [
         {
@@ -249,19 +243,17 @@ def main():
         },
         {
             "band": 2, "radius": c.radii[2],
-            "representation": "HIERARCHICAL TRANSPARENT SPRITES",
-            "resident_patterns": len(core) + len(extras),
-            "resident_bytes": (len(core) + len(extras)) * 32,
+            "representation": "HIERARCHICAL TRANSPARENT SPRITES (SHARED)",
+            "resident_patterns": len(vocabulary),
+            "resident_bytes": len(vocabulary) * 32,
             "angle_pattern_uploads": 0,
-            "refinement_patterns": len(extras),
-            "refinement_bytes": len(extras) * 32,
             **footprint[2], **bbox[2], **mid_band,
         },
         {
             "band": 3, "radius": c.radii[3],
-            "representation": "HIERARCHICAL TRANSPARENT SPRITES",
-            "resident_patterns": len(core),
-            "resident_bytes": len(core) * 32,
+            "representation": "HIERARCHICAL TRANSPARENT SPRITES (SHARED)",
+            "resident_patterns": len(vocabulary),
+            "resident_bytes": len(vocabulary) * 32,
             "angle_pattern_uploads": 0,
             **footprint[3], **bbox[3], **far_band,
         },
@@ -273,16 +265,11 @@ def main():
         for angle in angles:
             if band < 2:
                 pixels = raster_pixels(c, c.band(band)[angle])
-            elif band == 2:
-                gi = angle
-                pixels, _, _ = reconstruct_group_view(
-                    c, staged_groups[gi], staged_score["groups"][gi],
-                    extras, band, angle)
             else:
                 gi = angle
                 pixels, _, _ = reconstruct_group_view(
-                    c, far_groups[gi], far_score["groups"][gi],
-                    core, band, angle)
+                    c, midfar_groups[gi], midfar_score["groups"][gi],
+                    vocabulary, band, angle)
 
             img = semantic_image(c, pixels)
             deg = angle * metrics["angle_step_deg"]
@@ -299,18 +286,13 @@ def main():
                 ]
             else:
                 lines += [
-                    f"resident hero vocab: {dm['resident_patterns']} patterns  |  {dm['resident_bytes']} B VRAM graphics",
-                    f"angle-change hero pattern uploads: {dm['angle_pattern_uploads']}  |  mean refs {dm['sprite_refs_mean']:.1f} / max {dm['sprite_refs_max']}",
+                    f"shared hero vocab: {dm['resident_patterns']} patterns  |  {dm['resident_bytes']} B VRAM graphics",
+                    f"distance/angle-change hero pattern uploads: {dm['angle_pattern_uploads']}  |  mean refs {dm['sprite_refs_mean']:.1f} / max {dm['sprite_refs_max']}",
                     f"SAT payload: mean {dm['sat_bytes_mean']:.1f} B / max {dm['sat_bytes_max']} B  |  scan peak {dm['scanline_peak']}/8",
                     f"codec weighted error / demanded tile: {dm['mean_cost_per_demand']:.2f}  |  naive 32-view map {dm['naive_map_bytes']} B",
+                    "same 192-pattern vocabulary serves both R32 and R36; zero uploads either way",
+                    "lit-room reference: 256-pattern BG cache | measured scheduled peak 33/~48",
                 ]
-                if band == 2:
-                    lines.append(
-                        f"R36 -> R32 refinement: +{dm['refinement_patterns']} patterns / +{dm['refinement_bytes']} B once")
-                else:
-                    lines.append("far core only: 16 patterns; refinement prefix not required")
-                lines.append(
-                    "lit-room reference: 416-pattern BG cache | measured scheduled peak 22/~48")
 
             draw_overlay(img, lines)
             img.save(frames / f"frame-{frame_index:04d}.png", optimize=True)
@@ -331,8 +313,7 @@ def main():
         "frames": frame_index,
         "angles": c.angles,
         "distances": [d["radius"] for d in distance_metrics],
-        "core_patterns": len(core),
-        "refinement_patterns": len(extras),
+        "flat_patterns": len(vocabulary),
     }, sort_keys=True))
     print("HIERARCHICAL_LOD_VIDEO_FRAMES_PASS")
 

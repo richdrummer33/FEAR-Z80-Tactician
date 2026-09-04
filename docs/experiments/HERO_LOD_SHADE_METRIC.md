@@ -134,9 +134,21 @@ not the vocabulary is nested. Distance crossings are rare and gradual, and a
 non-nested 64-pattern far set is a 2 KiB upload, roughly 1.5 VBlanks, easily
 hidden behind band hysteresis.
 
-Recommendation: keep the prefix while the core is 16 to 32 patterns, and do not
-let it cap far quality. If the far band needs 64 or more patterns to read
-correctly, pay a rare 2 KiB transition rather than a permanent 12% quality tax.
+Recommendation, as it stood at this point in the investigation: keep the
+prefix while the core is 16 to 32 patterns, and do not let it cap far quality.
+If the far band needs 64 or more patterns to read correctly, pay a rare 2 KiB
+transition rather than a permanent 12% quality tax.
+
+**Superseded by the next pass.** Once the room's actual VRAM headroom was
+measured (it stays safe reserving up to 288 patterns), the question above
+turned out to be moot: there was no reason to keep the vocabulary small enough
+for nesting to matter. A direct comparison then showed one vocabulary trained
+jointly on mid+far demands beats two independently-sized dictionaries of the
+same combined budget at every size tested -- not because nesting is cheap at
+small sizes, but because sharing beats splitting outright once the budget is
+large enough to matter. The shipped policy is a single flat 192-pattern
+vocabulary. See `HERO_HIERARCHICAL_SPRITE_LOD.md` for the sweep and the final
+numbers.
 
 ## Reproduce
 
