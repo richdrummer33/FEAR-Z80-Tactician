@@ -59,6 +59,8 @@ static const TSPFloorLightEdgeDef k_fl_edge[4] = {
 #define TSP_FL_NEAR_Q2 4
 #define TSP_FL_SHADOW_WORD ((uint16_t)(TSP_TILE_FLOOR|TSP_ATTR_PALETTE))
 
+static uint16_t *g_fl_out_map;
+
 static uint16_t fl_abs16(int16_t v){return (uint16_t)(v<0?-v:v);}
 
 /* Ratio n/d as Q8 without 32-bit division.  Scale both operands together into
@@ -182,7 +184,7 @@ static void fl_draw_cast_edge(const TSPFloorLightEdgeDef *ed,const TSPFloorLight
         yl=fl_line_y_at(&a,&b,xl);yr=fl_line_y_at(&a,&b,xr);mid=(int16_t)((yl+yr)>>1);row=row_floor(mid);
         if(row<9||row>17)continue;if(!fl_cell_unclaimed((uint8_t)row,c))continue;
         slope=clamp_s8((int16_t)(yr-yl),-7,7);local=(int16_t)(yl-((int16_t)row<<3));
-        put_cell(g_map,(uint8_t)row,c,fl_edge_word(local,slope,shadow_below));
+        put_cell(g_fl_out_map,(uint8_t)row,c,fl_edge_word(local,slope,shadow_below));
     }
 }
 
@@ -205,14 +207,14 @@ static void fl_fill_poly(const TSPFloorLightScreenV *p,uint8_t n){
         if(hits>=2u&&xmax>=xmin){
             uint8_t c,c0=(uint8_t)((xmin<4?0:(xmin-4)>>3)),c1=(uint8_t)((xmax<4?0:(xmax-4)>>3));
             if(c1>=TSP_COLS)c1=TSP_COLS-1u;
-            for(c=c0;c<=c1;++c){int16_t xc=(int16_t)(((int16_t)c<<3)+4);if(xc<xmin||xc>xmax)continue;if(fl_cell_unclaimed(row,c))put_cell(g_map,row,c,TSP_FL_SHADOW_WORD);}
+            for(c=c0;c<=c1;++c){int16_t xc=(int16_t)(((int16_t)c<<3)+4);if(xc<xmin||xc>xmax)continue;if(fl_cell_unclaimed(row,c))put_cell(g_fl_out_map,row,c,TSP_FL_SHADOW_WORD);}
         }
     }
 }
 
 static void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS]){
     TSPFloorLightCamV cp[TSP_FL_MAX_VERTS];TSPFloorLightScreenV sp[4][TSP_FL_MAX_VERTS];uint8_t pn[4],i,j;
-    (void)out_map;
+    g_fl_out_map=out_map;
     for(i=0u;i<4u;++i){pn[i]=fl_clip_poly(&k_fl_poly[i],s,cp);for(j=0u;j<pn[i];++j)sp[i][j]=fl_project(&cp[j],k_fl_poly[i].floor_z);}
     /* Partial boundaries first: their coverage bits protect them from the full
      * shadow fill that follows, exactly like nearer geometry protects itself. */
