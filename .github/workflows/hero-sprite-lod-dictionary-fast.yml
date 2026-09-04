@@ -1,0 +1,80 @@
+name: Hero sprite-plane resident LOD dictionary
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-sprite-lod-dictionary-fast.yml"
+      - "tools/analyze_sprite_resident_lod.py"
+  workflow_dispatch:
+
+jobs:
+  sprite-lod:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/sprite-lod/host tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/sprite-lod/import.json
+
+      - name: Bake 32-angle corpus
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/sprite-lod/corpus-bake
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/sprite-lod/corpus-bake build/sprite-lod/host \
+            | tee build/sprite-lod/bake.txt
+
+      - name: Train mid/far transparent shared dictionary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_sprite_resident_lod.py \
+            build/sprite-lod/host/doomguy_dense_corpus.dhc \
+            --bands 2,3 --patterns 16,32,64 \
+            --lloyd-iterations 4 \
+            --summary-json build/sprite-lod/midfar.json \
+            | tee build/sprite-lod/midfar.txt
+          grep -q '^SPRITE_RESIDENT_LOD_PASS$' build/sprite-lod/midfar.txt
+
+      - name: Train far-only transparent shared dictionary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_sprite_resident_lod.py \
+            build/sprite-lod/host/doomguy_dense_corpus.dhc \
+            --bands 3 --patterns 16,32,64 \
+            --lloyd-iterations 4 \
+            --summary-json build/sprite-lod/far.json \
+            | tee build/sprite-lod/far.txt
+          grep -q '^SPRITE_RESIDENT_LOD_PASS$' build/sprite-lod/far.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-sprite-resident-lod
+          path: |
+            build/sprite-lod/bake.txt
+            build/sprite-lod/midfar.txt
+            build/sprite-lod/midfar.json
+            build/sprite-lod/far.txt
+            build/sprite-lod/far.json
+          if-no-files-found: error
