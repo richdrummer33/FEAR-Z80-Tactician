@@ -170,57 +170,133 @@ jobs:
 
           python3 - <<'PY' | tee build/runtime-light/performance-summary.txt
           from pathlib import Path
-          import re,statistics
+          import csv,json,re,statistics
           names=('roomA-turn','roomA-forward','roomA-button1')
           def read(v,n):
               t=Path(f'build/runtime-light/{v}-{n}.txt').read_text()
-              def one(p):
+              def one(p,required=True):
                   m=re.search(p,t)
-                  if not m:raise SystemExit(f'missing metric {v} {n}: {p}')
+                  if not m:
+                      if required: raise SystemExit(f'missing metric {v} {n}: {p}')
+                      return None
                   return float(m.group(1))
-              return {
-                'loop':one(r'loop\s+avg=\s*([0-9.]+) T'),
-                'ups':one(r'->\s*([0-9.]+) updates/s'),
-                'render':one(r'render/build avg=\s*([0-9.]+) T'),
-                'vram':one(r'VRAM-upload\s+avg=\s*([0-9.]+) T'),
-                'dirty':one(r'dirty words\s+avg=\s*([0-9.]+)'),
+              d={
+                'loop_T':one(r'loop\s+avg=\s*([0-9.]+) T'),
+                'updates_per_s':one(r'->\s*([0-9.]+) updates/s'),
+                'render_T':one(r'render/build avg=\s*([0-9.]+) T'),
+                'vram_T':one(r'VRAM-upload\s+avg=\s*([0-9.]+) T'),
+                'dirty_words':one(r'dirty words\s+avg=\s*([0-9.]+)'),
+                'map_hash':re.search(r'map-hash\s+frames=\d+ fnv64=([0-9A-F]+)',t).group(1),
               }
-          rows=[]
+              if v=='lit':
+                  d['light_projection_clip_T']=one(r'portal-control\s+total=.*?avg-chunk=\s*([0-9.]+) T')
+                  d['light_cast_edges_T']=one(r'portal-face\s+total=.*?avg-chunk=\s*([0-9.]+) T')
+                  d['light_fill_T']=one(r'retained-life\s+total=.*?avg-chunk=\s*([0-9.]+) T')
+              return d
+          records=[]
           for n in names:
-              b=read('baseline',n);l=read('lit',n);rows.append((n,b,l))
-              dt=l['loop']-b['loop'];pct=100*dt/b['loop'];du=l['ups']-b['ups']
-              print(f'{n}: baseline={b["ups"]:.3f} upd/s lit={l["ups"]:.3f} upd/s loop_delta={dt:+.1f} T ({pct:+.2f}%) ups_delta={du:+.3f}')
-              print(f'  render_delta={l["render"]-b["render"]:+.1f} T vram_delta={l["vram"]-b["vram"]:+.1f} T dirty_delta={l["dirty"]-b["dirty"]:+.1f} words')
-          bm=statistics.mean(r[1]['ups'] for r in rows);lm=statistics.mean(r[2]['ups'] for r in rows)
-          bt=statistics.mean(r[1]['loop'] for r in rows);lt=statistics.mean(r[2]['loop'] for r in rows)
+              b=read('baseline',n);l=read('lit',n)
+              dt=l['loop_T']-b['loop_T'];pct=100*dt/b['loop_T'];du=l['updates_per_s']-b['updates_per_s']
+              rec={'scenario':n,'baseline':b,'lit':l,'delta':{'loop_T':dt,'loop_pct':pct,'updates_per_s':du,
+                   'render_T':l['render_T']-b['render_T'],'vram_T':l['vram_T']-b['vram_T'],
+                   'dirty_words':l['dirty_words']-b['dirty_words']}}
+              records.append(rec)
+              print(f'{n}: baseline={b["updates_per_s"]:.3f} upd/s lit={l["updates_per_s"]:.3f} upd/s loop_delta={dt:+.1f} T ({pct:+.2f}%) ups_delta={du:+.3f}')
+              print(f'  render_delta={rec["delta"]["render_T"]:+.1f} T vram_delta={rec["delta"]["vram_T"]:+.1f} T dirty_delta={rec["delta"]["dirty_words"]:+.1f} words')
+              print(f'  light_split projection_clip={l["light_projection_clip_T"]:.1f} T cast_edges={l["light_cast_edges_T"]:.1f} T fill={l["light_fill_T"]:.1f} T')
+          bm=statistics.mean(r['baseline']['updates_per_s'] for r in records);lm=statistics.mean(r['lit']['updates_per_s'] for r in records)
+          bt=statistics.mean(r['baseline']['loop_T'] for r in records);lt=statistics.mean(r['lit']['loop_T'] for r in records)
+          split={k:statistics.mean(r['lit'][k] for r in records) for k in ('light_projection_clip_T','light_cast_edges_T','light_fill_T')}
+          aggregate={'baseline_mean_updates_per_s':bm,'lit_mean_updates_per_s':lm,
+                     'mean_loop_delta_T':lt-bt,'mean_loop_delta_pct':100*(lt-bt)/bt,
+                     'mean_light_stage_T':split,'new_vram_patterns':0}
           print(f'representative_baseline_mean_updates_per_s={bm:.3f}')
           print(f'representative_lit_mean_updates_per_s={lm:.3f}')
           print(f'representative_mean_loop_delta_T={lt-bt:+.1f}')
           print(f'representative_mean_loop_delta_pct={100*(lt-bt)/bt:+.3f}')
+          print(f'mean_light_projection_clip_T={split["light_projection_clip_T"]:.1f}')
+          print(f'mean_light_cast_edges_T={split["light_cast_edges_T"]:.1f}')
+          print(f'mean_light_fill_T={split["light_fill_T"]:.1f}')
           print('NEW_VRAM_PATTERNS=0')
+          Path('build/runtime-light/performance-summary.json').write_text(json.dumps({'scenarios':records,'aggregate':aggregate},indent=2)+'\n')
+          with Path('build/runtime-light/performance-summary.csv').open('w',newline='') as f:
+              w=csv.writer(f);w.writerow(['scenario','baseline_updates_per_s','lit_updates_per_s','loop_delta_T','loop_delta_pct','light_projection_clip_T','light_cast_edges_T','light_fill_T','baseline_map_hash','lit_map_hash'])
+              for r in records:
+                  w.writerow([r['scenario'],r['baseline']['updates_per_s'],r['lit']['updates_per_s'],r['delta']['loop_T'],r['delta']['loop_pct'],r['lit']['light_projection_clip_T'],r['lit']['light_cast_edges_T'],r['lit']['light_fill_T'],r['baseline']['map_hash'],r['lit']['map_hash']])
           PY
 
-      - name: Capture baseline and lit startup frames
+      - name: Capture real-time motion video images and state data
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p build/runtime-light/screens
-          ./build/tilesector_state_capture build/runtime-light/baseline.gg build/runtime-light/baseline.sym 0 build/runtime-light/screens/baseline.ppm \
-            | tee build/runtime-light/screens/baseline-capture.txt
-          ./build/tilesector_state_capture build/runtime-light/lit.gg build/runtime-light/lit.sym 0 build/runtime-light/screens/lit.ppm \
-            | tee build/runtime-light/screens/lit-capture.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
           python3 -m pip install --user --disable-pip-version-check pillow
-          python3 - <<'PY'
-          from PIL import Image,ImageChops,ImageDraw
+          ROOT=build/runtime-light/capture
+          mkdir -p "$ROOT"
+          for scenario in roomA-turn roomA-forward; do
+            for variant in baseline lit; do
+              D="$ROOT/${variant}-${scenario}"
+              mkdir -p "$D/frames"
+              ./build/tilesector_state_capture \
+                "build/runtime-light/${variant}.gg" "build/runtime-light/${variant}.sym" \
+                --vblank-sequence "$scenario" 180 30 "$D/frames/frame" "$D/state.csv" \
+                | tee "$D/capture.txt"
+              ffmpeg -y -loglevel error -framerate 60 -i "$D/frames/frame-%04d.ppm" \
+                -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +faststart \
+                "$D/${variant}-${scenario}.mp4"
+            done
+            ffmpeg -y -loglevel error \
+              -i "$ROOT/baseline-${scenario}/baseline-${scenario}.mp4" \
+              -i "$ROOT/lit-${scenario}/lit-${scenario}.mp4" \
+              -filter_complex '[0:v][1:v]hstack=inputs=2[v]' -map '[v]' \
+              -c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -movflags +faststart \
+              "$ROOT/baseline-vs-lit-${scenario}.mp4"
+          done
+
+          python3 - <<'PY' | tee build/runtime-light/capture/capture-summary.txt
           from pathlib import Path
-          p=Path('build/runtime-light/screens')
-          b=Image.open(p/'baseline.ppm').convert('RGB');l=Image.open(p/'lit.ppm').convert('RGB')
-          b.save(p/'baseline.png');l.save(p/'lit.png')
-          s=Image.new('RGB',(b.width*2,b.height),(0,0,0));s.paste(b,(0,0));s.paste(l,(b.width,0));
-          d=ImageDraw.Draw(s);d.rectangle((0,0,s.width,14),fill=(0,0,0));d.text((3,2),'BASELINE',fill=(255,255,255));d.text((b.width+3,2),'RUNTIME FLOOR LIGHT',fill=(255,255,255));s.save(p/'baseline-vs-lit.png')
-          diff=ImageChops.difference(b,l);diff.save(p/'baseline-vs-lit-diff.png')
-          print('SCREENSHOTS_WRITTEN=baseline.png,lit.png,baseline-vs-lit.png,baseline-vs-lit-diff.png')
+          from PIL import Image,ImageChops,ImageDraw
+          import csv,json
+          root=Path('build/runtime-light/capture')
+          scenarios=('roomA-turn','roomA-forward')
+          picks=(0,59,119,179)
+          manifest={'capture_kind':'real emulated display VBlank','display_fps':60,'frames':180,'warmup_vblanks':30,'scenarios':{}}
+          for scenario in scenarios:
+              rows=[]
+              for variant in ('baseline','lit'):
+                  d=root/f'{variant}-{scenario}'
+                  imgs=[]
+                  for idx in picks:
+                      im=Image.open(d/'frames'/f'frame-{idx:04d}.ppm').convert('RGB')
+                      im.save(d/f'frame-{idx:04d}.png')
+                      imgs.append(im)
+                  rows.append(imgs)
+                  data=list(csv.DictReader((d/'state.csv').open()))
+                  distinct_loops=len({r['loop_count'] for r in data})
+                  distinct_maps=len({r['map_fnv64'] for r in data})
+                  manifest['scenarios'].setdefault(scenario,{})[variant]={
+                      'start':{k:data[0][k] for k in ('x','y','yaw','loop_count','map_fnv64')},
+                      'end':{k:data[-1][k] for k in ('x','y','yaw','loop_count','map_fnv64')},
+                      'distinct_loop_counts':distinct_loops,'distinct_map_hashes':distinct_maps,
+                      'video':f'{variant}-{scenario}/{variant}-{scenario}.mp4','state_csv':f'{variant}-{scenario}/state.csv'}
+                  print(f'{scenario} {variant}: start=({data[0]["x"]},{data[0]["y"]},yaw {data[0]["yaw"]}) end=({data[-1]["x"]},{data[-1]["y"]},yaw {data[-1]["yaw"]}) distinct_loops={distinct_loops} distinct_maps={distinct_maps}')
+              w,h=rows[0][0].size; header=16
+              sheet=Image.new('RGB',(w*len(picks),h*2+header*2),(0,0,0));draw=ImageDraw.Draw(sheet)
+              for ri,label in enumerate(('BASELINE','RUNTIME FLOOR LIGHT')):
+                  y=ri*(h+header);draw.text((3,y+2),label,fill=(255,255,255))
+                  for ci,im in enumerate(rows[ri]):sheet.paste(im,(ci*w,y+header))
+              sheet.save(root/f'baseline-vs-lit-{scenario}-contact-sheet.png')
+              diff=ImageChops.difference(rows[0][-1],rows[1][-1]);diff.save(root/f'baseline-vs-lit-{scenario}-final-diff.png')
+              manifest['scenarios'][scenario]['comparison_video']=f'baseline-vs-lit-{scenario}.mp4'
+              manifest['scenarios'][scenario]['contact_sheet']=f'baseline-vs-lit-{scenario}-contact-sheet.png'
+          (root/'capture-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print('VIDEO_CAPTURE=PASS')
+          print('videos=baseline-vs-lit-roomA-turn.mp4,baseline-vs-lit-roomA-forward.mp4 plus individual baseline/lit MP4s')
+          print('images=4 representative PNG frames per variant/scenario plus A/B contact sheets and final diffs')
+          print('data=per-VBlank state.csv files + capture-manifest.json')
           PY
+          find "$ROOT" -type d -name frames -prune -exec rm -rf {} +
 
       - name: Summarize runtime floor light probe
         shell: bash
@@ -241,8 +317,10 @@ jobs:
             echo
             cat build/runtime-light/performance-summary.txt
             echo
-            cat build/runtime-light/screens/baseline-capture.txt
-            cat build/runtime-light/screens/lit-capture.txt
+            cat build/runtime-light/capture/capture-summary.txt
+            echo
+            echo 'machine-readable performance=performance-summary.json, performance-summary.csv'
+            echo 'motion evidence=capture/*.mp4, capture/*.png, capture/*/state.csv, capture/capture-manifest.json'
           } | tee build/runtime-light/SUMMARY.txt
 
       - uses: actions/upload-artifact@v4
