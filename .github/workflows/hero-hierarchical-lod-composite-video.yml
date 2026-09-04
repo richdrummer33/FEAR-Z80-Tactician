@@ -1,0 +1,114 @@
+name: Hero hierarchical LOD composite video
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-hierarchical-lod-composite-video.yml"
+      - "tools/render_hierarchical_lod_video.py"
+  workflow_dispatch:
+
+jobs:
+  video:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          python3 -m pip install --user pillow
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/lod-video/host build/lod-video/render tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/lod-video/import.json
+
+      - name: Bake 32-angle four-distance corpus
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/lod-video/corpus-bake
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/lod-video/corpus-bake build/lod-video/host \
+            | tee build/lod-video/bake.txt
+          grep -q '^DOOM_DENSE_CORPUS_PASS samples=128 angles=32 bands=4 ' \
+            build/lod-video/bake.txt
+
+      - name: Render annotated quantized-distance frames
+        run: |
+          set -euo pipefail
+          python3 tools/render_hierarchical_lod_video.py \
+            build/lod-video/host/doomguy_dense_corpus.dhc \
+            build/lod-video/render \
+            --core-patterns 16 --refinement-patterns 16 \
+            --lloyd-iterations 4 \
+            | tee build/lod-video/render.txt
+          grep -q '^HIERARCHICAL_LOD_VIDEO_FRAMES_PASS$' build/lod-video/render.txt
+          test "$(find build/lod-video/render/frames -name 'frame-*.png' | wc -l)" -eq 128
+
+      - name: Encode half-speed composite video
+        run: |
+          set -euo pipefail
+          # Previous Doomguy proof videos were 30 fps.  This is explicitly
+          # half-rate at 15 fps.  Each of the 32 quantized angular views is
+          # held for four output frames, giving ~8.53 s per 360-degree orbit.
+          ffmpeg -y -loglevel error \
+            -framerate 15 \
+            -i build/lod-video/render/frames/frame-%04d.png \
+            -vf "setpts=4.0*PTS" -r 15 \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            -movflags +faststart \
+            build/lod-video/doomguy-hierarchical-lod-4distance-composite.mp4
+
+          ffprobe -v error \
+            -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate,avg_frame_rate,nb_frames \
+            -show_entries format=duration,size,bit_rate \
+            -of default=noprint_wrappers=1 \
+            build/lod-video/doomguy-hierarchical-lod-4distance-composite.mp4 \
+            | tee build/lod-video/video-info.txt
+
+          test -s build/lod-video/doomguy-hierarchical-lod-4distance-composite.mp4
+          grep -q '^width=640$' build/lod-video/video-info.txt
+          grep -q '^height=576$' build/lod-video/video-info.txt
+          grep -q '^r_frame_rate=15/1$' build/lod-video/video-info.txt
+
+      - name: Export hashes
+        run: |
+          sha256sum \
+            build/lod-video/doomguy-hierarchical-lod-4distance-composite.mp4 \
+            build/lod-video/render/metrics.json \
+            build/lod-video/render/distance-contact-sheet.png \
+            | tee build/lod-video/SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-hierarchical-lod-composite-video
+          path: |
+            build/lod-video/doomguy-hierarchical-lod-4distance-composite.mp4
+            build/lod-video/video-info.txt
+            build/lod-video/SHA256.txt
+            build/lod-video/render/metrics.json
+            build/lod-video/render/distance-contact-sheet.png
+            build/lod-video/render.txt
+            build/lod-video/bake.txt
+          if-no-files-found: error
+          retention-days: 30
