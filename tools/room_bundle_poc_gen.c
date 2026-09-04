@@ -97,8 +97,72 @@
 #ifndef ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_BANDS
 #define ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_BANDS 3
 #endif
+/* Opt-in: stand the statue directly on the floor at 2x scale instead of on
+ * the plinth. Defaults OFF so every existing proof (doomguy-playable-proof,
+ * doomguy-hero-chamber-proof, etc, all built without this define) keeps its
+ * already-verified plinth/1.35-scale/22-unit-clearance behaviour untouched.
+ * Pass -DROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT=1 to build the requested placement. */
+#ifndef ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+#define ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT 0
+#endif
+#if ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+/* Requested 2x pass over the previous 1.35 art-direction scale, now that the
+ * statue stands directly on the floor instead of a plinth. */
+#ifndef ROOM_BUNDLE_DOOMGUY_SCALE
+#define ROOM_BUNDLE_DOOMGUY_SCALE 2.70
+#endif
+/* No plinth, no offset: the importer anchors local Z=0 at the mesh's own
+ * minimum bound, and apply_xf scales before it translates, so a zero here
+ * places that minimum exactly on the world floor at any scale -- flush, no
+ * air gap -- rather than trusting a second constant to track the scale. */
+#ifndef ROOM_BUNDLE_DOOMGUY_FLOOR_Z
+#define ROOM_BUNDLE_DOOMGUY_FLOOR_Z 0.0
+#endif
+/* Derived, not hand-tuned: ROOM_BUNDLE_MESH_BOUNDS_PROBE=1 prints the
+ * doomguy hero chamber's actual world-space bounds after scale/floor
+ * placement, then d = (topZ - eyeZ) * 80 / 72 is the ground distance at
+ * which the mesh's tippy top lands on screen_y=0, the top row (see
+ * project() / RMB_CY=72 / RMB_FOCAL=80 in room_mesh_bake.c). This is the
+ * distance both the playable grid's quality envelope
+ * (doom_play_position_valid) and the showcase route's closest legal
+ * approach (doomguy_quality_clamp) already treat as "min distance" -- this
+ * one constant drives both.
+ *
+ * Current value (39.0) is measured against the placeholder
+ * FullDoomguyclassic-single-notex.glb asset re-scaled to
+ * ROOM_BUNDLE_DOOMGUY_SCALE (topZ=51.30, eyeZ=16.0 -> d=39.22, rounded down
+ * slightly for margin): the real target asset was not available in this
+ * session. Re-run the probe once it is imported and update this constant;
+ * doom_play_position_framed already rejects any position that still clips a
+ * screen edge, so a stale value here fails loudly rather than silently.
+ *
+ * KNOWN LIMITATION at this value with the placeholder asset: the strict
+ * DOOM_PLAY_* walkable-grid pack (ROOM_BUNDLE_PLAYABLE=1) currently fails
+ * doom_play_grid_connected -- the statue is now tall enough that several
+ * grid positions near the room's south pillars clip the top of the screen
+ * regardless of clearance, breaking the ring. The showcase/route bake and
+ * its review video (ROOM_BUNDLE_ONLY=11, ROOM_BUNDLE_CAPTURE_REVIEW=1) are
+ * unaffected -- doomguy_quality_clamp pushes rather than excludes, so it
+ * cannot disconnect. Fixing the grid needs either a wider room or the real
+ * (differently proportioned) target asset; not attempted here. */
+#ifndef ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE
+#define ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE 39.0
+#endif
+/* rmb_render owners are 0x80 + the mesh object's creation-order index within
+ * its RMBScene. add_doomguy_proxy_mesh creates the visual object FIRST for
+ * w->mesh, and nothing else adds to that scene before it now that the
+ * plinth is gone, so the visual mesh is object 0 -> owner 0x80. This used
+ * to be 0x81 when the plinth (object 0) was created first; removing it
+ * silently broke every hardcoded 0x81 owner reference below (every one now
+ * routes through this constant instead, so a future object-order change
+ * only needs to update the derivation here). */
+#define ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER 0x80u
+#else
 #ifndef ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE
 #define ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE 22.0
+#endif
+/* Plinth present: visual is object 1 (plinth is object 0), unchanged. */
+#define ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER 0x81u
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS
 #define ROOM_BUNDLE_DOOMGUY_SEAM_COMPONENTS 0
@@ -831,9 +895,22 @@ static void add_showcase_shell(World *w){
 
 static void add_doomguy_proxy_mesh(RMBScene *m){
 #ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+#if ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+    /* No plinth: the statue stands directly on the room floor. apply_xf
+     * scales before it translates, and the importer anchors the mesh's own
+     * minimum bound at local Z=0, so translating by exactly
+     * ROOM_BUNDLE_DOOMGUY_FLOOR_Z (0.0) places that bound flush on the floor
+     * at any scale -- no separate plinth-height bookkeeping required. */
+    RMBTransform t=rmb_transform(78.0,24.0,(double)ROOM_BUNDLE_DOOMGUY_FLOOR_Z,
+                                 0,0,0,
+                                 (double)ROOM_BUNDLE_DOOMGUY_SCALE,
+                                 (double)ROOM_BUNDLE_DOOMGUY_SCALE,
+                                 (double)ROOM_BUNDLE_DOOMGUY_SCALE);
+#else
     /* Fixed art-direction scale: 135% of the original 19-unit normalization.
      * Plinth height is NOT part of this scale. */
     RMBTransform t=rmb_transform(78.0,24.0,3.0,0,0,0,1.35,1.35,1.35);
+#endif
     uint8_t visual=rmb_new_object(m,RMB_OUTLINE_NONE);
     uint8_t lighting=rmb_new_object(m,RMB_OUTLINE_NONE);
     uint8_t shadow=rmb_new_object(m,RMB_OUTLINE_NONE);
@@ -949,8 +1026,6 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
 #endif
 }
 static void make_doomguy_hero_chamber(World *w){
-    RMBTransform t;
-    uint8_t plinth;
     init_world(w);
 
     /* Canonical west/east traversal mouths remain unchanged. */
@@ -975,9 +1050,16 @@ static void make_doomguy_hero_chamber(World *w){
     add_solid_wall_line(w,54,60,54,68,8.0,0,32,1);
     add_solid_wall_line(w,102,60,102,68,8.0,0,32,1);
 
-    plinth=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(78,24,1.5,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,plinth,&t,10.0,9.0,1.5,0);
+#if !ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+    {
+        uint8_t plinth=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
+        RMBTransform pt=rmb_transform(78,24,1.5,0,0,0,1,1,1);
+        rmb_add_box(&w->mesh,plinth,&pt,10.0,9.0,1.5,0);
+    }
+#endif
+    /* ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT: no plinth, statue stands directly on
+     * the floor. add_doomguy_proxy_mesh anchors its own minimum bound at
+     * world Z=0 in that mode. */
     add_doomguy_proxy_mesh(&w->mesh);
 
     /* Outside light chosen from aperture geometry:
@@ -1349,7 +1431,22 @@ static Pose showcase_detail_pose(uint8_t bundle,uint16_t f){
     double a=(110.0-220.0*q)*(PI/180.0);
     if(bundle==9u){tx=80.0;ty=30.0;rx=24.0;ry=27.0;}
     else if(bundle==10u){tx=80.0;ty=28.0;tz=14.0;rx=21.0;ry=26.0;}
-    else if(bundle==11u){tx=78.0;ty=24.0;tz=15.0;rx=22.0;ry=27.0;}
+    /* ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT: circular at
+     * ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE, tz=16 to match the eye height that
+     * constant was derived against, so the review orbit's closest approach
+     * frames the mesh's tippy top at the top of the screen exactly like the
+     * playable grid's quality envelope does. Otherwise (plinth mode, or the
+     * proxy-primitive fallback with no generated mesh at all) keeps the
+     * original hand-placed ellipse unchanged. */
+    else if(bundle==11u){
+        tx=78.0;ty=24.0;tz=16.0;
+#if defined(ROOM_BUNDLE_DOOMGUY_GENERATED) && ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+        rx=(double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE;
+        ry=(double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE;
+#else
+        rx=22.0;ry=27.0;
+#endif
+    }
     else if(bundle==12u){tx=78.0;ty=24.0;tz=16.0;rx=34.0;ry=52.0;}
     /* A deliberately interior ellipse: all review frames remain inside the
      * showcase room instead of occasionally filming the outside of a wall. */
@@ -2015,7 +2112,7 @@ static void train_doomguy_codec(World *w){
     uint8_t band;
     const double cx=78.0,cy=24.0;
     tsp_host_composite_set_scene(&w->scene);
-    tsp_host_composite_codec_train_begin(0x81u,
+    tsp_host_composite_codec_train_begin(ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER,
         (uint8_t)ROOM_BUNDLE_DOOMGUY_CODEC_PATTERNS);
 
     /*
@@ -2029,7 +2126,15 @@ static void train_doomguy_codec(World *w){
      * chamber; only the camera-to-object relation changes.
      */
     for(band=0u;band<(uint8_t)ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_BANDS;++band){
+#if ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+        /* Anchored to the same min-distance floor the playable grid and the
+         * showcase route already enforce, rather than a fixed 26 units: a
+         * bigger statue needs the camera pulled back further before any
+         * background cell is fully enclosed by its silhouette at all. */
+        double radius=(double)ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE+6.0*(double)band;
+#else
         double radius=26.0+6.0*(double)band;
+#endif
         tsp_host_composite_reset_cache();
         for(a=0u;a<(uint16_t)ROOM_BUNDLE_DOOMGUY_CODEC_TRAIN_ANGLES;++a){
             double theta=(2.0*PI*(double)a)/
@@ -2040,6 +2145,13 @@ static void train_doomguy_codec(World *w){
             p.z=15.0;
             p.yaw=yaw_from_vec(cx-p.x,cy-p.y);
             render_pose(w,&p,dummy);
+            if(getenv("ROOM_BUNDLE_CODEC_TRAIN_DEBUG")&&(a%16u)==0u)
+                fprintf(stderr,
+                        "codec_train_debug band=%u a=%u pose=(%.2f,%.2f,%.2f) "
+                        "owner_px=%u lit_px=%u\n",
+                        (unsigned)band,(unsigned)a,p.x,p.y,p.z,
+                        (unsigned)tsp_host_composite_owner_pixel_count(ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER),
+                        (unsigned)tsp_host_composite_lit_owner_pixel_count(ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER));
         }
     }
     tsp_host_composite_codec_train_commit();
@@ -2224,12 +2336,20 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
  * point whose nearest aimed view clips the asymmetric figure. Every surviving
  * position receives sixteen independently addressable yaw states.
  */
+#ifndef DOOM_PLAY_GRID_W
 #define DOOM_PLAY_GRID_W 8u
+#endif
+#ifndef DOOM_PLAY_GRID_H
 #define DOOM_PLAY_GRID_H 8u
+#endif
 #define DOOM_PLAY_YAWS 16u
 #define DOOM_PLAY_STEP 8
+#ifndef DOOM_PLAY_ORIGIN_X
 #define DOOM_PLAY_ORIGIN_X 50
+#endif
+#ifndef DOOM_PLAY_ORIGIN_Y
 #define DOOM_PLAY_ORIGIN_Y (-4)
+#endif
 #define DOOM_PLAY_POOL_A_BASE 3u
 #define DOOM_PLAY_POOL_SIZE 180u
 #define DOOM_PLAY_POOL_B_BASE (DOOM_PLAY_POOL_A_BASE+DOOM_PLAY_POOL_SIZE)
@@ -2288,7 +2408,8 @@ static uint8_t doom_play_position_framed(World *w,uint8_t ix,uint8_t iy){
     tsp_host_composite_reset_cache();
     tsp_host_composite_codec_begin_route();
     render_pose(w,&p,dummy);
-    pixels=tsp_host_composite_owner_bounds(0x81u,&x0,&y0,&x1,&y1);
+    pixels=tsp_host_composite_owner_bounds(
+        ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER,&x0,&y0,&x1,&y1);
     if(!pixels||x0==0u||y0==0u||x1==159u||y1==143u){
         fprintf(stderr,
                 "quality envelope excludes grid=(%u,%u) world=(%.0f,%.0f) "
@@ -2440,7 +2561,7 @@ static void bake_doomguy_playable(const char *outdir){
                 if(yaw_i==target_yaw){
                     uint8_t x0=0u,y0=0u,x1=0u,y1=0u;
                     uint16_t pixels=tsp_host_composite_owner_bounds(
-                        0x81u,&x0,&y0,&x1,&y1);
+                        ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER,&x0,&y0,&x1,&y1);
                     char eval_path[512];
                     if(!pixels)die("playable aimed state cannot see Doomguy");
                     if(x0==0u||y0==0u||x1==159u||y1==143u)
@@ -2450,12 +2571,14 @@ static void bake_doomguy_playable(const char *outdir){
                                  "%s/playable-eval-%03u.ppm",outdir,
                                  (unsigned)ordinal);
                         if(!tsp_host_composite_write_owner_contrast_ppm(
-                               eval_path,0x81u))die("cannot write playable eval frame");
+                               eval_path,ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER))
+                        die("cannot write playable eval frame");
                         snprintf(eval_path,sizeof(eval_path),
                                  "%s/playable-mask-%03u.pgm",outdir,
                                  (unsigned)ordinal);
                         if(!tsp_host_composite_write_owner_mask_pgm(
-                               eval_path,0x81u))die("cannot write playable owner mask");
+                               eval_path,ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER))
+                        die("cannot write playable owner mask");
                     }
                     ++aimed_states;
                 }
@@ -2578,7 +2701,7 @@ static void bake_doomguy_playable(const char *outdir){
 /* Matches the playable pack's eye height so the corpus describes the geometry
  * the runtime will actually have to draw. */
 #define HERO_CORPUS_EYE_Z 16.0
-#define HERO_CORPUS_OWNER 0x81u
+#define HERO_CORPUS_OWNER ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER
 
 static void write_i16(FILE *f,int16_t v){write_u16(f,(uint16_t)v);}
 static void write_i32(FILE *f,int32_t v){write_u32(f,(uint32_t)v);}
@@ -2821,6 +2944,30 @@ int main(int argc,char **argv){
     }
     if(getenv("ROOM_BUNDLE_HERO_CORPUS")){
         bake_hero_dense_corpus(outdir);
+        return 0;
+    }
+    if(getenv("ROOM_BUNDLE_MESH_BOUNDS_PROBE")){
+        /* Prints the doomguy hero chamber mesh's actual world-space bounds
+         * after scale/floor placement, so ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE
+         * (and any orbit/detail-pass camera radius) can be re-derived from a
+         * measured bake instead of a guess whenever the imported asset or
+         * ROOM_BUNDLE_DOOMGUY_SCALE changes. scale/floor_z are only real
+         * build-time constants under ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT=1; the
+         * plinth-mode values are hardcoded literals, printed as such. */
+        World w;
+#if ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+        const double probe_scale=(double)ROOM_BUNDLE_DOOMGUY_SCALE;
+        const double probe_floor_z=(double)ROOM_BUNDLE_DOOMGUY_FLOOR_Z;
+#else
+        const double probe_scale=1.35,probe_floor_z=3.0;
+#endif
+        make_world(11u,&w);
+        printf("DOOMGUY_MESH_BOUNDS min=(%.4f,%.4f,%.4f) max=(%.4f,%.4f,%.4f) "
+               "scale=%.4f floor_z=%.4f floor_mount=%u\n",
+               w.mesh.bounds_min.x,w.mesh.bounds_min.y,w.mesh.bounds_min.z,
+               w.mesh.bounds_max.x,w.mesh.bounds_max.y,w.mesh.bounds_max.z,
+               probe_scale,probe_floor_z,
+               (unsigned)ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT);
         return 0;
     }
 #endif
