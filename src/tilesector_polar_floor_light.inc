@@ -179,7 +179,9 @@ static uint16_t fl_edge_word(int16_t local_left,int8_t slope,uint8_t shadow_belo
 
 static int16_t fl_line_y_at(const TSPFloorLightScreenV *a,const TSPFloorLightScreenV *b,int16_t x){
     uint16_t dx=fl_abs16((int16_t)(b->x-a->x)),nx=fl_abs16((int16_t)(x-a->x));uint8_t t;
-    if(!dx)return a->y;t=fl_ratio_q8(nx,dx);return (int16_t)(a->y+fl_mul_s16_q8((int16_t)(b->y-a->y),t));
+    /* Projected x is clamped to 0..159 and x lies on this segment, so both
+     * operands already fit the exact 8-bit reciprocal path. */
+    if(!dx)return a->y;t=ratio_q8_exact((uint8_t)nx,(uint8_t)dx);return (int16_t)(a->y+fl_mul_s16_q8((int16_t)(b->y-a->y),t));
 }
 
 static void fl_draw_cast_edge(uint8_t edge_id,const TSPFloorLightScreenV *poly,uint8_t pn){
@@ -206,7 +208,9 @@ static void fl_draw_cast_edge(uint8_t edge_id,const TSPFloorLightScreenV *poly,u
 
 static int16_t fl_scan_x(const TSPFloorLightScreenV *a,const TSPFloorLightScreenV *b,int16_t y){
     uint16_t dy=fl_abs16((int16_t)(b->y-a->y)),ny=fl_abs16((int16_t)(y-a->y));uint8_t t;
-    if(!dy)return a->x;t=fl_ratio_q8(ny,dy);return (int16_t)(a->x+fl_mul_s16_q8((int16_t)(b->x-a->x),t));
+    /* Projected y is clamped to 72..143 and this is called only for a crossing,
+     * so dy <= 71 and ny <= dy: no generic 16-to-8 scaling can ever occur. */
+    if(!dy)return a->x;t=ratio_q8_exact((uint8_t)ny,(uint8_t)dy);return (int16_t)(a->x+fl_mul_s16_q8((int16_t)(b->x-a->x),t));
 }
 
 static void fl_fill_poly(const TSPFloorLightScreenV *p,uint8_t n){
