@@ -1,0 +1,36 @@
+name: Temp Doomguy sandbox kit
+
+on:
+  push:
+    branches:
+      - temp/doomguy-material-form-latest
+    paths:
+      - ".github/workflows/temp-doomguy-sandbox-kit.yml"
+  workflow_dispatch:
+
+jobs:
+  kit:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install importer dependencies
+        run: |
+          set -euo pipefail
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Package exact branch source and offline importer dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p build/sandbox-kit
+          tar --exclude=.git --exclude=build -czf build/sandbox-kit/doomguy-sandbox-kit.tar.gz .
+          sha256sum build/sandbox-kit/doomguy-sandbox-kit.tar.gz | tee build/sandbox-kit/SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-sandbox-kit
+          path: build/sandbox-kit/*
+          if-no-files-found: error
+          retention-days: 3
