@@ -70,7 +70,7 @@ static int vblank_sequence(int argc,char**argv) {
     const unsigned frames=(unsigned)std::strtoul(argv[5],nullptr,0);
     const unsigned warmup=(unsigned)std::strtoul(argv[6],nullptr,0);
     const std::string prefix=argv[7]; const char* csv_path=argv[8];
-    if(!frames || !press_scenario) return 2;
+    if(!frames) return 2;
 
     u16 state=0,phase=0,map=0,loops=0,dirty=0;
     if(!any_symbol(sym,"_g_state","g_state",state)) {
