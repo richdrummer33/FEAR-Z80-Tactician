@@ -1,0 +1,3 @@
+Temporary CI retrigger for the Q2 floor-light inverse-depth benchmark.
+Source-under-test parent: e61cc8e03099ec3eb03212c3365935c1cb00ff5b
+This file has no build/runtime effect and should be removed after the benchmark.
