@@ -194,7 +194,7 @@ static void fl_fill_poly(const TSPFloorLightScreenV *p,uint8_t n){
     }
 }
 
-void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS]) BANKED {
+static void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS]){
     uint8_t n0,n1,n2,n3;g_fl_out_map=out_map;
     /* Camera origin and yaw are frame constants. Cache them once instead of
      * repeating shifts and sine-table reads for every light vertex. */
