@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """Shared cross-angle resident LOD vocabulary optimization.
 
-Each angular group owns its own near-distance resident base dictionary.  A
-small set of additional LOD patterns is shared by every group.  This models the
+Each angular group owns its own near-distance resident base dictionary. A small
+set of additional LOD patterns is shared by every group. This models the
 important hardware/ROM case: the close hero vocabulary may still vary with
 view, while a common coarse vocabulary can remain resident across angle and
 distance changes.
 
-The module provides:
-- greedy shared dictionary growth from the globally worst represented demand;
-- monotonic Lloyd-style refinement of only the shared entries;
-- free H/V flips, matching Mode-4 name-table capabilities.
+The implementation caches each group's best local-base match once. Repeated
+shared-vocabulary scoring then compares demands only against the shared entries,
+which keeps 32-angle sweeps practical.
 """
 
 from resident_tile_dictionary import (
-    TileWeights, canonical_pattern, dedupe_patterns, flip_pattern,
+    TileWeights, best_match, canonical_pattern, dedupe_patterns, flip_pattern,
     score_demands,
 )
 from resident_tile_lloyd import _optimal_value
@@ -28,26 +27,76 @@ def prepare_group(base_dictionary, demands, allow_flips=True):
     return {
         "base": base,
         "demands": demands,
+        "base_score_cache": None,
     }
 
 
+def _base_score(group, weights, allow_flips):
+    cached = group.get("base_score_cache")
+    key = (weights.silhouette, weights.shade, bool(allow_flips))
+    if cached is not None and cached.get("key") == key:
+        return cached["score"]
+    score = score_demands(
+        group["demands"], group["base"], weights, allow_flips)
+    group["base_score_cache"] = {"key": key, "score": score}
+    return score
+
+
 def score_groups(groups, shared, weights=TileWeights(), allow_flips=True):
+    """Score angle-local bases plus one shared add-on vocabulary.
+
+    The expensive local base search is cached. For every later solve we begin
+    from that local winner and compare only the shared entries.
+    """
     total_cost = 0.0
     exact = 0
     demand_count = 0
     group_scores = []
+
     for gi, group in enumerate(groups):
-        dictionary = group["base"] + list(shared)
-        score = score_demands(
-            group["demands"], dictionary, weights, allow_flips)
-        total_cost += score["total_cost"]
-        exact += score["exact_count"]
-        demand_count += len(group["demands"])
+        base_score = _base_score(group, weights, allow_flips)
+        base_count = len(group["base"])
+        matches = [dict(m) for m in base_score["matches"]]
+
+        for si, resident in enumerate(shared):
+            dictionary_index = base_count + si
+            for di, demand in enumerate(group["demands"]):
+                candidate = best_match(
+                    demand["pattern"], [resident], weights, allow_flips)
+                current = matches[di]
+                candidate_key = (
+                    candidate.cost, dictionary_index,
+                    int(candidate.flip_v), int(candidate.flip_h))
+                current_key = (
+                    current["cost"], current["dictionary_index"],
+                    int(current["flip_v"]), int(current["flip_h"]))
+                if candidate_key < current_key:
+                    matches[di] = {
+                        "demand_index": di,
+                        "cost": candidate.cost,
+                        "dictionary_index": dictionary_index,
+                        "flip_h": candidate.flip_h,
+                        "flip_v": candidate.flip_v,
+                    }
+
+        group_total = sum(m["cost"] for m in matches)
+        group_exact = sum(1 for m in matches if m["cost"] == 0)
+        n = len(group["demands"])
+        total_cost += group_total
+        exact += group_exact
+        demand_count += n
         group_scores.append({
             "group_index": gi,
-            "base_count": len(group["base"]),
-            "score": score,
+            "base_count": base_count,
+            "score": {
+                "total_cost": group_total,
+                "mean_cost": group_total / n if n else 0.0,
+                "exact_count": group_exact,
+                "exact_fraction": group_exact / n if n else 1.0,
+                "matches": matches,
+            },
         })
+
     return {
         "total_cost": total_cost,
         "mean_cost": total_cost / demand_count if demand_count else 0.0,
@@ -60,6 +109,7 @@ def score_groups(groups, shared, weights=TileWeights(), allow_flips=True):
 
 def greedy_shared_growth(groups, additions, weights=TileWeights(),
                          allow_flips=True):
+    """Grow one shared vocabulary with incremental per-demand updates."""
     shared = []
     known = set()
     score = score_groups(groups, shared, weights, allow_flips)
@@ -72,11 +122,48 @@ def greedy_shared_growth(groups, additions, weights=TileWeights(),
         "added_demand": None,
     }]
 
+    # Keep the current winning match tables and compare each newly added shared
+    # pattern exactly once against each demand.
+    current = []
+    for gscore in score["groups"]:
+        current.append([dict(m) for m in gscore["score"]["matches"]])
+
+    def rebuild_score():
+        total = 0.0
+        exact_count = 0
+        demand_count = 0
+        group_scores = []
+        for gi, matches in enumerate(current):
+            n = len(matches)
+            group_total = sum(m["cost"] for m in matches)
+            group_exact = sum(1 for m in matches if m["cost"] == 0)
+            total += group_total
+            exact_count += group_exact
+            demand_count += n
+            group_scores.append({
+                "group_index": gi,
+                "base_count": len(groups[gi]["base"]),
+                "score": {
+                    "total_cost": group_total,
+                    "mean_cost": group_total / n if n else 0.0,
+                    "exact_count": group_exact,
+                    "exact_fraction": group_exact / n if n else 1.0,
+                    "matches": matches,
+                },
+            })
+        return {
+            "total_cost": total,
+            "mean_cost": total / demand_count if demand_count else 0.0,
+            "exact_count": exact_count,
+            "exact_fraction": exact_count / demand_count if demand_count else 1.0,
+            "demand_count": demand_count,
+            "groups": group_scores,
+        }
+
     for step in range(1, additions + 1):
         ranked = []
-        for gscore in score["groups"]:
-            gi = gscore["group_index"]
-            for di, match in enumerate(gscore["score"]["matches"]):
+        for gi, matches in enumerate(current):
+            for di, match in enumerate(matches):
                 ranked.append((match["cost"], gi, di))
         ranked.sort(reverse=True)
 
@@ -96,7 +183,30 @@ def greedy_shared_growth(groups, additions, weights=TileWeights(),
         gi, di, pattern = chosen
         shared.append(pattern)
         known.add(pattern)
-        score = score_groups(groups, shared, weights, allow_flips)
+        si = len(shared) - 1
+
+        for group_i, group in enumerate(groups):
+            dictionary_index = len(group["base"]) + si
+            for demand_i, demand in enumerate(group["demands"]):
+                candidate = best_match(
+                    demand["pattern"], [pattern], weights, allow_flips)
+                old = current[group_i][demand_i]
+                candidate_key = (
+                    candidate.cost, dictionary_index,
+                    int(candidate.flip_v), int(candidate.flip_h))
+                old_key = (
+                    old["cost"], old["dictionary_index"],
+                    int(old["flip_v"]), int(old["flip_h"]))
+                if candidate_key < old_key:
+                    current[group_i][demand_i] = {
+                        "demand_index": demand_i,
+                        "cost": candidate.cost,
+                        "dictionary_index": dictionary_index,
+                        "flip_h": candidate.flip_h,
+                        "flip_v": candidate.flip_v,
+                    }
+
+        score = rebuild_score()
         history.append({
             "additions": step,
             "total_cost": score["total_cost"],
@@ -152,12 +262,10 @@ def refine_shared_dictionary(groups, shared, iterations=4,
         candidate = list(current)
         changed = 0
 
-        # Dead shared entries are reseeded from globally difficult demands.
         worst.sort(reverse=True)
         used = set()
         for si in range(len(candidate)):
-            assigned = buckets[si]
-            if assigned:
+            if buckets[si]:
                 continue
             seed = None
             for cost, gi, di in worst:
