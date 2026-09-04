@@ -48,7 +48,7 @@ static TSPFloorLightScreenV g_fl_sp2[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp3[TSP_FL_MAX_VERTS];
 static TSPFloorLightCamV g_fl_edge_ca[4];
 static TSPFloorLightCamV g_fl_edge_cb[4];
-static uint8_t g_fl_edge_skip_clip_mask[4];
+static uint8_t g_fl_edge_no_clip[4];
 static int16_t g_fl_cam_x_q2,g_fl_cam_y_q2;
 static int8_t g_fl_cam_sn_q5,g_fl_cam_cs_q5;
 
@@ -129,7 +129,7 @@ static void fl_world_to_cam(int16_t x_q2,int16_t y_q2,TSPFloorLightCamV *o){
 }
 
 static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
-    uint8_t i,n=pd->count,plane,plane_bit=1u,cls;const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];
+    uint8_t i,n=pd->count,plane,cls;const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];
     const TSPFloorLightCamV *src;TSPFloorLightCamV *dst,*tmp;
     for(i=0u;i<n;++i)fl_world_to_cam(pd->xy_q2[(uint8_t)(i+i)],pd->xy_q2[(uint8_t)(i+i+1u)],&g_fl_clip_a[i]);
     /* The cast edge is already a boundary of its owner polygon. Keep its raw
@@ -137,14 +137,14 @@ static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
      * the edge pass does not transform the same world vertices a second time. */
     g_fl_edge_ca[edge_id]=g_fl_clip_a[ed->va];
     g_fl_edge_cb[edge_id]=g_fl_clip_a[ed->vb];
-    /* A plane that wholly contains the owner polygon also contains the cast
-     * edge after any earlier convex clipping. Stage 6 can therefore omit that
-     * exact half-space test without changing either endpoint or projection. */
-    g_fl_edge_skip_clip_mask[edge_id]=0u;
+    /* If the entire owner polygon is wholly inside every frustum plane, its
+     * internal cast edge is too. Remember that proof so stage 6 can skip a
+     * redundant line clip while keeping the original endpoint projection. */
+    g_fl_edge_no_clip[edge_id]=1u;
     src=g_fl_clip_a;dst=g_fl_clip_b;
-    for(plane=0u;plane<3u;++plane,plane_bit=(uint8_t)(plane_bit<<1)){ 
+    for(plane=0u;plane<3u;++plane){
         cls=fl_classify_plane(src,n,plane);
-        if(cls==1u)g_fl_edge_skip_clip_mask[edge_id]|=plane_bit;
+        if(cls!=1u)g_fl_edge_no_clip[edge_id]=0u;
         if(!cls){g_fl_project_src=src;return 0u;}
         if(cls==2u){
             n=fl_clip_plane(src,n,dst,plane);if(!n){g_fl_project_src=src;return 0u;}
@@ -156,10 +156,9 @@ static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
     return n;
 }
 
-static uint8_t fl_clip_line(TSPFloorLightCamV *a,TSPFloorLightCamV *b,uint8_t skip_mask){
-    uint8_t p,bit=1u,ia,ib;int16_t ea,eb;TSPFloorLightCamV x;
-    for(p=0u;p<3u;++p,bit=(uint8_t)(bit<<1)){
-        if(skip_mask&bit)continue;
+static uint8_t fl_clip_line(TSPFloorLightCamV *a,TSPFloorLightCamV *b){
+    uint8_t p,ia,ib;int16_t ea,eb;TSPFloorLightCamV x;
+    for(p=0u;p<3u;++p){
         ea=fl_plane_eval(a,p);eb=fl_plane_eval(b,p);ia=(uint8_t)(ea>=0);ib=(uint8_t)(eb>=0);
         if(!ia&&!ib)return 0u;
         if(ia!=ib){x=fl_lerp_cross(a,b,ea,eb);if(!ia)*a=x;else *b=x;}
@@ -205,8 +204,8 @@ static int16_t fl_line_y_at(const TSPFloorLightScreenV *a,const TSPFloorLightScr
 }
 
 static void fl_draw_cast_edge(uint8_t edge_id,const TSPFloorLightScreenV *poly,uint8_t pn){
-    const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];TSPFloorLightCamV ca=g_fl_edge_ca[edge_id],cb=g_fl_edge_cb[edge_id];TSPFloorLightScreenV a,b,t;int16_t cross,dxh,dyh;uint8_t i,c,c0,c1,skip_mask=g_fl_edge_skip_clip_mask[edge_id],shadow_below=0u;
-    if(skip_mask!=7u&&!fl_clip_line(&ca,&cb,skip_mask))return;a=fl_project(&ca,ed->floor_z);b=fl_project(&cb,ed->floor_z);
+    const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];TSPFloorLightCamV ca=g_fl_edge_ca[edge_id],cb=g_fl_edge_cb[edge_id];TSPFloorLightScreenV a,b,t;int16_t cross,dxh,dyh;uint8_t i,c,c0,c1,shadow_below=0u;
+    if(!g_fl_edge_no_clip[edge_id]&&!fl_clip_line(&ca,&cb))return;a=fl_project(&ca,ed->floor_z);b=fl_project(&cb,ed->floor_z);
     if(a.x>b.x){t=a;a=b;b=t;}if((int16_t)(b.x-a.x)<2)return;
     /* Find any clipped polygon vertex clearly off the cast line. Halving the
      * line vector keeps the sign test inside signed 16-bit arithmetic. */
