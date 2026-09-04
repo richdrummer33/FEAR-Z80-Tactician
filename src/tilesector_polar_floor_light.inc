@@ -9,6 +9,10 @@
  */
 #if defined(__SDCC)
 
+extern volatile uint8_t g_tspf_stage;
+extern volatile uint8_t g_ts_render_stage;
+#define TSP_FL_SET_STAGE(v) do { g_tspf_stage=(v); g_ts_render_stage=(v); } while(0)
+
 typedef struct TSPFloorLightCamV { int16_t f_q2,s_q2; } TSPFloorLightCamV;
 typedef struct TSPFloorLightScreenV { int16_t x,y; } TSPFloorLightScreenV;
 typedef struct TSPFloorLightPolyDef { const int16_t *xy_q2;uint8_t count,floor_z; } TSPFloorLightPolyDef;
@@ -201,14 +205,17 @@ static void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CEL
     g_fl_cam_x_q2=shr_signed(s->x_q4,2);g_fl_cam_y_q2=shr_signed(s->y_q4,2);
     g_fl_cam_sn_q5=(int8_t)shr_signed((int16_t)k_tspf_sin_q7[s->yaw],2);
     g_fl_cam_cs_q5=(int8_t)shr_signed((int16_t)k_tspf_sin_q7[(uint8_t)(s->yaw+64u)],2);
+    TSP_FL_SET_STAGE(5u);
     n0=fl_project_poly(&k_fl_poly[0],0u,g_fl_sp0);
     n1=fl_project_poly(&k_fl_poly[1],1u,g_fl_sp1);
     n2=fl_project_poly(&k_fl_poly[2],2u,g_fl_sp2);
     n3=fl_project_poly(&k_fl_poly[3],3u,g_fl_sp3);
+    TSP_FL_SET_STAGE(6u);
     if(n0>=3u)fl_draw_cast_edge(0u,g_fl_sp0,n0);
     if(n1>=3u)fl_draw_cast_edge(1u,g_fl_sp1,n1);
     if(n2>=3u)fl_draw_cast_edge(2u,g_fl_sp2,n2);
     if(n3>=3u)fl_draw_cast_edge(3u,g_fl_sp3,n3);
+    TSP_FL_SET_STAGE(7u);
     if(n0>=3u)fl_fill_poly(g_fl_sp0,n0);
     if(n1>=3u)fl_fill_poly(g_fl_sp1,n1);
     if(n2>=3u)fl_fill_poly(g_fl_sp2,n2);
