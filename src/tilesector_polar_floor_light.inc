@@ -48,13 +48,6 @@ static TSPFloorLightScreenV g_fl_sp2[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp3[TSP_FL_MAX_VERTS];
 static TSPFloorLightCamV g_fl_edge_ca[4];
 static TSPFloorLightCamV g_fl_edge_cb[4];
-/* When a cast-edge endpoint survives polygon clipping unchanged, its owner
- * polygon has already paid to project that exact camera-space point. Cache
- * the result so the later edge pass can reuse it byte-for-byte. */
-static TSPFloorLightScreenV g_fl_edge_sa[4];
-static TSPFloorLightScreenV g_fl_edge_sb[4];
-static uint8_t g_fl_edge_screen_mask[4];
-static uint8_t g_fl_edge_inside_mask[4];
 static int16_t g_fl_cam_x_q2,g_fl_cam_y_q2;
 static int8_t g_fl_cam_sn_q5,g_fl_cam_cs_q5;
 
@@ -143,12 +136,6 @@ static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
      * the edge pass does not transform the same world vertices a second time. */
     g_fl_edge_ca[edge_id]=g_fl_clip_a[ed->va];
     g_fl_edge_cb[edge_id]=g_fl_clip_a[ed->vb];
-    /* Coordinate equality after Q8 clipping is not sufficient to prove an
-     * original endpoint survived: a rounded intersection can land back on the
-     * outside endpoint. Record true half-plane membership independently. */
-    g_fl_edge_inside_mask[edge_id]=0u;
-    if(fl_plane_eval(&g_fl_edge_ca[edge_id],0u)>=0&&fl_plane_eval(&g_fl_edge_ca[edge_id],1u)>=0&&fl_plane_eval(&g_fl_edge_ca[edge_id],2u)>=0)g_fl_edge_inside_mask[edge_id]|=1u;
-    if(fl_plane_eval(&g_fl_edge_cb[edge_id],0u)>=0&&fl_plane_eval(&g_fl_edge_cb[edge_id],1u)>=0&&fl_plane_eval(&g_fl_edge_cb[edge_id],2u)>=0)g_fl_edge_inside_mask[edge_id]|=2u;
     src=g_fl_clip_a;dst=g_fl_clip_b;
     for(plane=0u;plane<3u;++plane){
         cls=fl_classify_plane(src,n,plane);
@@ -185,14 +172,7 @@ static TSPFloorLightScreenV fl_project(const TSPFloorLightCamV *v,uint8_t floor_
 }
 
 static uint8_t fl_project_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id,TSPFloorLightScreenV *dst){
-    uint8_t i,n=fl_clip_poly(pd,edge_id),mask=0u,eligible=g_fl_edge_inside_mask[edge_id];TSPFloorLightScreenV q;
-    for(i=0u;i<n;++i){
-        const TSPFloorLightCamV *v=&g_fl_project_src[i];
-        q=fl_project(v,pd->floor_z);dst[i]=q;
-        if((eligible&1u)&&v->f_q2==g_fl_edge_ca[edge_id].f_q2&&v->s_q2==g_fl_edge_ca[edge_id].s_q2){g_fl_edge_sa[edge_id]=q;mask|=1u;}
-        if((eligible&2u)&&v->f_q2==g_fl_edge_cb[edge_id].f_q2&&v->s_q2==g_fl_edge_cb[edge_id].s_q2){g_fl_edge_sb[edge_id]=q;mask|=2u;}
-    }
-    g_fl_edge_screen_mask[edge_id]=mask;return n;
+    uint8_t i,n=fl_clip_poly(pd,edge_id);for(i=0u;i<n;++i)dst[i]=fl_project(&g_fl_project_src[i],pd->floor_z);return n;
 }
 
 static uint8_t fl_cell_unclaimed(uint8_t row,uint8_t col){
@@ -218,13 +198,8 @@ static int16_t fl_line_y_at(const TSPFloorLightScreenV *a,const TSPFloorLightScr
 }
 
 static void fl_draw_cast_edge(uint8_t edge_id,const TSPFloorLightScreenV *poly,uint8_t pn){
-    const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];TSPFloorLightCamV ca=g_fl_edge_ca[edge_id],cb=g_fl_edge_cb[edge_id];TSPFloorLightScreenV a,b,t;int16_t cross,dxh,dyh;uint8_t i,c,c0,c1,mask=g_fl_edge_screen_mask[edge_id],shadow_below=0u;
-    if(mask==3u){a=g_fl_edge_sa[edge_id];b=g_fl_edge_sb[edge_id];}
-    else{
-        if(!fl_clip_line(&ca,&cb))return;
-        a=(mask&1u)?g_fl_edge_sa[edge_id]:fl_project(&ca,ed->floor_z);
-        b=(mask&2u)?g_fl_edge_sb[edge_id]:fl_project(&cb,ed->floor_z);
-    }
+    const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];TSPFloorLightCamV ca=g_fl_edge_ca[edge_id],cb=g_fl_edge_cb[edge_id];TSPFloorLightScreenV a,b,t;int16_t cross,dxh,dyh;uint8_t i,c,c0,c1,shadow_below=0u;
+    if(!fl_clip_line(&ca,&cb))return;a=fl_project(&ca,ed->floor_z);b=fl_project(&cb,ed->floor_z);
     if(a.x>b.x){t=a;a=b;b=t;}if((int16_t)(b.x-a.x)<2)return;
     /* Find any clipped polygon vertex clearly off the cast line. Halving the
      * line vector keeps the sign test inside signed 16-bit arithmetic. */
