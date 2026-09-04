@@ -58,7 +58,7 @@ pe_row_loop$:
         ld      d, #0
         add     hl, de
 
-        ; DE = visible VDP row base + first*2.
+        ; DE = visible VDP row base + first*2 in the 0x3800 name table.
         push    hl
         ld      a, (#pe_row$)
         add     a, a
@@ -114,9 +114,9 @@ pe_map_rows$:
         .dw _g_map+240, _g_map+280, _g_map+320, _g_map+360, _g_map+400, _g_map+440
         .dw _g_map+480, _g_map+520, _g_map+560, _g_map+600, _g_map+640, _g_map+680
 pe_vdp_rows$:
-        .dw 0x18CC,0x190C,0x194C,0x198C,0x19CC,0x1A0C
-        .dw 0x1A4C,0x1A8C,0x1ACC,0x1B0C,0x1B4C,0x1B8C
-        .dw 0x1BCC,0x1C0C,0x1C4C,0x1C8C,0x1CCC,0x1D0C
+        .dw 0x38CC,0x390C,0x394C,0x398C,0x39CC,0x3A0C
+        .dw 0x3A4C,0x3A8C,0x3ACC,0x3B0C,0x3B4C,0x3B8C
+        .dw 0x3BCC,0x3C0C,0x3C4C,0x3C8C,0x3CCC,0x3D0C
 
         .area _DATA
 pe_row$:   .ds 1
