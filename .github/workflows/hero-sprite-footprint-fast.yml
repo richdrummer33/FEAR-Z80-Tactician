@@ -1,0 +1,79 @@
+name: Hero sprite-plane LOD footprint
+
+on:
+  push:
+    branches:
+      - temp/hero-nested-distance-codec-lab
+    paths:
+      - ".github/workflows/hero-sprite-footprint-fast.yml"
+      - "tools/analyze_hero_sprite_footprint.py"
+  workflow_dispatch:
+
+jobs:
+  sprite-footprint:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/sprite-footprint/host tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/sprite-footprint/import.json
+
+      - name: Bake 32-angle corpus
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm \
+            -o build/sprite-footprint/corpus-bake
+          ROOM_BUNDLE_HERO_CORPUS=1 \
+          HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 \
+          HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/sprite-footprint/corpus-bake build/sprite-footprint/host \
+            | tee build/sprite-footprint/bake.txt
+
+      - name: Measure 8x8 sprite footprint
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_hero_sprite_footprint.py \
+            build/sprite-footprint/host/doomguy_dense_corpus.dhc \
+            --bands 0,1,2,3 --sprite-height 8 \
+            --summary-json build/sprite-footprint/sprite8.json \
+            | tee build/sprite-footprint/sprite8.txt
+          grep -q '^HERO_SPRITE_FOOTPRINT_PASS$' build/sprite-footprint/sprite8.txt
+
+      - name: Measure 8x16 sprite footprint
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_hero_sprite_footprint.py \
+            build/sprite-footprint/host/doomguy_dense_corpus.dhc \
+            --bands 0,1,2,3 --sprite-height 16 \
+            --summary-json build/sprite-footprint/sprite16.json \
+            | tee build/sprite-footprint/sprite16.txt
+          grep -q '^HERO_SPRITE_FOOTPRINT_PASS$' build/sprite-footprint/sprite16.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-sprite-footprint
+          path: |
+            build/sprite-footprint/bake.txt
+            build/sprite-footprint/sprite8.txt
+            build/sprite-footprint/sprite8.json
+            build/sprite-footprint/sprite16.txt
+            build/sprite-footprint/sprite16.json
+          if-no-files-found: error
