@@ -58,11 +58,11 @@ jobs:
           mkdir -p build/runtime-light
           clean_polar() {
             rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
-                  build/tilesector_polar_renderer_gg.o build/tilesector_polar_projection_gg.o \
-                  build/tilesector_polar_proj_bank*.o build/tilesector_polar_depthplane_gg.o \
-                  build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o \
-                  build/tilesector_polar_ntupload_raw_gg.o build/tilesector_polar_ntupload_profiled_gg.o \
-                  build/gg-tilesector-polar.*
+                  build/tilesector_polar_renderer_gg.o build/tilesector_polar_floor_light_runtime_gg.o \
+                  build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+                  build/tilesector_polar_depthplane_gg.o build/tilesector_polar_ntstate_gg.o \
+                  build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_raw_gg.o \
+                  build/tilesector_polar_ntupload_profiled_gg.o build/gg-tilesector-polar.*
           }
           build_rom() {
             make GBDK_HOME="$PWD/.toolchain/gbdk" \
@@ -81,7 +81,8 @@ jobs:
           [ ! -f build/gg-tilesector-polar.map ] || cp build/gg-tilesector-polar.map build/runtime-light/baseline.map
 
           python3 tools/apply_lattice_floor_light_runtime.py | tee build/runtime-light/runtime-patch.txt
-          git diff -- src/tilesector_polar_renderer.c src/main_tilesector_polar_gg.c \
+          cp src/tilesector_polar_floor_light_runtime.c build/runtime-light/runtime-floor-light.c
+          git diff -- src/tilesector_polar_renderer.c src/main_tilesector_polar_gg.c Makefile \
             > build/runtime-light/runtime-source.patch
           if git diff -- src/tilesector_polar.h | grep -q .; then
             echo 'FAIL: tile-count header changed; zero-new-pattern invariant violated' >&2
@@ -228,6 +229,7 @@ jobs:
           {
             echo '=== POLAR ZERO-PATTERN RUNTIME FLOOR LIGHT ==='
             echo 'shadow representation=4 static world-space convex polygons + 4 internal cast edges'
+            echo 'runtime placement=separate BANKED translation unit; one banked call/rendered update'
             echo 'partial-edge vocabulary=repurposed existing shade-0 edge family'
             echo 'full-shadow tile=ordinary floor tile + palette 1'
             echo 'new VRAM patterns=0'
