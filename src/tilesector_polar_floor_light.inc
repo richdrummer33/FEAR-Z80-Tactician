@@ -227,8 +227,15 @@ static int16_t fl_scan_x(const TSPFloorLightScreenV *a,const TSPFloorLightScreen
 }
 
 static void fl_fill_poly(const TSPFloorLightScreenV *p,uint8_t n){
-    uint8_t row,i;if(n<3u)return;
-    for(row=9u;row<TSP_ROWS;++row){
+    uint8_t row,i,row0,row1;int16_t ymin,ymax;if(n<3u)return;
+    ymin=p[0].y;ymax=p[0].y;
+    for(i=1u;i<n;++i){if(p[i].y<ymin)ymin=p[i].y;if(p[i].y>ymax)ymax=p[i].y;}
+    /* Raster rows sample y=row*8+4 and the crossing rule accepts ymin <= y < ymax.
+     * Therefore floor((y+3)/8) gives both the first eligible row and the exclusive
+     * row after the last eligible sample. Clamp to the floor receiver rows. */
+    row0=(uint8_t)((ymin+3)>>3);row1=(uint8_t)((ymax+3)>>3);
+    if(row0<9u)row0=9u;if(row1>TSP_ROWS)row1=TSP_ROWS;if(row0>=row1)return;
+    for(row=row0;row<row1;++row){
         int16_t y=(int16_t)(((int16_t)row<<3)+4),xmin=32767,xmax=-32767;uint8_t hits=0u;TSPFloorLightScreenV a=p[(uint8_t)(n-1u)],b;
         for(i=0u;i<n;++i){int16_t x;b=p[i];if((a.y<=y&&b.y>y)||(b.y<=y&&a.y>y)){x=fl_scan_x(&a,&b,y);if(x<xmin)xmin=x;if(x>xmax)xmax=x;++hits;}a=b;}
         if(hits>=2u&&xmax>=xmin){
