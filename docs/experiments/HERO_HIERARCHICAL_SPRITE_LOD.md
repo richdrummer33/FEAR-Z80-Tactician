@@ -2,6 +2,28 @@
 
 Status: temporary experiment branch. Not merged.
 
+> **Correction, later pass.** Every cost figure below was produced with a shade
+> distance that measured semantic indices in enum order rather than brightness
+> order, which priced the darkest-to-brightest swap as the cheapest possible
+> move. That is what made the rendered far views read as speckle. See
+> `HERO_LOD_SHADE_METRIC.md`. The architecture and the sprite/VRAM/runtime
+> figures below all survive; the absolute error numbers were re-measured after
+> the fix and are restated here:
+>
+> | | before (broken metric) | after (corrected) |
+> |---|---:|---:|
+> | far core 16, R=36 mean cost | 109.967 | 111.989 |
+> | nested 16+16, mid/far mean cost | 100.763 | 99.611 |
+> | hierarchy penalty at 32 total | 2.085% | 3.531% |
+> | hierarchy penalty at 64 total | 3.071% | 1.796% |
+> | far sprite refs mean / max | 28.81 / 36 | 28.0 / 35 |
+> | mid/far sprite refs mean / max | 32.97 / 47 | 32.6 / 45 |
+>
+> The costs are in different units before and after, so only the penalties and
+> the reference counts are directly comparable. The separate finding that the
+> 16-pattern core is undersized relative to the measured room headroom is in
+> the same document.
+
 ## Executive result
 
 The distance codec has converged on a hardware-oriented hybrid rather than a

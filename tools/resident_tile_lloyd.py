@@ -18,22 +18,24 @@ pattern atom. Runtime remains a name-table tile reference plus flip bits.
 
 from resident_tile_dictionary import (
     TileWeights, best_match, canonical_pattern, flip_pattern,
-    pattern_cost, score_demands,
+    pattern_cost, pixel_cost, score_demands,
 )
 
 
 def _optimal_value(values, weights):
+    """Cheapest single shade code for one pixel across every assigned demand.
+
+    Candidates are the observed codes plus transparent. The cost has to be
+    measured in the same space the matcher uses, so this defers to pixel_cost
+    rather than re-deriving the arithmetic -- an earlier version duplicated it
+    and silently kept raw-index distance after the matcher moved to ranks.
+    """
     if not values:
         return 0
     candidates = sorted(set([0] + [int(v) for v in values]))
     best = None
     for value in candidates:
-        cost = 0.0
-        for wanted in values:
-            if bool(value) != bool(wanted):
-                cost += weights.silhouette
-            elif value:
-                cost += weights.shade * abs(int(value) - int(wanted))
+        cost = sum(pixel_cost(value, wanted, weights) for wanted in values)
         key = (cost, value)
         if best is None or key < best[0]:
             best = (key, value)

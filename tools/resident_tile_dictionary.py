@@ -19,10 +19,50 @@ TILE = 8
 PIXELS = 64
 
 
+# Corpus code = compositor semantic index + 1, and those indices are in
+# historical order, not brightness order: the two interstitial stops
+# (SEM_FAR_MID, SEM_MID_NEAR) were appended to the enum after the original
+# three, so they sit at 6 and 7 while belonging visually between 3/4 and 4/5.
+#
+# Dark to light, in corpus codes, that is 1, 2, 3, 4, 7, 5, 8, 6.
+#
+# Getting this wrong is not a small inaccuracy. Raw index arithmetic prices the
+# swap between code 7 (second darkest) and code 6 (brightest) at 1, the
+# cheapest move available, while pricing genuinely adjacent stops at 3. Those
+# two codes are half of every hero pixel, so a quantizer optimizing raw index
+# distance will preferentially trade dark for bright. That is exactly what
+# turned the far sprite reconstruction into speckle.
+#
+# tests/test_shade_rank.py re-derives this from the compositor's own preview
+# colours, so the table cannot drift away from the renderer.
+SHADE_ORDER = (1, 2, 3, 4, 7, 5, 8, 6)
+
+
+def build_rank(order=SHADE_ORDER):
+    table = [0] * 256
+    for position, code in enumerate(order):
+        table[code] = position
+    return tuple(table)
+
+
+PERCEPTUAL_RANK = build_rank()
+
+
 @dataclass(frozen=True)
 class TileWeights:
     silhouette: float = 12.0
     shade: float = 1.0
+    # Perceptual ordering of the semantic shade codes. The compositor's
+    # semantic indices are NOT sorted by brightness -- the two interstitial
+    # stops were appended after the original three, so raw index arithmetic
+    # measures distance in the wrong space. `rank` maps a code to its position
+    # on the actual dark-to-light ramp. None restores raw-index arithmetic and
+    # exists only so the regression can be reproduced.
+    rank: tuple = PERCEPTUAL_RANK
+
+    def key(self):
+        """Cache identity. Must include rank or scores leak across metrics."""
+        return (self.silhouette, self.shade, self.rank)
 
 
 @dataclass
@@ -63,7 +103,10 @@ def pixel_cost(got, wanted, weights=TileWeights()):
     if bool(got) != bool(wanted):
         return weights.silhouette
     if got:
-        return weights.shade * abs(int(got) - int(wanted))
+        rank = weights.rank
+        if rank is None:
+            return weights.shade * abs(int(got) - int(wanted))
+        return weights.shade * abs(rank[int(got)] - rank[int(wanted)])
     return 0.0
 
 

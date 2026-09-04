@@ -7,6 +7,11 @@ on:
     paths:
       - ".github/workflows/hero-hierarchical-sprite-lod-fast.yml"
       - "tools/analyze_hierarchical_sprite_lod.py"
+      - "tools/diagnose_lod_shade_metric.py"
+      - "tools/resident_tile_dictionary.py"
+      - "tools/resident_tile_lloyd.py"
+      - "tools/shared_resident_lod.py"
+      - "tests/test_shade_rank.py"
   workflow_dispatch:
 
 jobs:
@@ -58,6 +63,27 @@ jobs:
             | tee build/hier-sprite/result.txt
           grep -q '^HIERARCHICAL_SPRITE_LOD_PASS$' build/hier-sprite/result.txt
 
+      - name: Shade ordering guard
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_shade_rank.py' -v
+          python3 -m unittest discover -s tests -p 'test_resident_tile*.py'
+          python3 -m unittest discover -s tests -p 'test_shared_resident_lod.py'
+
+      - name: Shade metric regression sheets
+        run: |
+          set -euo pipefail
+          # The corrected ordering must keep gross tonal errors -- three or more
+          # ramp stops wrong, which is what reads as speckle -- far below what
+          # raw index arithmetic produced. This guards the ordering, and is not
+          # a quality target for the codebook itself.
+          python3 tools/diagnose_lod_shade_metric.py \
+            build/hier-sprite/host/doomguy_dense_corpus.dhc \
+            build/hier-sprite/metric \
+            --band 3 --patterns 16 --angles 8 \
+            --assert-gross-error-ratio 5 \
+            | tee build/hier-sprite/metric.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: hero-hierarchical-sprite-lod
@@ -65,4 +91,6 @@ jobs:
             build/hier-sprite/bake.txt
             build/hier-sprite/result.txt
             build/hier-sprite/result.json
+            build/hier-sprite/metric.txt
+            build/hier-sprite/metric/**
           if-no-files-found: error

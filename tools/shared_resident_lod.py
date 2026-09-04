@@ -33,7 +33,7 @@ def prepare_group(base_dictionary, demands, allow_flips=True):
 
 def _base_score(group, weights, allow_flips):
     cached = group.get("base_score_cache")
-    key = (weights.silhouette, weights.shade, bool(allow_flips))
+    key = (weights.key(), bool(allow_flips))
     if cached is not None and cached.get("key") == key:
         return cached["score"]
     score = score_demands(
