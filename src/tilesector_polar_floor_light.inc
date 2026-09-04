@@ -41,6 +41,7 @@ static const TSPFloorLightEdgeDef k_fl_edge[4] = {
 static uint16_t *g_fl_out_map;
 static TSPFloorLightCamV g_fl_clip_a[TSP_FL_MAX_VERTS];
 static TSPFloorLightCamV g_fl_clip_b[TSP_FL_MAX_VERTS];
+static const TSPFloorLightCamV *g_fl_project_src;
 static TSPFloorLightScreenV g_fl_sp0[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp1[TSP_FL_MAX_VERTS];
 static TSPFloorLightScreenV g_fl_sp2[TSP_FL_MAX_VERTS];
@@ -94,6 +95,19 @@ static uint8_t fl_clip_plane(const TSPFloorLightCamV *in,uint8_t n,TSPFloorLight
     return m;
 }
 
+/* 0 = wholly outside, 1 = wholly inside, 2 = straddles.  The old path always
+ * copied every polygon through all three Sutherland-Hodgman planes. Static
+ * shadow polygons are frequently wholly inside one or more planes, so classify
+ * first and only materialize a clipped copy when an actual crossing exists. */
+static uint8_t fl_classify_plane(const TSPFloorLightCamV *in,uint8_t n,uint8_t plane){
+    uint8_t i,inside=0u,outside=0u;
+    for(i=0u;i<n;++i){
+        if(fl_plane_eval(&in[i],plane)>=0)inside=1u;else outside=1u;
+        if(inside&&outside)return 2u;
+    }
+    return inside?1u:0u;
+}
+
 static void fl_world_to_cam(int16_t x_q2,int16_t y_q2,TSPFloorLightCamV *o){
     int16_t dx=(int16_t)(x_q2-g_fl_cam_x_q2),dy=(int16_t)(y_q2-g_fl_cam_y_q2);
     o->f_q2=shr_signed((int16_t)((int16_t)(dx*g_fl_cam_cs_q5)+(int16_t)(dy*g_fl_cam_sn_q5)),5);
@@ -101,16 +115,25 @@ static void fl_world_to_cam(int16_t x_q2,int16_t y_q2,TSPFloorLightCamV *o){
 }
 
 static uint8_t fl_clip_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id){
-    uint8_t i,n=pd->count;const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];
+    uint8_t i,n=pd->count,plane,cls;const TSPFloorLightEdgeDef *ed=&k_fl_edge[edge_id];
+    const TSPFloorLightCamV *src;TSPFloorLightCamV *dst,*tmp;
     for(i=0u;i<n;++i)fl_world_to_cam(pd->xy_q2[(uint8_t)(i+i)],pd->xy_q2[(uint8_t)(i+i+1u)],&g_fl_clip_a[i]);
     /* The cast edge is already a boundary of its owner polygon. Keep its raw
      * camera-space endpoints before Sutherland-Hodgman mutates the scratch, so
      * the edge pass does not transform the same world vertices a second time. */
     g_fl_edge_ca[edge_id]=g_fl_clip_a[ed->va];
     g_fl_edge_cb[edge_id]=g_fl_clip_a[ed->vb];
-    n=fl_clip_plane(g_fl_clip_a,n,g_fl_clip_b,0u);if(!n)return 0u;
-    n=fl_clip_plane(g_fl_clip_b,n,g_fl_clip_a,1u);if(!n)return 0u;
-    n=fl_clip_plane(g_fl_clip_a,n,g_fl_clip_b,2u);if(!n)return 0u;
+    src=g_fl_clip_a;dst=g_fl_clip_b;
+    for(plane=0u;plane<3u;++plane){
+        cls=fl_classify_plane(src,n,plane);
+        if(!cls){g_fl_project_src=src;return 0u;}
+        if(cls==2u){
+            n=fl_clip_plane(src,n,dst,plane);if(!n){g_fl_project_src=src;return 0u;}
+            src=dst;
+            tmp=dst;dst=(tmp==g_fl_clip_a)?g_fl_clip_b:g_fl_clip_a;
+        }
+    }
+    g_fl_project_src=src;
     return n;
 }
 
@@ -136,7 +159,7 @@ static TSPFloorLightScreenV fl_project(const TSPFloorLightCamV *v,uint8_t floor_
 }
 
 static uint8_t fl_project_poly(const TSPFloorLightPolyDef *pd,uint8_t edge_id,TSPFloorLightScreenV *dst){
-    uint8_t i,n=fl_clip_poly(pd,edge_id);for(i=0u;i<n;++i)dst[i]=fl_project(&g_fl_clip_b[i],pd->floor_z);return n;
+    uint8_t i,n=fl_clip_poly(pd,edge_id);for(i=0u;i<n;++i)dst[i]=fl_project(&g_fl_project_src[i],pd->floor_z);return n;
 }
 
 static uint8_t fl_cell_unclaimed(uint8_t row,uint8_t col){
@@ -223,4 +246,3 @@ static void tsp_polar_floor_light(const TSPState *s,uint16_t out_map[TSP_MAP_CEL
 }
 
 #endif /* __SDCC */
-
