@@ -8,6 +8,7 @@ on:
       - ".github/workflows/hero-shared-lod-fast.yml"
       - "tools/shared_resident_lod.py"
       - "tools/analyze_shared_resident_lod.py"
+      - "tools/analyze_strict_shared_resident_lod.py"
       - "tools/resident_tile_dictionary.py"
       - "tools/resident_tile_lloyd.py"
       - "tests/test_shared_resident_lod.py"
@@ -16,7 +17,7 @@ on:
 jobs:
   shared-lod:
     runs-on: ubuntu-22.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
     steps:
@@ -62,7 +63,7 @@ jobs:
           grep -q '^DOOM_DENSE_CORPUS_PASS samples=128 angles=32 bands=4 ' \
             build/shared-lod/bake.txt
 
-      - name: Shared cardinal LOD vocabulary
+      - name: Shared cardinal hybrid vocabulary
         run: |
           set -euo pipefail
           python3 tools/analyze_shared_resident_lod.py \
@@ -74,6 +75,31 @@ jobs:
             | tee build/shared-lod/cardinal.txt
           grep -q '^SHARED_RESIDENT_LOD_PASS$' build/shared-lod/cardinal.txt
 
+      - name: Strict shared-only cardinal far vocabulary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_strict_shared_resident_lod.py \
+            build/shared-lod/host/doomguy_dense_corpus.dhc \
+            --angles 0,8,16,24 --bands 1,2,3 \
+            --additions 16,32,64,96 \
+            --lloyd-iterations 6 \
+            --summary-json build/shared-lod/strict-cardinal.json \
+            | tee build/shared-lod/strict-cardinal.txt
+          grep -q '^STRICT_SHARED_RESIDENT_LOD_PASS$' build/shared-lod/strict-cardinal.txt
+
+      - name: Strict shared-only all-angle far vocabulary
+        run: |
+          set -euo pipefail
+          python3 tools/analyze_strict_shared_resident_lod.py \
+            build/shared-lod/host/doomguy_dense_corpus.dhc \
+            --angles 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 \
+            --bands 1,2,3 \
+            --additions 32,64,96 \
+            --lloyd-iterations 4 \
+            --summary-json build/shared-lod/strict-all-angles.json \
+            | tee build/shared-lod/strict-all-angles.txt
+          grep -q '^STRICT_SHARED_RESIDENT_LOD_PASS$' build/shared-lod/strict-all-angles.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: hero-shared-lod-fast-lab
@@ -81,4 +107,8 @@ jobs:
             build/shared-lod/bake.txt
             build/shared-lod/cardinal.txt
             build/shared-lod/cardinal.json
+            build/shared-lod/strict-cardinal.txt
+            build/shared-lod/strict-cardinal.json
+            build/shared-lod/strict-all-angles.txt
+            build/shared-lod/strict-all-angles.json
           if-no-files-found: error
