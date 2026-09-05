@@ -1,0 +1,43 @@
+name: Polar baked light half-plane identity
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  halfplane:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        shell: bash
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+      - name: Test four-line receiver-half-plane identity
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/halfplane-identity
+          python3 experiments/adaptive_polar_field/floor_shadow_halfplane_identity.py \
+            --out build/halfplane-identity --step 8 --yaw-step 16 \
+            | tee build/halfplane-identity/run.txt
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads(Path('build/halfplane-identity/summary.json').read_text())
+          msg=f"poses={d['poses']} mismatch_pixels={d['mismatch_pixels_total']} mean={d['mean_pct']:.9f}% p95={d['p95_pct']:.9f}% max={d['max_pct']:.9f}%"
+          print(msg);print(f'::notice title=Four-line half-plane identity::{msg}')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write(f"tag=p{d['mismatch_pixels_total']}-m{d['mean_pct']:.6f}-x{d['max_pct']:.6f}\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-halfplane-${{ steps.probe.outputs.tag }}
+          path: build/halfplane-identity/
+          retention-days: 30
