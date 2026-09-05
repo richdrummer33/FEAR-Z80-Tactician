@@ -1,0 +1,48 @@
+name: Polar shadow receiver chain audit
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  receiver-chain:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+      - name: Derive cast receiver chains
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/shadow-receiver-chain
+          python3 experiments/adaptive_polar_field/shadow_receiver_chain_poc.py \
+            --out build/shadow-receiver-chain | tee build/shadow-receiver-chain/run.txt
+          grep -q 'CAST_BOUNDARY_ONLY_NEW_GEOMETRY=PASS' build/shadow-receiver-chain/run.txt
+          grep -q 'RECEIVER_WALL_CONTINUATION_VERTICAL=PASS' build/shadow-receiver-chain/run.txt
+          grep -q 'GENERAL_SHADOW_POLYGON_RUNTIME_REQUIRED=NO' build/shadow-receiver-chain/run.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('build/shadow-receiver-chain/receiver-chains.json').read_text())
+          assert d['accepted_shadow_polygons']==4
+          assert d['new_cast_boundaries']==4
+          assert d['all_polygons_have_one_new_cast_edge']
+          assert d['all_receiver_continuations_vertical']
+          assert d['closure_edges_reuse_world_geometry']
+          assert d['new_runtime_receiver_masks_required']==0
+          assert d['new_general_polygon_clipper_required'] is False
+          assert all(c['accepted_hit_error_world'] <= 0.13 for c in d['chains'])
+          print('RECEIVER_CHAIN_JSON=PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-shadow-receiver-chain
+          path: build/shadow-receiver-chain/
+          retention-days: 30
