@@ -1,0 +1,73 @@
+name: Polar baked light screen-affine hires
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hires:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        shell: bash
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+
+      - name: Sweep Q8 Q9 Q10 masked affine precision
+        shell: bash
+        run: |
+          set -euo pipefail
+          for q in 8 9 10; do
+            mkdir -p "build/affine-hires/masked-q${q}"
+            python3 experiments/adaptive_polar_field/floor_shadow_screen_affine_poc.py \
+              --out "build/affine-hires/masked-q${q}" --step 8 --yaw-step 16 --trig-bits "$q" \
+              | tee "build/affine-hires/masked-q${q}/run.txt"
+          done
+
+      - name: A/B receiver-mask removal at Q8 and Q9
+        shell: bash
+        run: |
+          set -euo pipefail
+          for q in 8 9; do
+            mkdir -p "build/affine-hires/nomask-q${q}"
+            python3 experiments/adaptive_polar_field/floor_shadow_screen_affine_nomask_poc.py \
+              --out "build/affine-hires/nomask-q${q}" --step 8 --yaw-step 16 --trig-bits "$q" \
+              | tee "build/affine-hires/nomask-q${q}/run.txt"
+          done
+
+      - name: Expose hires metrics
+        id: metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          masked={q:json.loads(Path(f'build/affine-hires/masked-q{q}/summary.json').read_text()) for q in (8,9,10)}
+          nomask={q:json.loads(Path(f'build/affine-hires/nomask-q{q}/summary.json').read_text()) for q in (8,9)}
+          for mode,ds in [('masked',masked),('nomask',nomask)]:
+            for q,d in ds.items():
+              assert d['poses']>=4800 and d['field_bytes']==0 and d['bearing_vertices']==0 and d['reciprocal_bytes']==0
+              assert d['penumbra_new_mixed_tiles_total']==0
+              r=d['raw_error_pct'];e=d['edge_quantized_error_pct']
+              msg=f"raw_mean={r['mean']:.6f}% raw_p95={r['p95']:.6f}% raw_max={r['max']:.6f}% edge_mean={e['mean']:.6f}% edge_p95={e['p95']:.6f}%"
+              print(f'{mode} Q{q}: {msg}')
+              print(f'::notice title={mode} affine Q{q}::{msg}')
+          r8=masked[8]['raw_error_pct'];r9=masked[9]['raw_error_pct'];r10=masked[10]['raw_error_pct'];n8=nomask[8]['raw_error_pct']
+          tag=f"q8m{r8['mean']:.4f}-q9m{r9['mean']:.4f}-q10m{r10['mean']:.4f}-n8m{n8['mean']:.4f}"
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('tag='+tag+'\n')
+          print('SCREEN_AFFINE_HIRES=PASS')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-affine-hires-${{ steps.metrics.outputs.tag }}
+          path: build/affine-hires/
+          retention-days: 30
