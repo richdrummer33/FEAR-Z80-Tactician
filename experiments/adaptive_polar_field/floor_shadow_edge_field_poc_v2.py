@@ -2,12 +2,14 @@
 """Topology-closed variant of floor_shadow_edge_field_poc.
 
 The first probe conservatively labelled camera-on-polygon-boundary poses as a
-fallback.  That is unnecessary for a convex shadow polygon.  The position-only
-inside selector is made boundary-inclusive; forward projected edge crossings
-then close the shape without Sutherland-Hodgman or a general geometry fallback.
+fallback. That is unnecessary for a convex shadow polygon. The position-only
+inside selector is boundary-inclusive; forward projected edge crossings then
+close the shape without Sutherland-Hodgman or a general geometry fallback.
 
-Everything else (bearing fields, arbitrary yaw, edge vocabulary, penumbra and
-ROM accounting) comes from the v1 probe so this is a controlled A/B.
+A camera exactly on a polygon vertex is also explicit rather than general-case:
+that vertex has no defined bearing, and its two incident edges begin at depth
+zero. They are omitted; the remaining positive crossing closes the inside
+interval to the bottom of screen.
 """
 from __future__ import annotations
 
@@ -28,6 +30,10 @@ def point_in_poly_inclusive(cx:float,cy:float,p):
     return inside
 
 
+def at_camera(v,cx,cy,eps=1e-10):
+    return abs(v.x_q4/16.0-cx)<=eps and abs(v.y_q4/16.0-cy)<=eps
+
+
 def projected_shadow_frame_closed(cx,cy,yaw,bearing):
     shadow=base.np.zeros((base.oracle.H,base.oracle.W),dtype=bool)
     bf=0;yawq=yaw<<4
@@ -36,6 +42,11 @@ def projected_shadow_frame_closed(cx,cy,yaw,bearing):
         intervals=[]
         for i in range(len(p)):
             a=p[i];b=p[(i+1)%len(p)]
+            # Bearing at the camera itself is undefined. These incident edges
+            # have a zero-depth endpoint; omit them and let the opposite/exit
+            # edge define the visible boundary for an inclusive inside pose.
+            if at_camera(a,cx,cy) or at_camera(b,cx,cy):
+                continue
             ba,fa=bearing(a);bb,fb=bearing(b);bf+=int(fa)+int(fb)
             iv=base.angular_interval(ba,bb,yawq)
             if iv is not None:intervals.append((a,b,iv))
@@ -52,8 +63,6 @@ def projected_shadow_frame_closed(cx,cy,yaw,bearing):
                     if not uniq or abs(py-uniq[-1])>1e-6:uniq.append(py)
                 ys=uniq
             if inside:
-                # Camera lies in/on the convex polygon: the positive ray has an
-                # exit crossing and the near side runs off the bottom of screen.
                 if not ys:continue
                 y0=min(ys)
                 for sy in range(73,base.oracle.H):
@@ -63,8 +72,6 @@ def projected_shadow_frame_closed(cx,cy,yaw,bearing):
                 for sy in range(73,base.oracle.H):
                     py=sy+0.5
                     if py>=y0 and py<=y1:shadow[sy,sx]=True
-    # No general topology fallback: boundary membership is an explicit
-    # position selector and the edge-run parity closes the projected shape.
     return shadow,False,bf
 
 
