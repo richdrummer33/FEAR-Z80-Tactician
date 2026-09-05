@@ -1,0 +1,46 @@
+name: Polar shadow cast half-plane identity
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cast-halfplane:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+      - name: Prove receiver-region plus cast-edge identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/shadow-cast-halfplane
+          python3 experiments/adaptive_polar_field/shadow_cast_halfplane_identity.py \
+            --out build/shadow-cast-halfplane --step 4 --yaw-step 8 \
+            | tee build/shadow-cast-halfplane/run.txt
+          grep -q 'PROJECTED_CLOSURE_EDGES_REQUIRED=0' build/shadow-cast-halfplane/run.txt
+          grep -q 'GENERAL_SHADOW_POLYGONS_REQUIRED=0' build/shadow-cast-halfplane/run.txt
+          grep -q 'CAST_HALFPLANE_IDENTITY=PASS' build/shadow-cast-halfplane/run.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('build/shadow-cast-halfplane/summary.json').read_text())
+          assert d['cast_boundaries']==4
+          assert d['projected_closure_edges_required']==0
+          assert d['general_shadow_polygons_required']==0
+          assert d['runtime_receiver_masks_required']==0
+          assert d['total_mismatch_pixels']==0
+          print('CAST_HALFPLANE_JSON=PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-shadow-cast-halfplane
+          path: build/shadow-cast-halfplane/
+          retention-days: 30
