@@ -1,0 +1,70 @@
+name: Polar baked light primitive-line probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  primitive-line:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        shell: bash
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+
+      - name: Run primitive-line Q7 yaw oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/primitive-line/q7
+          python3 experiments/adaptive_polar_field/floor_shadow_edge_field_poc_v6_primitive.py \
+            --out build/primitive-line/q7 --step 8 --yaw-step 16 \
+            --bearing-threshold 4 --min-q4 8 --trig-bits 7 \
+            | tee build/primitive-line/q7/run.txt
+
+      - name: Run primitive-line Q8 yaw oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/primitive-line/q8
+          python3 experiments/adaptive_polar_field/floor_shadow_edge_field_poc_v6_primitive.py \
+            --out build/primitive-line/q8 --step 8 --yaw-step 16 \
+            --bearing-threshold 4 --min-q4 8 --trig-bits 8 \
+            | tee build/primitive-line/q8/run.txt
+
+      - name: Expose primitive-line metrics
+        id: metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          q7=json.loads(Path('build/primitive-line/q7/summary.json').read_text())
+          q8=json.loads(Path('build/primitive-line/q8/summary.json').read_text())
+          for name,d in [('q7',q7),('q8',q8)]:
+              assert d['poses']>=4800 and d['topology_fallback_poses']==0
+              assert d['penumbra']['new_mixed_tiles_total']==0
+              r=d['ordinary_pose_hard_shadow_error_pct'];e=d['ordinary_pose_existing_edge_quantized_error_pct']
+              msg=f"raw_mean={r['mean']:.6f}% raw_p95={r['p95']:.6f}% raw_max={r['max']:.6f}% edge_mean={e['mean']:.6f}% edge_p95={e['p95']:.6f}%"
+              print(f'Primitive {name}: {msg}')
+              print(f'::notice title=Primitive line {name.upper()}::{msg}')
+          r7=q7['ordinary_pose_hard_shadow_error_pct'];r8=q8['ordinary_pose_hard_shadow_error_pct']
+          tag=f"q7m{r7['mean']:.4f}-q7p{r7['p95']:.4f}-q8m{r8['mean']:.4f}-q8p{r8['p95']:.4f}"
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('tag='+tag+'\n')
+          print('PRIMITIVE_LINE_PROBE=PASS')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-primitive-line-${{ steps.metrics.outputs.tag }}
+          path: build/primitive-line/
+          retention-days: 30
