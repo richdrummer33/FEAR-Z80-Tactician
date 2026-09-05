@@ -1,0 +1,42 @@
+name: Polar baked light affine fractional stress
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fractional-q4:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+      - name: Stress full 1/16-world camera positions at Q9
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/affine-fractional-q9
+          python3 experiments/adaptive_polar_field/floor_shadow_screen_affine_poc.py \
+            --out build/affine-fractional-q9 --step 8 --yaw-step 16 --trig-bits 9 \
+            --fractional-q4-stress | tee build/affine-fractional-q9/run.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('build/affine-fractional-q9/summary.json').read_text())
+          r=d['raw_error_pct']; e=d['edge_quantized_error_pct']
+          assert d['fractional_q4_stress'] and d['poses']>20000
+          assert d['field_bytes']==0 and d['reciprocal_bytes']==0
+          assert d['penumbra_new_mixed_tiles_total']==0
+          print(f"FRACTIONAL_Q4_Q9=PASS poses={d['poses']} raw_mean={r['mean']:.6f}% raw_p95={r['p95']:.6f}% raw_max={r['max']:.6f}% edge_mean={e['mean']:.6f}% edge_p95={e['p95']:.6f}%")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-affine-fractional-q9
+          path: build/affine-fractional-q9/
+          retention-days: 30
