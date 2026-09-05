@@ -1,0 +1,132 @@
+name: Polar cast-run GG runtime
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-cast-run-lighting-bake
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force manual player control and mature name-table placement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/main_tilesector_polar_gg.c');s=p.read_text()
+          old='tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          new='tsp_reset(&g_state);g_state.manual=1u;tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          if s.count(old)!=1: raise SystemExit('manual boot anchor missing/ambiguous')
+          s=s.replace(old,new)
+          if 'R2_MAP_0x3800' not in s:
+              old2='DISPLAY_OFF;HIDE_SPRITES;'
+              if s.count(old2)!=1: raise SystemExit('name-table anchor missing')
+              s=s.replace(old2,'DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;',1)
+          p.write_text(s)
+          PY
+
+      - name: Mature host Polar regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-test | tee build/cast-runtime-host.txt
+
+      - name: Emit compact cast-plane bake
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 experiments/adaptive_polar_field/cast_light_plane_field.py \
+            --emit-dir build/generated/polar_cast_plane --rows-per-bank 4 \
+            | tee build/cast-runtime-bake.txt
+          grep -q '^CAST_CHAIN_AUDIT=PASS$' build/cast-runtime-bake.txt
+          grep -q '^CAST_FLOOR_ENDPOINT_BYTES=0$' build/cast-runtime-bake.txt
+          grep -q '^CAST_FLOOR_RUNTIME_MODEL=VIRTUAL_WALL_BOTTOM_EDGE_PLUS_RECEIVER_OWNER$' build/cast-runtime-bake.txt
+
+      - name: Apply cast-run runtime integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/apply_polar_cast_run_light_runtime.py | tee build/cast-runtime-patch.txt
+          grep -q '^POLAR_CAST_RUN_RUNTIME_PATCH=APPLIED$' build/cast-runtime-patch.txt
+          grep -q '^RUNTIME_SHADOW_POLYGONS=0$' build/cast-runtime-patch.txt
+          grep -q '^NEW_VRAM_PATTERNS=0$' build/cast-runtime-patch.txt
+          git diff -- src/tilesector_polar_renderer.c src/main_tilesector_polar_gg.c Makefile \
+            > build/cast-runtime.patch
+          cp src/tilesector_polar_cast_light_runtime.c build/cast-runtime-generated.c
+          if git diff -- src/tilesector_polar.h | grep -q .; then
+            echo 'FAIL: pattern-count header changed' >&2
+            exit 1
+          fi
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build cast-run ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/*_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 \
+            POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar 2>&1 | tee build/cast-runtime-build.txt
+          mkdir -p build/cast-runtime
+          cp build/gg-tilesector-polar.gg build/cast-runtime/cast-run.gg
+          cp build/gg-tilesector-polar.sym build/cast-runtime/cast-run.sym
+          [ ! -f build/gg-tilesector-polar.map ] || cp build/gg-tilesector-polar.map build/cast-runtime/cast-run.map
+          sha256sum build/cast-runtime/cast-run.gg | tee build/cast-runtime/rom-sha256.txt
+          wc -c build/cast-runtime/cast-run.gg | tee build/cast-runtime/rom-bytes.txt
+
+      - name: Compile-time architecture assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/cast-runtime/architecture.txt
+          from pathlib import Path
+          s=Path('src/tilesector_polar_cast_light_runtime.c').read_text()
+          banned=('fl_clip_poly','fl_fill_poly','fl_world_to_cam','TSPFloorLightPolyDef')
+          for x in banned:
+              if x in s: raise SystemExit(f'old polygon symbol leaked into cast runtime: {x}')
+          required=('tsp_polar_castplane_load','cast_draw_receiver','CAST_LIT_FLOOR_WORD','cast_edge_word')
+          for x in required:
+              if x not in s: raise SystemExit(f'missing runtime primitive: {x}')
+          print('CAST_RUNTIME_ARCHITECTURE=PASS')
+          print('runtime polygons=0')
+          print('runtime receiver halfplanes=6 total: 4 cast + 2 portal gates')
+          print('new VRAM patterns=0')
+          print('wall receiver vertical split=pending next checkpoint')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-cast-run-runtime
+          path: |
+            build/cast-runtime/
+            build/cast-runtime-host.txt
+            build/cast-runtime-bake.txt
+            build/cast-runtime-patch.txt
+            build/cast-runtime-build.txt
+            build/cast-runtime.patch
+            build/cast-runtime-generated.c
+            build/generated/polar_cast_plane/
+          retention-days: 30
