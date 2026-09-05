@@ -21,12 +21,12 @@ jobs:
         run: |
           python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
 
-      - name: Run Polar floor-shadow edge-field oracle
+      - name: Run topology-closed Polar floor-shadow edge-field oracle
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build/baked-light-field
-          python3 experiments/adaptive_polar_field/floor_shadow_edge_field_poc.py \
+          python3 experiments/adaptive_polar_field/floor_shadow_edge_field_poc_v2.py \
             --out build/baked-light-field \
             --step 8 --yaw-step 16 \
             --bearing-threshold 4 --min-q4 8 \
@@ -37,17 +37,17 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json,os
+          import json
           from pathlib import Path
           d=json.loads(Path('build/baked-light-field/summary.json').read_text())
           assert d['positions'] >= 300, d['positions']
           assert d['poses'] >= 4800, d['poses']
+          assert d['ordinary_poses'] == d['poses'], (d['ordinary_poses'],d['poses'])
+          assert d['topology_fallback_poses'] == 0, d['topology_fallback_poses']
           assert d['existing_shadow_vertices_reused'] == 9
           assert d['new_shadow_vertices'] == 4
           assert d['yaw_representation'].startswith('absolute Q12 bearing field')
           assert d['penumbra']['new_mixed_tiles_total'] == 0
-          # Deliberately loose first-probe guards. Promotion thresholds are set
-          # only from measured data, not guessed in advance.
           assert d['new_vertex_field']['estimated_bytes'] < 65536
           assert d['ordinary_pose_hard_shadow_error_pct']['mean'] < 0.5
           raw=d['ordinary_pose_hard_shadow_error_pct']
