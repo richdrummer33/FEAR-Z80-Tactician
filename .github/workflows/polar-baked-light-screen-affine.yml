@@ -1,0 +1,56 @@
+name: Polar baked light screen-affine probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  screen-affine:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        shell: bash
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+      - name: Sweep Q5 Q6 Q7 trig
+        shell: bash
+        run: |
+          set -euo pipefail
+          for q in 5 6 7; do
+            mkdir -p "build/screen-affine/q${q}"
+            python3 experiments/adaptive_polar_field/floor_shadow_screen_affine_poc.py \
+              --out "build/screen-affine/q${q}" --step 8 --yaw-step 16 --trig-bits "$q" \
+              | tee "build/screen-affine/q${q}/run.txt"
+          done
+      - name: Expose screen-affine metrics
+        id: metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          ds={q:json.loads(Path(f'build/screen-affine/q{q}/summary.json').read_text()) for q in (5,6,7)}
+          for q,d in ds.items():
+              assert d['poses']>=4800 and d['field_bytes']==0 and d['bearing_vertices']==0 and d['reciprocal_bytes']==0
+              assert d['penumbra_new_mixed_tiles_total']==0
+              r=d['raw_error_pct'];e=d['edge_quantized_error_pct']
+              msg=f"lines={d['unique_world_lines']} raw_mean={r['mean']:.6f}% raw_p95={r['p95']:.6f}% raw_max={r['max']:.6f}% edge_mean={e['mean']:.6f}% edge_p95={e['p95']:.6f}%"
+              print(f'Q{q}: {msg}');print(f'::notice title=Screen-affine Q{q}::{msg}')
+          r5=ds[5]['raw_error_pct'];r6=ds[6]['raw_error_pct'];r7=ds[7]['raw_error_pct']
+          tag=f"q5m{r5['mean']:.4f}-q6m{r6['mean']:.4f}-q7m{r7['mean']:.4f}-q7p{r7['p95']:.4f}"
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('tag='+tag+'\n')
+          print('SCREEN_AFFINE_PROBE=PASS')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-screen-affine-${{ steps.metrics.outputs.tag }}
+          path: build/screen-affine/
+          retention-days: 30
