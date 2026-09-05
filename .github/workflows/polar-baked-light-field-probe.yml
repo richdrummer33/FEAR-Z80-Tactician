@@ -32,26 +32,35 @@ jobs:
             --bearing-threshold 4 --min-q4 8 \
             | tee build/baked-light-field/run.txt
 
-      - name: Sanity-check representation invariants
+      - name: Sanity-check and expose representation metrics
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json
+          import json,os
           from pathlib import Path
-          p=Path('build/baked-light-field/summary.json')
-          d=json.loads(p.read_text())
+          d=json.loads(Path('build/baked-light-field/summary.json').read_text())
           assert d['positions'] >= 300, d['positions']
           assert d['poses'] >= 4800, d['poses']
           assert d['existing_shadow_vertices_reused'] == 9
           assert d['new_shadow_vertices'] == 4
           assert d['yaw_representation'].startswith('absolute Q12 bearing field')
           assert d['penumbra']['new_mixed_tiles_total'] == 0
-          # These are deliberately loose first-probe guards. Promotion thresholds
-          # will be tightened only after the measured field is inspected.
+          # Deliberately loose first-probe guards. Promotion thresholds are set
+          # only from measured data, not guessed in advance.
           assert d['new_vertex_field']['estimated_bytes'] < 65536
           assert d['ordinary_pose_hard_shadow_error_pct']['mean'] < 0.5
+          raw=d['ordinary_pose_hard_shadow_error_pct']
+          quant=d['ordinary_pose_existing_edge_quantized_error_pct']
+          nf=d['new_vertex_field'];pen=d['penumbra']
+          msg=(f"poses={d['poses']} ordinary={d['ordinary_poses']} topology_fb={d['topology_fallback_poses']} "
+               f"raw_mean={raw['mean']:.6f}% raw_p95={raw['p95']:.6f}% raw_max={raw['max']:.6f}% "
+               f"edge_mean={quant['mean']:.6f}% edge_p95={quant['p95']:.6f}% edge_max={quant['max']:.6f}% "
+               f"new_field_bytes={nf['estimated_bytes']} leaves={nf['affine_leaves']} field_fb={nf['fallback_records']} "
+               f"pen_new_mixed={pen['new_mixed_tiles_total']}")
           print('BAKED_LIGHT_FIELD_REPRESENTATION_SANITY=PASS')
+          print(msg)
+          print(f'::notice title=Baked light field metrics::{msg}')
           PY
 
       - uses: actions/upload-artifact@v4
