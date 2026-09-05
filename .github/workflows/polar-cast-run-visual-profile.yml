@@ -1,0 +1,212 @@
+name: Polar cast-run visual and performance proof
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-cast-run-lighting-bake
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force true manual control and mature VDP name table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/main_tilesector_polar_gg.c');s=p.read_text()
+          old='tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          new='tsp_reset(&g_state);g_state.manual=1u;tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          if s.count(old)!=1: raise SystemExit('manual boot anchor missing')
+          s=s.replace(old,new)
+          if 'R2_MAP_0x3800' not in s:
+              old2='DISPLAY_OFF;HIDE_SPRITES;'
+              if s.count(old2)!=1: raise SystemExit('R2 anchor missing')
+              s=s.replace(old2,'DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;',1)
+          p.write_text(s)
+          PY
+
+      - name: Host Polar acceptance
+        run: make polar-test
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build baseline and cast-run ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/cast-proof
+          clean_polar(){
+            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+              build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+              build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+              build/tilesector_polar_cast_light_runtime_gg.o build/tilesector_polar_castplane_gg.o \
+              build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+              build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          }
+          build_rom(){
+            make GBDK_HOME="$PWD/.toolchain/gbdk" \
+              POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+              POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+              POLAR_ROM_BANKS=8 \
+              TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+              gg-tilesector-polar
+          }
+          clean_polar
+          build_rom 2>&1 | tee build/cast-proof/build-baseline.txt
+          cp build/gg-tilesector-polar.gg build/cast-proof/baseline.gg
+          cp build/gg-tilesector-polar.sym build/cast-proof/baseline.sym
+
+          python3 experiments/adaptive_polar_field/cast_light_plane_field.py \
+            --emit-dir build/generated/polar_cast_plane --rows-per-bank 4 \
+            | tee build/cast-proof/cast-bake.txt
+          python3 tools/apply_polar_cast_run_light_runtime.py | tee build/cast-proof/runtime-patch.txt
+          cp src/tilesector_polar_cast_light_runtime.c build/cast-proof/runtime-cast-light.c
+          git diff -- src/tilesector_polar_renderer.c src/main_tilesector_polar_gg.c Makefile > build/cast-proof/runtime.patch
+
+          clean_polar
+          build_rom 2>&1 | tee build/cast-proof/build-cast.txt
+          cp build/gg-tilesector-polar.gg build/cast-proof/cast.gg
+          cp build/gg-tilesector-polar.sym build/cast-proof/cast.sym
+          sha256sum build/cast-proof/baseline.gg build/cast-proof/cast.gg | tee build/cast-proof/rom-sha256.txt
+
+      - name: Extend profiler with player input scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/tilesector_profile_runner.cpp');s=p.read_text()
+          old='if(scenario!="demo" && scenario!="roomA-turn") {'
+          new='if(scenario!="demo" && scenario!="roomA-turn" && scenario!="roomA-forward" && scenario!="roomA-back" && scenario!="roomA-button1" && scenario!="roomA-button2") {'
+          if s.count(old)==1:s=s.replace(old,new)
+          old2='if(scenario=="roomA-turn")\n        core.KeyPressed(Joypad_1,Key_Right);'
+          new2='''if(scenario=="roomA-turn") core.KeyPressed(Joypad_1,Key_Right);\n    else if(scenario=="roomA-forward") core.KeyPressed(Joypad_1,Key_Up);\n    else if(scenario=="roomA-back") core.KeyPressed(Joypad_1,Key_Down);\n    else if(scenario=="roomA-button1") core.KeyPressed(Joypad_1,Key_1);\n    else if(scenario=="roomA-button2") core.KeyPressed(Joypad_1,Key_2);'''
+          if s.count(old2)==1:s=s.replace(old2,new2)
+          p.write_text(s)
+          PY
+
+      - name: Build Gearsystem profiler and frame capture tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove player control and cycle profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/cast-proof/profile
+          for variant in baseline cast; do
+            for scenario in roomA-turn roomA-forward roomA-button1; do
+              ./build/tilesector_profile_runner \
+                "build/cast-proof/${variant}.gg" "build/cast-proof/${variant}.sym" \
+                120 8 "$scenario" | tee "build/cast-proof/profile/${variant}-${scenario}.txt"
+            done
+          done
+          python3 - <<'PY' | tee build/cast-proof/profile/summary.txt
+          from pathlib import Path
+          import re,statistics,csv
+          names=('roomA-turn','roomA-forward','roomA-button1')
+          rows=[]
+          for n in names:
+              vals={}
+              for v in ('baseline','cast'):
+                  t=Path(f'build/cast-proof/profile/{v}-{n}.txt').read_text()
+                  lm=re.search(r'loop\s+avg=\s*([0-9.]+) T',t)
+                  um=re.search(r'->\s*([0-9.]+) updates/s',t)
+                  hm=re.search(r'map-hash\s+frames=\d+ fnv64=([0-9A-F]+)',t)
+                  if not (lm and um and hm): raise SystemExit(f'missing profiler metrics {v}/{n}')
+                  vals[v]=(float(lm.group(1)),float(um.group(1)),hm.group(1))
+              b,c=vals['baseline'],vals['cast'];dt=c[0]-b[0]
+              rows.append((n,b[1],c[1],dt,100*dt/b[0],b[2],c[2]))
+              print(f'{n}: baseline={b[1]:.3f} upd/s cast={c[1]:.3f} upd/s delta={dt:+.1f} T ({100*dt/b[0]:+.2f}%)')
+              print(f'  map baseline={b[2]} cast={c[2]}')
+          print(f'mean baseline upd/s={statistics.mean(r[1] for r in rows):.3f}')
+          print(f'mean cast upd/s={statistics.mean(r[2] for r in rows):.3f}')
+          print(f'mean cast loop penalty T={statistics.mean(r[3] for r in rows):.1f}')
+          with Path('build/cast-proof/profile/summary.csv').open('w',newline='') as f:
+              w=csv.writer(f);w.writerow(('scenario','baseline_updates_s','cast_updates_s','delta_T','delta_pct','baseline_hash','cast_hash'));w.writerows(rows)
+          PY
+
+      - name: Capture real-time baseline versus cast-run frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          python3 -m pip install --user --disable-pip-version-check pillow
+          ROOT=build/cast-proof/capture
+          mkdir -p "$ROOT"
+          for scenario in roomA-turn roomA-forward; do
+            for variant in baseline cast; do
+              D="$ROOT/${variant}-${scenario}";mkdir -p "$D/frames"
+              ./build/tilesector_state_capture \
+                "build/cast-proof/${variant}.gg" "build/cast-proof/${variant}.sym" \
+                --vblank-sequence "$scenario" 180 30 "$D/frames/frame" "$D/state.csv" \
+                | tee "$D/capture.txt"
+              ffmpeg -y -loglevel error -framerate 60 -i "$D/frames/frame-%04d.ppm" \
+                -c:v libx264 -pix_fmt yuv420p -preset medium -crf 18 "$D/video.mp4"
+            done
+            ffmpeg -y -loglevel error -i "$ROOT/baseline-${scenario}/video.mp4" -i "$ROOT/cast-${scenario}/video.mp4" \
+              -filter_complex hstack=inputs=2 -c:v libx264 -pix_fmt yuv420p -crf 18 "$ROOT/baseline-vs-cast-${scenario}.mp4"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          root=Path('build/cast-proof/capture')
+          for scenario in ('roomA-turn','roomA-forward'):
+              picks=(1,60,120,180)
+              canvas=Image.new('RGB',(160*4,144*2),(0,0,0));draw=ImageDraw.Draw(canvas)
+              for r,v in enumerate(('baseline','cast')):
+                  for c,n in enumerate(picks):
+                      p=root/f'{v}-{scenario}'/'frames'/f'frame-{n:04d}.ppm'
+                      im=Image.open(p).convert('RGB');canvas.paste(im,(c*160,r*144))
+                  draw.text((2,r*144+2),v,fill=(255,255,255))
+              canvas.save(root/f'baseline-vs-cast-{scenario}-contact-sheet.png')
+          PY
+
+      - name: Automated image sanity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/cast-proof/capture/image-sanity.txt
+          from pathlib import Path
+          from PIL import Image,ImageChops
+          root=Path('build/cast-proof/capture')
+          for s in ('roomA-turn','roomA-forward'):
+              diffs=[];colors=set()
+              for n in (1,60,120,180):
+                  a=Image.open(root/f'baseline-{s}'/'frames'/f'frame-{n:04d}.ppm').convert('RGB')
+                  b=Image.open(root/f'cast-{s}'/'frames'/f'frame-{n:04d}.ppm').convert('RGB')
+                  box=ImageChops.difference(a,b).getbbox();diffs.append(box is not None);colors.update(b.getdata())
+              if not any(diffs):raise SystemExit(f'FAIL {s}: cast frames identical to baseline')
+              if len(colors)<5:raise SystemExit(f'FAIL {s}: suspiciously few colours {len(colors)}')
+              print(f'{s}: changed_frames={sum(diffs)}/{len(diffs)} cast_unique_rgb={len(colors)}')
+          print('CAST_VISUAL_SANITY=PASS')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-cast-run-visual-profile
+          path: build/cast-proof/
+          retention-days: 30
