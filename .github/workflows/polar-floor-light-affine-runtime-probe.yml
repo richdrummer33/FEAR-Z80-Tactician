@@ -1,0 +1,214 @@
+name: Polar floor light affine runtime probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  affine-runtime:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force true manual control and mature name-table placement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/main_tilesector_polar_gg.c');s=p.read_text()
+          old='tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          new='tsp_reset(&g_state);g_state.manual=1u;tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;'
+          if s.count(old)!=1: raise SystemExit('manual boot anchor missing/ambiguous')
+          s=s.replace(old,new)
+          old2='DISPLAY_OFF;HIDE_SPRITES;';new2='DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;'
+          if old2 in s:s=s.replace(old2,new2,1)
+          elif 'R2_MAP_0x3800' not in s:raise SystemExit('name table anchor missing')
+          p.write_text(s)
+          PY
+
+      - name: Host Polar acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-test | tee build/affine-runtime-host-test.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build baseline then affine-lit ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/affine-runtime
+          clean_polar() {
+            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+              build/tilesector_polar_renderer_gg.o build/tilesector_polar_floor_light_runtime_gg.o \
+              build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+              build/tilesector_polar_depthplane_gg.o build/tilesector_polar_ntstate_gg.o \
+              build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_raw_gg.o \
+              build/tilesector_polar_ntupload_profiled_gg.o build/gg-tilesector-polar.*
+          }
+          build_rom() {
+            make GBDK_HOME="$PWD/.toolchain/gbdk" \
+              POLAR_PROFILE_HOOKS=1 \
+              POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+              POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+              POLAR_ROM_BANKS=8 \
+              TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u" \
+              gg-tilesector-polar
+          }
+          clean_polar
+          build_rom 2>&1 | tee build/affine-runtime/build-baseline.txt
+          cp build/gg-tilesector-polar.gg build/affine-runtime/baseline.gg
+          cp build/gg-tilesector-polar.sym build/affine-runtime/baseline.sym
+          [ ! -f build/gg-tilesector-polar.map ] || cp build/gg-tilesector-polar.map build/affine-runtime/baseline.map
+
+          python3 tools/apply_affine_floor_light_runtime.py | tee build/affine-runtime/runtime-patch.txt
+          cp src/tilesector_polar_floor_light_runtime.c build/affine-runtime/runtime-floor-light.c
+          git diff -- src/tilesector_polar_renderer.c src/main_tilesector_polar_gg.c Makefile \
+            > build/affine-runtime/runtime-source.patch
+          if git diff -- src/tilesector_polar.h | grep -q .; then
+            echo 'FAIL: tile-count header changed; zero-new-pattern invariant violated' >&2; exit 1
+          fi
+          clean_polar
+          build_rom 2>&1 | tee build/affine-runtime/build-lit.txt
+          cp build/gg-tilesector-polar.gg build/affine-runtime/lit.gg
+          cp build/gg-tilesector-polar.sym build/affine-runtime/lit.sym
+          [ ! -f build/gg-tilesector-polar.map ] || cp build/gg-tilesector-polar.map build/affine-runtime/lit.map
+          sha256sum build/affine-runtime/baseline.gg build/affine-runtime/lit.gg | tee build/affine-runtime/rom-sha256.txt
+          wc -c build/affine-runtime/baseline.gg build/affine-runtime/lit.gg | tee build/affine-runtime/rom-bytes.txt
+
+      - name: Extend profiler with player input scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/tilesector_profile_runner.cpp');s=p.read_text()
+          old='if(scenario!="demo" && scenario!="roomA-turn") {'
+          new='if(scenario!="demo" && scenario!="roomA-turn" && scenario!="roomA-forward" && scenario!="roomA-back" && scenario!="roomA-button1" && scenario!="roomA-button2") {'
+          if s.count(old)!=1: raise SystemExit('scenario allow-list anchor missing')
+          s=s.replace(old,new)
+          old2='if(scenario=="roomA-turn")\n        core.KeyPressed(Joypad_1,Key_Right);'
+          new2='''if(scenario=="roomA-turn") core.KeyPressed(Joypad_1,Key_Right);\n    else if(scenario=="roomA-forward") core.KeyPressed(Joypad_1,Key_Up);\n    else if(scenario=="roomA-back") core.KeyPressed(Joypad_1,Key_Down);\n    else if(scenario=="roomA-button1") core.KeyPressed(Joypad_1,Key_1);\n    else if(scenario=="roomA-button2") core.KeyPressed(Joypad_1,Key_2);'''
+          if s.count(old2)!=1: raise SystemExit('input injection anchor missing')
+          p.write_text(s.replace(old2,new2))
+          PY
+
+      - name: Build Gearsystem profiler and capture tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Verify true player control
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROM=build/affine-runtime/lit.gg;SYM=build/affine-runtime/lit.sym
+          mkdir -p build/affine-runtime/input-proof
+          for scenario in demo roomA-forward roomA-back roomA-turn roomA-button1 roomA-button2; do
+            ./build/tilesector_profile_runner "$ROM" "$SYM" 28 2 "$scenario" | tee "build/affine-runtime/input-proof/${scenario}.txt"
+          done
+          python3 - <<'PY' | tee build/affine-runtime/input-proof-summary.txt
+          from pathlib import Path
+          import re
+          root=Path('build/affine-runtime/input-proof')
+          def motion(name):
+              t=(root/f'{name}.txt').read_text();a=re.search(r'motion start x=([-0-9.]+) y=([-0-9.]+) yaw=(\d+)',t);b=re.search(r'motion last\s+x=([-0-9.]+) y=([-0-9.]+) yaw=(\d+)',t)
+              if not a or not b: raise SystemExit(f'missing motion records for {name}')
+              return tuple(map(float,a.groups()[:2]))+(int(a.group(3)),),tuple(map(float,b.groups()[:2]))+(int(b.group(3)),)
+          def moved(a,b):return abs(a[0]-b[0])>.01 or abs(a[1]-b[1])>.01
+          pairs={n:motion(n) for n in ('demo','roomA-forward','roomA-back','roomA-turn','roomA-button1','roomA-button2')}
+          a,b=pairs['demo'];
+          if moved(a,b) or a[2]!=b[2]:raise SystemExit('FAIL scripted rail active')
+          for n in ('roomA-forward','roomA-back','roomA-button1','roomA-button2'):
+              a,b=pairs[n]
+              if not moved(a,b):raise SystemExit(f'FAIL {n} did not move')
+          a,b=pairs['roomA-turn']
+          if a[2]==b[2]:raise SystemExit('FAIL turn did not rotate')
+          print('AFFINE_LIT_TRUE_PLAYER_CONTROL=PASS')
+          PY
+
+      - name: Cycle profile baseline versus affine light
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in baseline lit; do
+            for scenario in roomA-turn roomA-forward roomA-button1; do
+              ./build/tilesector_profile_runner "build/affine-runtime/${variant}.gg" "build/affine-runtime/${variant}.sym" 120 8 "$scenario" \
+                | tee "build/affine-runtime/${variant}-${scenario}.txt"
+            done
+          done
+          python3 - <<'PY' | tee build/affine-runtime/performance-summary.txt
+          from pathlib import Path
+          import csv,json,re,statistics
+          names=('roomA-turn','roomA-forward','roomA-button1')
+          def read(v,n):
+              t=Path(f'build/affine-runtime/{v}-{n}.txt').read_text()
+              def one(p,req=True):
+                  m=re.search(p,t)
+                  if not m:
+                      if req:raise SystemExit(f'missing {v} {n}: {p}')
+                      return None
+                  return float(m.group(1))
+              d={'loop_T':one(r'loop\s+avg=\s*([0-9.]+) T'),'updates_per_s':one(r'->\s*([0-9.]+) updates/s'),'render_T':one(r'render/build avg=\s*([0-9.]+) T'),'vram_T':one(r'VRAM-upload\s+avg=\s*([0-9.]+) T'),'dirty_words':one(r'dirty words\s+avg=\s*([0-9.]+)'),'map_hash':re.search(r'map-hash\s+frames=\d+ fnv64=([0-9A-F]+)',t).group(1)}
+              if v=='lit':
+                  d['setup_T']=one(r'portal-control\s+total=.*?avg-chunk=\s*([0-9.]+) T')
+                  d['affine_T']=one(r'portal-face\s+total=.*?avg-chunk=\s*([0-9.]+) T')
+                  d['tail_T']=one(r'retained-life\s+total=.*?avg-chunk=\s*([0-9.]+) T')
+              return d
+          rec=[]
+          for n in names:
+              b=read('baseline',n);l=read('lit',n);dt=l['loop_T']-b['loop_T'];pct=100*dt/b['loop_T']
+              r={'scenario':n,'baseline':b,'lit':l,'delta_T':dt,'delta_pct':pct};rec.append(r)
+              print(f'{n}: baseline={b["updates_per_s"]:.3f} lit={l["updates_per_s"]:.3f} loop_delta={dt:+.1f} T ({pct:+.2f}%) setup={l["setup_T"]:.1f} affine={l["affine_T"]:.1f} tail={l["tail_T"]:.1f} hash={l["map_hash"]}')
+          agg={'baseline_mean_updates_per_s':statistics.mean(r['baseline']['updates_per_s'] for r in rec),'lit_mean_updates_per_s':statistics.mean(r['lit']['updates_per_s'] for r in rec),'mean_loop_delta_T':statistics.mean(r['delta_T'] for r in rec),'mean_setup_T':statistics.mean(r['lit']['setup_T'] for r in rec),'mean_affine_T':statistics.mean(r['lit']['affine_T'] for r in rec),'mean_tail_T':statistics.mean(r['lit']['tail_T'] for r in rec),'new_vram_patterns':0,'light_position_field_bytes':0,'light_reciprocal_bytes':0,'yaw_q9_bytes':512}
+          print(json.dumps(agg,indent=2));Path('build/affine-runtime/performance-summary.json').write_text(json.dumps({'scenarios':rec,'aggregate':agg},indent=2)+'\n')
+          with Path('build/affine-runtime/performance-summary.csv').open('w',newline='') as f:
+              w=csv.writer(f);w.writerow(['scenario','baseline_updates_per_s','lit_updates_per_s','loop_delta_T','loop_delta_pct','setup_T','affine_T','tail_T','baseline_map_hash','lit_map_hash']);
+              for r in rec:w.writerow([r['scenario'],r['baseline']['updates_per_s'],r['lit']['updates_per_s'],r['delta_T'],r['delta_pct'],r['lit']['setup_T'],r['lit']['affine_T'],r['lit']['tail_T'],r['baseline']['map_hash'],r['lit']['map_hash']])
+          PY
+
+      - name: Capture baseline versus affine-lit motion
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          ROOT=build/affine-runtime/capture;mkdir -p "$ROOT"
+          for scenario in roomA-turn roomA-forward; do
+            for variant in baseline lit; do
+              D="$ROOT/${variant}-${scenario}";mkdir -p "$D/frames"
+              ./build/tilesector_state_capture "build/affine-runtime/${variant}.gg" "build/affine-runtime/${variant}.sym" \
+                --vblank-sequence "$scenario" 180 30 "$D/frames/frame" "$D/state.csv" | tee "$D/capture.txt"
+              ffmpeg -y -loglevel error -framerate 60 -i "$D/frames/frame-%04d.ppm" -c:v libx264 -pix_fmt yuv420p "$D/video.mp4"
+            done
+            ffmpeg -y -loglevel error -i "$ROOT/baseline-${scenario}/video.mp4" -i "$ROOT/lit-${scenario}/video.mp4" \
+              -filter_complex '[0:v][1:v]hstack=inputs=2[v]' -map '[v]' -c:v libx264 -pix_fmt yuv420p "$ROOT/baseline-vs-lit-${scenario}.mp4"
+            ffmpeg -y -loglevel error -i "$ROOT/baseline-vs-lit-${scenario}.mp4" \
+              -vf "fps=1,scale=640:288,tile=3x1" -frames:v 1 "$ROOT/baseline-vs-lit-${scenario}-contact-sheet.png"
+          done
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,nb_frames -of default=nw=1 "$ROOT/baseline-vs-lit-roomA-turn.mp4" | tee "$ROOT/video-metadata.txt"
+
+      - name: Upload affine runtime evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: polar-floor-light-affine-runtime
+          path: build/affine-runtime/
+          retention-days: 30
