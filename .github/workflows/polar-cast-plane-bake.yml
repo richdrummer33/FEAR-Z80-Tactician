@@ -1,0 +1,41 @@
+name: Polar compact cast-plane bake
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-cast-run-lighting-bake
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compact-cast-plane:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Emit compact cast-plane grid metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/cast-plane
+          python3 experiments/adaptive_polar_field/cast_light_plane_field.py \
+            --emit-dir build/generated/polar_cast_plane --rows-per-bank 4 \
+            | tee build/cast-plane/bake.txt
+          grep -q '^CAST_CHAIN_AUDIT=PASS$' build/cast-plane/bake.txt
+          grep -q '^CAST_PLANE_GRID_BAKE=PASS ' build/cast-plane/bake.txt
+          grep -q '^CAST_FLOOR_ENDPOINT_BYTES=0$' build/cast-plane/bake.txt
+          grep -q '^CAST_FLOOR_RUNTIME_MODEL=VIRTUAL_WALL_BOTTOM_EDGE_PLUS_RECEIVER_OWNER$' build/cast-plane/bake.txt
+          test -s build/generated/polar_cast_plane/tilesector_polar_cast_plane_meta.h
+          test -s build/generated/polar_cast_plane/tilesector_polar_castplane.c
+          for i in 0 1 2 3 4 5; do test -s "build/generated/polar_cast_plane/tilesector_polar_castmask_bank${i}.c"; done
+      - name: Mature Polar host regression
+        run: make polar-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-compact-cast-plane-bake
+          path: |
+            build/cast-plane/
+            build/generated/polar_cast_plane/
+          retention-days: 30
