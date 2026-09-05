@@ -1,0 +1,43 @@
+name: Polar floor light affine Q16 coefficients
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  q16-coeff:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+      - name: Probe ordinary and fractional Q4 cameras
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in ordinary fractional; do
+            d="build/affine-q16-${mode}"; mkdir -p "$d"
+            extra=""; [ "$mode" != fractional ] || extra="--fractional-q4-stress"
+            python3 experiments/adaptive_polar_field/floor_shadow_affine_q16_coeff_poc.py \
+              --out "$d" --step 8 --yaw-step 16 $extra | tee "$d/run.txt"
+          done
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for mode in ('ordinary','fractional'):
+              d=json.loads(Path(f'build/affine-q16-{mode}/summary.json').read_text());r=d['mismatch_pct']
+              assert d['rom_bytes_bias_dx']==11264 and d['runtime_position_field_bytes']==0 and d['runtime_reciprocal_bytes']==0
+              if mode=='fractional': assert d['poses']>20000
+              print(f"Q16_AFFINE_{mode.upper()}=PASS poses={d['poses']} mean={r['mean']:.6f}% p95={r['p95']:.6f}% max={r['max']:.6f}% ROM={d['rom_bytes_bias_dx']}B")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-floor-light-affine-q16-coeff
+          path: build/affine-q16-*/
+          retention-days: 30
