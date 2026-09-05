@@ -42,11 +42,12 @@ jobs:
             | tee build/baked-light-field/ggdepth/run.txt
 
       - name: Sanity-check and expose representation metrics
+        id: metrics
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json
+          import json,os
           from pathlib import Path
           def load(name):return json.loads(Path(f'build/baked-light-field/{name}/summary.json').read_text())
           exact=load('exact');gg=load('ggdepth')
@@ -61,7 +62,6 @@ jobs:
               assert d['penumbra']['new_mixed_tiles_total'] == 0
               assert d['new_vertex_field']['estimated_bytes'] < 65536
           assert exact['ordinary_pose_hard_shadow_error_pct']['mean'] < 0.5
-          # Do not prematurely bless the cheap GG depth model: report it first.
           for title,d in [('Exact edge field',exact),('GG depth edge field',gg)]:
               raw=d['ordinary_pose_hard_shadow_error_pct'];quant=d['ordinary_pose_existing_edge_quantized_error_pct']
               nf=d['new_vertex_field'];pen=d['penumbra']
@@ -72,13 +72,18 @@ jobs:
                    f"pen_new_mixed={pen['new_mixed_tiles_total']}")
               print(title+': '+msg)
               print(f'::notice title={title}::{msg}')
+          er=exact['ordinary_pose_hard_shadow_error_pct'];gr=gg['ordinary_pose_hard_shadow_error_pct']
+          nf=exact['new_vertex_field']
+          tag=(f"em{er['mean']:.4f}-ep{er['p95']:.4f}-gm{gr['mean']:.4f}-gp{gr['p95']:.4f}-"
+               f"b{nf['estimated_bytes']}-fb{nf['fallback_records']}")
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('tag='+tag+'\n')
           print('BAKED_LIGHT_FIELD_REPRESENTATION_SANITY=PASS')
           PY
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: polar-baked-light-field-probe
+          name: polar-baked-light-field-${{ steps.metrics.outputs.tag }}
           path: |
             build/baked-light-field/
           retention-days: 30
