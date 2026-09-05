@@ -3,20 +3,25 @@
 
 For a fixed horizontal receiver plane, evaluating a static world-space line at
 the camera ray's floor intersection does NOT require projection or reciprocal.
-Let the world line in quarter-unit coordinates be:
+Let the world line in the renderer's full 1/16-world Q4 coordinates be:
 
-    L = A*x_q2 + B*y_q2 + C
+    L = A*x_q4 + B*y_q4 + C
 
 and v = screen_y - horizon (>0 below the horizon). With camera height h,
 focal length F, forward/side line coefficients nf/ns, multiplication by the
 positive floor-ray denominator gives an equivalent screen-space half-plane:
 
-    E = S*L(camera)*v + 4*h*F*nf + 4*h*ns*(screen_x-80)
+    E = S*L(camera)*v + 16*h*F*nf + 16*h*ns*(screen_x-80)
 
 where nf/ns use sin/cos scaled by S. E is AFFINE in screen x and y. Therefore a
 convex shadow polygon is just the AND of 3-4 tiny affine inequalities. No world
 vertex transform, endpoint bearing, clipping, reciprocal, division, or per-yaw
 view bake is required.
+
+The important detail is that CAMERA position remains Q4. Shadow vertices happen
+to be quarter-unit aligned, but the player is not snapped to them. The optional
+--fractional-q4-stress adds several 1/16-world offsets around every traversable
+sample specifically to guard that property.
 
 This POC classifies every floor pixel using those inequalities and compares to
 the mature finite-height oracle. --trig-bits controls the only approximation
@@ -45,14 +50,12 @@ class Line:
     A:int;B:int;C:int;inside:int
 
 
-def q2(v):
-    assert (v.x_q4&3)==0,(v.name,v.x_q4,v.y_q4)
-    assert (v.y_q4&3)==0,(v.name,v.x_q4,v.y_q4)
-    return v.x_q4//4,v.y_q4//4
+def q4(v):
+    return v.x_q4,v.y_q4
 
 
 def polygon_lines(poly):
-    pts=[q2(v) for v in poly];cx=sum(x for x,_ in pts)/len(pts);cy=sum(y for _,y in pts)/len(pts);out=[]
+    pts=[q4(v) for v in poly];cx=sum(x for x,_ in pts)/len(pts);cy=sum(y for _,y in pts)/len(pts);out=[]
     for i in range(len(pts)):
         ax,ay=pts[i];bx,by=pts[(i+1)%len(pts)];dx=bx-ax;dy=by-ay;g=math.gcd(abs(dx),abs(dy)) or 1
         A=dy//g;B=-dx//g;C=-(A*ax+B*ay);s=A*cx+B*cy+C
@@ -66,7 +69,7 @@ POLY_LINES=tuple(polygon_lines(poly) for poly,_ in src.POLYS)
 def frame(cx,cy,yaw,trig_bits):
     S=(1<<trig_bits)-1;ang=yaw*math.tau/256.0
     sn=int(round(math.sin(ang)*S));cs=int(round(math.cos(ang)*S))
-    cxq=int(round(cx*4.0));cyq=int(round(cy*4.0))
+    cxq=int(round(cx*16.0));cyq=int(round(cy*16.0))
     yy,xx=np.mgrid[73:oracle.H,0:oracle.W]
     v2=(2*yy+1)-144          # 2*(pixel-centre y - horizon)
     dx2=(2*xx+1)-160         # 2*(pixel-centre x - 80)
@@ -78,7 +81,7 @@ def frame(cx,cy,yaw,trig_bits):
     use4=room4&(~e0|(d4<d0));use0=e0&~use4
 
     sh=np.zeros_like(use0)
-    for pi,(lines) in enumerate(POLY_LINES):
+    for pi,lines in enumerate(POLY_LINES):
         h=16 if pi<2 else 12
         inside=np.ones_like(use0)
         for ln in lines:
@@ -86,7 +89,8 @@ def frame(cx,cy,yaw,trig_bits):
             nf=ln.A*cs+ln.B*sn
             ns=ln.A*(-sn)+ln.B*cs
             # Twice the affine expression so pixel centres stay integer.
-            E2=(S*Lc)*v2 + (8*h*int(oracle.FOCAL))*nf + (4*h*ns)*dx2
+            # Q4 world coordinates require the factor 16 shown in the derivation.
+            E2=(S*Lc)*v2 + (32*h*int(oracle.FOCAL))*nf + (16*h*ns)*dx2
             inside &= (ln.inside*E2)>=0
         inside &= use0 if pi<2 else use4
         sh |= inside
@@ -99,9 +103,22 @@ def pct_stats(vals):
     a=np.asarray(vals,float);return dict(mean=float(a.mean()),p95=float(np.percentile(a,95)),max=float(a.max()))
 
 
+def stress_samples(base_samples):
+    # Exercise the sub-quarter positions the Q2 prototype would have aliased.
+    offsets=((0,0),(1,0),(0,1),(1,1),(2,3),(3,2))
+    out=set()
+    for x,y in base_samples:
+      for ox,oy in offsets:
+        xx=x+ox/16.0;yy=y+oy/16.0
+        if oracle.point_in_any(xx,yy):out.add((xx,yy))
+    return sorted(out,key=lambda p:(p[1],p[0]))
+
+
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--out',default='build/screen-affine');ap.add_argument('--step',type=int,default=8);ap.add_argument('--yaw-step',type=int,default=16);ap.add_argument('--trig-bits',type=int,default=5);a=ap.parse_args()
-    out=Path(a.out);out.mkdir(parents=True,exist_ok=True);samples=oracle.traversable_samples(a.step,True);rows=[]
+    ap=argparse.ArgumentParser();ap.add_argument('--out',default='build/screen-affine');ap.add_argument('--step',type=int,default=8);ap.add_argument('--yaw-step',type=int,default=16);ap.add_argument('--trig-bits',type=int,default=5);ap.add_argument('--fractional-q4-stress',action='store_true');a=ap.parse_args()
+    out=Path(a.out);out.mkdir(parents=True,exist_ok=True);samples=oracle.traversable_samples(a.step,True)
+    if a.fractional_q4_stress:samples=stress_samples(samples)
+    rows=[]
     for cx,cy in samples:
       for yaw in range(0,256,a.yaw_step):
         e,exact_lit=oracle.exact_floor_frame(cx,cy,yaw);he,shadow=frame(cx,cy,yaw,a.trig_bits)
@@ -115,12 +132,12 @@ def main():
     unique={}
     for lines in POLY_LINES:
       for ln in lines:unique[(ln.A,ln.B,ln.C)]=ln
-    summary=dict(positions=len(samples),poses=len(rows),trig_bits=a.trig_bits,trig_scale=(1<<a.trig_bits)-1,polygon_edge_refs=sum(len(x) for x in POLY_LINES),unique_world_lines=len(unique),raw_error_pct=raw,edge_quantized_error_pct=quant,penumbra_new_mixed_tiles_total=pen,field_bytes=0,bearing_vertices=0,reciprocal_bytes=0,world_lines=[dict(A=A,B=B,C=C) for A,B,C in unique])
+    summary=dict(positions=len(samples),poses=len(rows),trig_bits=a.trig_bits,trig_scale=(1<<a.trig_bits)-1,fractional_q4_stress=a.fractional_q4_stress,polygon_edge_refs=sum(len(x) for x in POLY_LINES),unique_world_lines=len(unique),raw_error_pct=raw,edge_quantized_error_pct=quant,penumbra_new_mixed_tiles_total=pen,field_bytes=0,bearing_vertices=0,reciprocal_bytes=0,world_lines=[dict(A=A,B=B,C=C) for A,B,C in unique])
     (out/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print('=== SCREEN-AFFINE FLOOR SHADOW POC ===')
-    print(f"positions={len(samples)} poses={len(rows)} trig=Q{a.trig_bits} scale={summary['trig_scale']}")
+    print(f"positions={len(samples)} poses={len(rows)} trig=Q{a.trig_bits} scale={summary['trig_scale']} fractional_q4={a.fractional_q4_stress}")
     print(f"polygon edge refs={summary['polygon_edge_refs']} unique static lines={summary['unique_world_lines']}")
-    print('bearing field bytes=0; reciprocal bytes=0; yaw view-bake bytes=0')
+    print('bearing field bytes=0; reciprocal bytes=0; yaw view-bake bytes=0; camera_position=full_Q4')
     print(f"raw mismatch mean={raw['mean']:.6f}% p95={raw['p95']:.6f}% max={raw['max']:.6f}%")
     print(f"existing-edge mismatch mean={quant['mean']:.6f}% p95={quant['p95']:.6f}% max={quant['max']:.6f}%")
     print(f"penumbra NEW-MIXED-TILES={pen}")
