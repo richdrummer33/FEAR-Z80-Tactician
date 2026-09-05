@@ -1,0 +1,30 @@
+name: Polar cast-run pack comparison
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-cast-run-lighting-bake
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare cast-light grid packs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/cast-light-pack
+          python3 experiments/adaptive_polar_field/cast_light_pack_compare.py \
+            | tee build/cast-light-pack/pack-comparison.txt
+          grep -q '^=== POLAR CAST-LIGHT PACK COMPARISON ===$' build/cast-light-pack/pack-comparison.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-cast-run-pack-comparison
+          path: build/cast-light-pack/pack-comparison.txt
+          retention-days: 30
