@@ -1,0 +1,103 @@
+name: Polar cast-run lighting bake
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-cast-run-lighting-bake
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cast-bake:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prove caster to receiver topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/cast-light
+          python3 experiments/adaptive_polar_field/cast_light_field.py \
+            | tee build/cast-light/chain-audit.txt
+          grep -q '^CAST_CHAIN_AUDIT=PASS$' build/cast-light/chain-audit.txt
+
+      - name: Emit Polar-grid cast projection field
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 experiments/adaptive_polar_field/cast_light_field.py \
+            --emit-dir build/generated/polar_cast \
+            --emit-threshold 4 --min-q4 8 --rows-per-bank 4 \
+            | tee build/cast-light/bake.txt
+          grep -q '^CAST_CHAIN_AUDIT=PASS$' build/cast-light/bake.txt
+          grep -q '^CAST_GRID_BAKE=PASS ' build/cast-light/bake.txt
+          grep -q '^CAST_ENDPOINT_MODEL=POLAR_Q12_AFFINE ' build/cast-light/bake.txt
+          test -s build/generated/polar_cast/tilesector_polar_cast_light_meta.h
+          test -s build/generated/polar_cast/tilesector_polar_castplane.c
+          for i in 0 1 2 3 4 5; do
+            test -s "build/generated/polar_cast/tilesector_polar_castproj_bank${i}.c"
+          done
+
+      - name: Validate generated topology constants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/cast-light/generated-check.txt
+          from pathlib import Path
+          import re
+          h=Path('build/generated/polar_cast/tilesector_polar_cast_light_meta.h').read_text()
+          expected={
+            'k_tspf_cast_caster':[2,3,6,7],
+            'k_tspf_cast_receiver_sid':[0,3,10,13],
+            'k_tspf_cast_receiver_surface':[0,0,1,1],
+            'k_tspf_cast_floor_z':[0,0,4,4],
+            'k_tspf_cast_shadow_side':[1,0,0,1],
+            'k_tspf_cast_split_u_q8':[187,55,127,142],
+          }
+          for name,want in expected.items():
+            m=re.search(rf'{name}\[\d+\]\s*=\s*\{{(.*?)\}};',h,re.S)
+            if not m: raise SystemExit(f'missing {name}')
+            got=[int(x) for x in re.findall(r'-?\d+',m.group(1))]
+            if got!=want: raise SystemExit(f'{name}: got={got} want={want}')
+          for text in ('24, -24, 18, -18','-21, -21, 26, 26'):
+            if text not in h: raise SystemExit(f'missing cast normal row {text}')
+          print('GENERATED_CAST_METADATA=PASS')
+          print('receiver chains=v2->s0,v3->s3,v6->s10,v7->s13')
+          print('Q8 wall splits preserve the accepted Q2 receiver-hit coordinates')
+          PY
+
+      - name: Mature Polar host regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-test | tee build/cast-light/polar-host-test.txt
+
+      - name: Summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== POLAR CAST-RUN LIGHTING BAKE ==='
+            echo 'This checkpoint changes no GG runtime yet.'
+            echo 'It moves the four receiver-owned cast boundaries into a camera-grid keyed ROM bake.'
+            echo 'Each cast has Polar-Q12 affine caster/hit endpoint fields plus a cast-plane normal and wall split.'
+            echo
+            cat build/cast-light/chain-audit.txt
+            echo
+            cat build/cast-light/bake.txt
+            echo
+            cat build/cast-light/generated-check.txt
+          } | tee build/cast-light/SUMMARY.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-cast-run-lighting-bake
+          path: |
+            build/cast-light/
+            build/generated/polar_cast/
+          retention-days: 30
