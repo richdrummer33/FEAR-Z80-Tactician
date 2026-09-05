@@ -1,0 +1,40 @@
+name: Polar floor light affine tile oracle
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tile-oracle:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install analysis packages
+        run: python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+      - name: Emulate Q9 Game Gear tile materializer over free camera oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/affine-tile-oracle
+          python3 experiments/adaptive_polar_field/floor_shadow_affine_tile_runtime_poc.py \
+            --out build/affine-tile-oracle --step 8 --yaw-step 16 \
+            | tee build/affine-tile-oracle/run.txt
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('build/affine-tile-oracle/summary.json').read_text())
+          r=d['mismatch_pct'];o=d['outside_eligible_written_pixels']
+          assert d['poses']>=4800 and d['position_field_bytes']==0 and d['reciprocal_bytes']==0
+          print(f"AFFINE_TILE_ORACLE=PASS mean={r['mean']:.6f}% p95={r['p95']:.6f}% max={r['max']:.6f}% outside_mean={o['mean']:.3f}px outside_p95={o['p95']:.3f}px")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polar-floor-light-affine-tile-oracle
+          path: build/affine-tile-oracle/
+          retention-days: 30
