@@ -99,7 +99,9 @@ static uint8_t fl_cast_edge_word(uint8_t li,int32_t centre,uint16_t *word){
     int32_t dxp=fl_div8s32(g_fl_dx[li]),dyp=fl_div8s32(g_fl_dy[li]);
     int32_t e00,e70;uint8_t l0,l1;int16_t ds;
     if(!dyp)return 0u;
-    e00=centre-(dxp<<2)-(dyp<<2);
+    /* Explicit multiplies avoid implementation-defined/undefined signed shifts
+     * for negative affine values under SDCC. Constants are folded by compiler. */
+    e00=centre-dxp*4L-dyp*4L;
     e70=e00+dxp*7L;
     l0=fl_cross_threshold(e00,dyp);l1=fl_cross_threshold(e70,dyp);
     if((l0==0u&&l1==0u)||(l0==8u&&l1==8u))return 0u;
@@ -113,11 +115,13 @@ static void fl_setup_line(uint8_t i,const TSPFloorLightLineDef *ld,const TSPStat
     lc=(int32_t)ld->a*(int32_t)s->x_q4+(int32_t)ld->b*(int32_t)s->y_q4+ld->c;
     nf=(int32_t)ld->a*(int32_t)cs+(int32_t)ld->b*(int32_t)sn;
     ns=(int32_t)(-ld->a)*(int32_t)sn+(int32_t)ld->b*(int32_t)cs;
-    /* qlc = 511*L(camera). Tile (0,9) has v2=9 and dx2=-151. */
-    qlc=(lc<<9)-lc;
-    g_fl_row[i]=(qlc<<3)+qlc + nf*(32L*(int32_t)ld->h*TSP_FL_FOCAL) - ns*(16L*(int32_t)ld->h*151L);
+    /* qlc = 511*L(camera). Tile (0,9) has v2=9 and dx2=-151.
+     * Multiplication is deliberate here: negative signed left-shift is not
+     * portable C, and correctness is more valuable than hoping SDCC defines it. */
+    qlc=lc*TSP_FL_Q9_SCALE;
+    g_fl_row[i]=qlc*9L + nf*(32L*(int32_t)ld->h*TSP_FL_FOCAL) - ns*(16L*(int32_t)ld->h*151L);
     g_fl_dx[i]=ns*(256L*(int32_t)ld->h);
-    g_fl_dy[i]=qlc<<4;
+    g_fl_dy[i]=qlc*16L;
 }
 
 static void fl_setup(const TSPState *s){
