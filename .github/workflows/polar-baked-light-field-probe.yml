@@ -1,0 +1,67 @@
+name: Polar baked light field probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baked-light-field:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install analysis packages
+        shell: bash
+        run: |
+          python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+
+      - name: Run Polar floor-shadow edge-field oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/baked-light-field
+          python3 experiments/adaptive_polar_field/floor_shadow_edge_field_poc.py \
+            --out build/baked-light-field \
+            --step 8 --yaw-step 16 \
+            --bearing-threshold 4 --min-q4 8 \
+            | tee build/baked-light-field/run.txt
+
+      - name: Sanity-check representation invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('build/baked-light-field/summary.json')
+          d=json.loads(p.read_text())
+          assert d['positions'] >= 300, d['positions']
+          assert d['poses'] >= 4800, d['poses']
+          assert d['existing_shadow_vertices_reused'] == 9
+          assert d['new_shadow_vertices'] == 4
+          assert d['yaw_representation'].startswith('absolute Q12 bearing field')
+          assert d['penumbra']['new_mixed_tiles_total'] == 0
+          # These are deliberately loose first-probe guards. Promotion thresholds
+          # will be tightened only after the measured field is inspected.
+          assert d['new_vertex_field']['estimated_bytes'] < 65536
+          assert d['ordinary_pose_hard_shadow_error_pct']['mean'] < 0.5
+          print('BAKED_LIGHT_FIELD_REPRESENTATION_SANITY=PASS')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-baked-light-field-probe
+          path: |
+            build/baked-light-field/SUMMARY.txt
+            build/baked-light-field/summary.json
+            build/baked-light-field/pose_metrics.csv
+            build/baked-light-field/worst_field_quantized_contact_sheet.png
+            build/baked-light-field/run.txt
+          retention-days: 30
