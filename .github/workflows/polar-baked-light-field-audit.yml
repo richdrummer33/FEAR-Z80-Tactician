@@ -1,0 +1,99 @@
+name: Polar baked light field coverage audit
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-baked-light-field
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  field-audit:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install analysis packages
+        shell: bash
+        run: |
+          python3 -m pip install --user --disable-pip-version-check numpy matplotlib pillow
+
+      - name: Audit production bearing-record reuse at Q12=4
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/baked-light-audit
+          python3 experiments/adaptive_polar_field/floor_shadow_field_coverage_audit.py \
+            --threshold 4 --min-q4 8 \
+            --out build/baked-light-audit/coverage-q4.json \
+            | tee build/baked-light-audit/coverage-q4.txt
+
+      - name: Audit production bearing-record reuse at Q12=2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 experiments/adaptive_polar_field/floor_shadow_field_coverage_audit.py \
+            --threshold 2 --min-q4 8 \
+            --out build/baked-light-audit/coverage-q2.json \
+            | tee build/baked-light-audit/coverage-q2.txt
+
+      - name: Run uniformly-tight Q12=2 exact-line oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/baked-light-audit/exact-q2
+          python3 experiments/adaptive_polar_field/floor_shadow_edge_field_poc_v5_exact_threshold.py \
+            --out build/baked-light-audit/exact-q2 \
+            --step 8 --yaw-step 16 --bearing-threshold 2 --min-q4 8 \
+            | tee build/baked-light-audit/exact-q2/run.txt
+
+      - name: Expose corrected ROM and Q12=2 visual metrics
+        id: metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          c4=json.loads(Path('build/baked-light-audit/coverage-q4.json').read_text())
+          c2=json.loads(Path('build/baked-light-audit/coverage-q2.json').read_text())
+          q2=json.loads(Path('build/baked-light-audit/exact-q2/summary.json').read_text())
+          assert c4['active_camera_cells']==466
+          assert c2['active_camera_cells']==466
+          assert c4['old_shadow_vertices']==9 and c4['new_shadow_vertices']==4
+          assert c4['overlay_reuse']['estimated_bytes'] >= c4['new4_only']['estimated_bytes']
+          assert q2['topology_fallback_poses']==0
+          assert q2['penumbra']['new_mixed_tiles_total']==0
+          raw=q2['ordinary_pose_hard_shadow_error_pct']
+          edge=q2['ordinary_pose_existing_edge_quantized_error_pct']
+          msg4=(f"Q4 production-reuse={100*c4['old_reuse_fraction']:.2f}% "
+                f"new4={c4['new4_only']['estimated_bytes']}B "
+                f"corrected-overlay={c4['overlay_reuse']['estimated_bytes']}B "
+                f"standalone13={c4['standalone13']['estimated_bytes']}B "
+                f"overlay-fallback={c4['overlay_reuse']['fallback_records']}")
+          msg2=(f"Q2 production-reuse={100*c2['old_reuse_fraction']:.2f}% "
+                f"corrected-overlay={c2['overlay_reuse']['estimated_bytes']}B "
+                f"standalone13={c2['standalone13']['estimated_bytes']}B "
+                f"raw-mean={raw['mean']:.6f}% raw-p95={raw['p95']:.6f}% "
+                f"edge-mean={edge['mean']:.6f}% edge-p95={edge['p95']:.6f}%")
+          print('Corrected Q12=4 pack: '+msg4)
+          print('Tight Q12=2 pack: '+msg2)
+          print(f'::notice title=Corrected shadow bearing pack::{msg4}')
+          print(f'::notice title=Q12=2 exact shadow field::{msg2}')
+          tag=(f"r{100*c4['old_reuse_fraction']:.1f}-q4b{c4['overlay_reuse']['estimated_bytes']}-"
+               f"q2b{c2['overlay_reuse']['estimated_bytes']}-q2m{raw['mean']:.4f}-q2p{raw['p95']:.4f}-"
+               f"q2em{edge['mean']:.4f}")
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('tag='+tag+'\n')
+          print('SHADOW_BEARING_COVERAGE_AUDIT=PASS')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-baked-light-audit-${{ steps.metrics.outputs.tag }}
+          path: |
+            build/baked-light-audit/
+          retention-days: 30
