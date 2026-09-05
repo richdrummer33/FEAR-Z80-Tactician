@@ -1,4 +1,4 @@
-name: Doomguy floor-mount 2x proof
+name: Doomguy floor-mount 1.8x proof
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
       - "tools/room_bundle_poc_gen.c"
       - "tools/room_mesh_bake.c"
       - "tools/polar_baked_composite.c"
+      - "assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb"
   workflow_dispatch:
 
 jobs:
@@ -16,7 +17,8 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     env:
-      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+      DEFAULT_ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+      FLOOR_MOUNT_ASSET: assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb
     steps:
       - uses: actions/checkout@v4
 
@@ -29,22 +31,21 @@ jobs:
           cd tools/glb_rmb
           npm install --no-audit --no-fund
 
-      - name: Import Doomguy
-        run: |
-          set -euo pipefail
-          mkdir -p build/floor-mount tools/generated
-          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
-            --name doomguy --height 19 --up z \
-            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
-            > build/floor-mount/import.json
-
       - name: Default (plinth) build stays byte-identical
         run: |
           set -euo pipefail
-          # ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT defaults to 0 specifically so this
-          # opt-in feature cannot regress the pre-existing plinth/1.35-scale
-          # behaviour every other Doomguy proof depends on. Confirm it here
-          # rather than trusting the default silently.
+          # Every OTHER Doomguy proof imports FullDoomguyclassic at
+          # --height 19 --up z; ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT defaults to 0
+          # specifically so this opt-in feature cannot regress that
+          # pre-existing plinth/1.35-scale behaviour. Confirm it here against
+          # that same asset and those same import args, rather than trusting
+          # the default silently -- the hunyuan import below overwrites this
+          # same generated header, so the check has to happen first.
+          mkdir -p build/floor-mount tools/generated
+          node tools/glb_rmb/convert.mjs "$DEFAULT_ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --height 19 --up z \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/floor-mount/import-default.json
           cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
             -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
             tools/polar_baked_composite.c tools/room_mesh_bake.c \
@@ -56,7 +57,20 @@ jobs:
           grep -q '^DOOM_PLAYABLE_PASS positions=38 states=608 ' \
             build/floor-mount/default-playable.txt
 
-      - name: Build floor-mount 2x host baker
+      - name: Import the floor-mount target asset
+        run: |
+          set -euo pipefail
+          # Overwrites the same generated header the default check just used
+          # -- this is deliberate: only one of the two imports is ever
+          # resident at a time, matching how the room bake actually consumes
+          # it (#include "generated/doomguy_mesh.inc"), so the default check
+          # above has to run to completion first.
+          node tools/glb_rmb/convert.mjs "$FLOOR_MOUNT_ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --up y --height 12.2 \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > build/floor-mount/import.json
+
+      - name: Build floor-mount 1.8x host baker
         run: |
           set -euo pipefail
           cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
@@ -75,10 +89,12 @@ jobs:
             tools/polar_baked_composite.c tools/room_mesh_bake.c \
             tools/room_bundle_poc_gen.c -lm -o build/floor-mount/bake-sanitized
           mkdir -p build/floor-mount/sanitized
-          # Scoped to the doomguy chamber alone: the 2x-scaled statue needs
-          # more scheduler search room than the other, unrelated bundles'
-          # default budget allows (see the "exceeds configured upload search
-          # limit" note on the route bake step below).
+          # Scoped to the doomguy chamber alone: this asset needs more
+          # scheduler search room than the other, unrelated bundles' default
+          # budget allows (see the "exceeds configured upload search limit"
+          # note on the route bake step below) -- confirmed pre-existing by
+          # building the unmodified pre-floor-mount source against the same
+          # real (non-fixture) asset, not a consequence of this change.
           ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
           UBSAN_OPTIONS=halt_on_error=1 \
           ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
@@ -91,8 +107,10 @@ jobs:
           # it translates, and the importer anchors the mesh's own minimum
           # bound at local Z=0), not just an observed number -- this asserts
           # it stays true rather than only reporting it, and prints the top
-          # Z the min-clearance/orbit-radius constants in room_bundle_poc_gen.c
-          # were derived from.
+          # Z the min-clearance/orbit-radius constant in room_bundle_poc_gen.c
+          # was derived from. Measured: min=(61.89,10.56,0.03)
+          # max=(94.14,37.36,29.55) scale=2.43 -- min.z=0.03 is Q8 vertex
+          # quantization noise (~0.01 units pre-scale), not an air gap.
           ROOM_BUNDLE_MESH_BOUNDS_PROBE=1 \
             build/floor-mount/bake build/floor-mount \
             | tee build/floor-mount/bounds.txt
@@ -110,16 +128,20 @@ jobs:
           set -euo pipefail
           mkdir -p build/floor-mount/capture
           # The strict DOOM_PLAY_* walkable-grid pack is a KNOWN, documented
-          # limitation at this scale with this placeholder asset (see the
-          # comment on ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE) -- it is not run
-          # here. The route bake and its review video are unaffected:
-          # doomguy_quality_clamp pushes the camera out rather than excluding
-          # positions, so it cannot disconnect.
+          # limitation with this asset (see the comment on
+          # ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE: its flared base clips the
+          # BOTTOM of the screen at several off-axis grid positions,
+          # independent of clearance) -- it is not run here. The route bake
+          # and its review video are unaffected: doomguy_quality_clamp pushes
+          # the camera out rather than excluding positions, so it cannot
+          # disconnect.
           ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
           ROOM_BUNDLE_CAPTURE_REVIEW=1 \
             build/floor-mount/bake build/floor-mount/capture \
             | tee build/floor-mount/route.txt
           grep -q '^ROOM_BUNDLE_POC_PASS ' build/floor-mount/route.txt
+          grep -q '^ROOM_BUNDLE_STATS bundle=11 route=0->1 .* scheduled_peak=58 ' \
+            build/floor-mount/route.txt
           test "$(find build/floor-mount/capture -name 'review-doomguy-detail-*.ppm' | wc -l)" -eq 120
 
       - name: Encode orbit video and contact sheet
@@ -130,8 +152,8 @@ jobs:
             -vf "scale=320:288:flags=neighbor,setpts=2.0*PTS" -r 15 \
             -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
             -movflags +faststart \
-            build/floor-mount/doomguy-floor-2x-orbit.mp4
-          test -s build/floor-mount/doomguy-floor-2x-orbit.mp4
+            build/floor-mount/doomguy-floor-1.8x-orbit.mp4
+          test -s build/floor-mount/doomguy-floor-1.8x-orbit.mp4
 
           python3 - <<'PY'
           from PIL import Image
@@ -146,21 +168,22 @@ jobs:
           sheet = Image.new("RGB", (w * cols, h * ((len(idx) + cols - 1) // cols)))
           for k, im in enumerate(big):
               sheet.paste(im, ((k % cols) * w, (k // cols) * h))
-          out = pathlib.Path("build/floor-mount/doomguy-floor-2x-contact-sheet.png")
+          out = pathlib.Path("build/floor-mount/doomguy-floor-1.8x-contact-sheet.png")
           sheet.save(out)
           print(f"wrote {out}")
           PY
 
       - uses: actions/upload-artifact@v4
         with:
-          name: doomguy-floor-mount-2x-proof
+          name: doomguy-floor-mount-1.8x-proof
           path: |
+            build/floor-mount/import-default.json
             build/floor-mount/import.json
             build/floor-mount/default-playable.txt
             build/floor-mount/bounds.txt
             build/floor-mount/route.txt
-            build/floor-mount/doomguy-floor-2x-orbit.mp4
-            build/floor-mount/doomguy-floor-2x-contact-sheet.png
+            build/floor-mount/doomguy-floor-1.8x-orbit.mp4
+            build/floor-mount/doomguy-floor-1.8x-contact-sheet.png
             build/floor-mount/capture/review-doomguy-detail-000.ppm
             build/floor-mount/capture/review-doomguy-detail-030.ppm
             build/floor-mount/capture/review-doomguy-detail-060.ppm

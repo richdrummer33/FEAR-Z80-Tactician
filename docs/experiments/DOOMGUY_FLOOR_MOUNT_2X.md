@@ -1,176 +1,180 @@
-# Doomguy floor-mount, 2x scale
+# Doomguy floor-mount, 1.8x scale
 
 Status: temporary experiment branch. Not merged. Opt-in via
 `-DROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT=1`; every other Doomguy proof is
 unaffected (`ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT` defaults to 0).
 
-## Missing input for this pass
+File name kept from the initial pass (originally a 2x request); the shipped
+scale is 1.8x, see below.
 
-The requested asset, `hunyuan_diorama_vertical_112-optimized.glb`, was
-described in the handoff but never actually reached this session -- no file,
-no system attachment, nothing on disk or in the uploads directory. Everything
-below was built and measured against the placeholder already in the repo,
-`assets/gg-hero/FullDoomguyclassic-single-notex.glb` (imported at
-`--height 19 --up z`, the same parameters every existing Doomguy CI workflow
-uses), so the mechanism could be proven and shipped without waiting.
+## The asset
 
-**The exact numeric results here (mesh height, min-clearance, tile-transport
-cost) are specific to this placeholder's proportions and must be re-measured
-once the real diorama is provided.** `ROOM_BUNDLE_MESH_BOUNDS_PROBE=1` (see
-below) makes that a one-command re-derivation, not a re-investigation.
+`assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb` -- a flowing,
+wide-skirted figure on a flared base, 185365 vertices / 248608 triangles,
+with a base-colour texture, normal map, and metallic-roughness texture (no
+dedicated occlusion map), matching the prior material-form tri-run's
+description. An earlier pass on this branch had to proceed without this
+file (it never actually reached that session despite being referenced) and
+used the older `FullDoomguyclassic-single-notex.glb` as a stand-in; that
+placeholder's numbers are gone from this document now that the real asset
+is in hand. It is committed at `assets/gg-hero/` alongside the existing
+Doomguy/Purple-Prism assets so CI can import it directly, the same
+convention every other Doomguy proof already uses.
 
-## What changed
+Import: `--up y --height 12.2 --visual-tris 5200 --shadow-tris 200
+--recess-radius 0.5` (unchanged from the prior material-form tri-run).
+Shell: 2560 vertices / 5194 triangles visual, 90/188 shadow.
 
-Three things were requested: remove the plinth, ground the statue to the
-floor with no air gap, and scale it 2x. All three are one flag now,
-`ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT=1`:
+## Bottom-face check
 
-- `make_doomguy_hero_chamber` no longer adds the 10x9x1.5 plinth box when the
-  flag is set.
-- `add_doomguy_proxy_mesh`'s transform Z-translate changes from 3.0 (plinth
-  top) to `ROOM_BUNDLE_DOOMGUY_FLOOR_Z` (0.0, the floor). `apply_xf` scales
-  before it translates, and the importer already anchors the mesh's own
-  minimum bound at local Z=0, so this is flush by construction at any scale
-  -- not a number that has to be re-tuned if the scale changes.
-- The room-placement scale goes from the fixed 1.35 to
-  `ROOM_BUNDLE_DOOMGUY_SCALE` (2.70 default -- literally double the previous
-  art-direction factor, since "2x" was requested as a further pass over the
-  existing placement, not a replacement of it).
+Requested directly: verify no downward-facing geometry sits below the
+floor. Measured on the actual emitted Q8 vertex data (not just the overall
+bounding box, which by construction cannot be negative since it defines the
+anchor):
 
-Measured (`ROOM_BUNDLE_MESH_BOUNDS_PROBE=1`, placeholder asset):
+| shell | min Z (local, pre-scale) |
+|---|---:|
+| visual | 0.0117 |
+| lighting (unused at these renderer settings) | 0.4453 |
+| shadow | 0.0547 |
 
-    DOOMGUY_MESH_BOUNDS min=(59.99,7.77,0.03) max=(96.01,40.22,51.30)
-    scale=2.7000 floor_z=0.0000 floor_mount=1
+All three are at or fractionally above zero -- nothing dips below the
+anchor. This mattered to check rather than assume: the importer anchors
+`z0` to the RAW source mesh's minimum (`tools/glb_rmb/convert.mjs`, `norm.z0
+= b.min[2]`, computed before decimation), and each of the visual/lighting/
+shadow shells is independently decimated afterward from a fresh read of the
+same input. Quadric-based mesh simplification is not guaranteed to stay
+within the original silhouette -- an edge collapse can in principle move a
+vertex past the original extremum, which would show up as exactly the
+"some faces below the floor" the request was checking for. It happens not
+to occur here, but that is a property of this decimation run, not a
+guarantee `convert.mjs` enforces; if a future asset trips it, clamp each
+shell's own minimum into `norm.z0` (`min(raw_min, min(all shell mins))`)
+rather than trusting the raw source's bound alone.
 
-`min.z=0.03` is Q8 vertex quantization noise (roughly 0.01 units in the
-mesh's own local space), not an air gap -- three orders of magnitude below
-anything a 160x144 screen can show. The room-bake CI step asserts `min.z <
-0.1` so this stays a guarantee, not an observation.
+World-space, after placement (`ROOM_BUNDLE_MESH_BOUNDS_PROBE=1`):
 
-## A real bug, found by this change
+    DOOMGUY_MESH_BOUNDS min=(61.89,10.56,0.03) max=(94.14,37.36,29.55)
+    scale=2.4300 floor_z=0.0000 floor_mount=1
 
-Removing the plinth doesn't just remove a box -- it renumbers every mesh
-object that comes after it. `rmb_render` owners are `0x80 + object creation
-index`; the plinth was object 0, so the visual mesh was object 1, owner
-`0x81`. Eight call sites across three functions
-(`train_doomguy_codec`, `doom_play_position_framed`,
-`bake_doomguy_playable`'s capture code, `HERO_CORPUS_OWNER`) hardcoded that
-`0x81` directly. With the plinth gone the visual mesh becomes object 0,
-owner `0x80` -- every one of those sites was silently looking at an owner ID
-nothing painted to anymore.
+`min.z=0.03` is that same 0.0117-unit visual-shell residual times the 2.43
+scale -- three orders of magnitude below anything a 160x144 screen can
+show. The CI workflow asserts `min.z < 0.1` so this stays a guarantee.
 
-The symptom was total silence, not a crash: `tsp_host_composite_owner_pixel_count(0x81u)`
-returned 0 everywhere, including from camera positions standing well inside
-the room looking straight at the statue, which is what made this findable --
-a real framing bug would show SOME views working. `train_doomguy_codec` was
-the canary (`fatal: hero codec training found no enclosed cells`, from
-`tools/polar_baked_composite.c:1480`).
+## Scale: 1.8x, not 2x
+
+`ROOM_BUNDLE_DOOMGUY_SCALE` is `1.35 * 1.8 = 2.43` (revised down from an
+initial 2x request, applied as a further pass over the existing 1.35
+art-direction factor, same as the original request).
+
+## Min distance, the hard way
+
+The closed-form distance for "tippy top at screen_y=0" is still
+`d = (topZ - eyeZ) * 80 / 72` (see `project()` / `RMB_CY=72` /
+`RMB_FOCAL=80` in `room_mesh_bake.c`). With the measured topZ=29.55 and
+eyeZ=16.0 that is d=15.05 -- and it is wrong for this asset. This is a
+wide, flared diorama, not a narrow upright figure: at d=15.05 the camera
+sits inside the piece's own silhouette. Confirmed by rendering it, not
+just by comparing to the mesh's XY half-extent (which itself
+underestimated the real requirement -- a naive bounding-box radius put a
+safe distance around 21, and 22 still rendered as clearly inside the
+geometry).
+
+The actual value was found by rendering candidates and looking at them:
+15, 17, 19, 22, 24, 26, 28, 30, 40, 50 world units, at multiple angles
+around the orbit. 15 through 26 all still clipped through geometry at one
+angle or another. 50 broke the route bake outright (`route terminal seam
+name table != canonical seam` -- `doomguy_quality_clamp` pushing an
+ordinary traversal pose that far out corrupts the shared seam, not just
+the orbit). **28** was the smallest value clear of the geometry at every
+tested angle (0/15/30/45/60/75/90 degrees): the closest approach lands the
+tippy top just short of the top row, matching "give or take," and the rest
+of the orbit has comfortable headroom.
+
+`ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE=28.0` drives, as one constant, what used
+to be independently hand-tuned numbers: the playable grid's inclusion
+radius (`doom_play_position_valid`), the route bake's closest-approach
+clamp (`doomguy_quality_clamp`), the review orbit's radius
+(`showcase_detail_pose`, now an exact circle at this distance instead of a
+by-feel ellipse), and the codec's three training bands
+(`train_doomguy_codec`, now `MIN_CLEARANCE + 6*band`).
+
+## A real bug, found removing the plinth (unchanged from the first pass)
+
+Removing the plinth renumbers every mesh object created after it --
+`rmb_render` owners are `0x80 + creation index`. The plinth was object 0,
+so the visual mesh was object 1, owner `0x81`; with the plinth gone the
+visual mesh becomes object 0, owner `0x80`. Eight hardcoded `0x81` sites
+across three functions (`train_doomguy_codec`, `doom_play_position_framed`,
+`bake_doomguy_playable`'s capture code, `HERO_CORPUS_OWNER`) were left
+pointing at nothing. Symptom was total silence -- `owner_pixel_count`
+returning 0 from every camera angle, including ones standing well inside
+the room -- caught by the codec trainer's "no enclosed cells" die().
 
 Fixed with one named constant, `ROOM_BUNDLE_DOOMGUY_VISUAL_OWNER`, derived
-next to the object-creation code it depends on and used at all eight sites
-instead of the literal. It resolves to `0x81u` in plinth mode (unchanged)
-and `0x80u` in floor-mount mode. A future reordering only needs to update
-one derivation, not grep the file for `0x81`.
+next to the object-creation code it depends on (`0x81u` in plinth mode,
+unchanged; `0x80u` in floor-mount mode) and used at all eight sites instead
+of the literal.
 
-## Min distance: "tippy top at the top of the screen"
+## Known limitation: the playable grid, for a different reason than before
 
-`project()` in `room_mesh_bake.c` puts screen_y at
-`RMB_CY - (worldZ - camZ) * RMB_FOCAL / d` (72 and 80). Setting screen_y to 0
-(the top row) and solving for d:
+The route bake and its review video both pass. The strict `DOOM_PLAY_*`
+walkable-lattice pack (`ROOM_BUNDLE_PLAYABLE=1`) does not --
+`doom_play_grid_connected` fails, same as with the placeholder asset, but
+for a different underlying reason now that the real asset is in hand.
 
-    d = (topZ - eyeZ) * 80 / 72
+The placeholder was too TALL and clipped the top of the screen. This asset
+clips the BOTTOM (`y1=143`) at many off-axis grid positions -- its flared
+base is wide enough that being far enough away on the min-clearance circle
+is not sufficient at an angle that does not look straight at the piece.
+Confirmed this is a base-width problem, not a distance problem, by sweeping
+`MIN_CLEARANCE` from 22 through 40: the same style of exclusion recurs at
+every value tested, because raising clearance moves the camera further
+along a ray that still does not point at the object, rather than fixing
+the angle. `doom_play_position_valid` only checks distance from the
+statue's center; it has no per-position framing check of its own (that is
+`doom_play_position_framed`'s job, and it is already doing exactly what it
+should -- rejecting the bad positions). Fixing the grid would need either a
+wider room or teaching `doom_play_position_valid` to reason about framing,
+not just distance; not attempted here.
 
-With the measured topZ=51.30 and the eye height already used throughout this
-codebase for Doomguy (16.0, matching `HERO_CORPUS_EYE_Z` and the playable
-grid's `p.z`): d = 39.22, rounded to **39.0** for a hair of margin.
-
-This one constant, `ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE`, now drives every
-place in the file that used to hardcode a "how close can the camera get"
-number for bundle 11:
-
-- `doom_play_position_valid` -- the playable grid's inclusion radius (was a
-  literal 22.0, unrelated to any framing derivation).
-- `doomguy_quality_clamp` -- pushes any route-bake pose outside this radius.
-- `showcase_detail_pose`'s bundle-11 case -- now an exact **circle** at this
-  radius (was an ellipse, rx=22/ry=27, sized by feel) so the review orbit's
-  closest approach is the same distance the math was solved for, at every
-  angle.
-- `train_doomguy_codec`'s three training bands -- now `MIN_CLEARANCE + 6*band`
-  (was a fixed `26.0 + 6*band`, tuned for the old, much smaller statue).
-
-All four are gated on `ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT`; the plinth-mode
-literals (22.0, the 22/27 ellipse, `26.0 + 6*band`) are untouched.
-
-## Known limitation: the playable grid doesn't fit this placeholder at 2x
-
-The route bake and its review video (below) both pass. The **strict**
-`DOOM_PLAY_*` walkable-lattice pack (`ROOM_BUNDLE_PLAYABLE=1`) does not --
-`doom_play_grid_connected` fails.
-
-Root cause, not a tuning miss: `doom_play_position_framed` rejects a
-position independently of `doom_play_position_valid`'s distance check --
-raising `MIN_CLEARANCE` only trims the near side of the grid, it cannot
-rescue a position that clips because the object is simply too tall from
-that angle. On the original 8x8 lattice, at this placeholder's 2x-scaled
-height, an entire row near the room's south pillars clips regardless of
-clearance, and disconnects the remaining ring. This was verified not to be
-a min-clearance-value problem by sweeping 22 through 46 and by widening the
-grid to 10x10 and 12x12 (both still failed, the wider grid additionally
-colliding with the corner pillars). The room itself -- 80 units wide,
-36..116 in X -- is the binding constraint: even the exact framing distance
-(39.22) is within 2 units of the room's east-west half-width, leaving no
-margin for the off-axis views that don't look dead-on at the statue.
-
-This is very likely a placeholder-asset artifact, not a fundamental
-conflict: the actual target's import height (12.2, per the prior tri-run
-doc) is roughly 64% of this placeholder's 19, so its 2x-scaled height would
-be proportionally smaller too, and may clear the room's own limits without
-any further change. Re-run `ROOM_BUNDLE_MESH_BOUNDS_PROBE=1` once the real
-asset is imported before deciding whether the room needs widening.
+The route bake and review video are unaffected: `doomguy_quality_clamp`
+pushes a pose outward along its existing direction rather than excluding
+it, so it cannot disconnect a ring that does not exist for that code path.
 
 ## Route bake / review video
 
-`ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_CAPTURE_REVIEW=1` (with
-`ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512` -- see Performance below) produces
-120 frames of the closest-approach orbit plus the authored traversal route.
-Visually: floor-flush with no plinth and no gap, consistent framing with the
-top close to the top of the screen across the whole orbit.
+`ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512
+ROOM_BUNDLE_CAPTURE_REVIEW=1` produces 120 frames of the closest-approach
+orbit plus the authored traversal route.
 
-Screenshots and a 120-frame GIF (this environment could not install ffmpeg
-locally -- an apt mirror 404 -- so the CI workflow below does the MP4 encode
-instead) were sent alongside this doc.
+    ROOM_BUNDLE_STATS bundle=11 route=0->1 frames=192 patch_bytes=43403
+      tile_bytes=196472 tile_loads=5756 raw_peak=93 scheduled_peak=58
+      scheduled_budget=58 atomic_unsafe_peak=58 changed_words=15388
+    ROOM_BUNDLE_STATS bundle=11 route=1->0 ... scheduled_peak=58 ...
+    ROOM_BUNDLE_POC_PASS bundles=1 ordinary_routes=2 split_routes=6
+      stair_routes=2 frames_per_route=192 canonical=E4F108D3C424CCE3
 
-## Performance: this is the actual cost of 2x
+`ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512` is required regardless of
+floor-mount or scale -- confirmed pre-existing by building the unmodified
+pre-floor-mount source against this same real (non-fixture) asset: the
+default search budget is sized for the tiny synthetic fixture some older
+CI jobs import, not for a ~5200-triangle real mesh.
 
-|  | plinth, 1.35x (unchanged) | floor-mount, 2.70x |
-|---|---:|---:|
-| scheduled_peak (0->1) | 55\* | 67 |
-| scheduled_peak (1->0) | 56\* | 68 |
-| tile_loads (0->1) | 5340\* | 5497 |
-| changed_words | 15395\* | 13970 |
-
-\*From the prior material-form tri-run doc, same placeholder mesh, 1.35x
-scale -- not independently re-measured here since that path is intentionally
-untouched.
-
-Both configurations need `ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512` to bake at
-all with the real (non-fixture) asset -- confirmed pre-existing by building
-the unmodified `da8f987` source against the same asset, so this is not a
-consequence of floor-mount or the scale change, just of using the real mesh
-instead of the tiny synthetic fixture some older CI jobs import.
-
-scheduled_peak of 67-68 is roughly 40% above the ~48-pattern/VBlank ceiling
-this whole project has budgeted against everywhere else. Doubling the linear
-scale roughly quadruples projected screen area, and tile churn scales with
-it. This is real and worth knowing before committing to 2x for anything
-that has to hit that ceiling; it does not block the host bake, video, or
-screenshots, all of which are unconditional host-side work with no VBlank
-budget of their own.
+scheduled_peak=58 is roughly 20% above the ~48-pattern/VBlank ceiling this
+project budgets against elsewhere, and lower than the placeholder-asset
+pass's 67-68 despite the larger, more detailed mesh -- the shorter overall
+height (29.55 vs 51.30 for the placeholder at its own scale) means less of
+the screen churns per frame even though the silhouette itself is more
+complex. Real, worth knowing, does not block the host bake, video, or
+screenshots (all unconditional host-side work with no VBlank budget of
+their own).
 
 ## Reproduce
 
-    node tools/glb_rmb/convert.mjs assets/gg-hero/FullDoomguyclassic-single-notex.glb \
-      tools/generated/doomguy_mesh.inc --name doomguy --height 19 --up z \
+    node tools/glb_rmb/convert.mjs \
+      assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb \
+      tools/generated/doomguy_mesh.inc --name doomguy --up y --height 12.2 \
       --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5
 
     cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \

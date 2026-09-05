@@ -106,10 +106,11 @@
 #define ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT 0
 #endif
 #if ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
-/* Requested 2x pass over the previous 1.35 art-direction scale, now that the
- * statue stands directly on the floor instead of a plinth. */
+/* Requested 1.8x pass over the previous 1.35 art-direction scale (revised
+ * down from an initial 2x request), now that the statue stands directly on
+ * the floor instead of a plinth: 1.35 * 1.8 = 2.43. */
 #ifndef ROOM_BUNDLE_DOOMGUY_SCALE
-#define ROOM_BUNDLE_DOOMGUY_SCALE 2.70
+#define ROOM_BUNDLE_DOOMGUY_SCALE 2.43
 #endif
 /* No plinth, no offset: the importer anchors local Z=0 at the mesh's own
  * minimum bound, and apply_xf scales before it translates, so a zero here
@@ -118,35 +119,39 @@
 #ifndef ROOM_BUNDLE_DOOMGUY_FLOOR_Z
 #define ROOM_BUNDLE_DOOMGUY_FLOOR_Z 0.0
 #endif
-/* Derived, not hand-tuned: ROOM_BUNDLE_MESH_BOUNDS_PROBE=1 prints the
- * doomguy hero chamber's actual world-space bounds after scale/floor
- * placement, then d = (topZ - eyeZ) * 80 / 72 is the ground distance at
- * which the mesh's tippy top lands on screen_y=0, the top row (see
- * project() / RMB_CY=72 / RMB_FOCAL=80 in room_mesh_bake.c). This is the
- * distance both the playable grid's quality envelope
+/* ROOM_BUNDLE_MESH_BOUNDS_PROBE=1 prints the doomguy hero chamber's actual
+ * world-space bounds after scale/floor placement. The closed-form distance
+ * for "tippy top at screen_y=0" is d = (topZ - eyeZ) * 80 / 72 (see
+ * project() / RMB_CY=72 / RMB_FOCAL=80 in room_mesh_bake.c), but that alone
+ * is not sufficient for this asset: it is a wide flared diorama, not a
+ * narrow upright figure, and the closed-form distance (15.05 at the
+ * measured topZ=29.55, eyeZ=16.0) puts the camera inside the piece's own
+ * silhouette at several angles -- confirmed by rendering it. The value
+ * below was instead chosen by rendering candidates from 15 through 50 and
+ * picking the smallest one clear of the geometry at every tested angle
+ * (0/15/30/45/60/75/90 degrees of the orbit): the closest approach (15
+ * degrees) lands the tippy top just short of the top row, matching "give
+ * or take"; the rest of the orbit has comfortable headroom. This is the
+ * "min distance" both the playable grid's quality envelope
  * (doom_play_position_valid) and the showcase route's closest legal
- * approach (doomguy_quality_clamp) already treat as "min distance" -- this
- * one constant drives both.
+ * approach (doomguy_quality_clamp) treat as one constant.
  *
- * Current value (39.0) is measured against the placeholder
- * FullDoomguyclassic-single-notex.glb asset re-scaled to
- * ROOM_BUNDLE_DOOMGUY_SCALE (topZ=51.30, eyeZ=16.0 -> d=39.22, rounded down
- * slightly for margin): the real target asset was not available in this
- * session. Re-run the probe once it is imported and update this constant;
- * doom_play_position_framed already rejects any position that still clips a
- * screen edge, so a stale value here fails loudly rather than silently.
- *
- * KNOWN LIMITATION at this value with the placeholder asset: the strict
- * DOOM_PLAY_* walkable-grid pack (ROOM_BUNDLE_PLAYABLE=1) currently fails
- * doom_play_grid_connected -- the statue is now tall enough that several
- * grid positions near the room's south pillars clip the top of the screen
- * regardless of clearance, breaking the ring. The showcase/route bake and
- * its review video (ROOM_BUNDLE_ONLY=11, ROOM_BUNDLE_CAPTURE_REVIEW=1) are
- * unaffected -- doomguy_quality_clamp pushes rather than excludes, so it
- * cannot disconnect. Fixing the grid needs either a wider room or the real
- * (differently proportioned) target asset; not attempted here. */
+ * KNOWN LIMITATION at this value with this asset: the strict DOOM_PLAY_*
+ * walkable-grid pack (ROOM_BUNDLE_PLAYABLE=1) currently fails
+ * doom_play_grid_connected. Unlike the earlier placeholder asset (which
+ * clipped the TOP of the screen from being too tall), this one clips the
+ * BOTTOM (y1=143) at many off-axis grid positions -- the flared base is
+ * wide enough that a camera merely far enough away on the min-clearance
+ * circle is not necessarily far enough away at an angle that does not look
+ * straight at the piece. Raising MIN_CLEARANCE does not fix this (verified
+ * for 22..40): it is a base-width problem, not a distance problem. The
+ * showcase/route bake and its review video (ROOM_BUNDLE_ONLY=11,
+ * ROOM_BUNDLE_CAPTURE_REVIEW=1) are unaffected -- doomguy_quality_clamp
+ * pushes rather than excludes, so it cannot disconnect. Fixing the grid
+ * would need either a wider room or per-position framing (not just
+ * distance) validation in doom_play_position_valid; not attempted here. */
 #ifndef ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE
-#define ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE 39.0
+#define ROOM_BUNDLE_DOOMGUY_MIN_CLEARANCE 28.0
 #endif
 /* rmb_render owners are 0x80 + the mesh object's creation-order index within
  * its RMBScene. add_doomguy_proxy_mesh creates the visual object FIRST for
