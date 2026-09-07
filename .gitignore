@@ -70,3 +70,13 @@ build/gearsystem_core_runner*
 
 # Curated Game Gear ROM snapshots (*.gg) are intentionally tracked.
 # Do not add a global *.gg ignore rule.
+
+# Host-side tool/test binaries built into build/ by the Makefile.
+# (Curated *.gg ROM snapshots above remain intentionally tracked.)
+build/host_preview
+build/test_sim
+build/test_tilesector
+build/tilesector_preview
+build/test_tilesector_polar
+build/polar_transition_bake
+build/polar_demo_patch_gen
