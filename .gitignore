@@ -80,3 +80,7 @@ build/tilesector_preview
 build/test_tilesector_polar
 build/polar_transition_bake
 build/polar_demo_patch_gen
+
+# Python bytecode cache from host-side bake experiments
+__pycache__/
+*.pyc
