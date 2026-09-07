@@ -1,0 +1,35 @@
+name: Polar span-event chain POC
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-span-event-poc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  span-event-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exhaustive Q4 span-event analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/span-event-poc
+          python3 experiments/adaptive_polar_field/span_event_chain_poc.py --step 1 \
+            | tee build/span-event-poc/report.txt
+      - name: Sanity gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^unresolved_decision_trees=0$' build/span-event-poc/report.txt
+          grep -q '^NEXT_GATE:' build/span-event-poc/report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-span-event-poc
+          path: build/span-event-poc/report.txt
