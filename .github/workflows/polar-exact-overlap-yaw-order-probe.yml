@@ -1,0 +1,36 @@
+name: Polar exact overlap yaw-order probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-span-event-poc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  overlap-yaw-order-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build overlap-aware host-order probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/exact-overlap-yaw-order
+          cc -std=c99 -O3 -Wall -Wextra -Wpedantic -Isrc -Iexperiments/adaptive_polar_field \
+            src/tilesector_polar_motion.c \
+            experiments/adaptive_polar_field/exact_overlap_order_yaw_probe.c \
+            -o build/exact-overlap-yaw-order/probe
+      - name: Scan walkable XY positions and all 256 yaws
+        shell: bash
+        run: |
+          set -euo pipefail
+          build/exact-overlap-yaw-order/probe 8 | tee build/exact-overlap-yaw-order/report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-exact-overlap-yaw-order-probe
+          path: build/exact-overlap-yaw-order/report.txt
