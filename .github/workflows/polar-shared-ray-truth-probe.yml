@@ -1,0 +1,36 @@
+name: Polar shared-ray truth probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-span-event-poc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shared-ray-truth:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build shared-ray truth probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/shared-ray-truth
+          cc -std=c99 -O3 -Wall -Wextra -Wpedantic -Isrc -Iexperiments/adaptive_polar_field \
+            src/tilesector_polar_motion.c \
+            experiments/adaptive_polar_field/exact_overlap_truth_probe.c \
+            -o build/shared-ray-truth/probe
+      - name: Compare current sort to shared-ray occlusion truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          build/shared-ray-truth/probe 8 | tee build/shared-ray-truth/report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-shared-ray-truth-probe
+          path: build/shared-ray-truth/report.txt
