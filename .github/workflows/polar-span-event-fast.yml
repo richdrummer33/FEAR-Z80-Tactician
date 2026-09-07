@@ -1,0 +1,29 @@
+name: Polar span-event fast probe
+
+on:
+  push:
+    branches:
+      - experiment/gg-polar-span-event-poc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Coarse Q4 span-event analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/span-event-fast
+          python3 experiments/adaptive_polar_field/span_event_chain_poc.py --step 8 \
+            | tee build/span-event-fast/report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: polar-span-event-fast
+          path: build/span-event-fast/report.txt
