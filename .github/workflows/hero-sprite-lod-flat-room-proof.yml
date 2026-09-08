@@ -347,7 +347,7 @@ jobs:
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg
             build/hero-room-flat/ROM-size.txt
             build/hero-room-flat/palette.json
-            build/hero-room-flat/generated-hero/generated/hero_colour_palette.inc
+            build/hero-room-flat/generated-hero-colour/generated/hero_colour_palette.inc
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.map
             build/hero-room-flat/hero-pack.txt

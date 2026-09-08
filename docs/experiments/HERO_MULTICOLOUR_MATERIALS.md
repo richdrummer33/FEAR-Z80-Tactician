@@ -125,6 +125,30 @@ extra per-frame upload bandwidth (a tile is 32 bytes either way), no change to
 the room bake, and the palette is still 96 bytes (plus 192 for the temporal
 interleave).
 
+## Seen through a real VDP
+
+The host renders above go through the compositor's preview ramp. The ROM job
+builds both vocabularies from the same corpus, links a greyscale and a colour
+ROM, and runs each in Gearsystem, so the palette is finally indexed by actual
+VDP hardware rather than by a Python lookup. That matters here more than it did
+for the single-hue pass: the family packing renumbers every hero pixel to
+`1 + material*5 + ramp position`, and a pack and a palette that disagreed about
+that would look plausible in isolation and wrong together.
+
+Warm pixels (red clearly above both green and blue) can only come from the
+sprite palette this change installs, since the greyscale palette is
+neutral-to-cool by construction:
+
+| ROM | warm-pixel fraction |
+|---|---:|
+| greyscale | 0.0000 |
+| 3 materials + interleave | 0.1772 |
+
+Both ROMs are 4194304 bytes and both hero vocabularies are 192 patterns /
+6144 bytes. The room dispatch and every room data bank are the *same object
+files* linked into both, so the room is provably untouched; only `main.o` and
+the hero vocabulary differ.
+
 ## Saturation
 
 ![chroma 1.00, 0.72 and 0.50 against greyscale](images/doomguy-multicolour-chroma-sweep.png)
