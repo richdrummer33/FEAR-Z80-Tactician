@@ -229,18 +229,32 @@ jobs:
           sha256sum build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
             | tee build/hero-room-flat/SHA256.txt
 
-          # NOT _move_sprite: on sms/gg GBDK defines move_sprite as an inline in
-          # the platform header rather than as a library function, so it is
-          # correctly absent from the symbol table and this check could never
-          # have passed. Replaced with symbols that actually prove THIS proof
-          # linked -- the pack's own banked entry points -- rather than a GBDK
-          # implementation detail.
-          for sym in _main _set_sprite_4bpp_data _hero_lod_load_vocabulary _hero_lod_apply_view; do
-            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' \
-              build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym)"
+          # NOT _move_sprite: on sms/gg GBDK defines move_sprite as an inline
+          # in the platform header rather than as a library function, so it is
+          # correctly absent and the original form of this check could never
+          # have passed on any branch.
+          #
+          # The hero pack is checked by PREFIX rather than by exact name. Its
+          # entry points are BANKED, and which of them reach the .sym depends
+          # on how -autobank placed them -- that placement changes with the
+          # size of the generated data, so naming one function makes the check
+          # a hostage to the asset. What the check is actually for is that the
+          # hero vocabulary linked in at all, and any _hero_lod symbol proves
+          # that. The names found are recorded so a future failure says what
+          # is there instead of only what is missing.
+          SYM=build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym
+          for sym in _main _set_sprite_4bpp_data; do
+            tok="$(awk -v s="$sym" '$2==s{print $1; exit}' "$SYM")"
             test -n "$tok"
             printf '%s %s\n' "$sym" "$tok"
           done | tee build/hero-room-flat/SYMBOLS.txt
+          # The .sym is a debugger symbol list and does not necessarily carry
+          # every BANKED function; the linker MAP does, with its area, so that
+          # is where the hero vocabulary's linkage is asserted.
+          MAP=build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.map
+          grep -o '_hero_lod[A-Za-z0-9_]*' "$MAP" | sort -u \
+            | tee -a build/hero-room-flat/SYMBOLS.txt
+          test "$(grep -c '_hero_lod_apply_view' "$MAP")" -ge 1
 
       - name: Run in Gearsystem and capture orbit
         run: |

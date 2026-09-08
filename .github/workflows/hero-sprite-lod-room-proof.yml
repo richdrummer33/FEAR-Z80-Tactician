@@ -131,12 +131,21 @@ jobs:
           # have passed. Replaced with symbols that actually prove THIS proof
           # linked -- the pack's own banked entry points -- rather than a GBDK
           # implementation detail.
-          for sym in _main _set_sprite_4bpp_data _hero_lod_load_core _hero_lod_apply_view; do
+          # Prefix rather than exact names: the pack's entry points are BANKED
+          # and which reach the .sym depends on -autobank's placement, which
+          # moves with the generated data's size. See the flat-room proof.
+          for sym in _main _set_sprite_4bpp_data; do
             tok="$(awk -v s="$sym" '$2==s{print $1; exit}' \
               build/hero-room/GG-Hero-Hierarchical-Sprite-LOD-Room.sym)"
             test -n "$tok"
             printf '%s %s\n' "$sym" "$tok"
           done | tee build/hero-room/SYMBOLS.txt
+          # The .sym is a debugger symbol list and does not necessarily carry
+          # every BANKED function; the linker MAP does. See the flat-room proof.
+          MAP="$(ls build/hero-room/*.map | head -1)"
+          grep -o '_hero_lod[A-Za-z0-9_]*' "$MAP" | sort -u \
+            | tee -a build/hero-room/SYMBOLS.txt
+          test "$(grep -c '_hero_lod_apply_view' "$MAP")" -ge 1
 
       - name: Run in Gearsystem and capture orbit
         run: |
