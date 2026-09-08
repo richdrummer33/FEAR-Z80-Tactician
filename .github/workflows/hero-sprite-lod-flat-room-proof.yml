@@ -193,7 +193,13 @@ jobs:
           sha256sum build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
             | tee build/hero-room-flat/SHA256.txt
 
-          for sym in _main _set_sprite_4bpp_data _move_sprite; do
+          # NOT _move_sprite: on sms/gg GBDK defines move_sprite as an inline in
+          # the platform header rather than as a library function, so it is
+          # correctly absent from the symbol table and this check could never
+          # have passed. Replaced with symbols that actually prove THIS proof
+          # linked -- the pack's own banked entry points -- rather than a GBDK
+          # implementation detail.
+          for sym in _main _set_sprite_4bpp_data _hero_lod_load_vocabulary _hero_lod_apply_view; do
             tok="$(awk -v s="$sym" '$2==s{print $1; exit}' \
               build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym)"
             test -n "$tok"
@@ -220,6 +226,60 @@ jobs:
           test "$(find build/hero-room-flat/captures -name 'frame_*.ppm' | wc -l)" -ge 12
           grep -q 'RAM addr=' build/hero-room-flat/emulator.txt
 
+          # Same run against the colour ROM. This is the only place in the
+          # repository where the palette is seen through an actual VDP rather
+          # than through the host compositor's preview ramp, so it is what
+          # confirms the semantic-index mapping is right end to end -- a table
+          # written in enum order instead of brightness order would look
+          # obviously scrambled here and nowhere earlier.
+          mkdir -p build/hero-room-flat/captures-colour
+          CROM=build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg
+          CSYM=build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.sym
+          CSTATUS="$(awk '$2=="_g_hero_lod_room_status"{split($1,a,":");print a[2];exit}' "$CSYM")"
+          test -n "$CSTATUS"
+          LIBRETRO_CAPTURE_DIR=build/hero-room-flat/captures-colour \
+          LIBRETRO_CAPTURE_EVERY=30 \
+            ./build/libretro_runner "$CORE" "$CROM" 480 \
+            build/hero-room-flat/final-colour.ppm "$CSTATUS" 8 \
+            | tee build/hero-room-flat/emulator-colour.txt
+          test "$(find build/hero-room-flat/captures-colour -name 'frame_*.ppm' | wc -l)" -ge 12
+
+          # The colour ROM must actually be in colour. The grey palette is
+          # neutral-to-cool by construction (its stops have equal or rising
+          # R<G<B), so any substantial warm pixel population can only have come
+          # from the sprite palette this change installs -- and its absence
+          # would mean the tables were loaded but never reached the VDP.
+          python3 - <<'PY2'
+          import pathlib
+          def load(path):
+              d = pathlib.Path(path).read_bytes()
+              assert d[:2] == b"P6", f"{path}: expected a binary PPM, got {d[:2]!r}"
+              vals, pos = [], 2
+              while len(vals) < 3:
+                  while pos < len(d) and d[pos:pos+1].isspace():
+                      pos += 1
+                  if d[pos:pos+1] == b"#":
+                      while d[pos:pos+1] not in (b"\n", b""):
+                          pos += 1
+                      continue
+                  start = pos
+                  while pos < len(d) and not d[pos:pos+1].isspace():
+                      pos += 1
+                  vals.append(int(d[start:pos]))
+              w, h, _ = vals
+              return w, h, d[pos+1:pos+1+w*h*3]
+          def warm(path):
+              w, h, px = load(path)
+              n = sum(1 for k in range(0, w*h*3, 3)
+                      if px[k] > px[k+1] + 24 and px[k] > px[k+2] + 24)
+              return n / (w*h)
+          g = warm("build/hero-room-flat/final.ppm")
+          c = warm("build/hero-room-flat/final-colour.ppm")
+          print(f"warm-pixel fraction: grey ROM {g:.4f}, colour ROM {c:.4f}")
+          assert g < 0.01, g
+          assert c > 0.05, c
+          PY2
+
       - uses: actions/upload-artifact@v4
         with:
           name: hero-flat-sprite-lod-room-proof
@@ -237,6 +297,10 @@ jobs:
             build/hero-room-flat/ROM-size.txt
             build/hero-room-flat/SHA256.txt
             build/hero-room-flat/SYMBOLS.txt
+            build/hero-room-flat/emulator-colour.txt
+            build/hero-room-flat/final.ppm
+            build/hero-room-flat/final-colour.ppm
+            build/hero-room-flat/captures-colour/
             build/hero-room-flat/emulator.txt
             build/hero-room-flat/final.ppm
             build/hero-room-flat/captures/**

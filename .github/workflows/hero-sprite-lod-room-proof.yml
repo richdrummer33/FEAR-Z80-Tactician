@@ -125,7 +125,13 @@ jobs:
           sha256sum build/hero-room/GG-Hero-Hierarchical-Sprite-LOD-Room.gg \
             | tee build/hero-room/SHA256.txt
 
-          for sym in _main _set_sprite_4bpp_data _move_sprite; do
+          # NOT _move_sprite: on sms/gg GBDK defines move_sprite as an inline in
+          # the platform header rather than as a library function, so it is
+          # correctly absent from the symbol table and this check could never
+          # have passed. Replaced with symbols that actually prove THIS proof
+          # linked -- the pack's own banked entry points -- rather than a GBDK
+          # implementation detail.
+          for sym in _main _set_sprite_4bpp_data _hero_lod_load_core _hero_lod_apply_view; do
             tok="$(awk -v s="$sym" '$2==s{print $1; exit}' \
               build/hero-room/GG-Hero-Hierarchical-Sprite-LOD-Room.sym)"
             test -n "$tok"
