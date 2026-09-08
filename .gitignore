@@ -85,3 +85,4 @@ build/polar_demo_patch_gen
 __pycache__/
 *.pyc
 build/span_workload_probe
+build/emit_poses.txt

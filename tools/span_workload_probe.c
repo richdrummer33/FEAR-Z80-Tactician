@@ -87,5 +87,38 @@ int main(int argc, char **argv) {
     printf("contiguous column runs:  mean=%.2f\n", sum_runs / n);
     printf("mean wall cells per covered column = %.2f\n",
            sum_wall / (sum_cols > 0 ? sum_cols : 1));
+
+    /* --dump <path> <stride>: write raw 360-word viewports for a spread of
+     * poses, so the emit-kernel benchmark runs on real column content rather
+     * than a synthesised average. */
+    if (argc > 3 && !strcmp(argv[2], "--dump")) {
+        const char *path = argv[3];
+        unsigned stride = (argc > 4) ? (unsigned)strtoul(argv[4], 0, 0) : 512u;
+        FILE *f = fopen(path, "w");
+        uint32_t emitted = 0, seen = 0;
+        if (!f) return 1;
+        for (gy = 0; gy < GRID_H; ++gy) {
+            for (gx = 0; gx < GRID_W; ++gx) {
+                int16_t px = (int16_t)(gx * CELL_Q4 + CELL_Q4 / 2);
+                int16_t py = (int16_t)(gy * CELL_Q4 + CELL_Q4 / 2);
+                if (!tsp_is_walkable_q4(px, py)) continue;
+                for (yaw = 0; yaw < 256u; yaw += yaw_step) {
+                    if ((seen++ % stride) != 0) continue;
+                    memset(&s, 0, sizeof(s));
+                    s.x_q4 = px; s.y_q4 = py; s.yaw = (uint8_t)yaw;
+                    tsp_polar_render(&s, map, (TSPColumn *)0);
+                    fprintf(f, "pose %u %u %u\n", gx, gy, yaw);
+                    for (r = 0; r < TSP_ROWS; ++r) {
+                        for (c = 0; c < TSP_COLS; ++c)
+                            fprintf(f, "%u ", (unsigned)map[r * TSP_COLS + c]);
+                        fputc('\n', f);
+                    }
+                    ++emitted;
+                }
+            }
+        }
+        fclose(f);
+        printf("dumped %u poses (every %u of %u) -> %s\n", emitted, stride, seen, path);
+    }
     return 0;
 }
