@@ -246,9 +246,18 @@ jobs:
 
           # The colour ROM must actually be in colour. The grey palette is
           # neutral-to-cool by construction (its stops have equal or rising
-          # R<G<B), so any substantial warm pixel population can only have come
-          # from the sprite palette this change installs -- and its absence
-          # would mean the tables were loaded but never reached the VDP.
+          # R<G<B), so ANY warm pixel can only have come from the sprite
+          # palette this change installs -- and their absence would mean the
+          # tables were compiled in but never reached the VDP.
+          #
+          # The bound is small on purpose. What is being tested is that warm
+          # pixels exist and that the grey build has none, and the separation
+          # there is total: measured 0.0000 against 0.0355. It is deliberately
+          # NOT calibrated from the host renders in
+          # docs/experiments/HERO_COLOUR_PALETTE.md, which show a different
+          # asset filling much more of the screen (0.3083) -- reusing that
+          # number as a threshold was the first version of this check and it
+          # failed, correctly, on a picture that was perfectly in colour.
           python3 - <<'PY2'
           import pathlib
           def load(path):
@@ -277,7 +286,7 @@ jobs:
           c = warm("build/hero-room-flat/final-colour.ppm")
           print(f"warm-pixel fraction: grey ROM {g:.4f}, colour ROM {c:.4f}")
           assert g < 0.01, g
-          assert c > 0.05, c
+          assert c > 0.01, c
           PY2
 
       - uses: actions/upload-artifact@v4
