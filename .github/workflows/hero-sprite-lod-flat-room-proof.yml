@@ -64,13 +64,14 @@ jobs:
             build/hero-room-flat/hero-bake build/hero-room-flat/hero-host \
             | tee build/hero-room-flat/hero-bake.txt
 
-          # 192 patterns is the largest shared vocabulary this VRAM layout can
-          # hold: sprite tile id N reads unified pattern tile 256+N, and the
-          # name table begins at unified tile 448.
           # Two vocabularies from the SAME corpus. The greyscale one encodes a
           # hero pixel as the compositor's semantic code; the colour one as
           # 1 + material*5 + position on the brightness ramp, which is what a
           # three-material palette needs.
+          #
+          # 192 patterns is the largest shared vocabulary this VRAM layout can
+          # hold either way: sprite tile id N reads unified pattern tile 256+N,
+          # and the name table begins at unified tile 448.
           #
           # Unlike single-hue colour, this is NOT free: a second material is
           # new per-pixel information and the vocabulary has to carry it. What
