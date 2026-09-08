@@ -26,6 +26,7 @@ TILESECTOR_ROM := build/gg-tilesector-demo.gg
 TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o build/tilesector_vram_gg.o build/tilesector_raster_gg.o
 
 POLAR_TEST_BIN := build/test_tilesector_polar
+SPAN_WORKLOAD_PROBE_BIN := build/span_workload_probe
 POLAR_TRANSITION_BAKE_BIN := build/polar_transition_bake
 POLAR_DEMO_PATCH_GEN_BIN := build/polar_demo_patch_gen
 POLAR_PATCH_ROM := build/gg-polar-patch-demo.gg
@@ -87,7 +88,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
@@ -145,6 +146,10 @@ tilesector-host: build
 polar-test: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tests/test_tilesector_polar.c -o $(POLAR_TEST_BIN)
 	./$(POLAR_TEST_BIN)
+
+span-workload-probe: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/span_workload_probe.c -o $(SPAN_WORKLOAD_PROBE_BIN)
+	./$(SPAN_WORKLOAD_PROBE_BIN) 8
 
 $(POLAR_TRANSITION_BAKE_BIN): src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_transition_bake.c | build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/polar_transition_bake.c -o $@

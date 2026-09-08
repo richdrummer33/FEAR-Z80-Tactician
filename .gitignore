@@ -84,3 +84,4 @@ build/polar_demo_patch_gen
 # Python bytecode cache from host-side bake experiments
 __pycache__/
 *.pyc
+build/span_workload_probe
