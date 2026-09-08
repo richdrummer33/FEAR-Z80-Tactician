@@ -15,7 +15,8 @@ import {
   srgb8ToOklab, oklabToLinear, linearToOklab, ggToOklab, ggQuantize,
   gamutMapOklab, synthesizeRamp, quantizeRamp, solveRamp, bestSingle, bestPair,
   interleavedOklab, materialResidual, chromaGridStep, fitRampChroma,
-  kmeansOklab, oklabDistance, RAMP_MIN_STEP_L
+  kmeansOklab, oklabDistance, RAMP_MIN_STEP_L,
+  chromaticity, chromaConfidence, clusterFamilies, transferFamilyToShell
 } from './palette.mjs';
 
 let failures = 0;
@@ -149,6 +150,81 @@ test('the ramp separates stops without drifting off its own hue', () => {
     const d = oklabDistance(ggToOklab(gg[i]), ramp[i]);
     assert.ok(d < 0.12, `stop ${i} moved ${d} from its target while separating`);
   }
+});
+
+test('chromaticity divides lightness out', () => {
+  /* The same material lit two ways: chroma scales with lightness, so its
+     chromaticity must not move. This is the property the family clustering
+     depends on, and getting it wrong is what made a red-and-green asset
+     measure as one muddy hue. */
+  const lit = [0.60, 0.60 * 0.24, 0.60 * 0.17];
+  const shadowed = [0.18, 0.18 * 0.24, 0.18 * 0.17];
+  const a = chromaticity(lit), b = chromaticity(shadowed);
+  assert.ok(Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-9);
+});
+
+test('near-black samples are not trusted to define a hue', () => {
+  const bright = chromaConfidence([0.60, 0.14, 0.10]);
+  const dark = chromaConfidence([0.02, 0.005, 0.003]);
+  assert.ok(bright > 0.9, `bright confidence ${bright}`);
+  assert.ok(dark < 0.2, `dark confidence ${dark}`);
+  /* A well-lit but achromatic sample also tells you nothing about hue. */
+  assert.ok(chromaConfidence([0.60, 0.001, 0.001]) < 0.1);
+});
+
+test('two materials interleaved at every lightness are found as two', () => {
+  /* Red petals and green leaves, each appearing across the whole lightness
+     range, which is what a floral texture actually looks like. Clustering
+     Oklab directly splits these by lightness and reports the hues as one;
+     clustering chromaticity must not. */
+  const labs = [], areas = [];
+  const mats = [[0.24, 0.17], [-0.13, 0.14]];
+  for (const m of mats)
+    for (const L of [0.12, 0.22, 0.35, 0.50, 0.68]) {
+      labs.push(L, m[0] * L, m[1] * L);
+      areas.push(1);
+    }
+  const km = clusterFamilies(Float64Array.from(labs), areas, 2);
+  /* Every sample of one material must land in one family. */
+  const first = new Set(km.assign.slice(0, 5));
+  const second = new Set(km.assign.slice(5));
+  assert.equal(first.size, 1, `material 0 split across ${first.size} families`);
+  assert.equal(second.size, 1, `material 1 split across ${second.size} families`);
+  assert.notEqual([...first][0], [...second][0], 'both materials in one family');
+});
+
+test('one material at many lightnesses is not split into several', () => {
+  const labs = [], areas = [];
+  for (const L of [0.10, 0.18, 0.30, 0.44, 0.60, 0.75]) {
+    labs.push(L, 0.24 * L, 0.17 * L);
+    areas.push(1);
+  }
+  const km = clusterFamilies(Float64Array.from(labs), areas, 3);
+  const probeL = 0.55;
+  const fit = materialResidual(
+    km.families.map(f => [probeL, f.chromaticity[0] * probeL, f.chromaticity[1] * probeL]),
+    km.families.map(f => f.area));
+  assert.ok(fit.residual < chromaGridStep(),
+            `residual ${fit.residual} should say "one material"`);
+});
+
+test('family transfer takes the majority, never an average', () => {
+  /* Three source vertices at the same spot: two family 2, one family 0.
+     An averaging transfer would answer 1 -- a family that is not there. */
+  const src = new Float64Array([0,0,0, 0.01,0,0, 0.02,0,0]);
+  const fam = Int32Array.from([2, 2, 0]);
+  const w = new Float64Array([1, 1, 1]);
+  const dst = new Float64Array([0.01, 0, 0]);
+  const out = transferFamilyToShell(src, fam, w, 3, dst, 1, 0.5, 3);
+  assert.equal(out[0], 2, `majority vote returned ${out[0]}`);
+});
+
+test('family transfer falls back to the nearest source when nothing is in range', () => {
+  const src = new Float64Array([5, 5, 5]);
+  const out = transferFamilyToShell(src, Int32Array.from([1]),
+                                    new Float64Array([1]), 1,
+                                    new Float64Array([0, 0, 0]), 1, 0.1, 3);
+  assert.equal(out[0], 1);
 });
 
 console.log(failures ? `\n${failures} failing` : '\nall palette tests passed');

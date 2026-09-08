@@ -231,6 +231,18 @@ uint16_t tsp_host_composite_owner_bounds(uint8_t sid,uint8_t *x0,uint8_t *y0,
  * owned" distinguishable from SEM_BLACK, so a corpus crop is self-describing
  * without a separate mask plane. */
 uint8_t tsp_host_composite_owner_sample(uint8_t sid,uint8_t sx,uint8_t sy);
+/* Material family at a pixel owned by sid, 0 when the pixel is not sid's.
+ * Companion to tsp_host_composite_owner_sample(): that returns WHAT SHADE the
+ * pixel is, this returns WHICH MATERIAL, and the two are deliberately separate
+ * planes all the way to the palette. */
+uint8_t tsp_host_composite_owner_sample_family(uint8_t sid,uint8_t sx,uint8_t sy);
+/* As tsp_host_composite_pixel_ramp(), plus the material family. The plain
+ * entry point forwards here with family 0, so an object whose importer
+ * supplied no family behaves exactly as before. */
+void tsp_host_composite_pixel_ramp_family(uint8_t sx,uint8_t sy,uint8_t sid,
+                                          uint8_t ramp_level,uint8_t black,
+                                          uint8_t lit,uint8_t recess,
+                                          uint8_t family,double depth);
 int tsp_host_composite_write_ppm(const char *path);
 /* Diagnostics: same preview but masked to one owner id, so a histogram
  * measures a single object's shade distribution. */
@@ -240,5 +252,10 @@ int tsp_host_composite_write_owner_contrast_ppm(const char *path,uint8_t sid);
 /* Diagnostics: false-colour map of the per-pixel recess field for one object,
  * including sub-threshold values the crease dither will not draw. */
 int tsp_host_composite_write_recess_ppm(const char *path,uint8_t sid);
+/* Per-pixel material family for sid's pixels, written as family+1 so that 0
+ * unambiguously means "not this object". Companion plane to the owner mask:
+ * together with a review frame they carry shade, ownership and material, which
+ * is everything a palette needs. */
+int tsp_host_composite_write_owner_family_pgm(const char *path,uint8_t sid);
 
 #endif

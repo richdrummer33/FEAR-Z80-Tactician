@@ -90,6 +90,8 @@ typedef struct RMBObject {
     /* Set when the importer supplied a source-measured recess field. The shell
      * cannot measure its own folds: decimation removes them first. */
     uint8_t recess_supplied;
+    /* Set when the importer supplied a per-vertex material family. */
+    uint8_t family_supplied;
     double crease_coverage;
     /* How far a fully-recessed pixel is darkened, as a fraction of its
      * brightness. Applied BEFORE quantization so the ramp equalization sees
@@ -115,6 +117,11 @@ typedef struct RMBScene {
     /* Optional per-vertex recess supplied by the importer, measured on the
      * full-resolution source rather than on this decimated shell. */
     uint8_t vertex_recess[RMB_MAX_VERTICES];
+    /* Optional per-vertex MATERIAL FAMILY, also measured on the source. This
+     * is categorical, not a quantity: it says which material the surface is,
+     * never how bright it is. Lightness is the shade ramp's job and mixing the
+     * two would darken a shadowed pixel twice. */
+    uint8_t vertex_family[RMB_MAX_VERTICES];
     uint16_t vertex_count;
     uint16_t triangle_count;
     uint16_t edge_count;
@@ -175,6 +182,15 @@ void rmb_add_indexed_mesh_q8_ex(RMBScene *s,uint8_t object_id,
                                 const int16_t *xyz_q8,uint16_t vertex_count,
                                 const uint16_t *indices,uint16_t triangle_count,
                                 int8_t shade_bias,const uint8_t *vertex_recess);
+/* As above, plus a per-vertex material family. Pass NULL for vertex_family to
+ * get behaviour identical to rmb_add_indexed_mesh_q8_ex. */
+void rmb_add_indexed_mesh_q8_family(RMBScene *s,uint8_t object_id,
+                                    const RMBTransform *xf,
+                                    const int16_t *xyz_q8,uint16_t vertex_count,
+                                    const uint16_t *indices,
+                                    uint16_t triangle_count,int8_t shade_bias,
+                                    const uint8_t *vertex_recess,
+                                    const uint8_t *vertex_family);
 void rmb_add_cylinder(RMBScene *s,uint8_t object_id,const RMBTransform *xf,
                       double radius,double height,uint8_t sides,
                       int8_t shade_bias,uint8_t caps);

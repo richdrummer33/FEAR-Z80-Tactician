@@ -124,15 +124,27 @@ const roomChroma=Number(argValue(args,'--room-chroma','1.0'));
 if(!(heroChroma>=0&&heroChroma<=2)||!(roomChroma>=0&&roomChroma<=2))
   fail('--hero-chroma/--room-chroma must be in 0..2');
 
-if(report.layout!=='mono-ramp')
-  fail(`this generator emits the mono-ramp layout; importer chose ${report.layout}. `+
-       `The family-split layout needs the compositor's family plane, which is a `+
-       `separate change -- see docs/experiments/HERO_COLOUR_PALETTE.md.`);
-if(report.entries.length!==1) fail('mono-ramp report must carry exactly one family');
-
+const polychrome=report.layout==='family-split';
+if(!['mono-ramp','family-split'].includes(report.layout))
+  fail(`unknown palette layout ${report.layout}`);
+if(!polychrome&&report.entries.length!==1)
+  fail('mono-ramp report must carry exactly one family');
+for(const e of report.entries)
+  if(e.stops.length!==BRIGHTNESS_ORDER.length)
+    fail(`every family needs ${BRIGHTNESS_ORDER.length} stops to map onto the `+
+         `compositor's brightness ramp; family ${e.family} has ${e.stops.length}`);
+/*
+ * Sprite colour 0 is transparent on this hardware, so the hero has 15 usable
+ * entries and 3 families x 5 shades fills them exactly. That is the layout,
+ * and it is chosen over the tidier 4x4 on measurement: this asset's materials
+ * come out at roughly 50% / 44% / 6% of surface area, so a fourth family would
+ * be spent on well under a percent while costing every material a shade stop
+ * -- and shade stops are what carry shape.
+ */
+if(polychrome&&report.entries.length*BRIGHTNESS_ORDER.length>15)
+  fail(`${report.entries.length} families x ${BRIGHTNESS_ORDER.length} shades `+
+       `exceeds the 15 usable sprite palette entries`);
 const hero=report.entries[0];
-if(hero.stops.length!==BRIGHTNESS_ORDER.length)
-  fail(`mono-ramp must have ${BRIGHTNESS_ORDER.length} stops to map onto the compositor ramp`);
 
 /* ---- Room ---------------------------------------------------------------
  * Same ramp machinery as the hero, so both surfaces are lit by the same rules
@@ -164,12 +176,36 @@ const floorSolved = solveRamp([floorLab])[0];
  * importer measured the material without knowing what scene it would stand in,
  * and the lightness band is the part that belongs to the scene. */
 const heroBand = HERO_L_BAND;
-const heroFit = fitRampChroma(heroLab, hero.stops.length, heroBand);
-const heroScale = heroFit.scale*heroChroma;
-const heroRamp = synthesizeRamp(
-  [heroLab[0], heroLab[1]*heroScale, heroLab[2]*heroScale],
-  hero.stops.length, null, heroBand);
-const heroSolved = solveRamp(heroRamp);
+/*
+ * Every family gets the SAME lightness band. That is deliberate and it is the
+ * whole reason a family plane is safe to add: shade already says how lit a
+ * pixel is, so if a green leaf and a red petal at the same shade level sat at
+ * different lightnesses, the family plane would be smuggling shading
+ * information into the colour channel and the figure's form would depend on
+ * which material happened to be facing the light. Families differ in hue and
+ * saturation. They do not differ in lightness.
+ *
+ * Chroma is fitted per family, though, because the cap is a per-hue property:
+ * a saturated green rails its green channel at a different lightness than a
+ * saturated red rails its red one.
+ */
+const heroFamilies = report.entries.map(fam=>{
+  const lab = fam.centerOklab;
+  const fit = fitRampChroma(lab, BRIGHTNESS_ORDER.length, heroBand);
+  const scale = fit.scale*heroChroma;
+  const ramp = synthesizeRamp([lab[0], lab[1]*scale, lab[2]*scale],
+                              BRIGHTNESS_ORDER.length, null, heroBand);
+  return {family:fam.family, areaShare:fam.areaShare,
+          shellAreaShare:fam.shellAreaShare ?? fam.areaShare,
+          hueDeg:fam.hueDeg, saturation:fam.saturation,
+          fittedScale:fit.scale, appliedScale:scale,
+          worstAdjacentGapL:fit.worstGapL,
+          solved:solveRamp(ramp)};
+});
+const heroSolved = heroFamilies[0].solved;
+const heroFit = {scale:heroFamilies[0].fittedScale,
+                 worstGapL:heroFamilies[0].worstAdjacentGapL};
+const heroScale = heroFamilies[0].appliedScale;
 
 /* ---- Assemble the hardware tables ---------------------------------------
  * BG palette 0 is ambient. BG palette 1 is the same ramp one stop brighter,
@@ -221,12 +257,28 @@ function buildBG(which,pick){
   }
   return p;
 }
+/*
+ * Sprite colour 0 is transparent on this hardware; nothing may be written
+ * there and no hero pixel may resolve to it. The compositor's SEM_BLACK is
+ * exactly the "no hero here" code, so the two coincide by construction.
+ *
+ * mono-ramp writes its five stops at their SEMANTIC indices, so the hero's
+ * pixel codes do not change at all -- that is what makes single-material
+ * colour free. family-split cannot do that: it needs three ramps and there
+ * are only eight semantic values. So it packs families consecutively from
+ * index 1 and the pixel value becomes 1 + family*5 + position-on-the-ramp.
+ * That renumbering is the real cost of a second material, because it is what
+ * makes the tile vocabulary grow -- see HERO_COLOUR_PALETTE.md.
+ */
+function spriteIndex(family,shadeOrdinal){
+  return polychrome ? 1 + family*BRIGHTNESS_ORDER.length + shadeOrdinal
+                    : BRIGHTNESS_ORDER[shadeOrdinal];
+}
 function buildSprite(pickStop){
   const p = emptyPalette();
-  /* Sprite colour 0 is transparent on this hardware; nothing may be written
-   * there and no hero pixel may resolve to it. The compositor's SEM_BLACK is
-   * exactly the "no hero here" code, so the two coincide by construction. */
-  BRIGHTNESS_ORDER.forEach((sem,i)=>{ p[sem] = pickStop(heroSolved[i]); });
+  heroFamilies.forEach(fam=>{
+    fam.solved.forEach((st,i)=>{ p[spriteIndex(fam.family,i)] = pickStop(st); });
+  });
   return p;
 }
 
@@ -244,6 +296,18 @@ const design = {
             interleaveA:buildSprite(PICK.a),
             interleaveB:buildSprite(PICK.b) },
   heroLBand: heroBand, roomLBand: ROOM_L_BAND,
+  polychrome,
+  /* Palette index of every (family, ramp position) pair, so a renderer never
+   * has to re-derive the packing. */
+  spriteIndex: heroFamilies.map(fam=>
+    BRIGHTNESS_ORDER.map((_,i)=>spriteIndex(fam.family,i))),
+  heroFamilies: heroFamilies.map(f=>({
+    family:f.family, areaShare:f.areaShare, shellAreaShare:f.shellAreaShare,
+    hueDeg:f.hueDeg, saturation:f.saturation,
+    fittedChromaScale:f.fittedScale, appliedChromaScale:f.appliedScale,
+    worstAdjacentGapL:f.worstAdjacentGapL,
+    stops:f.solved
+  })),
   chroma: {
     heroFittedScale: heroFit.scale, heroRequested: heroChroma,
     heroApplied: heroScale, heroWorstAdjacentGapL: heroFit.worstGapL,
@@ -259,7 +323,8 @@ const design = {
 /* Accuracy of the whole design, hero and room together, static vs interleaved.
  * Reported for every stop the hardware will actually show, so it is not the
  * importer's hero-only number quoted twice. */
-const allStops = [...heroSolved, ...roomSolved, ceilSolved, floorSolved];
+const allStops = [...heroFamilies.flatMap(f=>f.solved), ...roomSolved,
+                  ceilSolved, floorSolved];
 design.metrics = {
   stops: allStops.length,
   meanStaticErrOklab: allStops.reduce((a,s)=>a+s.staticErr,0)/allStops.length,
@@ -281,8 +346,8 @@ const table = (name,rows) =>
 
 const inc = `/* Generated by tools/glb_rmb/gg_palette_design.mjs. DO NOT HAND EDIT.
  * source palette report: ${path.basename(args[0])}
- * layout: ${report.layout}
- * hero material: sRGB ${hero.centerSrgb8.join(',')} (mono ramp, ${heroSolved.length} stops)
+ * layout: ${report.layout}, ${heroFamilies.length} material famil${heroFamilies.length===1?'y':'ies'} x ${BRIGHTNESS_ORDER.length} shades
+${heroFamilies.map(f=>` *   family ${f.family}: hue ${Math.round(f.hueDeg)}deg, ${(100*f.areaShare).toFixed(1)}% of surface`).join('\n')}
  * hero lightness band: ${heroBand.map(v=>v.toFixed(3)).join('..')} Oklab L,
  *   chroma x${heroScale.toFixed(2)} (tonal-resolution cap allowed ${heroFit.scale.toFixed(2)})
  * room hue: sRGB ${roomHue.join(',')}
@@ -322,7 +387,10 @@ await fs.writeFile(outPrefix+'.inc', inc, 'utf8');
 console.log(JSON.stringify({
   out:{json:path.resolve(outPrefix+'.json'), inc:path.resolve(outPrefix+'.inc')},
   metrics:design.metrics,
-  heroRamp:heroSolved.map(s=>s.srgb8),
+  layout:report.layout,
+  heroRamps:heroFamilies.map(f=>({family:f.family,
+    area:+(100*f.areaShare).toFixed(1), hue:Math.round(f.hueDeg),
+    ramp:f.solved.map(s=>s.srgb8)})),
   heroBand, chroma:design.chroma,
   roomRamp:roomSolved.map(s=>s.srgb8),
   ceiling:ceilSolved.srgb8, floor:floorSolved.srgb8

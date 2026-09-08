@@ -111,6 +111,28 @@ def to_semantic(w, h, rgb):
     return out
 
 
+def hero_index(design, family, semantic):
+    """Palette index a hero pixel resolves to.
+
+    mono-ramp leaves the compositor's semantic value alone, so the index IS the
+    semantic. family-split repacks it as 1 + family*5 + position on the
+    brightness ramp, because three ramps do not fit in eight semantic values.
+    The design JSON carries the table so this is a lookup, not a re-derivation.
+    """
+    # design is None for the greyscale reference: that palette is indexed by
+    # the compositor's semantic value directly, and running it through the
+    # family repacking would send hero pixels to entries the shipped table
+    # never populated (which reads as large black holes in the figure -- how
+    # this was caught).
+    table = design.get("spriteIndex") if design else None
+    if not table:
+        return semantic
+    order = design["brightnessOrder"]
+    if semantic not in order:
+        return 0
+    return table[min(family, len(table) - 1)][order.index(semantic)]
+
+
 def palette_tables(design, mode):
     """Return (bg16, sprite16) as sRGB8 tuples, or (bg, sprite) pairs for blend."""
     if mode == "grey":
@@ -148,7 +170,7 @@ def oklab_L(c):
             - 0.0040720468 * s ** (1 / 3))
 
 
-def lightness_delta(ref_bg, ref_sprite, bg, sprite, counts):
+def lightness_delta(ref_bg, ref_sprite, bg, sprite, counts, design):
     """Weighted mean and max |dL| between two palettes over the pixels that
     actually occurred, per semantic and per hero/room role.
 
@@ -160,21 +182,32 @@ def lightness_delta(ref_bg, ref_sprite, bg, sprite, counts):
     else is a taste argument about saturation, which is a separate knob."""
     total = sum(counts.values()) or 1
     acc, worst = 0.0, (0.0, None)
-    for (role, v), n in counts.items():
+    for (role, f, v), n in counts.items():
         a = ref_sprite[v] if role else ref_bg[v]
-        b = sprite[v] if role else bg[v]
+        b = sprite[hero_index(design, f, v)] if role else bg[v]
         d = abs(oklab_L(a) - oklab_L(b))
         acc += d * n
         if d > worst[0]:
-            worst = (d, (role, v))
+            worst = (d, (role, f, v))
     return acc / total, worst
 
 
-def render(sem, mask, w, h, bg, sprite):
+def render(sem, mask, family, w, h, bg, sprite, design):
     out = bytearray(w * h * 3)
+    lut = {}
     for i in range(w * h):
         v = sem[i]
-        c = sprite[v] if (mask and mask[i]) else bg[v]
+        if mask and mask[i]:
+            f = (family[i] - 1) if family else 0
+            if f < 0:
+                f = 0
+            key = (f, v)
+            idx = lut.get(key)
+            if idx is None:
+                idx = lut[key] = hero_index(design, f, v)
+            c = sprite[idx]
+        else:
+            c = bg[v]
         out[i * 3:i * 3 + 3] = bytes(c)
     return bytes(out)
 
@@ -208,12 +241,15 @@ def palette_card(path, design, scale=48):
     bg_b, sp_b = blend_tables(design)
     order = design["brightnessOrder"]
     sem = design["semantics"]
-    rows = [
-        ("hero static", [sp_s[v] for v in order]),
-        ("hero blend", [sp_b[v] for v in order]),
-        ("room static", [bg_s[sem["CEILING"]], bg_s[sem["FLOOR"]]] + [bg_s[v] for v in order]),
-        ("room blend", [bg_b[sem["CEILING"]], bg_b[sem["FLOOR"]]] + [bg_b[v] for v in order]),
-    ]
+    fams = len(design.get("spriteIndex") or [1])
+    rows = []
+    for f in range(fams):
+        idx = [hero_index(design, f, v) for v in order]
+        label = f"hero fam{f}" if fams > 1 else "hero"
+        rows.append((label + " static", [sp_s[i] for i in idx]))
+        rows.append((label + " blend", [sp_b[i] for i in idx]))
+    rows.append(("room static", [bg_s[sem["CEILING"]], bg_s[sem["FLOOR"]]] + [bg_s[v] for v in order]))
+    rows.append(("room blend", [bg_b[sem["CEILING"]], bg_b[sem["FLOOR"]]] + [bg_b[v] for v in order]))
     cols = max(len(r[1]) for r in rows)
     label_w = 150
     im = Image.new("RGB", (label_w + cols * scale, len(rows) * scale), (18, 18, 22))
@@ -251,6 +287,7 @@ def main():
     sheets = {m: [] for m in modes}
     counts = {}
     n_masked = 0
+    n_family = 0
     for f in frames:
         w, h, rgb = read_ppm(f)
         sem = to_semantic(w, h, rgb)
@@ -263,13 +300,27 @@ def main():
                 raise SystemExit(f"{maskp}: size mismatch with {f}")
             mask = m
             n_masked += 1
+        # Material family per pixel, written as family+1 so 0 means "not the
+        # hero". Absent for a mono-ramp asset, where every hero pixel is the
+        # one material and family 0 is the only answer.
+        famp = f.parent / f"family-{args.tag}-{idx}.pgm"
+        family = None
+        if famp.exists():
+            fw, fh, fm = read_pgm(famp)
+            if (fw, fh) != (w, h):
+                raise SystemExit(f"{famp}: size mismatch with {f}")
+            family = fm
+            n_family += 1
         for i in range(w * h):
-            key = (1 if (mask and mask[i]) else 0, sem[i])
+            hero = 1 if (mask and mask[i]) else 0
+            f = (family[i] - 1) if (hero and family and family[i]) else 0
+            key = (hero, f, sem[i])
             counts[key] = counts.get(key, 0) + 1
         for mode in modes:
             bg, sprite = blend_tables(design) if mode == "blend" \
                 else palette_tables(design, mode)
-            img = render(sem, mask, w, h, bg, sprite)
+            img = render(sem, mask, family, w, h, bg, sprite,
+                         None if mode == "grey" else design)
             d = args.outdir / mode
             d.mkdir(exist_ok=True)
             save_png(d / f"{idx}.png", w, h, img, args.scale)
@@ -287,13 +338,15 @@ def main():
             continue
         bg, sprite = blend_tables(design) if mode == "blend" \
             else palette_tables(design, mode)
-        mean, (worst, where) = lightness_delta(ref_bg, ref_sprite, bg, sprite, counts)
+        mean, (worst, where) = lightness_delta(ref_bg, ref_sprite, bg, sprite,
+                                               counts, design)
         role = "hero" if where and where[0] else "room"
+        at = f"{role}/fam{where[1]}/sem{where[2]}" if where else "-"
         print(f"LIGHTNESS_DELTA mode={mode} mean_abs_dL={mean:.4f} "
-              f"max_abs_dL={worst:.4f} at={role}/sem{where[1] if where else '-'}")
+              f"max_abs_dL={worst:.4f} at={at}")
 
     print(f"RECOLOUR_PASS frames={len(frames)} masked={n_masked} "
-          f"modes={','.join(modes)} out={args.outdir}")
+          f"family={n_family} modes={','.join(modes)} out={args.outdir}")
     if n_masked != len(frames):
         print(f"note: {len(frames) - n_masked} frames had no owner mask; the hero "
               f"in those was drawn from the BG palette (set ROOM_BUNDLE_CAPTURE_OWNER)",

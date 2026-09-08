@@ -11,15 +11,21 @@ on:
       - "tools/glb_rmb/gg_palette_design.mjs"
       - "tools/glb_rmb/convert.mjs"
       - "tools/recolour_semantic_frames.py"
+      - "tools/analyze_hero_colour_codec.py"
+      - "tools/analyze_doomguy_dense_corpus.py"
+      - "tools/build_hierarchical_sprite_lod_pack.py"
       - "tools/room_bundle_poc_gen.c"
+      - "tools/room_mesh_bake.c"
+      - "tools/polar_baked_composite.c"
   workflow_dispatch:
 
 jobs:
   colour:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       ASSET: assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb
+      FAMILIES: "3"
     steps:
       - uses: actions/checkout@v4
 
@@ -28,53 +34,73 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          python3 -m pip install --user pillow
+          python3 -m pip install --user pillow pytest
           cd tools/glb_rmb
           npm install --no-audit --no-fund
 
-      - name: Palette solver unit tests
-        run: node tools/glb_rmb/palette.test.mjs
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          node tools/glb_rmb/palette.test.mjs
+          python3 -m pytest tests/ -q
 
-      - name: Import with palette extraction
+      - name: Import with material extraction
         run: |
           set -euo pipefail
           mkdir -p build/colour tools/generated
           node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
             --name doomguy --up y --height 12.2 \
             --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
-            --hue-families 4 \
+            --hue-families "$FAMILIES" \
             > build/colour/import.json
-
-          # The whole architectural claim in one assertion. This asset's base
-          # texture is a single terracotta hue with the lighting baked in, so
-          # the solver must choose the mono-ramp layout: the palette maps onto
-          # the shade codes the compositor already emits, and NO per-vertex hue
-          # data, NO extra pixel codes and NO extra tile patterns exist. If a
-          # future asset trips the family-split branch this fails loudly
-          # rather than silently costing two tile bitplanes.
           python3 - <<'PY'
-          import json
+          import json, os
           p = json.load(open("build/colour/import.json"))["palette"]
-          assert p["layout"] == "mono-ramp", p["layout"]
-          assert not p["polychrome"]
-          assert p["materialResidualOklab"] < p["chromaGridStepOklab"], p
-          print("layout=%s  material residual %.5f < grid step %.5f"
-                % (p["layout"], p["materialResidualOklab"], p["chromaGridStepOklab"]))
+          # This asset is a red-and-green floral diorama. An earlier pass
+          # measured it as one terracotta hue because the texture statistics
+          # were taken on a downsample, which blends interleaved petals and
+          # leaves into a brown that is on neither material. This assertion is
+          # that regression's tombstone.
+          assert p["layout"] == "family-split", p["layout"]
+          assert p["polychrome"]
+          assert p["materialResidualOklab"] > p["chromaGridStepOklab"], p
+          assert p["families"] == int(os.environ["FAMILIES"]), p["families"]
+          # The segmentation has to survive onto the decimated shell as
+          # REGIONS. A family plane made of isolated vertices would cost the
+          # tile vocabulary a great deal and buy a shimmer.
+          assert p["shellTriangleCoherence"] > 0.80, p["shellTriangleCoherence"]
+          hues = sorted(e["hueDeg"] for e in p["entries"])
+          assert max(hues) - min(hues) > 60, hues
+          print("layout=%s  %d families  residual %.4f > grid step %.4f  "
+                "shell coherence %.3f  hues %s"
+                % (p["layout"], p["families"], p["materialResidualOklab"],
+                   p["chromaGridStepOklab"], p["shellTriangleCoherence"],
+                   [round(h) for h in hues]))
           PY
-          ! grep -q 'doomguy_visual_hue' tools/generated/doomguy_mesh.inc
+          grep -q 'doomguy_visual_hue' tools/generated/doomguy_mesh.inc
 
-      - name: A colour-free import is unchanged
+      - name: A colour-free import changes no geometry
         run: |
           set -euo pipefail
-          # Colour is opt-in and must not perturb any other proof in the repo.
           node tools/glb_rmb/convert.mjs "$ASSET" build/colour/mesh_plain.inc \
             --name doomguy --up y --height 12.2 \
             --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
             > /dev/null
-          # The only difference the colour run may introduce is its one header
-          # comment line; every emitted array must be identical.
-          diff <(grep -v '^ \* palette:' tools/generated/doomguy_mesh.inc) \
-               build/colour/mesh_plain.inc
+          # Colour may add its header comment and its family array. It may not
+          # touch a single vertex, index or recess value.
+          python3 - <<'PY'
+          import re
+          def arrays(path):
+              text = open(path).read()
+              return {m.group(1): m.group(2) for m in re.finditer(
+                  r"static const \w+ (\w+)\[\] = \{(.*?)\};", text, re.S)}
+          a, b = arrays("build/colour/mesh_plain.inc"), arrays("tools/generated/doomguy_mesh.inc")
+          added = set(b) - set(a)
+          assert added == {"doomguy_visual_hue"}, added
+          for k in a:
+              assert a[k] == b[k], f"colour changed array {k}"
+          print(f"every geometry array identical; colour added only {sorted(added)}")
+          PY
 
       - name: Design the hardware palettes
         run: |
@@ -87,23 +113,25 @@ jobs:
           import json
           d = json.load(open("tools/generated/hero_colour_palette.json"))
           m = d["metrics"]
-          # Temporal interleave has to actually earn its per-frame palette
-          # write, and it has to stay under the flicker limit while doing so.
-          assert m["interleaveGainPct"] > 30, m
+          assert d["polychrome"], d["layout"]
+          idx = d["spriteIndex"]
+          flat = [i for row in idx for i in row]
+          # Sprite colour 0 is transparent: no hero pixel may resolve there,
+          # and no two (material, shade) pairs may share an entry.
+          assert 0 not in flat, idx
+          assert len(set(flat)) == len(flat), idx
+          assert max(flat) <= 15, idx
+          # Every family spans the same lightness band, or the family plane
+          # would be smuggling shading into the colour channel.
           assert m["unsafeStops"] == 0, m
-          # BG palette 1 is the ambient ramp one stop brighter, and its upper
-          # half carries the compositor's v+7 shadow aliases. Get this wrong
-          # and mixed boundary tiles show the lit colour on both sides.
+          assert m["interleaveGainPct"] > 30, m
           p0, p1 = d["bg"]["static"]
           assert all(p1[v + 7] == p0[v] for v in range(1, 8)), (p0, p1)
-          assert p1[1] == p0[2] and p1[2] == p0[3], (p0, p1)
-          # Sprite colour 0 is transparent; nothing may be parked there.
-          assert d["sprite"]["static"][0] == [0, 0, 0]
-          print("interleave gain %.1f%%, max luma split %.2f of 15"
-                % (m["interleaveGainPct"], m["maxLumaSplit"]))
+          print("sprite packing %s, interleave gain %.1f%%, max luma split %.2f"
+                % (idx, m["interleaveGainPct"], m["maxLumaSplit"]))
           PY
 
-      - name: Bake review frames with owner masks
+      - name: Bake review frames with owner and family planes
         run: |
           set -euo pipefail
           cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
@@ -112,18 +140,15 @@ jobs:
             tools/polar_baked_composite.c tools/room_mesh_bake.c \
             tools/room_bundle_poc_gen.c -lm -o build/colour/bake
           mkdir -p build/colour/capture
-          # ROOM_BUNDLE_CAPTURE_OWNER=0 selects owner 0x80, the floor-mount
-          # visual mesh, and writes the mask PGM the recolour tool needs to
-          # tell hero pixels (sprite palette) from room pixels (BG palettes).
-          # ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 is pre-existing for this
-          # asset; see docs/experiments/DOOMGUY_FLOOR_MOUNT_2X.md.
           ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
           ROOM_BUNDLE_CAPTURE_REVIEW=1 ROOM_BUNDLE_CAPTURE_OWNER=0 \
             build/colour/bake build/colour/capture \
             | tee build/colour/route.txt
           grep -q '^ROOM_BUNDLE_POC_PASS ' build/colour/route.txt
-          test "$(find build/colour/capture -name 'review-doomguy-detail-*.ppm' | wc -l)" -eq 120
-          test "$(find build/colour/capture -name 'mask-doomguy-detail-*.pgm' | wc -l)" -eq 120
+          for kind in review mask family; do
+            ext=ppm; [ "$kind" = review ] && ext=ppm || ext=pgm
+            test "$(find build/colour/capture -name "$kind-doomguy-detail-*.$ext" | wc -l)" -eq 120
+          done
 
       - name: Recolour and check the lightness structure survived
         run: |
@@ -133,20 +158,19 @@ jobs:
             build/colour/capture build/colour/render \
             --scale 3 --sheet-every 15 \
             | tee build/colour/recolour.txt
-          grep -q '^RECOLOUR_PASS frames=120 masked=120 ' build/colour/recolour.txt
+          grep -q '^RECOLOUR_PASS frames=120 masked=120 family=120 ' build/colour/recolour.txt
           python3 - <<'PY'
           import re
           txt = open("build/colour/recolour.txt").read()
-          rows = dict((m.group(1), (float(m.group(2)), float(m.group(3))))
-                      for m in re.finditer(
-                          r"LIGHTNESS_DELTA mode=(\S+) mean_abs_dL=(\S+) max_abs_dL=(\S+)", txt))
-          # Depth and shade in this renderer are carried entirely by lightness,
-          # and the tile vocabulary was trained against a lightness-ordered
-          # objective. If the coloured palette puts every semantic at the
-          # lightness the greyscale one did, the coloured build cannot read as
-          # flatter -- it is the same image with hue added. The bound is the
-          # greyscale ramp's own tightest adjacent step (0.062 Oklab L): no
-          # pixel may move by as much as one ramp stop.
+          rows = {m.group(1): (float(m.group(2)), float(m.group(3)))
+                  for m in re.finditer(
+                      r"LIGHTNESS_DELTA mode=(\S+) mean_abs_dL=(\S+) max_abs_dL=(\S+)", txt)}
+          # Depth and shade are carried entirely by lightness here, and the
+          # tile vocabulary is trained against a lightness-ordered objective.
+          # If every (material, shade) pair sits at the lightness the greyscale
+          # design put it, the coloured build cannot read as flatter. The bound
+          # is the greyscale ramp's own tightest adjacent step: no pixel may
+          # land where a DIFFERENT shade stop would have.
           for mode in ("static", "blend"):
               mean, worst = rows[mode]
               assert mean < 0.030, (mode, mean)
@@ -154,7 +178,97 @@ jobs:
               print("%-7s mean |dL|=%.4f  max |dL|=%.4f" % (mode, mean, worst))
           PY
 
-      - name: Encode colour orbit video and comparison sheet
+      - name: Bake the dense corpus and measure what a second material costs
+        run: |
+          set -euo pipefail
+          # Plinth configuration, matching every other corpus job: the corpus
+          # camera pivots on the plinth top, which floor-mount removes.
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/colour/corpus-bake
+          mkdir -p build/colour/host
+          ROOM_BUNDLE_HERO_CORPUS=1 HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/colour/corpus-bake build/colour/host \
+            | tee build/colour/corpus.txt
+          grep -q '^DOOM_DENSE_CORPUS_PASS samples=128 ' build/colour/corpus.txt
+
+          python3 tools/analyze_hero_colour_codec.py \
+            build/colour/host/doomguy_dense_corpus.dhc \
+            --palette tools/generated/doomguy_mesh_palette.json \
+            --families "$FAMILIES" --bands 2,3 --angles 8 \
+            --patterns 128,192 \
+            --summary-json build/colour/codec.json \
+            | tee build/colour/codec.txt
+          grep -q '^HERO_COLOUR_CODEC_PASS$' build/colour/codec.txt
+          python3 - <<'PY'
+          import json
+          rows = json.load(open("build/colour/codec.json"))["rows"]
+          at = {(r["encoding"], r["patterns"]): r for r in rows}
+          shade = at[("shade", 192)]
+          fam = at[("family", 192)]
+          # 192 patterns is the VRAM ceiling for this sprite/name-table layout.
+          # The family plane is expected to be paid for out of silhouette
+          # precision, NOT out of tone -- tone is what carries form, and a
+          # regression there would mean the encoding is trading away the wrong
+          # thing. Bounds are loose enough to survive retuning and tight enough
+          # to catch that.
+          d_sil = fam["silhouette_error_pct"] - shade["silhouette_error_pct"]
+          d_stops = fam["mean_stops_wrong"] - shade["mean_stops_wrong"]
+          assert d_sil < 3.0, (shade, fam)
+          assert d_stops < 0.05, (shade, fam)
+          assert fam["family_wrong_pct"] < 10.0, fam
+          print("at the 192-pattern ceiling: silhouette %.2f%% -> %.2f%% (+%.2f), "
+                "stops wrong %.3f -> %.3f (+%.3f), material wrong %.1f%%"
+                % (shade["silhouette_error_pct"], fam["silhouette_error_pct"], d_sil,
+                   shade["mean_stops_wrong"], fam["mean_stops_wrong"], d_stops,
+                   fam["family_wrong_pct"]))
+          PY
+
+      - name: The shade-only path provably ignores the family plane
+        run: |
+          set -euo pipefail
+          # Same geometry, no --hue-families, so the corpus carries an all-zero
+          # family plane. --families 1 must produce byte-identical packs from
+          # both corpora, or the shipped greyscale proof is not the same thing
+          # it was.
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --up y --height 12.2 \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 > /dev/null
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/colour/corpus-bake-plain
+          mkdir -p build/colour/host-plain build/colour/pack-a build/colour/pack-b
+          ROOM_BUNDLE_HERO_CORPUS=1 HERO_CORPUS_ANGLES=32 \
+          HERO_CORPUS_BANDS=24,28,32,36 HERO_CORPUS_PREVIEW_EVERY=0 \
+            build/colour/corpus-bake-plain build/colour/host-plain > /dev/null
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          from analyze_doomguy_dense_corpus import Corpus
+          a = Corpus("build/colour/host/doomguy_dense_corpus.dhc")
+          b = Corpus("build/colour/host-plain/doomguy_dense_corpus.dhc")
+          assert all(x.crop == y.crop and (x.x0, x.y0, x.x1, x.y1) == (y.x0, y.y0, y.x1, y.y1)
+                     for x, y in zip(a.samples, b.samples)), "shade plane moved"
+          assert any(any(s.family) for s in a.samples), "no families captured"
+          assert not any(any(s.family) for s in b.samples), "plain corpus has families"
+          print("shade planes and bounding boxes identical; family plane present "
+                "in one corpus and empty in the other")
+          PY
+          for n in a b; do
+            src=host; [ "$n" = b ] && src=host-plain
+            python3 tools/build_hierarchical_sprite_lod_pack.py \
+              "build/colour/$src/doomguy_dense_corpus.dhc" "build/colour/pack-$n" \
+              --mode flat --angles 32 --flat-patterns 192 > /dev/null
+          done
+          for f in hero_sprite_lod_pack.c hero_sprite_lod_pack.h hero_sprite_lod_pack.json; do
+            cmp "build/colour/pack-a/$f" "build/colour/pack-b/$f"
+          done
+          echo "--families 1 output is byte-identical with and without a family plane"
+
+      - name: Contact sheets and orbit video
         run: |
           set -euo pipefail
           ffmpeg -y -loglevel error \
@@ -162,13 +276,13 @@ jobs:
             -vf "scale=480:432:flags=neighbor,setpts=2.0*PTS" -r 15 \
             -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
             -movflags +faststart \
-            build/colour/doomguy-colour-orbit.mp4
-          test -s build/colour/doomguy-colour-orbit.mp4
+            build/colour/doomguy-multicolour-orbit.mp4
+          test -s build/colour/doomguy-multicolour-orbit.mp4
           python3 - <<'PY'
           from PIL import Image, ImageDraw
           rows = [("grey", "greyscale (currently shipped)"),
-                  ("static", "colour, static palette"),
-                  ("blend", "colour + 60Hz palette interleave")]
+                  ("static", "3-material colour, static palette"),
+                  ("blend", "3-material colour + 60Hz palette interleave")]
           cols = ["000", "030", "075"]
           w, h, lab = 320, 288, 26
           out = Image.new("RGB", (w * len(cols), (h + lab) * len(rows)), (18, 18, 22))
@@ -179,7 +293,7 @@ jobs:
                   im = Image.open(f"build/colour/render/{mode}/{c}.png").resize(
                       (w, h), Image.NEAREST)
                   out.paste(im, (j * w, i * (h + lab) + lab))
-          out.save("build/colour/doomguy-colour-comparison.png")
+          out.save("build/colour/doomguy-multicolour-comparison.png")
           PY
 
       - uses: actions/upload-artifact@v4
@@ -189,9 +303,11 @@ jobs:
             build/colour/import.json
             build/colour/palette.json
             build/colour/recolour.txt
+            build/colour/codec.txt
+            build/colour/codec.json
             build/colour/route.txt
-            build/colour/doomguy-colour-orbit.mp4
-            build/colour/doomguy-colour-comparison.png
+            build/colour/doomguy-multicolour-orbit.mp4
+            build/colour/doomguy-multicolour-comparison.png
             build/colour/render/palette-card.png
             build/colour/render/sheet-grey.png
             build/colour/render/sheet-static.png

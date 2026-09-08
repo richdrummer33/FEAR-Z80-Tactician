@@ -543,13 +543,105 @@ export function solveRamp(ramp, { radius = 2, lumaLimit = FLICKER_LUMA_LIMIT } =
 }
 
 /*
- * Spatial vec3 transfer, same uniform-grid trick as recess.mjs but carrying a
- * colour instead of a scalar. Albedo is averaged in LINEAR light within the
- * radius; averaging sRGB-encoded values darkens edges between materials, which
- * would invent shadow lines exactly along the boundaries the family
- * segmentation is about to be asked to find.
+ * Chromaticity: chroma per unit lightness.
+ *
+ * This is the space material families must be found in, and using it rather
+ * than Oklab directly is the difference between finding this asset's materials
+ * and not finding them. Lightness is the SHADING channel -- the renderer
+ * computes its own incident light, ambient occlusion and creases, and
+ * --shading-source hybrid already folds the texture's own local darkness into
+ * that. A family that meant "dark" would therefore double-count shadow: the
+ * pixel would be darkened once by the shade ramp and again by being handed a
+ * dark palette entry. What is left for a family to carry is precisely what
+ * shading cannot express, which is which material the surface is.
+ *
+ * Measured on the diorama asset: clustering full Oklab needs K=5 before the
+ * green foliage appears as its own cluster at all, because the first four
+ * clusters spend themselves splitting the red by lightness. Clustering
+ * chromaticity finds red / warm-neutral / green at K=3, stably.
  */
-export function transferVec3ToShell(srcXyz, srcRgb, srcCount, dstXyz, dstCount, radius) {
+export function chromaticity(lab, floorL = 0.02) {
+  const L = Math.max(lab[0], floorL);
+  return [lab[1] / L, lab[2] / L];
+}
+
+/*
+ * How much a sample's chromaticity should be trusted.
+ *
+ * A near-black texel's hue is quantization noise amplified by the division
+ * above, so it must be allowed to be assigned to a family but never to decide
+ * where a family sits. Confidence rises with lightness and with how far the
+ * sample is from neutral -- a dark grey texel tells you nothing about hue
+ * twice over.
+ */
+export function chromaConfidence(lab, knee = 0.18) {
+  const L = Math.max(lab[0], 1e-6);
+  const sat = Math.hypot(lab[1], lab[2]) / L;
+  return Math.min(1, L / knee) * Math.min(1, sat / 0.10);
+}
+
+/*
+ * Cluster samples into material families on chromaticity alone.
+ *
+ * Reuses the weighted Oklab k-means by parking the chromaticity in the a/b
+ * slots and holding L constant, so the lightness term of its distance
+ * contributes nothing and there is only one clustering implementation to keep
+ * correct. Returns families ordered by the area they cover, descending, so
+ * family 0 is always the dominant material.
+ */
+export function clusterFamilies(labs, areas, k, iterations = 40) {
+  const n = areas.length;
+  const feat = new Float64Array(n * 3);
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; ++i) {
+    const lab = [labs[i * 3], labs[i * 3 + 1], labs[i * 3 + 2]];
+    const c = chromaticity(lab);
+    feat[i * 3] = 0.5; feat[i * 3 + 1] = c[0]; feat[i * 3 + 2] = c[1];
+    w[i] = areas[i] * chromaConfidence(lab);
+  }
+  const km = kmeansOklab(feat, w, k, iterations);
+  const cover = km.centers.map(() => 0);
+  for (let i = 0; i < n; ++i) cover[km.assign[i]] += areas[i];
+  const rank = km.centers.map((_, c) => c).sort((a, b) => cover[b] - cover[a]);
+  const remap = new Int32Array(km.centers.length);
+  rank.forEach((oldIdx, newIdx) => { remap[oldIdx] = newIdx; });
+  const assign = new Int32Array(n);
+  for (let i = 0; i < n; ++i) assign[i] = remap[km.assign[i]];
+  return {
+    assign,
+    /* Each family's chromaticity centre, and the mean lightness of the
+     * samples in it -- reported, not used for the ramp, since the ramp's
+     * lightness band is a scene decision. */
+    families: rank.map((c, f) => {
+      let area = 0, sumL = 0;
+      for (let i = 0; i < n; ++i) if (assign[i] === f) { area += areas[i]; sumL += labs[i * 3] * areas[i]; }
+      return {
+        chromaticity: [km.centers[c][1], km.centers[c][2]],
+        saturation: Math.hypot(km.centers[c][1], km.centers[c][2]),
+        hueDeg: (Math.atan2(km.centers[c][2], km.centers[c][1]) * 180 / Math.PI + 360) % 360,
+        area, meanL: area > 0 ? sumL / area : 0
+      };
+    })
+  };
+}
+
+/*
+ * Transfer a CATEGORICAL field from source vertices onto the shell.
+ *
+ * The scalar transfer in recess.mjs averages, and averaging a family index is
+ * meaningless -- halfway between "red petal" and "green leaf" is not a
+ * material. Worse, averaging the underlying COLOUR (which is what the first
+ * version of this pipeline did) produces the brown that lies between them,
+ * which exists nowhere on the model and which is exactly why this asset first
+ * measured as a single muddy hue.
+ *
+ * So this takes the area-weighted majority within the radius. Ties go to the
+ * lower family index, which is the more common material, because the failure
+ * that matters is a lone leaf vertex turning a petal green rather than the
+ * reverse.
+ */
+export function transferFamilyToShell(srcXyz, srcFamily, srcWeight, srcCount,
+                                      dstXyz, dstCount, radius, familyCount) {
   let mnx = Infinity, mny = Infinity, mnz = Infinity;
   let mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
   for (let i = 0; i < srcCount; ++i) {
@@ -579,14 +671,23 @@ export function transferVec3ToShell(srcXyz, srcRgb, srcCount, dstXyz, dstCount, 
   const fill = counts.slice(0, nCells);
   for (let i = 0; i < srcCount; ++i) order[fill[key[i]]++] = i;
 
-  const out = new Float32Array(dstCount * 3);
+  const out = new Uint8Array(dstCount);
   const r2 = radius * radius;
+  const vote = new Float64Array(familyCount);
+  const maxRing = Math.max(gx, gy, gz);
   for (let d = 0; d < dstCount; ++d) {
     const px = dstXyz[d * 3], py = dstXyz[d * 3 + 1], pz = dstXyz[d * 3 + 2];
-    const i0 = Math.floor((px - mnx) / cell), j0 = Math.floor((py - mny) / cell);
-    const k0 = Math.floor((pz - mnz) / cell);
-    let sr = 0, sg = 0, sb = 0, n = 0;
-    let br = 0, bg = 0, bb = 0, bestD = Infinity;
+    /* Clamped into the grid, exactly as source points are when they are
+     * binned. Without this a shell vertex outside the source's bounding box
+     * indexes cells that do not exist, every lookup misses, and it silently
+     * receives the default family -- which on an asset where decimation
+     * pushes a vertex past the source hull would paint an unmatched region
+     * with the dominant material and look entirely plausible. */
+    const i0 = Math.min(gx - 1, Math.max(0, Math.floor((px - mnx) / cell)));
+    const j0 = Math.min(gy - 1, Math.max(0, Math.floor((py - mny) / cell)));
+    const k0 = Math.min(gz - 1, Math.max(0, Math.floor((pz - mnz) / cell)));
+    vote.fill(0);
+    let any = false, best = 0, bestD = Infinity;
     for (let k = k0 - 1; k <= k0 + 1; ++k) { if (k < 0 || k >= gz) continue;
     for (let j = j0 - 1; j <= j0 + 1; ++j) { if (j < 0 || j >= gy) continue;
     for (let i = i0 - 1; i <= i0 + 1; ++i) { if (i < 0 || i >= gx) continue;
@@ -595,12 +696,41 @@ export function transferVec3ToShell(srcXyz, srcRgb, srcCount, dstXyz, dstCount, 
         const v = order[s];
         const dx = srcXyz[v * 3] - px, dy = srcXyz[v * 3 + 1] - py, dz = srcXyz[v * 3 + 2] - pz;
         const dd = dx * dx + dy * dy + dz * dz;
-        if (dd < bestD) { bestD = dd; br = srcRgb[v * 3]; bg = srcRgb[v * 3 + 1]; bb = srcRgb[v * 3 + 2]; }
-        if (dd <= r2) { sr += srcRgb[v * 3]; sg += srcRgb[v * 3 + 1]; sb += srcRgb[v * 3 + 2]; ++n; }
+        if (dd < bestD) { bestD = dd; best = srcFamily[v]; }
+        if (dd <= r2) { vote[srcFamily[v]] += srcWeight[v]; any = true; }
       }
     }}}
-    if (n > 0) { out[d * 3] = sr / n; out[d * 3 + 1] = sg / n; out[d * 3 + 2] = sb / n; }
-    else { out[d * 3] = br; out[d * 3 + 1] = bg; out[d * 3 + 2] = bb; }
+    if (!any) {
+      /* Nothing within the radius. Fall back to the nearest source vertex --
+       * but "nearest" has to mean nearest anywhere, not nearest in the cells
+       * already looked at. A shell vertex that decimation pushed outside the
+       * source hull can sit several cells away from any source, and returning
+       * a default family there would silently paint an unmatched region with
+       * the dominant material. Widen the ring until something is found; on
+       * real data this never runs, and when it does it is cheap because it
+       * stops at the first non-empty ring. */
+      for (let ring = 2; !Number.isFinite(bestD) && ring <= maxRing; ++ring) {
+        for (let k = k0 - ring; k <= k0 + ring; ++k) { if (k < 0 || k >= gz) continue;
+        for (let j = j0 - ring; j <= j0 + ring; ++j) { if (j < 0 || j >= gy) continue;
+        for (let i = i0 - ring; i <= i0 + ring; ++i) { if (i < 0 || i >= gx) continue;
+          /* Only the shell of the ring; the interior was covered already. */
+          if (Math.abs(k - k0) !== ring && Math.abs(j - j0) !== ring &&
+              Math.abs(i - i0) !== ring) continue;
+          const c = (k * gy + j) * gx + i;
+          for (let s = counts[c]; s < counts[c + 1]; ++s) {
+            const v = order[s];
+            const dx = srcXyz[v * 3] - px, dy = srcXyz[v * 3 + 1] - py, dz = srcXyz[v * 3 + 2] - pz;
+            const dd = dx * dx + dy * dy + dz * dz;
+            if (dd < bestD) { bestD = dd; best = srcFamily[v]; }
+          }
+        }}}
+      }
+      out[d] = best;
+      continue;
+    }
+    let win = 0;
+    for (let f = 1; f < familyCount; ++f) if (vote[f] > vote[win]) win = f;
+    out[d] = vote[win] > 0 ? win : best;
   }
   return out;
 }

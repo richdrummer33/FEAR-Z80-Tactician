@@ -32,7 +32,8 @@ SHADE_RGB = [
 
 class Sample:
     __slots__ = ("angle", "band", "yaw", "cam_x", "cam_y", "anchor_x",
-                 "anchor_y", "x0", "y0", "x1", "y1", "pixels", "crop")
+                 "anchor_y", "x0", "y0", "x1", "y1", "pixels", "crop",
+                 "family")
 
     @property
     def width(self):
@@ -47,6 +48,19 @@ class Sample:
         if not (self.x0 <= sx <= self.x1 and self.y0 <= sy <= self.y1):
             return 0
         return self.crop[(sy - self.y0) * self.width + (sx - self.x0)]
+
+    def family_at(self, sx, sy):
+        """Material family at a screen pixel, 0 outside the hero.
+
+        A separate plane from at(), on purpose and all the way down: shade says
+        how lit the pixel is and family says which material it is. Nothing in
+        the pipeline is allowed to average one into the other.
+        """
+        if self.family is None:
+            return 0
+        if not (self.x0 <= sx <= self.x1 and self.y0 <= sy <= self.y1):
+            return 0
+        return self.family[(sy - self.y0) * self.width + (sx - self.x0)]
 
     def row_spans(self):
         """Leftmost/rightmost owned column per crop row, None when empty.
@@ -71,7 +85,7 @@ class Corpus:
         data = pathlib.Path(path).read_bytes()
         size = struct.calcsize(HEADER_STRUCT)
         if len(data) < size:
-            raise SystemExit(f"{path}: too short to be a DHC1 corpus")
+            raise SystemExit(f"{path}: too short to be a DHC corpus")
         fields = struct.unpack_from(HEADER_STRUCT, data, 0)
         magic, version, self.screen_w, self.screen_h = fields[0:4]
         self.angles, self.bands, self.owner = fields[4:7]
@@ -80,8 +94,14 @@ class Corpus:
         radii = fields[12:20]
         if magic != b"DHC1":
             raise SystemExit(f"{path}: not a DHC1 corpus")
-        if version != 1:
+        if version not in (1, 2):
             raise SystemExit(f"{path}: unsupported corpus version {version}")
+        # Version 2 appends a per-pixel material-family plane after each
+        # record's shade plane. Both planes are always written in a v2 file --
+        # an asset with no families writes zeros -- so there is no optional
+        # path here for a reader to get wrong.
+        self.version = version
+        self.has_family = version >= 2
         if not self.angles or not 1 <= self.bands <= 8:
             raise SystemExit(f"{path}: corpus header out of range")
         self.pivot = (px / 256.0, py / 256.0, pz / 256.0)
@@ -109,6 +129,18 @@ class Corpus:
             p += n
             if sum(1 for v in s.crop if v) != s.pixels:
                 raise SystemExit(f"{path}: crop disagrees with pixel count")
+            s.family = None
+            if self.has_family:
+                if p + n > len(data):
+                    raise SystemExit(f"{path}: corpus truncated in family plane")
+                s.family = data[p:p + n]
+                p += n
+                # A family may only be named where the hero actually is; a
+                # non-zero family on an empty pixel would mean the two planes
+                # disagree about the silhouette.
+                if any(f and not c for f, c in zip(s.family, s.crop)):
+                    raise SystemExit(
+                        f"{path}: family plane names a material outside the hero")
             self.samples.append(s)
         if p != len(data):
             raise SystemExit(f"{path}: {len(data) - p} trailing bytes")

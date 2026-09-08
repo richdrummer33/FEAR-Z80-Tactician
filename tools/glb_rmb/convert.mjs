@@ -8,9 +8,9 @@ import draco3d from 'draco3dgltf';
 import { MeshoptDecoder, MeshoptSimplifier } from 'meshoptimizer';
 import sharp from 'sharp';
 import { computeSourceConcavity, transferToShell } from './recess.mjs';
-import { srgbToLinear, linearToOklab, kmeansOklab, synthesizeRamp,
-         solveRamp, oklabDistance, ggToSrgb8, transferVec3ToShell,
-         materialResidual, chromaGridStep } from './palette.mjs';
+import { srgbToLinear, linearToOklab, synthesizeRamp, solveRamp, oklabDistance,
+         ggToSrgb8, materialResidual, chromaGridStep, clusterFamilies,
+         chromaConfidence, transferFamilyToShell } from './palette.mjs';
 
 function fail(msg) { console.error('fatal:', msg); process.exit(2); }
 function argValue(args, name, fallback) {
@@ -275,21 +275,17 @@ async function decodeBaseColorRGB(texture) {
     for(let k=0;k<3;++k) out[i*3+k]=srgbToLinear(raw.data[i*c+k]/255);
   return {data:out,width:w,height:h};
 }
-function sampleBilinearRGB(field,u,v) {
+/* NEAREST, deliberately not bilinear. Filtering across a petal/leaf boundary
+ * invents a colour that is on neither material -- on this asset a brown that
+ * appears nowhere on the model -- and that invented colour then votes in the
+ * clustering. Albedo for material identification wants point samples. */
+function sampleNearestRGB(field,u,v) {
   if(!field) return null;
   u=u-Math.floor(u); v=v-Math.floor(v);
-  const x=u*(field.width-1), y=v*(field.height-1);
-  const x0=Math.floor(x), y0=Math.floor(y);
-  const x1=Math.min(field.width-1,x0+1), y1=Math.min(field.height-1,y0+1);
-  const fx=x-x0, fy=y-y0;
-  const out=[0,0,0];
-  for(let k=0;k<3;++k){
-    const at=(xx,yy)=>field.data[(yy*field.width+xx)*3+k];
-    const a=at(x0,y0)*(1-fx)+at(x1,y0)*fx;
-    const b=at(x0,y1)*(1-fx)+at(x1,y1)*fx;
-    out[k]=a*(1-fy)+b*fy;
-  }
-  return out;
+  const x=Math.min(field.width-1,Math.max(0,Math.round(u*(field.width-1))));
+  const y=Math.min(field.height-1,Math.max(0,Math.round(v*(field.height-1))));
+  const o=(y*field.width+x)*3;
+  return [field.data[o],field.data[o+1],field.data[o+2]];
 }
 async function buildAlbedoSampler(material,cache,meta) {
   if(!material) return null;
@@ -301,14 +297,14 @@ async function buildAlbedoSampler(material,cache,meta) {
   const f=material.getBaseColorFactor?.()||[1,1,1,1];
   if(tex)meta.albedoTexture=true; else meta.albedoFactorOnly++;
   const sampler=(uv)=>{
-    const t=uv?sampleBilinearRGB(tex,uv[0],uv[1]):null;
+    const t=uv?sampleNearestRGB(tex,uv[0],uv[1]):null;
     return t? [t[0]*f[0],t[1]*f[1],t[2]*f[2]] : [f[0],f[1],f[2]];
   };
   cache.set(material,sampler);
   return sampler;
 }
 async function collectWorldAlbedo(doc) {
-  const xyz=[], rgb=[];
+  const xyz=[], rgb=[], area=[];
   const cache=new Map();
   const meta={albedoTexture:false,albedoFactorOnly:0,untexturedPrimitives:0};
   let count=0;
@@ -321,18 +317,35 @@ async function collectWorldAlbedo(doc) {
       const pa=pos.getArray(), ua=uv?.getArray();
       const sampler=await buildAlbedoSampler(prim.getMaterial?.(),cache,meta);
       if(!ua)meta.untexturedPrimitives++;
+      /* Surface area per source vertex, in SOURCE units. Only used as a
+       * relative weight, so the un-normalized scale does not matter. */
+      const va=new Float64Array(pos.getCount());
+      const idx=prim.getIndices(); const ia=idx?idx.getArray():null;
+      const n=idx?idx.getCount():pos.getCount();
+      for(let t=0;t+2<n;t+=3){
+        const a=ia?Number(ia[t]):t,b=ia?Number(ia[t+1]):t+1,c=ia?Number(ia[t+2]):t+2;
+        const e1=[pa[b*3]-pa[a*3],pa[b*3+1]-pa[a*3+1],pa[b*3+2]-pa[a*3+2]];
+        const e2=[pa[c*3]-pa[a*3],pa[c*3+1]-pa[a*3+1],pa[c*3+2]-pa[a*3+2]];
+        const cx=e1[1]*e2[2]-e1[2]*e2[1];
+        const cy=e1[2]*e2[0]-e1[0]*e2[2];
+        const cz=e1[0]*e2[1]-e1[1]*e2[0];
+        const ar=Math.hypot(cx,cy,cz)/6;
+        va[a]+=ar;va[b]+=ar;va[c]+=ar;
+      }
       for(let i=0;i<pos.getCount();++i){
         const p=transformPoint(matrix,[pa[i*3],pa[i*3+1],pa[i*3+2]]);
         const c=sampler?sampler(ua?[ua[i*2],ua[i*2+1]]:null):[0.5,0.5,0.5];
         xyz.push(p[0],p[1],p[2]);
         rgb.push(c[0],c[1],c[2]);
+        area.push(va[i]||1e-12);
         count++;
       }
     }
   }
   if(!count)fail('no vertices carried base colour; cannot derive a palette');
   meta.vertices=count;
-  return {xyz,rgb:Float32Array.from(rgb),vertexCount:count,meta};
+  return {xyz,rgb:Float32Array.from(rgb),area:Float64Array.from(area),
+          vertexCount:count,meta};
 }
 /*
  * Per-vertex surface area on the shell: one third of each incident triangle.
@@ -414,7 +427,12 @@ const recessRadius=Number(argValue(args,'--recess-radius','0.5'));
  * (family<<2)|shade, so anything above 4 does not fit the sprite palette and
  * anything below wastes a bitplane. */
 const hueFamilies=Math.max(0,Number(argValue(args,'--hue-families','0'))|0);
-const hueShades=Math.max(2,Number(argValue(args,'--hue-shades','4'))|0);
+/* The sprite palette has 15 usable entries (colour 0 is transparent), so 3
+ * families x 5 shades fits exactly and keeps the compositor's full five-stop
+ * brightness ramp -- which is what carries shape. Four families would cost a
+ * shade stop to buy a fourth material, a trade this asset's measured
+ * distribution does not justify. */
+const hueShades=Math.max(2,Number(argValue(args,'--hue-shades','5'))|0);
 /* The mono-ramp layout reuses the compositor's existing five-stop brightness
  * ramp verbatim, so these two are dictated by polar_baked_composite.c's
  * k_shade_ramp and must not be tuned independently of it. */
@@ -423,8 +441,9 @@ const MONO_RAMP_PALETTE_INDICES=[3,6,4,7,5];
 if(!(height>0)) fail('--height must be positive');
 if(!['geometry','hybrid','material'].includes(shadingSource))
   fail('--shading-source must be geometry, hybrid, or material');
-if(hueFamilies>0&&hueFamilies*hueShades>16)
-  fail('--hue-families x --hue-shades must fit the 16-entry sprite palette');
+if(hueFamilies>0&&hueFamilies*hueShades>15)
+  fail('--hue-families x --hue-shades must fit the 15 usable sprite palette '+
+       'entries (colour 0 is transparent on this hardware)');
 
 const io=await makeIO();
 const source=await io.read(input);
@@ -484,106 +503,134 @@ if(sourceMaterial){
  * the same reason the crease field is: decimation destroys the UVs and the
  * fine material boundaries before it destroys anything else.
  *
- * Two layouts come out of this, and which one an asset gets is measured, not
- * chosen:
+ * Families are found in CHROMATICITY, with lightness divided out. Lightness is
+ * the shading channel -- the renderer computes its own incident light, AO and
+ * creases, and --shading-source hybrid folds the texture's own local darkness
+ * into that -- so a family that meant "dark" would darken a pixel twice. What
+ * is left for a family to carry is which material the surface is, and that is
+ * chromaticity. See clusterFamilies() for what this buys on a real asset.
  *
- *   family-split  the asset has genuinely different materials. Palette index
- *                 becomes (family<<2)|shade, so the two shade bits sit in
- *                 tile bitplanes 0-1 and the two family bits in 2-3. The
- *                 compositor has to emit a family plane, which is new
- *                 information and therefore has a real cost.
+ * Two layouts come out of this, and which one an asset gets is measured:
  *
- *   mono-ramp     the asset has one hue. Splitting the palette into families
- *                 would spend two bitplanes encoding a distinction that does
- *                 not exist. Instead the whole budget becomes one ramp in that
- *                 hue, mapped straight onto the shade codes the compositor
- *                 ALREADY emits -- so nothing about the tile vocabulary
- *                 changes and the colour costs 32 bytes of palette RAM.
+ *   family-split  genuinely different materials. The compositor carries a
+ *                 per-pixel family alongside the shade level and the palette
+ *                 index is familyBase[f] + shade. This is new information, so
+ *                 it has a real cost in the tile vocabulary.
+ *
+ *   mono-ramp     one material. The palette maps straight onto the shade codes
+ *                 the compositor already emits, nothing else changes at all,
+ *                 and the colour costs 32 bytes of palette RAM.
  */
 let visualHue=null, paletteReport=null;
 if(hueFamilies>0){
   const srcAlbedo=await collectWorldAlbedo(source);
   const srcAlbedoPos=normalizedPositions(
     {xyz:srcAlbedo.xyz,vertexCount:srcAlbedo.vertexCount},up,norm);
-  const shellRgb=transferVec3ToShell(srcAlbedoPos,srcAlbedo.rgb,
-    srcAlbedo.vertexCount,visualPos,visualGeom.vertexCount,recessRadius);
-  const shellLab=new Float64Array(visualGeom.vertexCount*3);
-  for(let i=0;i<visualGeom.vertexCount;++i){
-    const lab=linearToOklab(shellRgb[i*3],shellRgb[i*3+1],shellRgb[i*3+2]);
-    shellLab[i*3]=lab[0];shellLab[i*3+1]=lab[1];shellLab[i*3+2]=lab[2];
+  const srcLab=new Float64Array(srcAlbedo.vertexCount*3);
+  for(let i=0;i<srcAlbedo.vertexCount;++i){
+    const lab=linearToOklab(srcAlbedo.rgb[i*3],srcAlbedo.rgb[i*3+1],srcAlbedo.rgb[i*3+2]);
+    srcLab[i*3]=lab[0];srcLab[i*3+1]=lab[1];srcLab[i*3+2]=lab[2];
   }
-  const areas=vertexAreas(visualGeom,visualQ8);
-  const km=kmeansOklab(shellLab,areas,hueFamilies);
+  /* Cluster on the FULL-RESOLUTION source, before any transfer. Clustering
+   * after a spatial transfer is what hid this asset's green foliage: the
+   * transfer radius is sized to the shell's triangles, which on a floral
+   * diorama is many petals and leaves wide, so it averaged interleaved red and
+   * green into a brown that is on neither and the whole model measured as one
+   * muddy hue. */
+  const km=clusterFamilies(srcLab,srcAlbedo.area,hueFamilies);
+  const totalArea=km.families.reduce((a,f)=>a+f.area,0)||1;
 
-  /* Order families by the surface area they cover, descending. Family 0 is
-   * therefore the dominant material -- which matters because family 0 is the
-   * one that shares palette index 0 with the transparent/void stop, so it is
-   * the family whose darkest shade is cheapest to encode. */
-  const covered=km.centers.map(()=>0);
-  for(let i=0;i<visualGeom.vertexCount;++i)covered[km.assign[i]]+=areas[i];
-  const rank=km.centers.map((_,c)=>c).sort((a,b)=>covered[b]-covered[a]);
-  const remap=new Int32Array(km.centers.length);
-  rank.forEach((oldIdx,newIdx)=>{remap[oldIdx]=newIdx;});
-  let centers=rank.map(c=>km.centers[c]);
-  let areaShare=rank.map(c=>covered[c]);
-  const totalArea=areaShare.reduce((a,b)=>a+b,0)||1;
-
-  /* Do the families differ in MATERIAL, or only in how much light the source
-   * texture already had baked onto them? See materialResidual(): chroma that
-   * tracks lightness is shading, and only what is left over is a second
-   * material. The threshold is one 4-bit chroma grid step, i.e. "a difference
-   * the hardware could actually draw". */
+  /* Is more than one of these a real material, or are they one material's
+   * chromaticity spread? materialResidual() answers it against one 4-bit
+   * chroma grid step, i.e. "a difference the hardware could draw". The family
+   * centres are lifted back into Oklab at a common lightness first, since the
+   * test is about what will be drawn, not about the clustering feature space. */
   const gridStep=chromaGridStep();
-  const fit=materialResidual(centers,areaShare);
+  const probeL=0.55;
+  const fit=materialResidual(
+    km.families.map(f=>[probeL,f.chromaticity[0]*probeL,f.chromaticity[1]*probeL]),
+    km.families.map(f=>f.area));
   const polychrome=fit.residual>=gridStep;
   const layout=polychrome?'family-split':'mono-ramp';
   const shades=polychrome?hueShades:MONO_RAMP_STOPS;
 
-  let residual=0;
+  let coherence=null, shellShare=null, residual=0;
   if(polychrome){
-    visualHue=new Uint8Array(visualGeom.vertexCount);
-    for(let i=0;i<visualGeom.vertexCount;++i)visualHue[i]=remap[km.assign[i]];
-    for(let i=0;i<visualGeom.vertexCount;++i)
-      residual+=oklabDistance([shellLab[i*3],shellLab[i*3+1],shellLab[i*3+2]],
-                              centers[visualHue[i]])*areas[i];
+    const conf=new Float64Array(srcAlbedo.vertexCount);
+    for(let i=0;i<srcAlbedo.vertexCount;++i)
+      conf[i]=srcAlbedo.area[i]*
+        chromaConfidence([srcLab[i*3],srcLab[i*3+1],srcLab[i*3+2]]);
+    /* Majority vote, not an average: halfway between "petal" and "leaf" is not
+     * a material. Radius is the shell's own triangle scale, the finest
+     * boundary the shell can actually draw. */
+    visualHue=transferFamilyToShell(srcAlbedoPos,km.assign,conf,
+      srcAlbedo.vertexCount,visualPos,visualGeom.vertexCount,
+      recessRadius,km.families.length);
+
+    /* Does the segmentation survive onto the shell as REGIONS, or as noise?
+     * A family plane made of isolated single vertices would cost the tile
+     * vocabulary a great deal and buy a shimmer. The fraction of shell
+     * triangles whose three corners agree is the cheap honest measure, and it
+     * is reported rather than assumed. */
+    const areas=vertexAreas(visualGeom,visualQ8);
+    let agree=0;
+    for(let t=0;t<visualGeom.triangleCount;++t){
+      const i=visualGeom.indices[t*3],j=visualGeom.indices[t*3+1],k=visualGeom.indices[t*3+2];
+      if(visualHue[i]===visualHue[j]&&visualHue[j]===visualHue[k])agree++;
+    }
+    coherence=visualGeom.triangleCount?agree/visualGeom.triangleCount:1;
+    shellShare=km.families.map(()=>0);
+    let shellTotal=0;
+    for(let i=0;i<visualGeom.vertexCount;++i){shellShare[visualHue[i]]+=areas[i];shellTotal+=areas[i];}
+    shellShare=shellShare.map(v=>v/(shellTotal||1));
+
+    /* How much chromaticity the K-family approximation discards, area
+     * weighted, in the same units the threshold above is expressed in. */
+    for(let i=0;i<srcAlbedo.vertexCount;++i){
+      const L=Math.max(srcLab[i*3],0.02);
+      const c=[srcLab[i*3+1]/L,srcLab[i*3+2]/L];
+      const f=km.families[km.assign[i]].chromaticity;
+      residual+=Math.hypot(c[0]-f[0],c[1]-f[1])*srcAlbedo.area[i]*probeL;
+    }
     residual/=totalArea;
   }else{
-    /* One family: the area-weighted mean of the whole surface, which is the
-     * hue the ramp is painted in. The lightness variation the clustering found
-     * is not discarded -- it is exactly what the shade ramp is for. */
-    const mean=[0,0,0];
-    for(let i=0;i<visualGeom.vertexCount;++i)
-      for(let k=0;k<3;++k)mean[k]+=shellLab[i*3+k]*areas[i];
-    for(let k=0;k<3;++k)mean[k]/=totalArea;
-    centers=[mean]; areaShare=[totalArea];
-    for(let i=0;i<visualGeom.vertexCount;++i){
-      const da=shellLab[i*3+1]-mean[1], db=shellLab[i*3+2]-mean[2];
-      residual+=Math.hypot(da,db)*areas[i];
+    /* One material: the area-weighted mean chromaticity is the hue the ramp is
+     * painted in. The lightness variation the clustering saw is not discarded,
+     * it is exactly what the shade ramp is for. */
+    let ca=0,cb=0;
+    for(const f of km.families){ca+=f.chromaticity[0]*f.area;cb+=f.chromaticity[1]*f.area;}
+    ca/=totalArea;cb/=totalArea;
+    km.families.splice(0,km.families.length,
+      {chromaticity:[ca,cb],saturation:Math.hypot(ca,cb),
+       hueDeg:(Math.atan2(cb,ca)*180/Math.PI+360)%360,
+       area:totalArea,
+       meanL:0});
+    for(let i=0;i<srcAlbedo.vertexCount;++i){
+      const L=Math.max(srcLab[i*3],0.02);
+      residual+=Math.hypot(srcLab[i*3+1]/L-ca,srcLab[i*3+2]/L-cb)*srcAlbedo.area[i]*probeL;
     }
     residual/=totalArea;
   }
 
-  const meanL=centers.reduce((a,c,i)=>a+c[0]*areaShare[i],0)/totalArea;
-  const families=centers.map((c,f)=>{
-    const ramp=synthesizeRamp(c,shades,polychrome?meanL:null);
+  const families=km.families.map((fam,f)=>{
+    /* The family's colour at a reference lightness. The ramp's own lightness
+     * band is a scene decision made downstream in gg_palette_design.mjs; what
+     * the importer knows, and all it knows, is the material's chromaticity. */
+    const center=[probeL,fam.chromaticity[0]*probeL,fam.chromaticity[1]*probeL];
+    const ramp=synthesizeRamp(center,shades);
     const solved=solveRamp(ramp);
-    /* Where the ramp stop lives in the 16-entry sprite palette.
-     *
-     * family-split: (family<<2)|shade, with shade 0 collapsing to the shared
-     *   transparent/void entry 0 in every family.
-     * mono-ramp: the compositor's existing brightness ramp, in BRIGHTNESS
-     *   order -- SEM_FAR, SEM_FAR_MID, SEM_MID, SEM_MID_NEAR, SEM_NEAR are
-     *   enum values 3,6,4,7,5, appended to the enum out of order. Writing the
-     *   ramp into those five entries recolours the hero without changing a
-     *   single pixel code, which is the whole point of this branch.
-     */
-    const indices=polychrome
-      ? solved.map((_,s)=>s===0?0:(f<<2)|s)
-      : MONO_RAMP_PALETTE_INDICES.slice(0,solved.length);
     return {
-      family:f, areaShare:areaShare[f]/totalArea, centerOklab:c,
+      family:f,
+      areaShare:fam.area/totalArea,
+      shellAreaShare:shellShare?shellShare[f]:(polychrome?0:1),
+      chromaticity:fam.chromaticity,
+      saturation:fam.saturation, hueDeg:fam.hueDeg, sourceMeanL:fam.meanL,
+      centerOklab:center,
       centerSrgb8:solved[Math.min(2,solved.length-1)].srgb8,
-      indices, stops:solved
+      /* Provisional. gg_palette_design.mjs assigns the real hardware indices
+       * once it knows how many entries the whole scene needs. */
+      indices:polychrome?null:MONO_RAMP_PALETTE_INDICES.slice(0,solved.length),
+      stops:solved
     };
   });
 
@@ -592,18 +639,17 @@ if(hueFamilies>0){
   const meanStatic=flat.reduce((a,s)=>a+s.staticErr,0)/flat.length;
   const meanInter=flat.reduce((a,s)=>a+s.interleave.err,0)/flat.length;
   paletteReport={
-    layout, requestedFamilies:hueFamilies, families:centers.length, shades,
+    layout, requestedFamilies:hueFamilies, families:families.length, shades,
     source:srcAlbedo.meta,
     materialResidualOklab:fit.residual, chromaGridStepOklab:gridStep,
-    chromaPerLightness:[fit.ka,fit.kb],
     polychrome,
     familyResidualOklab:residual,
+    shellTriangleCoherence:coherence,
     meanStopQuantErrOklab:meanQuant,
     meanStopStaticErrOklab:meanStatic,
     meanStopInterleavedErrOklab:meanInter,
     interleaveGainPct:meanQuant>0?100*(1-meanInter/meanQuant):0,
     unsafeInterleaveStops:flat.filter(s=>!s.interleave.safe).length,
-    inertia:km.inertia,
     entries:families
   };
 }
@@ -654,7 +700,8 @@ const header=`/* Generated by tools/glb_rmb/convert.mjs. DO NOT HAND EDIT.
 const body=header+
   emitMesh(name,'visual',visualGeom,visualQ8)+
   emitRecess(name,'visual',visualRecess)+
-  (visualHue?emitHue(name,'visual',visualHue):'')+'\n'+
+  (visualHue?emitHue(name,'visual',visualHue):'')+
+  (visualHue?`#define ${name.toUpperCase()}_VISUAL_FAMILY_COUNT ${paletteReport.families}u\n`:'')+'\n'+
   emitMesh(name,'lighting',lightingGeom,lightingQ8)+'\n'+
   emitMesh(name,'shadow',shadowGeom,shadowQ8);
 await fs.mkdir(path.dirname(output),{recursive:true});

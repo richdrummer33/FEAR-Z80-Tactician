@@ -45,6 +45,7 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     s->objects[id].consolidate_passes=0u;
     s->objects[id].smooth_shading=0u;
     s->objects[id].ramp_levels=0u;
+    s->objects[id].family_supplied=0u;
     s->objects[id].static_light=0u;
     s->objects[id].incident_weight=1.0;
     s->objects[id].ao_radius=0.0;
@@ -285,6 +286,17 @@ void rmb_add_indexed_mesh_q8_ex(RMBScene *s,uint8_t obj,const RMBTransform *xf,
                                 const int16_t *xyz_q8,uint16_t vertex_count,
                                 const uint16_t *indices,uint16_t triangle_count,
                                 int8_t bias,const uint8_t *vertex_recess){
+    rmb_add_indexed_mesh_q8_family(s,obj,xf,xyz_q8,vertex_count,indices,
+                                   triangle_count,bias,vertex_recess,NULL);
+}
+
+void rmb_add_indexed_mesh_q8_family(RMBScene *s,uint8_t obj,
+                                    const RMBTransform *xf,
+                                    const int16_t *xyz_q8,uint16_t vertex_count,
+                                    const uint16_t *indices,
+                                    uint16_t triangle_count,int8_t bias,
+                                    const uint8_t *vertex_recess,
+                                    const uint8_t *vertex_family){
     uint16_t base,i;
     uint32_t t;
     if(obj>=s->object_count)rmb_fail("invalid indexed-mesh object id");
@@ -304,8 +316,10 @@ void rmb_add_indexed_mesh_q8_ex(RMBScene *s,uint8_t obj,const RMBTransform *xf,
         };
         uint16_t v=add_vertex(s,apply_xf(xf,p));
         s->vertex_recess[v]=vertex_recess?vertex_recess[i]:0u;
+        s->vertex_family[v]=vertex_family?vertex_family[i]:0u;
     }
     if(vertex_recess)s->objects[obj].recess_supplied=1u;
+    if(vertex_family)s->objects[obj].family_supplied=1u;
     for(t=0u;t<(uint32_t)triangle_count;++t){
         uint16_t a=indices[t*3u+0u],b=indices[t*3u+1u],d=indices[t*3u+2u];
         if(a>=vertex_count||b>=vertex_count||d>=vertex_count)
@@ -1009,7 +1023,7 @@ static void raster_triangle(const RMBScene *s,const RMBTriangle *t,
             double q0=w0*pa.inv/inv,q1=w1*pb.inv/inv,q2=w2*pc.inv/inv;
             RMBVec3 pn,pw;
             double vis,open,cr;
-            uint8_t level,recess;
+            uint8_t level,recess,family=0u;
             pw.x=q0*a.x+q1*b.x+q2*c.x;
             pw.y=q0*a.y+q1*b.y+q2*c.y;
             pw.z=q0*a.z+q1*b.z+q2*c.z;
@@ -1039,6 +1053,17 @@ static void raster_triangle(const RMBScene *s,const RMBTriangle *t,
                 if(cr>1.0)cr=1.0;
             }
             recess=(uint8_t)(cr*255.0);
+            /* Material family is CATEGORICAL: interpolating it would produce
+             * indices for materials that are not on this triangle at all, and
+             * on a boundary triangle every interior pixel would name a
+             * material the surface does not have. Take the corner with the
+             * largest perspective-correct weight -- nearest-vertex, which is
+             * the only defensible resampling of a label. */
+            if(ob->family_supplied){
+                if(q0>=q1&&q0>=q2)family=s->vertex_family[t->v[0]];
+                else if(q1>=q2)family=s->vertex_family[t->v[1]];
+                else family=s->vertex_family[t->v[2]];
+            }
             level=ramp_quantize(surface_brightness(pn,pw,light,vis,open,cr,ob),
                                 t->shade_bias,ob->ramp_levels,ob,t->object_id,
                                 x,y);
@@ -1049,8 +1074,8 @@ static void raster_triangle(const RMBScene *s,const RMBTriangle *t,
              * add +2 ramp stops everywhere and flatten the angular information
              * straight back out -- that was measured, not assumed.
              */
-            tsp_host_composite_pixel_ramp((uint8_t)x,(uint8_t)y,owner,level,0u,
-                                          0u,recess,d);
+            tsp_host_composite_pixel_ramp_family((uint8_t)x,(uint8_t)y,owner,
+                                                 level,0u,0u,recess,family,d);
         }else if(s->objects[t->object_id].overlay_target_object!=0xffu){
             static const uint8_t bayer2[4]={0u,2u,3u,1u};
             uint8_t q=s->objects[t->object_id].overlay_dither_quarters;

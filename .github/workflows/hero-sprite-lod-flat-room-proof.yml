@@ -23,13 +23,12 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     env:
-      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
-      # The palette is derived from the one asset in the repo that carries a
-      # base-colour texture. It is independent of the mesh -- a palette is 48
-      # colours, not geometry -- so pairing it with the classic Doomguy shell
-      # here is deliberate: this job proves the coloured ROM BUILDS and that
-      # colour costs no tiles, not that this is the shipping art pairing.
-      PALETTE_ASSET: assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb
+      # The one asset in the repo that carries a base-colour texture, and
+      # therefore the only one a material palette can be derived from. Both
+      # ROMs are built from it so the coloured one is the actual object rather
+      # than someone else's palette on a different mesh.
+      ASSET: assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb
+      FAMILIES: "3"
     steps:
       - uses: actions/checkout@v4
 
@@ -42,11 +41,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/hero-room-flat/hero-host build/hero-room-flat/room-host \
-                   build/hero-room-flat/generated-hero build/hero-room-flat/generated-room \
-                   tools/generated
+                   build/hero-room-flat/generated-hero \
+                   build/hero-room-flat/generated-hero-colour \
+                   build/hero-room-flat/generated-room tools/generated
           node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
-            --name doomguy --height 19 --up z \
+            --name doomguy --up y --height 12.2 \
             --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            --hue-families "$FAMILIES" \
             > build/hero-room-flat/import.json
 
       - name: Bake hero oracle corpus and flat runtime pack
@@ -66,18 +67,44 @@ jobs:
           # 192 patterns is the largest shared vocabulary this VRAM layout can
           # hold: sprite tile id N reads unified pattern tile 256+N, and the
           # name table begins at unified tile 448.
+          # Two vocabularies from the SAME corpus. The greyscale one encodes a
+          # hero pixel as the compositor's semantic code; the colour one as
+          # 1 + material*5 + position on the brightness ramp, which is what a
+          # three-material palette needs.
+          #
+          # Unlike single-hue colour, this is NOT free: a second material is
+          # new per-pixel information and the vocabulary has to carry it. What
+          # is unchanged is the budget -- both are 192 patterns and 6144 bytes,
+          # the same VRAM and the same 32 bytes per tile upload. The cost is
+          # paid in reconstruction accuracy, measured in the colour-palette
+          # workflow, not in bandwidth.
           python3 tools/build_hierarchical_sprite_lod_pack.py \
             build/hero-room-flat/hero-host/doomguy_dense_corpus.dhc \
             build/hero-room-flat/generated-hero \
             --mode flat --angles 32 --flat-patterns 192 \
             | tee build/hero-room-flat/hero-pack.txt
           grep -q '^HERO_SPRITE_LOD_PACK_PASS$' build/hero-room-flat/hero-pack.txt
+          python3 tools/build_hierarchical_sprite_lod_pack.py \
+            build/hero-room-flat/hero-host/doomguy_dense_corpus.dhc \
+            build/hero-room-flat/generated-hero-colour \
+            --mode flat --angles 32 --flat-patterns 192 \
+            --families "$FAMILIES" \
+            | tee build/hero-room-flat/hero-pack-colour.txt
+          grep -q '^HERO_SPRITE_LOD_PACK_PASS$' build/hero-room-flat/hero-pack-colour.txt
           python3 - <<'PY'
           import json
-          report = json.load(open(
+          grey = json.load(open(
               "build/hero-room-flat/generated-hero/hero_sprite_lod_pack.json"))
-          assert report["flat_patterns"] == 192, report
-          assert report["room_background_tile_limit"] == 256, report
+          col = json.load(open(
+              "build/hero-room-flat/generated-hero-colour/hero_sprite_lod_pack.json"))
+          for r in (grey, col):
+              assert r["flat_patterns"] == 192, r
+              assert r["room_background_tile_limit"] == 256, r
+          # Same VRAM, same upload bandwidth, different content.
+          assert grey["pattern_bytes"] == col["pattern_bytes"] == 6144, (grey, col)
+          print("grey mean cost %.1f, colour mean cost %.1f, both 192 patterns "
+                "/ %d bytes" % (grey["midfar_mean_cost"], col["midfar_mean_cost"],
+                                grey["pattern_bytes"]))
           PY
 
       - name: Bake lit room with 192 hero patterns reserved
@@ -106,15 +133,11 @@ jobs:
       - name: Solve the colour palette
         run: |
           set -euo pipefail
-          node tools/glb_rmb/convert.mjs "$PALETTE_ASSET" \
-            build/hero-room-flat/palette_mesh.inc \
-            --name palette_src --up y --height 12.2 \
-            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
-            --hue-families 4 \
-            > build/hero-room-flat/palette-import.json
+          # Derived from the same import the meshes came from, so the palette
+          # and the pack agree on what family each index means.
           node tools/glb_rmb/gg_palette_design.mjs \
-            build/hero-room-flat/palette_mesh_palette.json \
-            build/hero-room-flat/generated-hero/generated/hero_colour_palette \
+            tools/generated/doomguy_mesh_palette.json \
+            build/hero-room-flat/generated-hero-colour/generated/hero_colour_palette \
             | tee build/hero-room-flat/palette.json
 
       - name: Install GBDK 4.5.0
@@ -131,6 +154,7 @@ jobs:
           set -euo pipefail
           LCC="$PWD/.toolchain/gbdk/bin/lcc"
           HGEN="$PWD/build/hero-room-flat/generated-hero"
+          CGEN="$PWD/build/hero-room-flat/generated-hero-colour"
           RGEN="$PWD/build/hero-room-flat/generated-room"
           FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 \
                  -Isrc -I"$HGEN" -I"$RGEN")
@@ -163,16 +187,27 @@ jobs:
           wc -c build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
             | tee build/hero-room-flat/ROM-size.txt
 
-          # Second ROM, colour + temporal palette interleave. Everything but
-          # main.o is REUSED, not rebuilt: the hero vocabulary object, the room
-          # dispatch and every room data bank are the exact same files linked
-          # into both ROMs. That is the zero-tile-cost claim as a build
-          # dependency rather than as a sentence -- colour cannot have touched
-          # a tile pattern, because no object containing one was recompiled.
-          "$LCC" "${FLAGS[@]}" -DHERO_COLOUR_PALETTE=1 -DHERO_COLOUR_INTERLEAVE=1 \
+          # Second ROM: three materials plus the temporal palette interleave.
+          # main.o and the hero vocabulary are rebuilt (the vocabulary now
+          # encodes material as well as shade); the room dispatch and every
+          # room data bank are the SAME object files linked into both ROMs, so
+          # the room is provably untouched by any of this.
+          "$LCC" "${FLAGS[@]}" -I"$CGEN" -DHERO_COLOUR_PALETTE=1 \
+            -DHERO_COLOUR_INTERLEAVE=1 \
             -c -o build/hero-room-flat/main-colour.o \
             src/main_hero_sprite_lod_flat_room_gg.c
-          COLOUR_OBJS=(build/hero-room-flat/main-colour.o "${OBJS[@]:1}")
+          "$LCC" "${FLAGS[@]}" -I"$CGEN" -c \
+            -o build/hero-room-flat/hero-pack-colour.o \
+            "$CGEN/hero_sprite_lod_pack.c"
+          # Built explicitly rather than by substituting into OBJS: the two
+          # ROMs differ in exactly two objects and saying which ones outright
+          # is what makes "the room is the same object files" checkable.
+          COLOUR_OBJS=(build/hero-room-flat/main-colour.o
+                       build/hero-room-flat/ntstate.o
+                       build/hero-room-flat/ntupload.o
+                       build/hero-room-flat/hero-pack-colour.o
+                       build/hero-room-flat/room-dispatch.o
+                       "${OBJS[@]:5}")
           "$LCC" "${FLAGS[@]}" -Wm-yS \
             -o build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg \
             "${COLOUR_OBJS[@]}"
@@ -182,10 +217,11 @@ jobs:
           import pathlib
           grey = pathlib.Path("build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg").stat().st_size
           col = pathlib.Path("build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg").stat().st_size
-          # Six 16-entry palette tables at two bytes an entry, minus the two
-          # they replace. Bank padding means this is a bound, not an equality;
-          # what matters is that it is nowhere near a tile-pattern budget
-          # (the hero vocabulary alone is 192 patterns = 6144 bytes).
+          # Both ROMs carry a 192-pattern hero vocabulary and six palette
+          # tables against two; bank padding makes this a bound rather than an
+          # equality. What matters is that three materials did not change the
+          # SIZE of anything -- the vocabulary is the same 6144 bytes, it just
+          # spends them differently.
           print(f"grey ROM {grey} bytes, colour+interleave ROM {col} bytes, "
                 f"delta {col-grey}")
           assert col - grey < 4096, (grey, col)
@@ -301,7 +337,9 @@ jobs:
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.map
             build/hero-room-flat/hero-pack.txt
+            build/hero-room-flat/hero-pack-colour.txt
             build/hero-room-flat/generated-hero/hero_sprite_lod_pack.json
+            build/hero-room-flat/generated-hero-colour/hero_sprite_lod_pack.json
             build/hero-room-flat/room-bake.txt
             build/hero-room-flat/ROM-size.txt
             build/hero-room-flat/SHA256.txt

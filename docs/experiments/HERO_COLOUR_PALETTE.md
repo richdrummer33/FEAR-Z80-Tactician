@@ -1,10 +1,33 @@
 # Colour, for the price of 32 bytes
 
-Status: temporary experiment branch. Not merged. Opt-in at every stage --
-`convert.mjs --hue-families` defaults to 0 and `HERO_COLOUR_PALETTE` defaults
-to 0, so every other proof in the repository is untouched.
+Status: temporary experiment branch. Not merged.
+
+> **Superseded in part.** This document's central factual claim about the
+> asset -- that its base-colour texture is a single terracotta hue -- is
+> wrong. It is a red-and-green floral diorama with three measurable materials.
+> The mistake was in the measurement, not the machinery: the texture's
+> statistics were taken on a 96x96 downsample, and downsampling blends
+> interleaved petals and leaves into a brown that is on neither. See
+> `HERO_MULTICOLOUR_MATERIALS.md` for the correction, the material survey, and
+> what a second material costs the tile vocabulary.
+>
+> Everything else here still holds and is still the foundation: colour is a
+> palette-index remapping, the lightness band comes from the shipped greyscale
+> design, gamut mapping sheds chroma rather than rotating hue, and the 60Hz
+> temporal interleave buys colour resolution for the bandwidth of one tile.
+> The single-hue path this document describes remains the correct and free
+> answer for an asset that really does have one material -- the detection is
+> now just reliable enough to tell which case you are in.
+
+Opt-in at every stage -- `convert.mjs --hue-families` defaults to 0 and
+`HERO_COLOUR_PALETTE` defaults to 0, so every other proof in the repository is
+untouched.
 
 ## The short version
+
+(Read with the correction above: the numbers below are for the single-hue
+palette this pass built, which is the right answer for a single-material asset
+and is not the right answer for this one.)
 
 Colour on this renderer is a palette-index remapping and nothing else. The
 compositor emits the same shade codes it always did, the tile vocabulary is
@@ -256,14 +279,13 @@ proof carried the identical check and is fixed the same way.
 
 ## Known limits
 
-- Only the mono-ramp layout is wired end to end. `--hue-families` will emit a
-  per-vertex family plane for a genuinely polychrome asset, and the palette
-  index arithmetic for it is `(family<<2)|shade` with shade 0 collapsing to the
-  shared transparent stop -- chosen so the family bits land in tile bitplanes
-  2-3 and can be quantized as a separate, much lower-frequency image than the
-  shade bits. The compositor does not yet carry that plane, so
-  `gg_palette_design.mjs` refuses the layout rather than pretending. Nothing in
-  this repository currently has a second material to test it against.
+- ~~Only the mono-ramp layout is wired end to end.~~ Both layouts are now
+  wired through compositor, corpus, dictionary and palette; see
+  `HERO_MULTICOLOUR_MATERIALS.md`. The shipped packing is 3 families x 5
+  shades rather than the `(family<<2)|shade` bitplane split sketched here --
+  keeping all five shade stops mattered more than bit alignment, since the
+  plane-split codec that alignment would enable saves ROM while the binding
+  constraint is VRAM pattern slots.
 - The interleave assumes the frame loop actually runs at 60 Hz. A dropped
   frame shows one half of a pair for two frame times. On these luminance
   splits that is a barely visible chroma tick, but it is not nothing, and a

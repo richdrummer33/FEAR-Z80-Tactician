@@ -926,11 +926,24 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
      * GLB master, so their silhouettes remain registered. */
     rmb_set_object_flags(m,visual,1u,0u);
     rmb_set_object_shade_levels(m,visual,(uint8_t)ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS);
+    /* The family plane only exists when the importer was run with
+     * --hue-families and found a genuinely polychrome asset; without it this
+     * is the plain recess path and every existing proof is unaffected. */
+#ifdef DOOMGUY_VISUAL_FAMILY_COUNT
+    rmb_add_indexed_mesh_q8_family(m,visual,&t,
+                                   doomguy_visual_xyz_q8,
+                                   DOOMGUY_VISUAL_VERTEX_COUNT,
+                                   doomguy_visual_indices,
+                                   DOOMGUY_VISUAL_TRIANGLE_COUNT,0,
+                                   doomguy_visual_recess,
+                                   doomguy_visual_hue);
+#else
     rmb_add_indexed_mesh_q8_ex(m,visual,&t,
                                doomguy_visual_xyz_q8,DOOMGUY_VISUAL_VERTEX_COUNT,
                                doomguy_visual_indices,
                                DOOMGUY_VISUAL_TRIANGLE_COUNT,0,
                                doomguy_visual_recess);
+#endif
 #if ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT
     rmb_set_object_incident_weight(m,visual,
                                    (double)ROOM_BUNDLE_DOOMGUY_INCIDENT);
@@ -2309,6 +2322,12 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                          outdir,tag,(unsigned)rf);
                 if(!tsp_host_composite_write_owner_mask_pgm(path,sid))
                     die("owner mask frame write failed");
+                /* Material family plane. Written as family+1 so 0 means "not
+                 * the hero", which makes it usable as a mask on its own. */
+                snprintf(path,sizeof(path),"%s/family-%s-%03u.pgm",
+                         outdir,tag,(unsigned)rf);
+                if(!tsp_host_composite_write_owner_family_pgm(path,sid))
+                    die("owner family frame write failed");
             }
         }
     }
@@ -2790,8 +2809,13 @@ static void bake_hero_dense_corpus(const char *outdir){
     manifest=fopen(path,"w");
     if(!manifest)die("cannot create hero dense corpus manifest");
 
+    /* Format 2 appends a per-pixel MATERIAL FAMILY plane after each record's
+     * shade plane. Version 1 readers reject it by version rather than
+     * misreading it, and a version-2 file whose mesh carried no families is
+     * simply all zeros -- so the two planes are always both present and the
+     * reader has no optional path to get wrong. */
     fwrite("DHC1",1,4,pack);
-    write_u16(pack,1u);
+    write_u16(pack,2u);
     fputc(160,pack);
     fputc(144,pack);
     write_u16(pack,(uint16_t)angles);
@@ -2806,7 +2830,7 @@ static void bake_hero_dense_corpus(const char *outdir){
         write_u32(pack,band<bands?(uint32_t)lround(radius[band]*256.0):0u);
 
     fprintf(manifest,
-            "Doomguy dense hero view corpus v1\n"
+            "Doomguy dense hero view corpus v2 (shade + family planes)\n"
             "angles=%u bands=%u owner=0x%02x pivot=(%.1f,%.1f,%.1f) eye_z=%.1f\n",
             angles,bands,(unsigned)HERO_CORPUS_OWNER,
             HERO_CORPUS_PIVOT_X,HERO_CORPUS_PIVOT_Y,HERO_CORPUS_PIVOT_Z,
@@ -2854,6 +2878,9 @@ static void bake_hero_dense_corpus(const char *outdir){
             for(py=y0;py<=y1;++py)for(px=x0;px<=x1;++px)
                 fputc(tsp_host_composite_owner_sample(HERO_CORPUS_OWNER,px,py),
                       pack);
+            for(py=y0;py<=y1;++py)for(px=x0;px<=x1;++px)
+                fputc(tsp_host_composite_owner_sample_family(
+                          HERO_CORPUS_OWNER,px,py),pack);
 
             total_pixels+=pixels;
             payload_bytes+=(uint32_t)cw*(uint32_t)ch;

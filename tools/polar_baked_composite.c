@@ -121,6 +121,11 @@ static double g_overlay_depth[TSP_MAP_CELLS][PIXELS];
  * brightness before quantization; this buffer exists so the diagnostic map can
  * show what the geometry pass detected, sub-threshold values included. */
 static uint8_t g_recess[TSP_MAP_CELLS][PIXELS];
+/* Material family per pixel, a second plane alongside the shade codes in
+ * g_cells. Kept separate rather than folded into the semantic value because
+ * the two answer different questions -- which material, and how lit -- and
+ * because the tile quantizer's objective is defined on shade alone. */
+static uint8_t g_family[TSP_MAP_CELLS][PIXELS];
 static uint8_t g_lighting_stage=TSP_HOST_LIGHT_BASELINE;
 static int16_t g_camera_x_q4;
 static int16_t g_camera_y_q4;
@@ -1045,6 +1050,7 @@ void tsp_host_composite_begin_frame(void){
     ensure_init();
     uint16_t di;
     memset(g_owner,0xff,sizeof(g_owner));
+    memset(g_family,0,sizeof(g_family));
     memset(g_lit,0,sizeof(g_lit));
     memset(g_lightable,1,sizeof(g_lightable));
     memset(g_recess,0,sizeof(g_recess));
@@ -1173,6 +1179,14 @@ void tsp_host_composite_pixel_depth(uint8_t sx,uint8_t sy,uint8_t sid,
 void tsp_host_composite_pixel_ramp(uint8_t sx,uint8_t sy,uint8_t sid,
                                    uint8_t ramp_level,uint8_t black,
                                    uint8_t lit,uint8_t recess,double depth){
+    tsp_host_composite_pixel_ramp_family(sx,sy,sid,ramp_level,black,lit,recess,
+                                         0u,depth);
+}
+
+void tsp_host_composite_pixel_ramp_family(uint8_t sx,uint8_t sy,uint8_t sid,
+                                          uint8_t ramp_level,uint8_t black,
+                                          uint8_t lit,uint8_t recess,
+                                          uint8_t family,double depth){
     uint8_t row,col,px,py;
     uint16_t cell,pi;
     if(sx>=160u||sy>=144u||depth<=0.0)return;
@@ -1190,6 +1204,7 @@ void tsp_host_composite_pixel_ramp(uint8_t sx,uint8_t sy,uint8_t sid,
      * it neither sets nor clears these bits; they survive into the quantizer. */
     g_lit[cell][pi]=(uint8_t)(black?0u:(lit?1u:0u));
     g_recess[cell][pi]=black?0u:recess;
+    g_family[cell][pi]=black?0u:family;
 }
 
 void tsp_host_composite_pixel_overlay_depth(uint8_t sx,uint8_t sy,
@@ -1841,6 +1856,15 @@ int tsp_host_composite_write_owner_ppm(const char *path,uint8_t sid){
     fclose(f);return 1;
 }
 
+uint8_t tsp_host_composite_owner_sample_family(uint8_t sid,uint8_t sx,uint8_t sy){
+    uint16_t cell,pi;
+    if(sx>=160u||sy>=144u)return 0u;
+    cell=(uint16_t)(sy>>3)*TSP_COLS+(uint16_t)(sx>>3);
+    pi=(uint16_t)(sy&7u)*8u+(uint16_t)(sx&7u);
+    if(g_owner[cell][pi]!=sid)return 0u;
+    return g_family[cell][pi];
+}
+
 uint8_t tsp_host_composite_owner_sample(uint8_t sid,uint8_t sx,uint8_t sy){
     uint16_t cell,pi;
     uint8_t v;
@@ -1863,6 +1887,19 @@ int tsp_host_composite_write_owner_mask_pgm(const char *path,uint8_t sid){
         uint16_t cell=(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3);
         uint16_t pi=(uint16_t)(y&7u)*8u+(uint16_t)(x&7u);
         fputc(g_owner[cell][pi]==sid?255:0,f);
+    }
+    fclose(f);return 1;
+}
+
+int tsp_host_composite_write_owner_family_pgm(const char *path,uint8_t sid){
+    FILE *f=fopen(path,"wb");
+    uint16_t y,x;
+    if(!f)return 0;
+    fprintf(f,"P5\n160 144\n255\n");
+    for(y=0u;y<144u;++y)for(x=0u;x<160u;++x){
+        uint16_t cell=(uint16_t)(y>>3)*TSP_COLS+(uint16_t)(x>>3);
+        uint16_t pi=(uint16_t)(y&7u)*8u+(uint16_t)(x&7u);
+        fputc(g_owner[cell][pi]==sid?(int)(g_family[cell][pi]+1u):0,f);
     }
     fclose(f);return 1;
 }

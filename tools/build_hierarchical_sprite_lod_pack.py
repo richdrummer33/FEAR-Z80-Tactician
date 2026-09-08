@@ -41,6 +41,8 @@ import pathlib
 from analyze_doomguy_dense_corpus import Corpus
 from analyze_hierarchical_sprite_lod import learn, with_fixed_base
 from analyze_sprite_resident_lod import build_groups
+from analyze_hero_colour_codec import (RecodedCorpus, family_rank,
+                                       ramp_positions)
 from resident_tile_dictionary import TileWeights, dedupe_patterns
 from shared_resident_lod import score_groups
 
@@ -301,6 +303,15 @@ def build_flat(args, c):
 
     angles = list(range(args.angles))
     weights = TileWeights(12.0, 1.0)
+    if args.families > 1:
+        if not c.has_family:
+            raise SystemExit(
+                f"--families={args.families} needs a corpus carrying the "
+                f"material-family plane; this one is version {c.version}")
+        hue_order = ([int(x) for x in args.family_hue_order.split(",")]
+                     if args.family_hue_order else list(range(args.families)))
+        c = RecodedCorpus(c, args.families, ramp_positions())
+        weights = TileWeights(12.0, 1.0, family_rank(args.families, hue_order))
 
     midfar_groups, _ = build_groups(c, angles, [args.mid_band, args.far_band])
     far_groups, _ = build_groups(c, angles, [args.far_band])
@@ -443,6 +454,18 @@ def main():
     ap.add_argument("--mode", choices=("flat", "nested"), default="flat")
     # flat mode
     ap.add_argument("--flat-patterns", type=int, default=192)
+    ap.add_argument("--families", type=int, default=1,
+                    help="1 keeps the shipped shade-only pixel alphabet and "
+                         "produces byte-identical output. >1 re-encodes each "
+                         "hero pixel as 1 + family*5 + ramp position, which is "
+                         "what a multi-material palette needs and what makes "
+                         "the vocabulary work harder; see "
+                         "tools/analyze_hero_colour_codec.py for the cost")
+    ap.add_argument("--family-hue-order",
+                    help="comma-separated family indices in hue order, so the "
+                         "quantizer's ordinal rank distance stands in for how "
+                         "different two materials look. Defaults to the "
+                         "importer's own order (which is by area).")
     ap.add_argument("--flat-sprite-base", type=int, default=None)
     # nested mode (original small-scale proof; kept for comparison)
     ap.add_argument("--core-patterns", type=int, default=16)
