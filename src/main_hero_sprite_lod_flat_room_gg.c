@@ -52,6 +52,38 @@ void tsp_polar_nt_upload_dirty(void);
 
 static uint8_t g_tile[32u];
 
+/*
+ * Colour.
+ *
+ * HERO_COLOUR_PALETTE=1 swaps in the palette solved offline from the source
+ * model's own base-colour texture (tools/glb_rmb/gg_palette_design.mjs). It is
+ * a palette swap and NOTHING else: not one tile pattern, sprite attribute,
+ * name-table word or byte of ROM outside the two palette tables changes, and
+ * the compositor emits exactly the same pixel codes it always did. Colour on
+ * this machine is an index remapping, which is why it is affordable at all --
+ * the scarce resource here is tile-pattern upload bandwidth, and this spends
+ * none of it.
+ *
+ * HERO_COLOUR_INTERLEAVE=1 additionally alternates the palette between two
+ * settings every frame. The eye integrates the pair, so entries land between
+ * points of the 4-bit-per-channel grid and the ramp stops sit measurably
+ * closer to where they were designed to be (70% closer, on this asset). It
+ * costs two 32-byte palette writes per vblank -- the bandwidth of ONE tile
+ * pattern, for the whole screen -- and the pairs are solved under a luminance
+ * split constraint so what alternates is chroma, which does not read as
+ * flicker.
+ */
+#ifndef HERO_COLOUR_PALETTE
+#define HERO_COLOUR_PALETTE 0
+#endif
+#ifndef HERO_COLOUR_INTERLEAVE
+#define HERO_COLOUR_INTERLEAVE 0
+#endif
+#if HERO_COLOUR_PALETTE
+#include "generated/hero_colour_palette.inc"
+#endif
+
+#if !HERO_COLOUR_PALETTE
 /* Same ambient/light semantic palette used by the nested proof, so a
  * side-by-side capture compares codec quality rather than lighting. */
 static const palette_color_t k_bg_palettes[32] = {
@@ -68,6 +100,7 @@ static const palette_color_t k_sprite_palette[16] = {
     RGB(4,5,7),RGB(8,9,11),
     RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0)
 };
+#endif
 
 static void clear_tile(void){
     uint8_t i;
@@ -122,8 +155,13 @@ void main(void){
     SPRITES_8x8;
     HIDE_SPRITES;
     SET_BORDER_COLOR(C_BLACK);
+#if HERO_COLOUR_PALETTE
+    set_bkg_palette(0u,2u,k_hero_colour_bg);
+    set_sprite_palette(0u,1u,k_hero_colour_sprite);
+#else
     set_bkg_palette(0u,2u,k_bg_palettes);
     set_sprite_palette(0u,1u,k_sprite_palette);
+#endif
     init_base_tiles();
     tsp_polar_nt_init();
 
@@ -196,6 +234,20 @@ void main(void){
         }
 
         vsync();
+
+#if HERO_COLOUR_PALETTE && HERO_COLOUR_INTERLEAVE
+        /* Immediately after vsync, before the room's tile patch: palette RAM
+         * is the cheapest thing in the vblank and must not be the thing that
+         * overruns it. Toggling on the frame parity the room playback already
+         * counts avoids a second counter. */
+        if(room_tick&1u){
+            set_bkg_palette(0u,2u,k_hero_colour_bg_a);
+            set_sprite_palette(0u,1u,k_hero_colour_sprite_a);
+        }else{
+            set_bkg_palette(0u,2u,k_hero_colour_bg_b);
+            set_sprite_palette(0u,1u,k_hero_colour_sprite_b);
+        }
+#endif
 
         if(room_advance){
             tsp_room_bundle_generated_apply_tile(

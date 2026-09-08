@@ -5,9 +5,12 @@ on:
     branches:
       - temp/hero-nested-distance-codec-lab
       - temp/hero-lod-shape-objective
+      - temp/doomguy-material-form-v2
     paths:
       - ".github/workflows/hero-sprite-lod-flat-room-proof.yml"
       - "src/main_hero_sprite_lod_flat_room_gg.c"
+      - "tools/glb_rmb/palette.mjs"
+      - "tools/glb_rmb/gg_palette_design.mjs"
       - "tools/build_hierarchical_sprite_lod_pack.py"
       - "tools/analyze_hierarchical_sprite_lod.py"
       - "tools/resident_tile_dictionary.py"
@@ -21,6 +24,12 @@ jobs:
     timeout-minutes: 40
     env:
       ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+      # The palette is derived from the one asset in the repo that carries a
+      # base-colour texture. It is independent of the mesh -- a palette is 48
+      # colours, not geometry -- so pairing it with the classic Doomguy shell
+      # here is deliberate: this job proves the coloured ROM BUILDS and that
+      # colour costs no tiles, not that this is the shipping art pairing.
+      PALETTE_ASSET: assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb
     steps:
       - uses: actions/checkout@v4
 
@@ -94,6 +103,20 @@ jobs:
             build/hero-room-flat/generated-room \
             | tee build/hero-room-flat/room-cgen.txt
 
+      - name: Solve the colour palette
+        run: |
+          set -euo pipefail
+          node tools/glb_rmb/convert.mjs "$PALETTE_ASSET" \
+            build/hero-room-flat/palette_mesh.inc \
+            --name palette_src --up y --height 12.2 \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            --hue-families 4 \
+            > build/hero-room-flat/palette-import.json
+          node tools/glb_rmb/gg_palette_design.mjs \
+            build/hero-room-flat/palette_mesh_palette.json \
+            build/hero-room-flat/generated-hero/generated/hero_colour_palette \
+            | tee build/hero-room-flat/palette.json
+
       - name: Install GBDK 4.5.0
         run: |
           set -euo pipefail
@@ -139,6 +162,34 @@ jobs:
             "${OBJS[@]}"
           wc -c build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
             | tee build/hero-room-flat/ROM-size.txt
+
+          # Second ROM, colour + temporal palette interleave. Everything but
+          # main.o is REUSED, not rebuilt: the hero vocabulary object, the room
+          # dispatch and every room data bank are the exact same files linked
+          # into both ROMs. That is the zero-tile-cost claim as a build
+          # dependency rather than as a sentence -- colour cannot have touched
+          # a tile pattern, because no object containing one was recompiled.
+          "$LCC" "${FLAGS[@]}" -DHERO_COLOUR_PALETTE=1 -DHERO_COLOUR_INTERLEAVE=1 \
+            -c -o build/hero-room-flat/main-colour.o \
+            src/main_hero_sprite_lod_flat_room_gg.c
+          COLOUR_OBJS=(build/hero-room-flat/main-colour.o "${OBJS[@]:1}")
+          "$LCC" "${FLAGS[@]}" -Wm-yS \
+            -o build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg \
+            "${COLOUR_OBJS[@]}"
+          wc -c build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg \
+            | tee -a build/hero-room-flat/ROM-size.txt
+          python3 - <<'PY'
+          import pathlib
+          grey = pathlib.Path("build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg").stat().st_size
+          col = pathlib.Path("build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg").stat().st_size
+          # Six 16-entry palette tables at two bytes an entry, minus the two
+          # they replace. Bank padding means this is a bound, not an equality;
+          # what matters is that it is nowhere near a tile-pattern budget
+          # (the hero vocabulary alone is 192 patterns = 6144 bytes).
+          print(f"grey ROM {grey} bytes, colour+interleave ROM {col} bytes, "
+                f"delta {col-grey}")
+          assert col - grey < 4096, (grey, col)
+          PY
           sha256sum build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg \
             | tee build/hero-room-flat/SHA256.txt
 
@@ -174,6 +225,10 @@ jobs:
           name: hero-flat-sprite-lod-room-proof
           path: |
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.gg
+            build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room-Colour.gg
+            build/hero-room-flat/ROM-size.txt
+            build/hero-room-flat/palette.json
+            build/hero-room-flat/generated-hero/generated/hero_colour_palette.inc
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.sym
             build/hero-room-flat/GG-Hero-Flat-Sprite-LOD-Room.map
             build/hero-room-flat/hero-pack.txt

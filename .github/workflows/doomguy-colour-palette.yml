@@ -1,0 +1,202 @@
+name: Doomguy colour palette
+
+on:
+  push:
+    branches:
+      - temp/doomguy-material-form-v2
+    paths:
+      - ".github/workflows/doomguy-colour-palette.yml"
+      - "tools/glb_rmb/palette.mjs"
+      - "tools/glb_rmb/palette.test.mjs"
+      - "tools/glb_rmb/gg_palette_design.mjs"
+      - "tools/glb_rmb/convert.mjs"
+      - "tools/recolour_semantic_frames.py"
+      - "tools/room_bundle_poc_gen.c"
+  workflow_dispatch:
+
+jobs:
+  colour:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      ASSET: assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install --user pillow
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Palette solver unit tests
+        run: node tools/glb_rmb/palette.test.mjs
+
+      - name: Import with palette extraction
+        run: |
+          set -euo pipefail
+          mkdir -p build/colour tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --up y --height 12.2 \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            --hue-families 4 \
+            > build/colour/import.json
+
+          # The whole architectural claim in one assertion. This asset's base
+          # texture is a single terracotta hue with the lighting baked in, so
+          # the solver must choose the mono-ramp layout: the palette maps onto
+          # the shade codes the compositor already emits, and NO per-vertex hue
+          # data, NO extra pixel codes and NO extra tile patterns exist. If a
+          # future asset trips the family-split branch this fails loudly
+          # rather than silently costing two tile bitplanes.
+          python3 - <<'PY'
+          import json
+          p = json.load(open("build/colour/import.json"))["palette"]
+          assert p["layout"] == "mono-ramp", p["layout"]
+          assert not p["polychrome"]
+          assert p["materialResidualOklab"] < p["chromaGridStepOklab"], p
+          print("layout=%s  material residual %.5f < grid step %.5f"
+                % (p["layout"], p["materialResidualOklab"], p["chromaGridStepOklab"]))
+          PY
+          ! grep -q 'doomguy_visual_hue' tools/generated/doomguy_mesh.inc
+
+      - name: A colour-free import is unchanged
+        run: |
+          set -euo pipefail
+          # Colour is opt-in and must not perturb any other proof in the repo.
+          node tools/glb_rmb/convert.mjs "$ASSET" build/colour/mesh_plain.inc \
+            --name doomguy --up y --height 12.2 \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            > /dev/null
+          # The only difference the colour run may introduce is its one header
+          # comment line; every emitted array must be identical.
+          diff <(grep -v '^ \* palette:' tools/generated/doomguy_mesh.inc) \
+               build/colour/mesh_plain.inc
+
+      - name: Design the hardware palettes
+        run: |
+          set -euo pipefail
+          node tools/glb_rmb/gg_palette_design.mjs \
+            tools/generated/doomguy_mesh_palette.json \
+            tools/generated/hero_colour_palette \
+            | tee build/colour/palette.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open("tools/generated/hero_colour_palette.json"))
+          m = d["metrics"]
+          # Temporal interleave has to actually earn its per-frame palette
+          # write, and it has to stay under the flicker limit while doing so.
+          assert m["interleaveGainPct"] > 30, m
+          assert m["unsafeStops"] == 0, m
+          # BG palette 1 is the ambient ramp one stop brighter, and its upper
+          # half carries the compositor's v+7 shadow aliases. Get this wrong
+          # and mixed boundary tiles show the lit colour on both sides.
+          p0, p1 = d["bg"]["static"]
+          assert all(p1[v + 7] == p0[v] for v in range(1, 8)), (p0, p1)
+          assert p1[1] == p0[2] and p1[2] == p0[3], (p0, p1)
+          # Sprite colour 0 is transparent; nothing may be parked there.
+          assert d["sprite"]["static"][0] == [0, 0, 0]
+          print("interleave gain %.1f%%, max luma split %.2f of 15"
+                % (m["interleaveGainPct"], m["maxLumaSplit"]))
+          PY
+
+      - name: Bake review frames with owner masks
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -DROOM_BUNDLE_DOOMGUY_GENERATED -DROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT=1 \
+            -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/colour/bake
+          mkdir -p build/colour/capture
+          # ROOM_BUNDLE_CAPTURE_OWNER=0 selects owner 0x80, the floor-mount
+          # visual mesh, and writes the mask PGM the recolour tool needs to
+          # tell hero pixels (sprite palette) from room pixels (BG palettes).
+          # ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 is pre-existing for this
+          # asset; see docs/experiments/DOOMGUY_FLOOR_MOUNT_2X.md.
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
+          ROOM_BUNDLE_CAPTURE_REVIEW=1 ROOM_BUNDLE_CAPTURE_OWNER=0 \
+            build/colour/bake build/colour/capture \
+            | tee build/colour/route.txt
+          grep -q '^ROOM_BUNDLE_POC_PASS ' build/colour/route.txt
+          test "$(find build/colour/capture -name 'review-doomguy-detail-*.ppm' | wc -l)" -eq 120
+          test "$(find build/colour/capture -name 'mask-doomguy-detail-*.pgm' | wc -l)" -eq 120
+
+      - name: Recolour and check the lightness structure survived
+        run: |
+          set -euo pipefail
+          python3 tools/recolour_semantic_frames.py \
+            tools/generated/hero_colour_palette.json \
+            build/colour/capture build/colour/render \
+            --scale 3 --sheet-every 15 \
+            | tee build/colour/recolour.txt
+          grep -q '^RECOLOUR_PASS frames=120 masked=120 ' build/colour/recolour.txt
+          python3 - <<'PY'
+          import re
+          txt = open("build/colour/recolour.txt").read()
+          rows = dict((m.group(1), (float(m.group(2)), float(m.group(3))))
+                      for m in re.finditer(
+                          r"LIGHTNESS_DELTA mode=(\S+) mean_abs_dL=(\S+) max_abs_dL=(\S+)", txt))
+          # Depth and shade in this renderer are carried entirely by lightness,
+          # and the tile vocabulary was trained against a lightness-ordered
+          # objective. If the coloured palette puts every semantic at the
+          # lightness the greyscale one did, the coloured build cannot read as
+          # flatter -- it is the same image with hue added. The bound is the
+          # greyscale ramp's own tightest adjacent step (0.062 Oklab L): no
+          # pixel may move by as much as one ramp stop.
+          for mode in ("static", "blend"):
+              mean, worst = rows[mode]
+              assert mean < 0.030, (mode, mean)
+              assert worst < 0.062, (mode, worst)
+              print("%-7s mean |dL|=%.4f  max |dL|=%.4f" % (mode, mean, worst))
+          PY
+
+      - name: Encode colour orbit video and comparison sheet
+        run: |
+          set -euo pipefail
+          ffmpeg -y -loglevel error \
+            -framerate 15 -i build/colour/render/blend/%03d.png \
+            -vf "scale=480:432:flags=neighbor,setpts=2.0*PTS" -r 15 \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            -movflags +faststart \
+            build/colour/doomguy-colour-orbit.mp4
+          test -s build/colour/doomguy-colour-orbit.mp4
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw
+          rows = [("grey", "greyscale (currently shipped)"),
+                  ("static", "colour, static palette"),
+                  ("blend", "colour + 60Hz palette interleave")]
+          cols = ["000", "030", "075"]
+          w, h, lab = 320, 288, 26
+          out = Image.new("RGB", (w * len(cols), (h + lab) * len(rows)), (18, 18, 22))
+          d = ImageDraw.Draw(out)
+          for i, (mode, name) in enumerate(rows):
+              d.text((8, i * (h + lab) + 7), name, fill=(230, 230, 235))
+              for j, c in enumerate(cols):
+                  im = Image.open(f"build/colour/render/{mode}/{c}.png").resize(
+                      (w, h), Image.NEAREST)
+                  out.paste(im, (j * w, i * (h + lab) + lab))
+          out.save("build/colour/doomguy-colour-comparison.png")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-colour-palette
+          path: |
+            build/colour/import.json
+            build/colour/palette.json
+            build/colour/recolour.txt
+            build/colour/route.txt
+            build/colour/doomguy-colour-orbit.mp4
+            build/colour/doomguy-colour-comparison.png
+            build/colour/render/palette-card.png
+            build/colour/render/sheet-grey.png
+            build/colour/render/sheet-static.png
+            build/colour/render/sheet-blend.png
+            tools/generated/hero_colour_palette.inc
+            tools/generated/hero_colour_palette.json
+          if-no-files-found: error
+          retention-days: 30

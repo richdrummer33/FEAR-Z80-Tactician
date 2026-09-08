@@ -8,6 +8,9 @@ import draco3d from 'draco3dgltf';
 import { MeshoptDecoder, MeshoptSimplifier } from 'meshoptimizer';
 import sharp from 'sharp';
 import { computeSourceConcavity, transferToShell } from './recess.mjs';
+import { srgbToLinear, linearToOklab, kmeansOklab, synthesizeRamp,
+         solveRamp, oklabDistance, ggToSrgb8, transferVec3ToShell,
+         materialResidual, chromaGridStep } from './palette.mjs';
 
 function fail(msg) { console.error('fatal:', msg); process.exit(2); }
 function argValue(args, name, fallback) {
@@ -152,6 +155,9 @@ function emitRecess(prefix,kind,values) {
   const base=`${prefix}_${kind}`;
   return cArray('uint8_t',base+'_recess',Array.from(values),16);
 }
+function emitHue(prefix,kind,values) {
+  return cArray('uint8_t',`${prefix}_${kind}_hue`,Array.from(values),24);
+}
 function emitMesh(prefix,kind,geom,q8) {
   const base=`${prefix}_${kind}`;
   if(geom.vertexCount>65535) fail(`${kind} mesh exceeds uint16 indexable vertex count`);
@@ -252,6 +258,107 @@ async function buildMaterialSampler(material,blurSigma,cache,meta){
   cache.set(material,sampler);
   return sampler;
 }
+/*
+ * Base-colour (albedo) extraction, kept separate from the scalar "material
+ * form" field above on purpose. That field asks "is this pixel in a crease",
+ * and to answer it correctly it must NOT treat black armour as a shadow. This
+ * one asks the opposite question -- "what colour is this material" -- so it
+ * wants exactly the albedo the other one is trying to discount.
+ */
+async function decodeBaseColorRGB(texture) {
+  if(!texture?.getImage()) return null;
+  const raw=await sharp(Buffer.from(texture.getImage()),{failOn:'none'})
+    .removeAlpha().raw().toBuffer({resolveWithObject:true});
+  const w=raw.info.width,h=raw.info.height,c=raw.info.channels;
+  const out=new Float32Array(w*h*3);
+  for(let i=0;i<w*h;++i)
+    for(let k=0;k<3;++k) out[i*3+k]=srgbToLinear(raw.data[i*c+k]/255);
+  return {data:out,width:w,height:h};
+}
+function sampleBilinearRGB(field,u,v) {
+  if(!field) return null;
+  u=u-Math.floor(u); v=v-Math.floor(v);
+  const x=u*(field.width-1), y=v*(field.height-1);
+  const x0=Math.floor(x), y0=Math.floor(y);
+  const x1=Math.min(field.width-1,x0+1), y1=Math.min(field.height-1,y0+1);
+  const fx=x-x0, fy=y-y0;
+  const out=[0,0,0];
+  for(let k=0;k<3;++k){
+    const at=(xx,yy)=>field.data[(yy*field.width+xx)*3+k];
+    const a=at(x0,y0)*(1-fx)+at(x1,y0)*fx;
+    const b=at(x0,y1)*(1-fx)+at(x1,y1)*fx;
+    out[k]=a*(1-fy)+b*fy;
+  }
+  return out;
+}
+async function buildAlbedoSampler(material,cache,meta) {
+  if(!material) return null;
+  if(cache.has(material)) return cache.get(material);
+  const tex=await decodeBaseColorRGB(material.getBaseColorTexture?.()||null);
+  /* glTF baseColorFactor is already linear and multiplies the texture. A
+   * material with a factor and no texture is a perfectly ordinary flat
+   * material and must still contribute a family. */
+  const f=material.getBaseColorFactor?.()||[1,1,1,1];
+  if(tex)meta.albedoTexture=true; else meta.albedoFactorOnly++;
+  const sampler=(uv)=>{
+    const t=uv?sampleBilinearRGB(tex,uv[0],uv[1]):null;
+    return t? [t[0]*f[0],t[1]*f[1],t[2]*f[2]] : [f[0],f[1],f[2]];
+  };
+  cache.set(material,sampler);
+  return sampler;
+}
+async function collectWorldAlbedo(doc) {
+  const xyz=[], rgb=[];
+  const cache=new Map();
+  const meta={albedoTexture:false,albedoFactorOnly:0,untexturedPrimitives:0};
+  let count=0;
+  for(const node of doc.getRoot().listNodes().filter(n=>n.getMesh())){
+    const matrix=node.getWorldMatrix();
+    for(const prim of node.getMesh().listPrimitives()){
+      const pos=prim.getAttribute('POSITION');
+      if(!pos)continue;
+      const uv=prim.getAttribute('TEXCOORD_0');
+      const pa=pos.getArray(), ua=uv?.getArray();
+      const sampler=await buildAlbedoSampler(prim.getMaterial?.(),cache,meta);
+      if(!ua)meta.untexturedPrimitives++;
+      for(let i=0;i<pos.getCount();++i){
+        const p=transformPoint(matrix,[pa[i*3],pa[i*3+1],pa[i*3+2]]);
+        const c=sampler?sampler(ua?[ua[i*2],ua[i*2+1]]:null):[0.5,0.5,0.5];
+        xyz.push(p[0],p[1],p[2]);
+        rgb.push(c[0],c[1],c[2]);
+        count++;
+      }
+    }
+  }
+  if(!count)fail('no vertices carried base colour; cannot derive a palette');
+  meta.vertices=count;
+  return {xyz,rgb:Float32Array.from(rgb),vertexCount:count,meta};
+}
+/*
+ * Per-vertex surface area on the shell: one third of each incident triangle.
+ * The family clustering is weighted by this and not by vertex count, because
+ * decimation does not distribute vertices by visual importance -- it leaves a
+ * broad flat panel with a handful of vertices and a filigreed edge with
+ * hundreds. Counting vertices would let a detail nobody can see at 32 units
+ * outvote the material that covers half the silhouette.
+ */
+function vertexAreas(geom,q8) {
+  const area=new Float64Array(geom.vertexCount);
+  for(let t=0;t<geom.triangleCount;++t){
+    const i=geom.indices[t*3],j=geom.indices[t*3+1],k=geom.indices[t*3+2];
+    const ax=q8[i*3]/256,ay=q8[i*3+1]/256,az=q8[i*3+2]/256;
+    const bx=q8[j*3]/256,by=q8[j*3+1]/256,bz=q8[j*3+2]/256;
+    const cx=q8[k*3]/256,cy=q8[k*3+1]/256,cz=q8[k*3+2]/256;
+    const e1=[bx-ax,by-ay,bz-az], e2=[cx-ax,cy-ay,cz-az];
+    const nx=e1[1]*e2[2]-e1[2]*e2[1];
+    const ny=e1[2]*e2[0]-e1[0]*e2[2];
+    const nz=e1[0]*e2[1]-e1[1]*e2[0];
+    const a=Math.hypot(nx,ny,nz)/2/3;
+    area[i]+=a; area[j]+=a; area[k]+=a;
+  }
+  return area;
+}
+
 async function collectWorldMaterialForm(doc,blurSigma){
   const xyz=[], form=[];
   const cache=new Map();
@@ -287,7 +394,7 @@ async function collectWorldMaterialForm(doc,blurSigma){
 }
 
 const args=process.argv.slice(2);
-if(args.length<2) fail('usage: convert.mjs INPUT.glb OUTPUT.inc [--name doomguy] [--height 19] [--up z] [--visual-tris 1800] [--lighting-tris 72] [--shadow-tris 350] [--shading-source geometry|hybrid|material] [--material-strength 0.65] [--material-blur 6]');
+if(args.length<2) fail('usage: convert.mjs INPUT.glb OUTPUT.inc [--name doomguy] [--height 19] [--up z] [--visual-tris 1800] [--lighting-tris 72] [--shadow-tris 350] [--shading-source geometry|hybrid|material] [--material-strength 0.65] [--material-blur 6] [--hue-families 0|4] [--hue-shades 4]');
 const input=args[0], output=args[1];
 const name=sanitizeName(argValue(args,'--name','doomguy'));
 const height=Number(argValue(args,'--height','19'));
@@ -302,9 +409,22 @@ const materialBlur=Math.max(0.5,Number(argValue(args,'--material-blur','6')));
  * is averaged onto a shell vertex. Match it to the shell's triangle size: a
  * crease cannot be drawn narrower than the shell can represent. */
 const recessRadius=Number(argValue(args,'--recess-radius','0.5'));
+/* 0 disables colour entirely and the emitted header is byte-identical to a
+ * pre-colour build. The interesting value is 4: the runtime palette index is
+ * (family<<2)|shade, so anything above 4 does not fit the sprite palette and
+ * anything below wastes a bitplane. */
+const hueFamilies=Math.max(0,Number(argValue(args,'--hue-families','0'))|0);
+const hueShades=Math.max(2,Number(argValue(args,'--hue-shades','4'))|0);
+/* The mono-ramp layout reuses the compositor's existing five-stop brightness
+ * ramp verbatim, so these two are dictated by polar_baked_composite.c's
+ * k_shade_ramp and must not be tuned independently of it. */
+const MONO_RAMP_STOPS=5;
+const MONO_RAMP_PALETTE_INDICES=[3,6,4,7,5];
 if(!(height>0)) fail('--height must be positive');
 if(!['geometry','hybrid','material'].includes(shadingSource))
   fail('--shading-source must be geometry, hybrid, or material');
+if(hueFamilies>0&&hueFamilies*hueShades>16)
+  fail('--hue-families x --hue-shades must fit the 16-entry sprite palette');
 
 const io=await makeIO();
 const source=await io.read(input);
@@ -359,6 +479,135 @@ if(sourceMaterial){
   for(let i=0;i<visualMaterial.length;++i)visualMaterial[i]=clamp01(visualMaterial[i]/p97);
 }
 
+/* ---- Material palette ---------------------------------------------------
+ * Runs on the SOURCE mesh's texture and is transferred onto the shell, for
+ * the same reason the crease field is: decimation destroys the UVs and the
+ * fine material boundaries before it destroys anything else.
+ *
+ * Two layouts come out of this, and which one an asset gets is measured, not
+ * chosen:
+ *
+ *   family-split  the asset has genuinely different materials. Palette index
+ *                 becomes (family<<2)|shade, so the two shade bits sit in
+ *                 tile bitplanes 0-1 and the two family bits in 2-3. The
+ *                 compositor has to emit a family plane, which is new
+ *                 information and therefore has a real cost.
+ *
+ *   mono-ramp     the asset has one hue. Splitting the palette into families
+ *                 would spend two bitplanes encoding a distinction that does
+ *                 not exist. Instead the whole budget becomes one ramp in that
+ *                 hue, mapped straight onto the shade codes the compositor
+ *                 ALREADY emits -- so nothing about the tile vocabulary
+ *                 changes and the colour costs 32 bytes of palette RAM.
+ */
+let visualHue=null, paletteReport=null;
+if(hueFamilies>0){
+  const srcAlbedo=await collectWorldAlbedo(source);
+  const srcAlbedoPos=normalizedPositions(
+    {xyz:srcAlbedo.xyz,vertexCount:srcAlbedo.vertexCount},up,norm);
+  const shellRgb=transferVec3ToShell(srcAlbedoPos,srcAlbedo.rgb,
+    srcAlbedo.vertexCount,visualPos,visualGeom.vertexCount,recessRadius);
+  const shellLab=new Float64Array(visualGeom.vertexCount*3);
+  for(let i=0;i<visualGeom.vertexCount;++i){
+    const lab=linearToOklab(shellRgb[i*3],shellRgb[i*3+1],shellRgb[i*3+2]);
+    shellLab[i*3]=lab[0];shellLab[i*3+1]=lab[1];shellLab[i*3+2]=lab[2];
+  }
+  const areas=vertexAreas(visualGeom,visualQ8);
+  const km=kmeansOklab(shellLab,areas,hueFamilies);
+
+  /* Order families by the surface area they cover, descending. Family 0 is
+   * therefore the dominant material -- which matters because family 0 is the
+   * one that shares palette index 0 with the transparent/void stop, so it is
+   * the family whose darkest shade is cheapest to encode. */
+  const covered=km.centers.map(()=>0);
+  for(let i=0;i<visualGeom.vertexCount;++i)covered[km.assign[i]]+=areas[i];
+  const rank=km.centers.map((_,c)=>c).sort((a,b)=>covered[b]-covered[a]);
+  const remap=new Int32Array(km.centers.length);
+  rank.forEach((oldIdx,newIdx)=>{remap[oldIdx]=newIdx;});
+  let centers=rank.map(c=>km.centers[c]);
+  let areaShare=rank.map(c=>covered[c]);
+  const totalArea=areaShare.reduce((a,b)=>a+b,0)||1;
+
+  /* Do the families differ in MATERIAL, or only in how much light the source
+   * texture already had baked onto them? See materialResidual(): chroma that
+   * tracks lightness is shading, and only what is left over is a second
+   * material. The threshold is one 4-bit chroma grid step, i.e. "a difference
+   * the hardware could actually draw". */
+  const gridStep=chromaGridStep();
+  const fit=materialResidual(centers,areaShare);
+  const polychrome=fit.residual>=gridStep;
+  const layout=polychrome?'family-split':'mono-ramp';
+  const shades=polychrome?hueShades:MONO_RAMP_STOPS;
+
+  let residual=0;
+  if(polychrome){
+    visualHue=new Uint8Array(visualGeom.vertexCount);
+    for(let i=0;i<visualGeom.vertexCount;++i)visualHue[i]=remap[km.assign[i]];
+    for(let i=0;i<visualGeom.vertexCount;++i)
+      residual+=oklabDistance([shellLab[i*3],shellLab[i*3+1],shellLab[i*3+2]],
+                              centers[visualHue[i]])*areas[i];
+    residual/=totalArea;
+  }else{
+    /* One family: the area-weighted mean of the whole surface, which is the
+     * hue the ramp is painted in. The lightness variation the clustering found
+     * is not discarded -- it is exactly what the shade ramp is for. */
+    const mean=[0,0,0];
+    for(let i=0;i<visualGeom.vertexCount;++i)
+      for(let k=0;k<3;++k)mean[k]+=shellLab[i*3+k]*areas[i];
+    for(let k=0;k<3;++k)mean[k]/=totalArea;
+    centers=[mean]; areaShare=[totalArea];
+    for(let i=0;i<visualGeom.vertexCount;++i){
+      const da=shellLab[i*3+1]-mean[1], db=shellLab[i*3+2]-mean[2];
+      residual+=Math.hypot(da,db)*areas[i];
+    }
+    residual/=totalArea;
+  }
+
+  const meanL=centers.reduce((a,c,i)=>a+c[0]*areaShare[i],0)/totalArea;
+  const families=centers.map((c,f)=>{
+    const ramp=synthesizeRamp(c,shades,polychrome?meanL:null);
+    const solved=solveRamp(ramp);
+    /* Where the ramp stop lives in the 16-entry sprite palette.
+     *
+     * family-split: (family<<2)|shade, with shade 0 collapsing to the shared
+     *   transparent/void entry 0 in every family.
+     * mono-ramp: the compositor's existing brightness ramp, in BRIGHTNESS
+     *   order -- SEM_FAR, SEM_FAR_MID, SEM_MID, SEM_MID_NEAR, SEM_NEAR are
+     *   enum values 3,6,4,7,5, appended to the enum out of order. Writing the
+     *   ramp into those five entries recolours the hero without changing a
+     *   single pixel code, which is the whole point of this branch.
+     */
+    const indices=polychrome
+      ? solved.map((_,s)=>s===0?0:(f<<2)|s)
+      : MONO_RAMP_PALETTE_INDICES.slice(0,solved.length);
+    return {
+      family:f, areaShare:areaShare[f]/totalArea, centerOklab:c,
+      centerSrgb8:solved[Math.min(2,solved.length-1)].srgb8,
+      indices, stops:solved
+    };
+  });
+
+  const flat=families.flatMap(f=>f.stops);
+  const meanQuant=flat.reduce((a,s)=>a+s.nearestErr,0)/flat.length;
+  const meanStatic=flat.reduce((a,s)=>a+s.staticErr,0)/flat.length;
+  const meanInter=flat.reduce((a,s)=>a+s.interleave.err,0)/flat.length;
+  paletteReport={
+    layout, requestedFamilies:hueFamilies, families:centers.length, shades,
+    source:srcAlbedo.meta,
+    materialResidualOklab:fit.residual, chromaGridStepOklab:gridStep,
+    chromaPerLightness:[fit.ka,fit.kb],
+    polychrome,
+    familyResidualOklab:residual,
+    meanStopQuantErrOklab:meanQuant,
+    meanStopStaticErrOklab:meanStatic,
+    meanStopInterleavedErrOklab:meanInter,
+    interleaveGainPct:meanQuant>0?100*(1-meanInter/meanQuant):0,
+    unsafeInterleaveStops:flat.filter(s=>!s.interleave.safe).length,
+    inertia:km.inertia,
+    entries:families
+  };
+}
+
 const visualRecess=new Uint8Array(visualGeom.vertexCount);
 for(let i=0;i<visualGeom.vertexCount;++i){
   const g=geomField[i],m=visualMaterial[i];
@@ -398,16 +647,23 @@ const header=`/* Generated by tools/glb_rmb/convert.mjs. DO NOT HAND EDIT.
  * shadow vertices/triangles: ${shadowGeom.vertexCount}/${shadowGeom.triangleCount}
  * crease source: ${srcWelded.vertexCount} welded source vertices,
  *   transfer radius ${recessRadius}, positive-concavity max ${concMax.toFixed(5)}
- * material form: ${materialStats ? `base=${materialStats.baseColor} normal=${materialStats.normal} ao=${materialStats.occlusion}` : 'disabled'}
+ * material form: ${materialStats ? `base=${materialStats.baseColor} normal=${materialStats.normal} ao=${materialStats.occlusion}` : 'disabled'}${paletteReport ? `
+ * palette: ${paletteReport.layout}, ${paletteReport.families} family/families x ${paletteReport.shades} shades, chroma residual ${paletteReport.familyResidualOklab.toFixed(4)} Oklab` : ''}
  */
 `;
 const body=header+
   emitMesh(name,'visual',visualGeom,visualQ8)+
-  emitRecess(name,'visual',visualRecess)+'\n'+
+  emitRecess(name,'visual',visualRecess)+
+  (visualHue?emitHue(name,'visual',visualHue):'')+'\n'+
   emitMesh(name,'lighting',lightingGeom,lightingQ8)+'\n'+
   emitMesh(name,'shadow',shadowGeom,shadowQ8);
 await fs.mkdir(path.dirname(output),{recursive:true});
 await fs.writeFile(output,body,'utf8');
+if(paletteReport){
+  const palettePath=output.replace(/\.inc$/,'')+'_palette.json';
+  await fs.writeFile(palettePath,JSON.stringify(paletteReport,null,2),'utf8');
+  paletteReport.path=path.resolve(palettePath);
+}
 
 const stats={
   input:path.resolve(input), output:path.resolve(output), name, up, targetHeight:height,
@@ -418,6 +674,7 @@ const stats={
   shadow:{vertices:shadowGeom.vertexCount,triangles:shadowGeom.triangleCount,target:shadowTarget},
   q8:{scale:norm.scale,centerXY:[norm.cx,norm.cy],baseZ:norm.z0},
   recess:recessStats,
-  materialForm:materialStats
+  materialForm:materialStats,
+  palette:paletteReport
 };
 console.log(JSON.stringify(stats,null,2));

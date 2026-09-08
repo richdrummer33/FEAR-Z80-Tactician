@@ -2297,6 +2297,18 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
                          outdir,tag,(unsigned)rf);
                 if(!tsp_host_composite_write_recess_ppm(path,sid))
                     die("recess diagnostic frame write failed");
+                /* Which pixels belong to the hero. The full-scene review frame
+                 * above is written through one preview ramp, so hero and wall
+                 * pixels carrying the same brightness semantic are
+                 * indistinguishable in it. On hardware they are not the same
+                 * pixel at all -- the hero is sprites and reads the SPRITE
+                 * palette while the room is background tiles reading the BG
+                 * palettes -- so recolouring the two independently needs this
+                 * mask, and gets two full 16-entry palettes for free. */
+                snprintf(path,sizeof(path),"%s/mask-%s-%03u.pgm",
+                         outdir,tag,(unsigned)rf);
+                if(!tsp_host_composite_write_owner_mask_pgm(path,sid))
+                    die("owner mask frame write failed");
             }
         }
     }
