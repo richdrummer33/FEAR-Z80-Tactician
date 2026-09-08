@@ -222,7 +222,37 @@ the full temporal interleave is 3% of that, and 0.1% of the room's tile data.
 The CI ROM job links the greyscale and colour ROMs from **the same object
 files** except `main.o` -- the hero vocabulary object, the room dispatch and
 every room data bank are literally the same files in both links. The
-zero-tile-cost claim is a build dependency, not a sentence.
+zero-tile-cost claim is a build dependency, not a sentence. Both ROMs come out
+at 4194304 bytes: the palette tables fit inside padding that already existed.
+
+## Seen through a real VDP
+
+Everything above is measured on the host compositor, which writes its frames
+through a fixed preview ramp. That is enough to reason about, and it is not
+enough to trust, because the one thing it cannot catch is the palette being
+indexed wrongly -- the ramp lives at semantic indices `3,6,4,7,5` and a table
+written in enum order would look scrambled on hardware and nowhere earlier.
+
+So the ROM job runs both builds through Gearsystem and counts warm pixels
+(red clearly above both green and blue). The greyscale palette is
+neutral-to-cool by construction, so a warm pixel can only come from the sprite
+palette this change installs:
+
+| ROM | warm-pixel fraction |
+|---|---:|
+| greyscale | 0.0000 |
+| colour + interleave | 0.0355 |
+
+An exact zero against a real population, from an emulated VDP reading the
+tables the generator emitted.
+
+Getting there also fixed a pre-existing failure in that job, unrelated to
+colour: it asserted `_move_sprite` was in the linked symbol table, but GBDK
+defines `move_sprite` as an inline in the sms/gg platform header rather than
+as a library function, so the symbol is correctly absent and the check had
+never passed on any branch. It now checks the pack's own banked entry points,
+which is what it was trying to prove in the first place. The sibling nested
+proof carried the identical check and is fixed the same way.
 
 ## Known limits
 
