@@ -177,8 +177,8 @@ $(COLUMN_SOLVE_PROBE_BIN): build tools/column_solve_probe.c
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/column_solve_probe.c -o $@
 
 column-solve-bench: $(COLUMN_SOLVE_PROBE_BIN)
-	./$(COLUMN_SOLVE_PROBE_BIN) 8 build/column_solve_oracle.txt 1
-	python3 tools/z80_column_solve_bench.py 20
+	./$(COLUMN_SOLVE_PROBE_BIN) 16 build/column_solve_oracle.txt 1
+	python3 tools/z80_column_solve_bench.py 12000
 
 span-emit-bench: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/span_workload_probe.c -o $(SPAN_WORKLOAD_PROBE_BIN)

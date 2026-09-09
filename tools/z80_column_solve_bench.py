@@ -874,6 +874,58 @@ def w16(mem, addr, v):
     mem[addr + 1] = v >> 8
 
 
+def stratify(rows, T, budget):
+    """Sample every (path, fraction) class, not every Nth row.
+
+    Uniform striding hid two coverage holes in a row here. First the corpus
+    itself was centres-only, so `wall_d_q4`'s fx/fy correction terms were
+    identically zero in all 215,292 rows and its general path's fractional
+    arithmetic was never executed. After the corpus was fixed to sweep
+    sub-cell offsets, a stride-100 sample then contained ZERO general-path
+    rows at all - the non-cardinal segments are 3 of 17 and striding simply
+    missed them. Passing 10,718/10,718 proved nothing about the code in
+    question, twice, for two different reasons.
+
+    So the sample is built per class instead: cardinal vs general x
+    zero-fraction vs non-zero fraction. Each class gets its share of the
+    budget and the class census is printed, so an empty stratum is visible
+    rather than silently absent."""
+    def s8(v):
+        return v - 256 if v > 127 else v
+    nx = [s8(v) for v in T["nx_q5"]]
+    ny = [s8(v) for v in T["ny_q5"]]
+    cardinal = {i for i in range(len(nx))
+                if (ny[i] == 0 and nx[i] in (32, -32))
+                or (nx[i] == 0 and ny[i] in (32, -32))}
+    buckets = collections.defaultdict(list)
+    for r in rows:
+        sid = int(r[3])
+        frac = (int(r[0]) % 16) or (int(r[1]) % 16)
+        buckets[("cardinal" if sid in cardinal else "GENERAL",
+                 "frac!=0" if frac else "frac==0")].append(r)
+    print("stratified coverage (class census):")
+    out = []
+    share = max(1, budget // max(1, len(buckets)))
+    for k in sorted(buckets):
+        b = buckets[k]
+        take = b[::max(1, len(b) // share)][:share]
+        print(f"  {k[0]:9s} {k[1]:8s}  population {len(b):8,d}  sampled {len(take):6,d}")
+        for r in take:
+            out.append((r, len(b)))
+    missing = [k for k in (("cardinal", "frac==0"), ("cardinal", "frac!=0"),
+                           ("GENERAL", "frac==0"), ("GENERAL", "frac!=0"))
+               if k not in buckets]
+    if missing:
+        raise SystemExit(f"EMPTY STRATUM - corpus does not exercise {missing}")
+    print()
+    total = sum(len(b) for b in buckets.values())
+    print("  NOTE: the sample is deliberately BALANCED for coverage, which")
+    print("  over-represents the general path (50% of sample, 12.5% of reality).")
+    print("  T-states below are therefore POPULATION-WEIGHTED, not sample means.")
+    print()
+    return [(r, pop / total) for r, pop in out]
+
+
 def main():
     T = load_tables()
     code, labels = assemble(SRC, CODE)
@@ -882,19 +934,21 @@ def main():
     dump = ROOT / "build" / "column_solve_oracle.txt"
     if not dump.exists():
         raise SystemExit(f"missing {dump} - run `make column-solve-bench`")
-    rows = [line.split() for line in dump.read_text().splitlines() if line.strip()]
-    stride = int(sys.argv[1]) if len(sys.argv) > 1 else 8
-    rows = rows[::stride]
-    print(f"oracle rows: {len(rows)} (stride {stride} over "
-          f"{sum(1 for _ in dump.open())} C-verified spans)\n")
+    allrows = [line.split() for line in dump.read_text().splitlines() if line.strip()]
+    budget = int(sys.argv[1]) if len(sys.argv) > 1 else 12000
+    rows = stratify(allrows, T, budget)
+    print(f"oracle rows: {len(rows)} stratified from {len(allrows)} "
+          f"C-verified spans\n")
 
     base = build_mem(T)
     fails = collections.Counter()
     ts = []
     shown = 0
-    for r in rows:
+    weights = []
+    for r, wgt in rows:
         (px, py, yaw, sid, lo, hi, x0, x1, invd, inv0, inv1,
          c0, c1, n, iq, step) = (int(v) for v in r)
+        weights.append(wgt)
         mem = bytearray(base)
         mem[CODE:CODE + len(code)] = code
         mem[SID] = sid
@@ -930,8 +984,13 @@ def main():
           f"          - the whole project_key + draw_run prologue, matching "
           f"the shipped C")
 
-    mean_t = stt.mean(ts)
-    print(f"\nT-states per span: mean={mean_t:.1f}  min={min(ts)}  max={max(ts)}")
+    # Weight each sampled row by its class's share of the real population, so
+    # the balanced-for-coverage sample does not skew the cost.
+    wsum = sum(weights)
+    mean_t = sum(t * w for t, w in zip(ts, weights)) / wsum
+    print(f"\nT-states per span: population-weighted mean={mean_t:.1f}  "
+          f"(unweighted sample mean={stt.mean(ts):.1f})")
+    print(f"                   min={min(ts)}  max={max(ts)}")
 
     spans = 4.30
     line = mean_t * spans

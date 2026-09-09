@@ -86,3 +86,8 @@ __pycache__/
 *.pyc
 build/span_workload_probe
 build/emit_poses.txt
+
+# Build outputs: reproducible via Make targets, never committed.
+# (An oracle dump reached 57 MB before this rule existed.)
+build/*
+!build/.gitkeep

@@ -563,6 +563,42 @@ Live leads, in the order they are worth taking:
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
+### A16. Test-coverage failure found by external review — TWO layers, code was innocent
+
+An external review flagged that the column-solve oracle placed the camera at
+coarse-cell centres. Checked, and it was right: `px = gx*64 + 32`, and
+`32 & 15 == 0`, so **`x_q4 & 15` was zero in all 215,292 rows**. `wall_d_q4`'s
+fractional correction (`frac = nx*fx + ny*fy`, then `>>5`) was therefore
+identically zero and **never executed once**, in a corpus described as
+exhaustively verified.
+
+Fixed by sweeping ten sub-cell offsets, giving 1,071,800 rows. Then a second
+layer appeared: a stride-100 sample of the fixed corpus contained **zero
+general-path rows** — the non-cardinal segments are only 3 of 17 and uniform
+striding simply missed them. So "10,718/10,718 passed" proved nothing about
+the code in question, twice, for two unrelated reasons.
+
+Directly targeted, the general path with non-zero fractions passes
+4,045/4,045, and the stratified run passes 12,000/12,000. **The code was
+correct all along.** The defect was in the verification, not the kernel —
+which is worse in one specific way: the claim of verification was not earned,
+and nothing would have caught a real bug there.
+
+Durable fix: `stratify()` samples per class (cardinal vs general x
+zero-fraction vs non-zero) and **raises on an empty stratum** rather than
+quietly reporting a pass. It prints the class census every run. Because a
+balanced sample over-represents the general path (50% of sample vs 12.5% of
+reality), the T-state figure is now population-weighted: 6,237.2 T/span
+weighted against 8,277.3 unweighted. The weighted figure lands within 0.1% of
+the previously recorded 6,243.0, so the cost was never wrong — only the
+confidence was.
+
+**Generalised lesson, for every oracle in this repo:** a corpus is not
+coverage. Every existing bench samples "real poses" the same centres-only
+way. `span_block_bake.py` walks sub-cell positions properly, but the bearing,
+GATE, decode and emit benches should each be audited for the same class of
+hole before their pass rates are cited again.
+
 ### A15. Parked efficiency leads and open unknowns
 
 **Standing direction: function over efficiency.** Get a whole update running

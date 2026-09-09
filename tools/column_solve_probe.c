@@ -41,14 +41,27 @@ int main(int argc, char **argv) {
     PolarRun r;
     uint32_t gx, gy, yaw, k;
     unsigned long emitted = 0, seen = 0, checked = 0;
+    static const int8_t off[][2] = {
+        {0,0},{1,0},{0,1},{7,3},{3,7},{15,15},{11,5},{5,11},{15,0},{0,15}
+    };
+    const unsigned n_off = (argc > 4 && strcmp(argv[4], "--centres") == 0)
+                           ? 1u : (unsigned)(sizeof off / sizeof off[0]);
 
     if (!out) { fprintf(stderr, "cannot open %s\n", out_path); return 1; }
     tsp_polar_renderer_reset();
 
     for (gy = 0; gy < GRID_H; ++gy) {
         for (gx = 0; gx < GRID_W; ++gx) {
-            int16_t px = (int16_t)(gx * CELL_Q4 + CELL_Q4 / 2);
-            int16_t py = (int16_t)(gy * CELL_Q4 + CELL_Q4 / 2);
+            int16_t px0 = (int16_t)(gx * CELL_Q4 + CELL_Q4 / 2);
+            int16_t py0 = (int16_t)(gy * CELL_Q4 + CELL_Q4 / 2);
+            unsigned oi;
+            if (!tsp_is_walkable_q4(px0, py0)) continue;
+            /* Sub-cell fractional offsets. Cell centres have x_q4&15 == 0, so
+             * a centres-only corpus leaves wall_d_q4's fx/fy correction terms
+             * identically zero and therefore never executed. */
+            for (oi = 0; oi < n_off; ++oi) {
+            int16_t px = (int16_t)(px0 + off[oi][0]);
+            int16_t py = (int16_t)(py0 + off[oi][1]);
             if (!tsp_is_walkable_q4(px, py)) continue;
             for (yaw = 0; yaw < 256u; yaw += yaw_step) {
                 memset(&s, 0, sizeof(s));
@@ -111,6 +124,7 @@ int main(int argc, char **argv) {
                             invd, r.inv0, r.inv1, c0, c1, n, iq, step);
                     ++emitted;
                 }
+            }
             }
         }
     }
