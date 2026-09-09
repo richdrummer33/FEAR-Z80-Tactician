@@ -89,41 +89,68 @@ Cartridge ROM cannot self-modify. Copying the ~400-byte kernel into WRAM
 page-aligning the LUTs so a lookup is `ld l,a` with no 16-bit add (~11 T per
 lookup, ~4 lookups per column).
 
-### A7. Decode-stage T-state cost — instruction-counted only, NOT cycle-exact
+### A7. Decode-clip kernel — CLOSED. Cycle-exact, 6,000/6,000 verified.
 
-`tools/span_decode_workload.py` now prints a decode-stage T-state estimate
-using the same hand-count methodology the ORIGINAL emit estimate used - and
-that methodology was measured **94% low** once actually cycle-exact-simulated
-(`make span-emit-bench`: 11,200 T estimated vs 21,756 T measured). This
-decode estimate has not received that treatment and should be trusted
-proportionally less.
+`tools/z80_decode_bench.py` (`make span-decode-bench`) is a real Z80
+implementation of `project_key`'s visibility clip
+(`src/tilesector_polar_renderer.c:416-427`): assembled from a from-scratch
+mini-assembler, run on a from-scratch cycle-exact interpreter, verified
+bit-for-bit (visibility decision AND exact lo/hi window value, not just
+aggregate stats) against **6,000 real (a0,a1,yaw) triples** sampled from
+real block spans at real poses.
 
-Current instruction-counted range: **3,457-4,117 T/update**, applied to the
-measured 12.00 spans-tested and 2.71 gates-tested per update. Two things
-would tighten it before it is worth trusting:
+Built in two layers on purpose. The Z80 has no native 16-bit signed compare,
+so every comparison in this kernel reduces to one primitive - "is HL < DE
+(signed)?", answered by XORing bit 15 of both operands (which maps two's
+complement ordering onto plain unsigned ordering) then reading the Carry flag
+from an ordinary `SBC HL,DE`. That primitive was self-tested against 4,052
+cases (every boundary value the kernel actually compares against, plus 4,000
+random int16 pairs) **before** it went anywhere near the real kernel. Only
+after that passed at 0 failures was the full clip logic built on top of it.
 
-1. **A cycle-exact decode kernel**, built the same way `z80_emit_bench.py`
-   was: a real Z80 instruction stream for the clip arithmetic
-   (`project_key`'s len/wrap/window test), assembled and simulated, verified
-   against `visible_window()`'s output on real poses. This is the correct
-   next step and was deliberately not attempted in the same pass as the
-   estimate above - writing untested 16-bit signed-comparison Z80 idioms
-   (which the part has no native instruction for) and trusting a hand-count
-   of them repeats exactly the mistake the emit estimate made.
-2. **The real runtime SPAN-vs-SPANC mix.** `span_decode_workload.py` counts
-   spans tested and visible, not which of those were `SPAN` (fresh bearing
-   lookup, ~317 T) vs `SPANC` (reused, ~262 T) *at the poses actually
-   sampled* - the 44.5% SPANC ratio used above is the bake's overall
-   corpus-wide ratio (`span_block_bake.py`), not a per-pose measurement.
+Two real bugs were caught by the verification loop, not by inspection:
 
-Combined with the cycle-exact emit measurement, confidence-labeled:
+1. **Prefix-matching order** in the mini-assembler: `"jp "` matched before
+   the more specific `"jp z,"`, silently mis-parsing every conditional jump.
+2. **`XOR A`** (the register-form idiom for zeroing A, used in the
+   reject/visible branches) was being parsed as `XOR <label "a">` by the
+   immediate-operand path, since the assembler didn't special-case it.
+
+And one real logic bug survived assembly and was only caught by the
+oracle-comparison loop: the final `hi<=lo` reject test used `HL=hi, DE=lo`
+with "jump to visible if not-carry" - which admits `hi==lo` as visible. The
+C reference requires **strict** `hi>lo`. Fixed by testing `lo<hi` directly
+and jumping to visible only on Carry. 23 of the first 6,000 test cases
+caught this before the fix; 0 after.
+
+**Measured: 919.7 T/span** (min 143, max 1,048) - not the 262-317 T
+instruction-counted estimate this replaces. **190% over the top of that
+estimate**, the same failure mode as the original emit estimate (94% low)
+but more severe. The wrap-loop-to-plain-`if` simplification used here is
+provably exact for all inputs (not just this map's geometry) - see the
+module docstring for the range-bound proof that `en`'s and `st`'s adjustment
+loops can fire at most once each, which is why they were implemented as
+straight-line conditionals rather than actual loops.
+
+What this kernel does NOT cover, still open:
+
+- **GATE selector evaluation** (2.71/update measured) - a separate,
+  arithmetically simpler stage (two 8x8->16 products + add + sign test,
+  same shape as `ratio_q8_exact`), not yet built.
+- **The bearing lookup itself** (`a0`/`a1` fetch from the baked corner
+  field) - this kernel takes `a0`, `a1`, `yawq` as given inputs; producing
+  them is a separate, uncosted step.
+- **Column-solve** (`wall_d_q4`, `inv_for_dq4`, `inv_at_invd`, Q6 start/step)
+  - entirely uncosted.
+
+Confidence-labeled whole-update picture, updated:
 
 | stage | T/update | confidence |
 | --- | ---: | --- |
-| decode | 3,457-4,117 | instruction-counted estimate |
+| decode-clip (12.00 spans-tested x 919.7 T) | 11,036 | **cycle-exact**, 6,000 cases verified |
 | emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
-| column-solve | not yet costed | wall_d_q4, inv_for_dq4, inv_at_invd, Q6 start/step |
-| **decode+emit only** | **25,213-25,873** | excludes column-solve entirely |
+| bearing lookup, GATE eval, column-solve | not yet costed | separate, uncosted stages |
+| **decode-clip + emit only** | **32,792** | excludes bearing lookup, GATE, column-solve |
 
 ### A6. K under cylindrical projection
 
