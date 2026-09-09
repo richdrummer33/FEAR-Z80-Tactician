@@ -563,6 +563,50 @@ Live leads, in the order they are worth taking:
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
+### A17. FUSED HOST PATH — BUILT AND EXACT. Baked block in, 20x18 name table out.
+
+`make fused-host-path` (`tools/fused_block_render.c` + `tools/export_blocks.py`).
+The end-to-end proof that was missing: a baked block program drives a
+complete name table, compared **word for word** against the shipped
+renderer's own output over **74,560 real poses** (every walkable cell x 5
+sub-cell offsets x every 8th yaw).
+
+**Built so the only difference is the front end.** It `#include`s
+`tilesector_polar_renderer.c`, so `project_key`, the bearing field, the clip,
+column-solve, `draw_run`, the edge/full materializers and the background fill
+are all the *shipped C*. Nothing downstream is re-implemented, so a mismatch
+can only come from the block program. A Python re-derivation of the
+materializer would have made every mismatch ambiguous.
+
+**Three findings, cleanly separated by rendering each pose three ways:**
+
+| mode | poses exact | reading |
+| --- | ---: | --- |
+| key SELECTION (as sets) | **74,560 / 74,560 (100%)** | the baker picks exactly the right spans |
+| ORDER_BLOCK — strict baked order, no depth sort | 22,039 / 74,560 (29.6%) | **baked order alone is definitively insufficient** |
+| ORDER_DEPTH — runtime far→near `inv_mid` sort | 72,179 / 74,560 (96.8%) | depth sort recovers almost all of it |
+| ORDER_ORACLE_INSERT — same set, oracle's insertion order | **74,560 / 74,560 (100%)** | **exact** |
+
+1. **Key selection is perfect.** The block bake chooses the right spans at
+   every one of 74,560 poses. That half of the baker is proven.
+2. **The review's §6 concern is confirmed and quantified.** Drawing in baked
+   order gives 29.6% — 851,595 wrong words. Order is not a static property of
+   a cell, because `insert_run` sorts by `inv_mid`, which depends on the pose.
+3. **The residual is smaller and more specific than "must sort at runtime".**
+   Feeding the *same* key set in the oracle's insertion order is exact, while
+   the depth sort alone leaves 3.2% wrong. So the gap is purely
+   **insertion-order tie-breaking among equal `inv_mid`**: `insert_run` shifts
+   only on *strictly* greater, so ties keep insertion order
+   (`src/tilesector_polar_renderer.c:534`). The baker must emit a
+   tie-consistent order, or the interpreter must break ties identically.
+   That is a far smaller problem than a runtime depth sort.
+
+**What this does and does not prove.** It proves the block program is a
+faithful front end and locates the exact remaining gap. It does *not* yet
+prove a Z80 interpreter can execute it — this is host C, and the Z80 kernels
+are still separate. Fusing those is the next step, and this tool is now the
+oracle for it.
+
 ### A16. Test-coverage failure found by external review — TWO layers, code was innocent
 
 An external review flagged that the column-solve oracle placed the camera at
