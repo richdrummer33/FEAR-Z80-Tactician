@@ -96,7 +96,9 @@ NO_ARG = {
     "add hl,de": 0x19, "add hl,hl": 0x29, "or a": 0xB7, "xor a": 0xAF,
     "sub l": 0x95, "sub h": 0x94, "sbc a,a": 0x9F, "inc hl": 0x23,
     "ld a,(hl)": 0x7E, "ld e,(hl)": 0x5E, "ld d,(hl)": 0x56,
-    "ex de,hl": 0xEB,
+    "ld c,(hl)": 0x4E, "ld b,(hl)": 0x46,
+    "ex de,hl": 0xEB, "inc h": 0x24,
+    "add a,c": 0x81, "sub c": 0x91, "ld l,c": 0x69, "ld h,c": 0x61,
 }
 IMM8 = {"ld a,": 0x3E, "ld b,": 0x06, "ld c,": 0x0E, "ld d,": 0x16,
         "ld e,": 0x1E, "ld h,": 0x26, "ld l,": 0x2E, "add a,": 0xC6}
@@ -138,6 +140,8 @@ def _val(tok, labels, sizing):
 def encode(line, pc, labels, sizing) -> bytes:
     if line == "sbc hl,de":
         return bytes([0xED, 0x52])
+    if line == "neg":
+        return bytes([0xED, 0x44])
     if line.startswith("bit 7,"):
         r = {"a": 7, "b": 0, "c": 1, "d": 2, "e": 3, "h": 4, "l": 5}[line.split(",")[1].strip()]
         return bytes([0xCB, 0x40 | (7 << 3) | r])
@@ -235,6 +239,18 @@ class Z80:
         elif op == 0x7E: self.a = m[self.hl]; t = 7
         elif op == 0x5E: self.e = m[self.hl]; t = 7
         elif op == 0x56: self.d = m[self.hl]; t = 7
+        elif op == 0x4E: self.c = m[self.hl]; t = 7
+        elif op == 0x46: self.b = m[self.hl]; t = 7
+        elif op == 0x24: self.h = (self.h + 1) & 0xFF; t = 4
+        elif op == 0x69: self.l = self.c; t = 4
+        elif op == 0x61: self.h = self.c; t = 4
+        elif op == 0x81:
+            r = self.a + self.c
+            self.cf = r > 0xFF
+            self.a = r & 0xFF
+            self.zf = (self.a == 0)
+            t = 4
+        elif op == 0x91: self._sub(self.c); t = 4
         elif op == 0x95: self._sub(self.l); t = 4
         elif op == 0x94: self._sub(self.h); t = 4
         elif op == 0x9F:
@@ -290,6 +306,12 @@ class Z80:
             elif sub == 0x53:  # ld (nn),de
                 a = m[self.pc] | (m[self.pc + 1] << 8); self.pc += 2
                 m[a] = self.e; m[a + 1] = self.d; t = 20
+            elif sub == 0x44:  # neg
+                before = self.a
+                self.a = (0 - self.a) & 0xFF
+                self.cf = before != 0
+                self.zf = (self.a == 0)
+                t = 8
             elif sub == 0x52:  # sbc hl,de
                 r = self.hl - self.de - (1 if self.cf else 0)
                 self.cf = r < 0
@@ -331,6 +353,26 @@ class Z80:
 
 def build_qs_table():
     return b"".join(((n * n) // 4).to_bytes(2, "little") for n in range(256))
+
+
+# Two page-aligned 256-byte BYTE PLANES on adjacent pages: S_lo at page P,
+# S_hi at page P+1. An index is then a single byte in A:
+#     ld l,a / ld h,P / ld e,(hl) / inc h / ld d,(hl)
+# with no `add hl,hl` to form a word offset and no `add hl,de` to add a base.
+# `inc h` walks from the low plane to the high plane precisely because the
+# pages are adjacent - that adjacency is a load-bearing layout requirement,
+# not a convenience, and is asserted at build time below.
+QS_LO_PAGE = 0x10
+QS_HI_PAGE = 0x11
+assert QS_HI_PAGE == QS_LO_PAGE + 1, "byte planes must be on adjacent pages"
+QS_LO = QS_LO_PAGE << 8
+QS_HI = QS_HI_PAGE << 8
+
+
+def build_qs_planes():
+    vals = [(n * n) // 4 for n in range(256)]
+    assert max(vals) <= 0xFFFF
+    return bytes(v & 0xFF for v in vals), bytes(v >> 8 for v in vals)
 
 
 # --------------------------------------------------------------------------
@@ -515,6 +557,119 @@ q_done:
 """
 
 
+# --------------------------------------------------------------------------
+# LAYER 3 (A12): the same operation, rebuilt around two realisations the
+# first table version missed.
+#
+# 1. PAGE-ALIGNED BYTE PLANES kill the address arithmetic (see above).
+# 2. EVERY INDEX IS A SINGLE BYTE. |slope| <= 128 and coord <= 63, so
+#    sum <= 191 and |diff| <= 128 - all inside one register. The first
+#    version computed abs, sum and diff in 16-bit register pairs and staged
+#    each through memory (13-16 T per touch) for no reason at all. That,
+#    not the table indexing, was the larger share of the waste.
+#
+# Sign is not carried in a flag byte either: the result's sign is just the
+# slope's sign, so bit 7 of (SLOPE) is re-tested at the end. That costs 21 T
+# and frees B entirely for the shift loop's djnz.
+# --------------------------------------------------------------------------
+QMUL_SHR0_FAST = f"""
+        ld a,(0x{SLOPE:04X})
+        bit 7,a
+        jp z,f_abs_done
+        neg
+f_abs_done:
+        ld c,a
+        ld a,(0x{COORD:04X})
+        add a,c
+        ld l,a
+        ld h,0x{QS_LO_PAGE:02X}
+        ld e,(hl)
+        inc h
+        ld d,(hl)
+        ld a,(0x{COORD:04X})
+        sub c
+        jp nc,f_diff_ok
+        neg
+f_diff_ok:
+        ld l,a
+        ld h,0x{QS_LO_PAGE:02X}
+        ld c,(hl)
+        inc h
+        ld a,(hl)
+        ld h,a
+        ld l,c
+        ex de,hl
+        or a
+        sbc hl,de
+        ld a,(0x{NSH:04X})
+        ld b,a
+f_shl:
+        add hl,hl
+        djnz f_shl
+        ld a,h
+        ld l,a
+        ld h,0
+        ld a,(0x{SLOPE:04X})
+        bit 7,a
+        jp z,f_done
+        xor a
+        sub l
+        ld l,a
+        sbc a,a
+        sub h
+        ld h,a
+f_done:
+        ld (0x{OUT:04X}),hl
+        halt
+"""
+
+
+def _stage_fast(code, slope, coord, shift):
+    mem = bytearray(0x10000)
+    lo, hi = build_qs_planes()
+    mem[QS_LO:QS_LO + 256] = lo
+    mem[QS_HI:QS_HI + 256] = hi
+    mem[CODE:CODE + len(code)] = code
+    mem[SLOPE] = slope & 0xFF
+    mem[COORD] = coord
+    mem[NSH] = 8 - shift
+    return mem
+
+
+def run_qmul_fast(code, slope, coord, shift):
+    cpu = Z80(_stage_fast(code, slope, coord, shift))
+    cpu.run(CODE)
+    got = cpu.m[OUT] | (cpu.m[OUT + 1] << 8)
+    return cpu.t, got - 0x10000 if got >= 0x8000 else got
+
+
+def selftest_qmul_fast():
+    code, _ = assemble(QMUL_SHR0_FAST)
+    cases = []
+    for shift in (3, 4, 5, 6):
+        span = 1 << shift
+        for slope in range(-128, 128):
+            for coord in range(0, span):
+                cases.append((slope, coord, shift))
+    fails = 0
+    ts = []
+    for slope, coord, shift in cases:
+        t, got = run_qmul_fast(code, slope, coord, shift)
+        ts.append(t)
+        want = shr0(slope * coord, shift)
+        if got != want:
+            fails += 1
+            if fails <= 5:
+                print(f"  FAIL: shr0({slope}*{coord},{shift}) want {want} got {got}")
+    print(f"=== LAYER 3 (A12): page-aligned byte-plane kernel, {len(code)} bytes ===")
+    print(f"cases={len(cases)} (EXHAUSTIVE: every int8 slope x every valid "
+          f"coord, all 4 depths)  fails={fails}")
+    if fails:
+        raise SystemExit(f"kernel is WRONG - {fails}/{len(cases)} failed")
+    print(f"PASS  mean={stt.mean(ts):.1f} T  min={min(ts)}  max={max(ts)}\n")
+    return code, stt.mean(ts)
+
+
 def selftest_qmul_shr0():
     code, _ = assemble(QMUL_SHR0)
     fails = 0
@@ -607,6 +762,7 @@ def run_qmul(code, slope, coord, shift):
 def main():
     selftest_magmul()
     qmul_code, mean_t_isolated = selftest_qmul_shr0()
+    fast_code, mean_t_fast = selftest_qmul_fast()
 
     print("=== SUBSTITUTED INTO THE REAL BEARING KERNEL'S OWN ORACLE ===")
     entries, hist = gather_leaves()
@@ -618,78 +774,75 @@ def main():
     rng = random.Random(7)
     probes = rng_probes + [(rng.randint(0, 63), rng.randint(0, 63)) for _ in range(4)]
 
-    mismatches = 0
-    ts_by_dep = collections.defaultdict(list)
-    n = 0
-    for gx, gy, v, dep, recs in entries:
-        shift = 6 - dep
-        for lx, ly in probes:
-            step = 1 << shift
-            base, sx, sy = recs[(ly >> shift) * (1 << dep) + (lx >> shift)]
-            lx0, ly0 = lx & (step - 1), ly & (step - 1)
-            tx, resx = run_qmul(qmul_code, sx, lx0, shift)
-            ty, resy = run_qmul(qmul_code, sy, ly0, shift)
-            got = (base + resx + resy) & 4095
-            want = reference(recs, dep, lx, ly)
-            n += 1
-            ts_by_dep[dep].append(tx + ty)
-            if got != want:
-                mismatches += 1
-                if mismatches <= 8:
-                    print(f"  MISMATCH cell=({gx},{gy}) corner={v} dep={dep} "
-                          f"lx={lx} ly={ly}: want {want} got {got}")
+    variants = (("word-table (A11)", qmul_code, run_qmul),
+                ("byte-plane (A12)", fast_code, run_qmul_fast))
+    means = {}
+    for label, code, runner in variants:
+        mismatches = 0
+        ts_by_dep = collections.defaultdict(list)
+        n = 0
+        for gx, gy, v, dep, recs in entries:
+            shift = 6 - dep
+            for lx, ly in probes:
+                step = 1 << shift
+                base, sx, sy = recs[(ly >> shift) * (1 << dep) + (lx >> shift)]
+                lx0, ly0 = lx & (step - 1), ly & (step - 1)
+                tx, resx = runner(code, sx, lx0, shift)
+                ty, resy = runner(code, sy, ly0, shift)
+                got = (base + resx + resy) & 4095
+                want = reference(recs, dep, lx, ly)
+                n += 1
+                ts_by_dep[dep].append(tx + ty)
+                if got != want:
+                    mismatches += 1
+                    if mismatches <= 8:
+                        print(f"  MISMATCH [{label}] cell=({gx},{gy}) corner={v} "
+                              f"dep={dep} lx={lx} ly={ly}: want {want} got {got}")
+        print(f"{label}: VERIFIED {n - mismatches}/{n} against the SAME "
+              f"reference z80_bearing_bench.py used")
+        if mismatches:
+            raise SystemExit(f"FAIL: {mismatches}/{n} mismatches in {label}")
+        weighted = sum(stt.mean(ts_by_dep[dep]) * hist[dep]
+                       for dep in ts_by_dep if dep in hist)
+        denom = sum(hist[dep] for dep in ts_by_dep if dep in hist)
+        means[label] = (weighted / denom, ts_by_dep)
 
-    print(f"VERIFIED: {n - mismatches}/{n} exact matches against the SAME "
-          f"reference z80_bearing_bench.py used")
-    if mismatches:
-        raise SystemExit(f"FAIL: {mismatches}/{n} mismatches")
-
-    print("\nT-states for BOTH products of one bearing lookup (table-based), by depth:")
-    for dep in sorted(ts_by_dep):
-        v = ts_by_dep[dep]
-        print(f"  depth {dep}:  mean={stt.mean(v):7.1f}  min={min(v)}  max={max(v)}")
-
-    weighted = sum(stt.mean(ts_by_dep[dep]) * hist[dep] for dep in ts_by_dep if dep in hist)
-    denom = sum(hist[dep] for dep in ts_by_dep if dep in hist)
-    mean_t = weighted / denom
+    print("\nT-states for BOTH products of one bearing lookup, by leaf depth:")
+    for label, (_, ts_by_dep) in means.items():
+        row = "  ".join(f"d{dep}={stt.mean(ts_by_dep[dep]):7.1f}"
+                        for dep in sorted(ts_by_dep))
+        print(f"  {label:20s} {row}")
 
     OLD_MEAN_T = 1499.0     # measured, z80_bearing_bench.py, shift-add primitive
+    m_word = means["word-table (A11)"][0]
+    m_byte = means["byte-plane (A12)"][0]
     print(f"\nmap-weighted mean per FULL bearing lookup (base + 2 products):")
-    print(f"  shift-add (measured, z80_bearing_bench.py)  {OLD_MEAN_T:8.1f} T")
-    print(f"  quarter-square table (measured, this file)  {mean_t:8.1f} T")
-    print(f"  saving                                      {OLD_MEAN_T-mean_t:8.1f} T  "
-          f"({(1-mean_t/OLD_MEAN_T):.1%})")
+    print(f"  shift-add loop      (span-bearing-bench)  {OLD_MEAN_T:8.1f} T   baseline")
+    print(f"  quarter-square, word table + 16-bit math  {m_word:8.1f} T   "
+          f"{(1-m_word/OLD_MEAN_T):+6.1%}")
+    print(f"  quarter-square, byte planes + byte math   {m_byte:8.1f} T   "
+          f"{(1-m_byte/OLD_MEAN_T):+6.1%}")
+    print(f"\n  A12's own contribution over A11: {m_word-m_byte:.1f} T "
+          f"({(1-m_byte/m_word):.1%}) - the address arithmetic AND the")
+    print(f"  needless 16-bit staging of byte-sized quantities, together.")
 
     distinct = 9.12   # measured, z80_bearing_bench.py: distinct corners/update
-    old_line = OLD_MEAN_T * distinct
-    new_line = mean_t * distinct
-    print(f"\nbearing-lookup line of the whole-update budget "
-          f"({distinct} distinct corners/update, cached):")
-    print(f"  shift-add       {old_line:9,.0f} T")
-    print(f"  quarter-square  {new_line:9,.0f} T")
-
-    decode_clip, gate, emit, column_solve_old = 11036.0, 2339.0, 21756.0, 17729.0
-    old_total = old_line + decode_clip + gate + column_solve_old + emit
-    # column-solve's own multiplies would see the same ~68% cut once its
-    # kernel is built on this table; not re-derived here (that is A11's
-    # remaining step, building the column-solve kernel itself), so the
-    # "if column-solve also switches" line is explicitly labeled projected.
-    cut_ratio = mean_t / OLD_MEAN_T
-    column_solve_projected = column_solve_old * cut_ratio
-    new_total_bearing_only = new_line + decode_clip + gate + column_solve_old + emit
-    new_total_both = new_line + decode_clip + gate + column_solve_projected + emit
-
-    print(f"\n=== WHOLE-UPDATE BUDGET ===")
-    print(f"  before (all shift-add)                      {old_total:9,.0f} T")
-    print(f"  bearing switched to table only               {new_total_bearing_only:9,.0f} T "
-          f"[MEASURED]")
-    print(f"  bearing + column-solve switched (projected)  {new_total_both:9,.0f} T "
-          f"[column-solve multiplies not yet a kernel - "
-          f"cut applied at the bearing kernel's measured ratio, not its own]")
+    decode_clip, gate, emit, column_solve = 11036.0, 2339.0, 21756.0, 17729.0
     frame = 59736.0
-    print(f"\n  updates/frame before                {frame/old_total:.2f}")
-    print(f"  updates/frame, bearing switched      {frame/new_total_bearing_only:.2f}")
-    print(f"  updates/frame, both switched (proj.) {frame/new_total_both:.2f}")
+    print(f"\n=== WHOLE-UPDATE BUDGET "
+          f"({distinct} distinct corners/update, cached) ===")
+    for label, per in (("shift-add loop", OLD_MEAN_T),
+                       ("word table (A11)", m_word),
+                       ("byte planes (A12)", m_byte)):
+        line = per * distinct
+        total = line + decode_clip + gate + column_solve + emit
+        print(f"  {label:20s} bearing {line:8,.0f} T   "
+              f"TOTAL {total:8,.0f} T   {frame/total:.2f} updates/frame")
+    print(f"\n  column-solve is still carried at its 17,729 T PROJECTION, on the")
+    print(f"  shift-add primitive. It has 29.30 multiplies/update against the")
+    print(f"  bearing lookup's 18.24, so it stands to gain more from this")
+    print(f"  primitive than the bearing lookup did - but that is the next")
+    print(f"  kernel to build, not a number to assert here.")
 
 
 if __name__ == "__main__":

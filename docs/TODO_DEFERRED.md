@@ -311,38 +311,97 @@ Whole-update effect, bearing line only switched (measured):
 "~35,000 T, 1.7 updates/frame" this entry originally projected — that
 number is retracted, not carried forward.
 
-- **A12 (open): page-align the table.** If `QS_TABLE` starts at a page
-  boundary and never crosses one for the sums this kernel produces (max
-  sum 191, well inside 256), the index math collapses to `ld h,QS_TABLE>>8`
-  / `ld l,a` — no `add hl,hl`, no `add hl,de`. That was the assumption the
-  original 60-80 T estimate depended on and this build did not implement
-  it. Worth measuring before trusting a number here again.
-- **Do not re-cite this file's original ≈17,000 T claim.** It was a
-  projection, not a measurement, and the measurement came in at 187.6 T —
-  the same directional lesson as every hand-count in this project, just in
-  the opposite direction (over-promised instead of under-promised) this
-  time.
+- **A12 (see below) closed the gap this entry blamed on page alignment** —
+  and found the larger half of the waste was somewhere else entirely.
+- **Do not re-cite this file's original ≈17,000 T claim** as stated. It was
+  a projection, and the *first* measurement came in at 187.6 T. A12 then
+  recovered 671.8 T more. The lesson is not "the estimate was too
+  optimistic" — it is that an estimate of a *lookup* said nothing about the
+  code wrapped around the lookup, which is where the time actually was.
+
+### A12. Page-aligned byte planes + byte-sized arithmetic — CLOSED. 57.3% off the bearing lookup.
+
+Same file, `make span-qsquare-bench`, LAYER 3. Verified twice over:
+**30,720 exhaustive cases** (every `int8` slope x every valid coord x all
+four depths — the complete input domain, not a sample) and then the same
+**53,112-case** real-map oracle A11 was held to. Both clean.
+
+Two changes, and the second mattered more than the first:
+
+1. **Page-aligned byte planes.** `S_lo` at page `0x10`, `S_hi` at page
+   `0x11`. A lookup becomes `ld l,a` / `ld h,0x10` / `ld e,(hl)` / `inc h` /
+   `ld d,(hl)`. No `add hl,hl` to form a word offset, no `add hl,de` to add
+   a base. `inc h` crossing from the low plane to the high plane is a
+   *load-bearing layout requirement*, not a convenience — asserted at build
+   time in the source so a future relocation cannot silently break it.
+2. **Every index is one byte, so stop using register pairs.** `|slope|` <=
+   128, `coord` <= 63, therefore `sum` <= 191 and `|diff|` <= 128. All of it
+   fits in `A`. The A11 build computed abs, sum and diff in 16-bit pairs and
+   staged each through memory at 13-16 T per touch, for quantities that
+   never needed a second byte. Sign is not stored in a flag byte either —
+   the product's sign is just the slope's sign, so bit 7 of `(SLOPE)` is
+   re-tested at the end, which costs 21 T and frees `B` for the shift loop.
+
+| primitive | T per bearing lookup (both products) | vs baseline | kernel |
+| --- | ---: | ---: | ---: |
+| shift-add loop (`span-bearing-bench`) | 1,499.0 | — | — |
+| quarter-square, word table + 16-bit math (A11) | 1,311.4 | −12.5% | 142 B |
+| **quarter-square, byte planes + byte math (A12)** | **639.6** | **−57.3%** | **71 B** |
+
+Half the time *and* half the code. A12's own contribution over A11 is
+**671.8 T (51.2%)** — 3.6x what page-alignment alone was worth in A11's
+framing, because most of it was the 16-bit staging, not the addressing.
+
+**Whole-update budget, bearing line switched (measured):**
+
+| primitive | bearing line | TOTAL | updates/frame |
+| --- | ---: | ---: | ---: |
+| shift-add loop | 13,671 | 66,531 | 0.90 |
+| word table (A11) | 11,960 | 64,820 | 0.92 |
+| **byte planes (A12)** | **5,833** | **58,693** | **1.02** |
+
+**The span interpreter fits inside one NTSC frame for the first time** —
+58,693 T against 59,736 T — with column-solve still carried at its
+unmeasured projection. That is a threshold worth naming, and equally worth
+not overselling: it assumes the Z80 does nothing else, and one of the five
+lines in it has never been built.
+
+The standing generalisation, now that it has bitten in both directions:
+**a T-state estimate of an idea is not an estimate of an implementation.**
+Every number in this project that was hand-counted has been wrong, low by
+94% and 190% (emit, decode-clip) and high by 3.6x (A11's read of its own
+opportunity). Only the built-and-verified ones have held.
 
 ### Whole-update budget, current best measurement
 
 | stage | T/update | confidence |
 | --- | ---: | --- |
-| bearing lookup (cached, quarter-square, 9.12 distinct x 1,311.4 T) | 11,960 | **cycle-exact**, 53,112 cases verified |
+| bearing lookup (cached, A12 byte planes, 9.12 distinct x 639.6 T) | 5,833 | **cycle-exact**, 53,112 + 30,720 cases verified |
 | decode-clip (12.00 spans-tested x 919.7 T) | 11,036 | **cycle-exact**, 6,000 cases verified |
 | GATE (2.71 gates-tested x 863.1 T) | 2,339 | **cycle-exact**, 6,000 cases verified |
 | column-solve | 17,729 | **projected** from measured op counts — a floor |
 | emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
-| **TOTAL** | **64,820** | |
+| **TOTAL** | **58,693** | |
 
 One NTSC frame at 59.9 Hz is 59,736 T; VBlank alone is 15,960 T. So the span
-interpreter currently costs **0.92 updates per frame** — about **55.0 Hz** of
-update rate if the Z80 did nothing else at all, which it must. That is the
-honest headline: the architecture works and lands in the right order of
-magnitude, and it is *not* comfortably inside budget. A11 closed for a much
-smaller gain than it originally projected (12.5%, not ≈26%) — see A12 for
-the unfinished half of that idea (page-aligned tables), and column-solve's
-own multiplies are still on the shift-add primitive, uncosted with the
-table substituted.
+interpreter now costs **1.02 updates per frame** — it fits inside a frame for
+the first time, at about **61.0 Hz** of update rate if the Z80 did nothing
+else at all, which it must.
+
+Read that with the caveats attached, because they are large: **one of the
+five lines has never been built.** Column-solve is carried at a projection
+(17,729 T) derived from measured op counts on the *old* shift-add primitive.
+It has 29.30 multiplies/update against the bearing lookup's 18.24, so it has
+more to gain from A12's primitive than the bearing lookup did — but it also
+has more room to come in over its projection, which is what every unbuilt
+estimate in this project has done. Building that kernel is the next thing
+that changes this table.
+
+Two further stages are still on the old shift-add primitive and would each
+shrink if rebuilt on A12: **GATE** (2,339 T, two products per gate — the
+same shape the bearing kernel had) and the general-path multiplies inside
+column-solve. Neither is re-measured here; both are cheap re-runs once the
+column-solve kernel exists.
 
 ### A6. K under cylindrical projection
 
