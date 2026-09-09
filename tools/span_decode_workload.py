@@ -64,16 +64,21 @@ def signed_q12(a):
 
 
 def visible_window(a0, a1, yaw_q12):
-    """Exact port of project_key's clip. Returns None if culled, else (lo,hi)."""
+    """Exact port of project_key's clip. Returns None if culled, else (lo,hi).
+
+    Wrap thresholds are +/-512 (the FOV half-width), matching
+    src/tilesector_polar_renderer.c:426 verbatim - NOT +/-2048 (a first port
+    of this used 2048 and was wrong; caught by re-reading source rather than
+    trusting the earlier port, see docs/TODO_DEFERRED.md A7)."""
     length = (a1 - a0) % 4096.0
     if length == 0.0 or length >= 2048.0:
         return None
     st_ = signed_q12(a0 - yaw_q12)
     en = st_ + length
-    while en < -2048.0:
+    while en < -512.0:
         st_ += 4096.0
         en += 4096.0
-    while st_ > 2048.0:
+    while st_ > 512.0:
         st_ -= 4096.0
         en -= 4096.0
     lo = max(st_, -512.0)
@@ -157,6 +162,61 @@ def main():
     print("this replaces the ISA-spec's ~450 T/span x ~10 spans decode")
     print(f"estimate's SPAN COUNT with a measured {st.mean(visible_l):.2f} "
           f"visible + {rejected:.2f} rejected-but-tested per update")
+    print()
+    instruction_counted_decode_estimate(st.mean(tested_l), st.mean(gates_l))
+
+
+def instruction_counted_decode_estimate(spans_tested_mean, gates_mean):
+    """INSTRUCTION-COUNTED, NOT CYCLE-EXACT. Read the warning before citing this.
+
+    Per-span clip cost (worst case, treating every tested span as a fresh SPAN
+    with no shared-corner reuse - the true SPAN/SPANC runtime mix is not yet
+    measured):
+
+      a0 lookup (16-bit indexed table read)        ~55 T
+      a1 lookup (16-bit indexed table read)         55 T
+      len = (a1-a0)&4095  (16-bit sub + mask)        34 T
+      len==0 test                                    15 T
+      len>=2048 test                                  18 T
+      st = signed_q12(a0-yawq)                        39 T
+      en = st+len                                     11 T
+      wrap-loop guard tests (usually 0 iterations)     40 T
+      lo=max(st,-512)                                 15 T
+      hi=min(en,512)                                  15 T
+      hi<=lo reject test                              20 T
+      -----------------------------------------------------
+      worst case (fresh SPAN)                        317 T
+      best case (SPANC, a0 reused)                    262 T
+
+    GATE selector (two 8x8->16 exact-decomposition products + add + sign test,
+    same shape as ratio_q8_exact in tilesector_polar_renderer.c)  ~115 T
+
+    This mirrors the ORIGINAL emit estimate's methodology exactly - and that
+    estimate was measured 94% LOW once actually simulated cycle-exactly
+    (make span-emit-bench). Treat this number the same way: a plausible
+    order-of-magnitude, not a trustworthy budget line, until it gets the same
+    treatment (see docs/TODO_DEFERRED.md A7).
+    """
+    worst = 317 * spans_tested_mean + 115 * gates_mean
+    best = 262 * spans_tested_mean + 115 * gates_mean
+    print("=== DECODE T-STATE ESTIMATE (instruction-counted, NOT cycle-exact) ===")
+    print(f"worst case (all fresh SPAN lookups)   {worst:,.0f} T/update")
+    print(f"best case  (max SPANC reuse)          {best:,.0f} T/update")
+    print()
+    print("WARNING: the equivalent hand-count for emit was 11,200 T; the")
+    print("cycle-exact measurement (make span-emit-bench) came back at")
+    print("21,756 T - 94% higher. This decode estimate has NOT received that")
+    print("treatment yet and should be trusted proportionally less.")
+    print()
+    emit_measured = 21756
+    print(f"current best-effort whole-update picture, confidence labeled:")
+    print(f"  decode  {best:,.0f}-{worst:,.0f} T   [instruction-counted estimate]")
+    print(f"  emit    {emit_measured:,} T   [CYCLE-EXACT, verified against 30 real "
+          f"viewports]")
+    print(f"  column-solve   NOT YET COSTED (wall_d_q4, inv_for_dq4, "
+          f"inv_at_invd, Q6 start/step)")
+    print(f"  TOTAL (decode+emit only, excludes column-solve)  "
+          f"{best+emit_measured:,.0f}-{worst+emit_measured:,.0f} T")
 
 
 if __name__ == "__main__":

@@ -22,12 +22,23 @@ over 360 words emitted unconditionally, verified word-for-word against 30 real
 host-oracle viewports.
 
 **Decode-stage baseline** (`tools/span_decode_workload.py`, `make
-span-decode-workload`, 14,912 real poses): mean 4.29 spans visible per update,
-7.71 tested-but-rejected (**64.3% of tested spans are clip-rejected**), 2.71
+span-decode-workload`, 14,912 real poses): mean 4.30 spans visible per update,
+7.70 tested-but-rejected (**64.1% of tested spans are clip-rejected**), 2.71
 GATE evaluations. Cross-validated against the independent `polar-test`
 regression's avg_runs=4.06 (different pose sampling entirely) - agreement
 within 6% is evidence the block-bake model is faithful to the real renderer,
 not proof of an exact match.
+
+A bug was caught and fixed while building this: the first port of
+`project_key`'s wrap-around loop used +/-2048 as the threshold instead of the
+real code's +/-512 (`src/tilesector_polar_renderer.c:426`). Re-measuring after
+the fix changed the reported statistics by under 0.3% (4.29->4.30 visible,
+64.3%->64.1% rejected) - on this map's short wall segments the wrap loop
+essentially never needs more than one iteration, so both thresholds converge
+to the same answer in practice. Still a real correctness bug, worth fixing
+before a map with longer angular spans makes it matter. Caught by re-reading
+source against the port rather than trusting the first pass - the discipline
+this file exists to enforce.
 
 ### A1. LITERAL opcode — largest remaining win
 
@@ -77,6 +88,42 @@ Cartridge ROM cannot self-modify. Copying the ~400-byte kernel into WRAM
 `ld de,NNNN` at 10 T against 16 T+ for a memory load. Also enables
 page-aligning the LUTs so a lookup is `ld l,a` with no 16-bit add (~11 T per
 lookup, ~4 lookups per column).
+
+### A7. Decode-stage T-state cost — instruction-counted only, NOT cycle-exact
+
+`tools/span_decode_workload.py` now prints a decode-stage T-state estimate
+using the same hand-count methodology the ORIGINAL emit estimate used - and
+that methodology was measured **94% low** once actually cycle-exact-simulated
+(`make span-emit-bench`: 11,200 T estimated vs 21,756 T measured). This
+decode estimate has not received that treatment and should be trusted
+proportionally less.
+
+Current instruction-counted range: **3,457-4,117 T/update**, applied to the
+measured 12.00 spans-tested and 2.71 gates-tested per update. Two things
+would tighten it before it is worth trusting:
+
+1. **A cycle-exact decode kernel**, built the same way `z80_emit_bench.py`
+   was: a real Z80 instruction stream for the clip arithmetic
+   (`project_key`'s len/wrap/window test), assembled and simulated, verified
+   against `visible_window()`'s output on real poses. This is the correct
+   next step and was deliberately not attempted in the same pass as the
+   estimate above - writing untested 16-bit signed-comparison Z80 idioms
+   (which the part has no native instruction for) and trusting a hand-count
+   of them repeats exactly the mistake the emit estimate made.
+2. **The real runtime SPAN-vs-SPANC mix.** `span_decode_workload.py` counts
+   spans tested and visible, not which of those were `SPAN` (fresh bearing
+   lookup, ~317 T) vs `SPANC` (reused, ~262 T) *at the poses actually
+   sampled* - the 44.5% SPANC ratio used above is the bake's overall
+   corpus-wide ratio (`span_block_bake.py`), not a per-pose measurement.
+
+Combined with the cycle-exact emit measurement, confidence-labeled:
+
+| stage | T/update | confidence |
+| --- | ---: | --- |
+| decode | 3,457-4,117 | instruction-counted estimate |
+| emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
+| column-solve | not yet costed | wall_d_q4, inv_for_dq4, inv_at_invd, Q6 start/step |
+| **decode+emit only** | **25,213-25,873** | excludes column-solve entirely |
 
 ### A6. K under cylindrical projection
 
