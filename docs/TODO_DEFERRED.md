@@ -149,6 +149,15 @@ Outputs: clean native capture, telemetry-overlay MP4, lossless MKV,
 `timing.csv`, `telemetry.csv`, selected screenshots, ROM SHA-256 + build
 metadata.
 
+### Gate — when this section becomes actionable
+
+**Do not write the capture workflow or capture-runner changes until there is
+something running on the Z80 (real or interpreted-faithfully) producing a
+drawn frame to point the camera at.** Confirmed explicitly by the project
+owner. Writing CI/emulator-facing code with no way to execute or verify it
+locally is exactly the failure mode this file exists to avoid repeating.
+Section B stays fully specified and ready; it is not started.
+
 ### Standing distinction — do not conflate these
 
 Gearsystem's ~59.9 Hz is the **Game Gear display/VBlank cadence**, not the
@@ -168,13 +177,34 @@ never written by Polar while legacy projects geometry into it. That is a
 visibility/projection gap, **not** dirty-state corruption, and absence of
 geometry is explicitly not dismissed as cosmetic.
 
-### C2. Sweep-order guarantee needs the wraparound case
+### C2. Sweep-order entry point — CLOSED, no rule needed
 
-`tools/span_block_bake.py` emits spans in world-bearing order and validates the
-drawn key set at 16,776 sub-cell positions. What it does **not** yet prove is
-where the interpreter should *start* the cyclic walk for a given yaw. The cyclic
-order is yaw-invariant; the entry point is not. Needs an explicit rule plus a
-test before the interpreter consumes real blocks.
+Originally flagged as an open question: where should the interpreter *start*
+the cyclic bearing-ordered walk for a given yaw? Resolved by re-reading
+`project_key()` (`src/tilesector_polar_renderer.c:416`) rather than assuming:
+the current runtime does not search for a start offset at all. It evaluates
+every candidate key unconditionally and rejects per-span via the yaw-relative
+window test (`len==0||len>=2048` / `hi<=lo`). No binary search, no wraparound
+bookkeeping.
+
+The span interpreter can do the same: walk the full block every frame
+(mean 13.25 spans/cell, `span_block_bake.py`) and let each `SPAN`/`SPANC`
+self-reject. That per-span clip cost is already inside the "span decode +
+setup" line of the emit-bench budget — this was a stitching task, not a new
+unknown.
+
+### C3. SPANC safety across yaw-driven culling — CHECKED, safe
+
+Raised and resolved in the same pass: does `SPANC` correctly reuse a corner
+bearing from a predecessor that was itself culled off-screen this frame?
+
+Confirmed safe by source inspection. `project_key()` reads both corner
+bearings (`a0=g_corner_bearing_q12[v0]; a1=g_corner_bearing_q12[v1];`) from the
+baked field *before* the yaw-relative visibility test can reject the span.
+Bearing lookup is a precondition of every instruction's visibility test, never
+a consequence of passing it — so a culled predecessor still leaves its
+right-vertex bearing available for the next `SPANC` to reuse. No runtime
+fallback-to-SPAN needed when the predecessor is off-screen.
 
 ---
 
