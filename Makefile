@@ -27,6 +27,7 @@ TILESECTOR_GG_OBJS := build/main_tilesector_gg.o build/tilesector_core_gg.o buil
 
 POLAR_TEST_BIN := build/test_tilesector_polar
 SPAN_WORKLOAD_PROBE_BIN := build/span_workload_probe
+COLUMN_SOLVE_PROBE_BIN := build/column_solve_probe
 POLAR_TRANSITION_BAKE_BIN := build/polar_transition_bake
 POLAR_DEMO_PATCH_GEN_BIN := build/polar_demo_patch_gen
 POLAR_PATCH_ROM := build/gg-polar-patch-demo.gg
@@ -88,7 +89,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
@@ -171,6 +172,13 @@ column-solve-workload: build
 
 span-qsquare-bench: build
 	python3 tools/z80_qsquare_bench.py
+
+$(COLUMN_SOLVE_PROBE_BIN): build tools/column_solve_probe.c
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/column_solve_probe.c -o $@
+
+column-solve-bench: $(COLUMN_SOLVE_PROBE_BIN)
+	./$(COLUMN_SOLVE_PROBE_BIN) 8 build/column_solve_oracle.txt 1
+	python3 tools/z80_column_solve_bench.py 20
 
 span-emit-bench: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c src/tilesector_polar_renderer.c tools/span_workload_probe.c -o $(SPAN_WORKLOAD_PROBE_BIN)

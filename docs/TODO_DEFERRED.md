@@ -417,14 +417,16 @@ kernel:
 | bearing lookup (A12) | 5,833 | cycle-exact |
 | decode-clip | 11,036 | cycle-exact |
 | GATE | 2,339 | cycle-exact, **still on the old primitive** |
-| column-solve | 7,636 | **projected**, but both inputs now measured |
+| column-solve | ~~7,636~~ | **REFUTED — measured 19,529, see A14** |
 | emit | 21,756 | cycle-exact |
-| **TOTAL** | **48,600** | **1.23 updates/frame** |
+| ~~TOTAL~~ | ~~48,600~~ | **superseded: 60,493, 0.99 updates/frame** |
 
-Still a floor. Both inputs to the column-solve line are measurements now,
-but the kernel gluing them together does not exist, and in this project the
-glue is exactly where the surprises have lived — emit's hand-count missed by
-94% and decode-clip's by 190%, on precisely this style of reasoning.
+Called a floor at the time, and it was one. The kernel gluing the measured
+op counts together did not exist, and the glue is exactly where this
+project's surprises have lived — emit's hand-count missed by 94% and
+decode-clip's by 190%. A14 built it: **156% over this projection.** The
+multiplies were costed correctly; the 1.35x overhead factor was not, and
+the real figure is about 4.5x.
 
 ### Whole-update budget, current best measurement
 
@@ -456,6 +458,89 @@ shrink if rebuilt on A12: **GATE** (2,339 T, two products per gate — the
 same shape the bearing kernel had) and the general-path multiplies inside
 column-solve. Neither is re-measured here; both are cheap re-runs once the
 column-solve kernel exists.
+
+### A14. Column-solve kernel — CLOSED, and the projection was 156% low.
+
+`tools/z80_column_solve_bench.py` (`make column-solve-bench`) is the
+`dq4 -> invd -> inv0/inv1` chain as real Z80: `wall_d_q4` (both the cardinal
+and general paths), `inv_for_dq4` (all three branches plus the `invz`
+interpolation), and `inv_at_invd` twice. 880 bytes.
+
+**The oracle is the shipped C, not a port of it.** `tools/column_solve_probe.c`
+`#include`s `tilesector_polar_renderer.c` directly, which makes its `static`
+internals callable **without modifying one line of shipped renderer source**,
+and dumps what the real code computes on real poses. It also self-checks: the
+`lo`/`hi` it re-derives to feed `inv_at_invd` must reproduce the `inv0`/`inv1`
+the real `project_key` just returned, or it aborts rather than emitting a
+plausible-looking wrong row. That check passed on **all 215,292** visible
+spans. The kernel then matched `invd`, `inv0` and `inv1` on **10,765/10,765**
+sampled rows.
+
+> The probe walks all 71 keys per pose where the runtime walks only the
+> current cell's block, so 215,292 is a **correctness corpus**, deliberately
+> broader than the runtime's workload. Do not divide it by the pose count and
+> read that as spans/update — that number is 4.30, from
+> `span_decode_workload.py`.
+
+**Measured 4,541.6 T/span → 19,529 T/update.**
+
+| column-solve | T/update | error |
+| --- | ---: | ---: |
+| projection on the shift-add primitive | 17,729 | — |
+| re-cost on the A13 primitive (A13) | 7,636 | — |
+| **measured (this kernel)** | **19,529** | **+156% over the A13 re-cost** |
+
+**Why the projection failed, precisely.** It costed 29.30 multiplies/update at
+193 T and multiplied by 1.35 for "branches, table reads, staging". The
+multiplies are real and that unit cost is right — but they account for only
+**~18%** of the kernel's measured time. The true overhead factor is about
+**4.5x, not 1.35x**. It goes on operand staging through memory (every `MA`/`MB`
+is a 13 T store plus a 13 T load), `call`/`ret`, the branch chains selecting
+cardinal vs general, and the shifts. Costing an algorithm by counting its
+arithmetic and adding a fudge factor does not work on this part, and this is
+the third time that has been demonstrated (emit 94% low, decode-clip 190%
+low, column-solve 156% low).
+
+One self-inflicted cost was found and fixed before recording the number, since
+it was my error rather than the architecture's: the first draft used `djnz`
+loops of `srl h; rr l` for the `>>7` and `>>4` steps, at 203 T for a `>>7`,
+after the bearing kernel (A9) had already established the fast form. The `>>7`
+here **cannot** use A9's shift-left-then-take-H trick — `q*sec+64` reaches
+64,579, so a left shift overflows 16 bits and silently corrupts the result.
+The exact decomposition `v>>7 == (v>>8)*2 + (low>>7)` holds for any 16-bit `v`
+and costs 59 T. That fix alone was worth 748 T/span (5,292.9 -> 4,541.6).
+
+### Whole-update budget — every line now measured
+
+| stage | T/update | confidence |
+| --- | ---: | --- |
+| bearing lookup (A12) | 5,833 | cycle-exact |
+| decode-clip | 11,036 | cycle-exact |
+| GATE | 2,339 | cycle-exact, **still on the old primitive** |
+| column-solve | 19,529 | **cycle-exact**, vs the shipped C |
+| emit | 21,756 | cycle-exact |
+| **TOTAL** | **60,493** | **0.99 updates/frame** |
+
+**The sub-frame crossing A12 claimed is withdrawn.** 60,493 T against a
+59,736 T frame is 0.99 updates/frame, not 1.23. A12's 1.23 was carrying
+column-solve at the projection this entry just refuted; the crossing was an
+artifact of the one unmeasured line, exactly as that entry warned it might be.
+
+Two pieces are still outside this total, both small, both genuinely uncosted:
+**`angle_x`** (2 table lookups per span, sitting in the seam between
+decode-clip and column-solve, and in nobody's budget until now) and the **Q6
+`iq`/`step`** computation. Neither is guessed at here.
+
+Live leads, in the order they are worth taking:
+
+1. **Register-passing for the multiply operands.** ~65 T of the ~193 T
+   multiply is staging `MA`/`MB` through memory, and it happens 5-6 times per
+   span. Worth an estimated 300-400 T/span — but that is an estimate, and this
+   entry is about what estimates are worth.
+2. **Re-run GATE on the A12 primitive** (2,339 T, same two-product shape the
+   bearing kernel had).
+3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
+   ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
 ### A6. K under cylindrical projection
 
