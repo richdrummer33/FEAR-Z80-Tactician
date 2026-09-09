@@ -181,15 +181,127 @@ Updated whole-update picture, all three components now cycle-exact:
 | emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
 | **decode-clip + GATE + emit** | **35,131** | excludes bearing lookup and column-solve |
 
-Still open, deliberately not attempted:
+### A9. Bearing-field evaluation kernel — CLOSED. Cycle-exact, 53,112/53,112 verified.
 
-- **The bearing lookup itself** (`a0`/`a1` fetch from the baked corner
-  field) - this kernel takes `a0`, `a1`, `yawq` as given inputs; producing
-  them from the local-projection field is a separate, uncosted step.
-- **Column-solve** (`wall_d_q4`, `inv_for_dq4`, `inv_at_invd`, Q6
-  start/step) - a genuinely different kind of piece (LUT interpolation, not
-  pure arithmetic like the two kernels above), entirely uncosted, no
-  workload measurement yet even. Deserves its own focused pass.
+`tools/z80_bearing_bench.py` (`make span-bearing-bench`) evaluates a baked
+local affine leaf on real Z80:
+`(base + shr0(sx*lx0, shift) + shr0(sy*ly0, shift)) & 4095`, matching
+`quant_leaf_record` / `quant_leaf_error` in
+`experiments/adaptive_polar_field/local_projection_field_poc.py`. Verified
+against **every corner record in the shipped map** (4,426 usable records
+x 12 sub-cell probe positions = 53,112 cases), bit-for-bit, at each record's
+real chosen leaf depth.
+
+`shr0` is a power-of-two divide rounded **toward zero**, which an arithmetic
+shift is not for negative values. Implemented as "normalise sign, shift LEFT
+by 8-shift, take H, negate back": `add hl,hl` is 11 T where `srl h; rr l` in
+a djnz loop is 29 T *per bit*, so a >>6 costs 48 T instead of ~180 T. The
+range is safe **by construction, not by luck** - `|p| <= 127*(2^shift - 1)`,
+so `|p << (8-shift)| < 32512` for every depth 0..3. That bound is in the
+module docstring, not left implicit.
+
+**Leaf-depth distribution across the real map** (threshold 4 Q12, min leaf 8):
+
+| depth | span | shift | records | share | T/lookup |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 64 | 6 | 3,810 | 85.9% | 1,416.9 |
+| 1 | 32 | 5 | 462 | 10.4% | 1,973.6 |
+| 2 | 16 | 4 | 123 | 2.8% | 2,085.1 |
+| 3 | 8 | 3 | 31 | 0.7% | 2,188.8 |
+| — | — | — | 7 | 0.2% | **no depth<=3 meets threshold — see C4** |
+
+**Map-weighted mean: 1,499.0 T per bearing lookup.** 86% of corners need a
+single affine plane for the whole 4-world-unit cell — the field is far
+smoother than the quadtree machinery assumes.
+
+**The finding that mattered more than the kernel:** naive evaluation costs
+**18.17 lookups/update**, but only **9.12 distinct corners** are referenced
+(worst case 12) — a measured **1.99x redundancy**, because every corner is a
+shared span endpoint. `lx,ly` are fixed for the whole update, so a corner's
+bearing *cannot* change within one; a per-update cache of at most 12 entries
+(corner id -> Q12 + validity byte) turns every second reference into a ~30 T
+table read.
+
+- naive: 27,239 T/update — the largest line in the whole budget
+- cached: **13,674 T/update**
+
+This is not a micro-optimisation to file away. It is a required part of the
+design and is costed as such below.
+
+### A10. Column-solve workload — MEASURED (op counts), kernel not yet built
+
+`tools/column_solve_workload.py` (`make column-solve-workload`), 14,912 real
+poses. Reports 4.30 visible spans/update, **exactly** matching
+`span_decode_workload.py` — an independent path arriving at the same number.
+
+14 of this map's 17 segments are cardinal (82.4% statically). At runtime the
+shortcut fires more often than that:
+
+| path | share of visible spans | cost |
+| --- | ---: | --- |
+| `wall_d_q4` cardinal | 87.5% | one Q4 subtraction, zero multiplies |
+| `wall_d_q4` general | 12.5% | 4 multiplies |
+| `inv_for_dq4` near-clamp | 16.5% | no multiply |
+| `inv_for_dq4` far-clamp | 2.9% | no multiply |
+| `inv_for_dq4` interpolate | 80.6% | 1 multiply |
+| `inv_at_invd` cardinal | 87.5% | dot is a raw trig byte |
+| `inv_at_invd` general | 12.5% | 2 extra multiplies |
+
+**Multiplies per update: 7.78 (8x8) + 21.52 (16x8) = 29.30.** The 16x8 count
+is the whole story: 5 per visible span (two per `inv_at_invd` endpoint, x2
+endpoints, plus the Q6 step), and none of them is deletable by a cardinal
+shortcut.
+
+Projected **17,729 T/update** from measured op counts x measured op costs
+(432 T for an 8x8, 454 T for a 16x8, derived from the bearing kernel's
+cycle-exact 324 T / 6 iterations / 54 T per iteration, x1.35 for branch and
+staging overhead). **This is a projection, not a measurement** — and every
+projection in this project so far has come in low. Treat 17,729 as a floor.
+
+Deliberately not costed: the `screen_depth_plane` fast path. Its
+`k_tspf_depth_normal_class` / `g_depth_nf_q7` / `g_depth_stepfac_q4` tables
+are SDCC-side and not in the generated pack, so the *exact endpoint path* was
+costed instead. The plane path can only be cheaper; costing the exact path
+keeps the budget honest.
+
+### A11. Quarter-square multiply table — the single largest remaining lever
+
+Now measurable rather than speculative. Multiplies dominate every stage:
+
+| stage | multiply loops | measured/projected T |
+| --- | ---: | ---: |
+| bearing lookup (cached) | 18.24 (2 per distinct corner) | 13,674 |
+| column-solve | 29.30 | 17,729 |
+
+A quarter-square table (`a*b = f(a+b) - f(a-b)`, `f(x)=x^2/4`, 512 bytes of
+ROM) replaces a ~430 T shift-add loop with two table reads and a subtract —
+roughly 60-80 T. At 47.5 multiply loops per update that is **on the order of
+17,000 T/update recovered**, which would take the whole update from ~66,500 T
+to roughly 35,000 T, i.e. from 0.90 updates/frame to about 1.7.
+
+- Worth: **≈17,000 T/update**, larger than A1, A2 and A4 combined
+- Costs: 512 bytes of ROM out of 128 KiB linked
+- Closes with: build the table kernel, self-test it across the real operand
+  ranges, then re-run `span-bearing-bench` and rebuild column-solve on it
+- **Do it before writing the column-solve kernel**, not after — the kernel's
+  whole shape depends on whether a multiply costs 430 T or 70 T
+
+### Whole-update budget, current best measurement
+
+| stage | T/update | confidence |
+| --- | ---: | --- |
+| bearing lookup (cached, 9.12 distinct x 1,499 T) | 13,674 | **cycle-exact**, 53,112 cases verified |
+| decode-clip (12.00 spans-tested x 919.7 T) | 11,036 | **cycle-exact**, 6,000 cases verified |
+| GATE (2.71 gates-tested x 863.1 T) | 2,339 | **cycle-exact**, 6,000 cases verified |
+| column-solve | 17,729 | **projected** from measured op counts — a floor |
+| emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
+| **TOTAL** | **66,534** | |
+
+One NTSC frame at 59.9 Hz is 59,736 T; VBlank alone is 15,960 T. So the span
+interpreter currently costs **0.90 updates per frame** — about **53.8 Hz** of
+update rate if the Z80 did nothing else at all, which it must. That is the
+honest headline: the architecture works and lands in the right order of
+magnitude, and it is *not* comfortably inside budget until A11 lands.
 
 ### A6. K under cylindrical projection
 
@@ -326,6 +438,29 @@ Bearing lookup is a precondition of every instruction's visibility test, never
 a consequence of passing it — so a culled predecessor still leaves its
 right-vertex bearing available for the next `SPANC` to reuse. No runtime
 fallback-to-SPAN needed when the predecessor is off-screen.
+
+### C4. Seven corners have no accurate baked leaf
+
+Surfaced by `make span-bearing-bench`, which counts what the field bake
+quietly skips: **7 of 4,433 corner records (0.2%)** have no quadtree depth
+<= 3 that meets the 4 Q12 accuracy threshold. `corner_quant_depth` returns
+`None` for them and `serialize_quantized_cell` writes `0xff` as the depth
+byte — an escape marker with, at present, **nothing on the runtime side that
+handles it**.
+
+These are the near-singular cases: a corner essentially on top of the camera,
+where bearing changes arbitrarily fast with sub-cell position and no affine
+patch can track it. Two honest options, neither chosen yet:
+
+1. An exact fallback path (real `atan2`-equivalent via the existing
+   `k_tspf_atan_q12` table) for the 0.2%, gated on the `0xff` marker.
+2. Prove those corners can never be visible from inside their own cell (a
+   corner that close is behind the near plane or occluded), and make the
+   marker a hard assert instead of a fallback.
+
+Option 2 is likely correct and much cheaper, but it is a *claim*, not a
+measurement, and this file does not carry claims. Until one of these is
+resolved the bearing field is 99.8% baked, not baked.
 
 ---
 
