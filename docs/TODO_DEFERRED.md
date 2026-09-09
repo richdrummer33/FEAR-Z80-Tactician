@@ -21,6 +21,14 @@ questions are answered; these are the remaining cycle-level wins.
 over 360 words emitted unconditionally, verified word-for-word against 30 real
 host-oracle viewports.
 
+**Decode-stage baseline** (`tools/span_decode_workload.py`, `make
+span-decode-workload`, 14,912 real poses): mean 4.29 spans visible per update,
+7.71 tested-but-rejected (**64.3% of tested spans are clip-rejected**), 2.71
+GATE evaluations. Cross-validated against the independent `polar-test`
+regression's avg_runs=4.06 (different pose sampling entirely) - agreement
+within 6% is evidence the block-bake model is faithful to the real renderer,
+not proof of an exact match.
+
 ### A1. LITERAL opcode — largest remaining win
 
 A single-word run costs **86 T** through the run path (pop, count test, pop,
