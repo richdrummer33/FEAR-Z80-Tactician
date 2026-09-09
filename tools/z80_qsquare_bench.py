@@ -101,7 +101,8 @@ NO_ARG = {
     "add a,c": 0x81, "sub c": 0x91, "ld l,c": 0x69, "ld h,c": 0x61,
 }
 IMM8 = {"ld a,": 0x3E, "ld b,": 0x06, "ld c,": 0x0E, "ld d,": 0x16,
-        "ld e,": 0x1E, "ld h,": 0x26, "ld l,": 0x2E, "add a,": 0xC6}
+        "ld e,": 0x1E, "ld h,": 0x26, "ld l,": 0x2E, "add a,": 0xC6,
+        "adc a,": 0xCE}
 ABS = {"jp nc,": 0xD2, "jp c,": 0xDA, "jp z,": 0xCA, "jp nz,": 0xC2, "jp ": 0xC3}
 
 
@@ -251,6 +252,13 @@ class Z80:
             self.zf = (self.a == 0)
             t = 4
         elif op == 0x91: self._sub(self.c); t = 4
+        elif op == 0xCE:
+            v = m[self.pc]; self.pc += 1
+            r = self.a + v + (1 if self.cf else 0)
+            self.cf = r > 0xFF
+            self.a = r & 0xFF
+            self.zf = (self.a == 0)
+            t = 7
         elif op == 0x95: self._sub(self.l); t = 4
         elif op == 0x94: self._sub(self.h); t = 4
         elif op == 0x9F:
@@ -624,6 +632,107 @@ f_done:
 """
 
 
+# --------------------------------------------------------------------------
+# LAYER 4: unsigned 8x8 -> 16, the shape COLUMN-SOLVE needs.
+#
+# The bearing lookup's multiply has a second operand <= 63, so its sums fit
+# in one byte and `ld l,a` indexes the table directly. Column-solve's do
+# not: `invd*dot` is 255 x 127 (sum <= 382), `q*sec` is 253 x ~181 (sum <=
+# 434), and `(inv1-inv0)*recip` is 255 x 255 (sum <= 510). Ranges read from
+# the C reference and its generated tables, not assumed.
+#
+# So the table grows to 512 entries. S(511) = 65,280, which still fits a
+# u16 - with 255 to spare, checked at build time rather than hoped for.
+# Byte planes become 512 bytes each: S_lo across pages P and P+1, S_hi
+# across P+2 and P+3 (1 KiB of ROM total).
+#
+# A12's trick survives the ninth index bit intact, because that bit is
+# exactly the carry `add a,c` already produced:
+#     add a,c / ld l,a / ld a,P / adc a,0 / ld h,a
+# `ld` does not disturb flags, so the carry is still live two instructions
+# later. That is 11 T more than the 8-bit-index form, not a new lookup
+# strategy. The DIFF index needs none of it: |a-b| <= 255 for any two bytes,
+# so it always lands in the first page and keeps the cheap `ld h,P`.
+# --------------------------------------------------------------------------
+UPLANE_LO_PAGE = 0x20      # S_lo spans pages 0x20,0x21
+UPLANE_HI_PAGE = 0x22      # S_hi spans pages 0x22,0x23
+assert UPLANE_HI_PAGE == UPLANE_LO_PAGE + 2, "S_lo occupies two pages"
+UPLANE_LO = UPLANE_LO_PAGE << 8
+UPLANE_HI = UPLANE_HI_PAGE << 8
+
+UA, UB = 0xD050, 0xD051
+UPROD = 0xD052
+
+
+def build_uplanes():
+    vals = [(n * n) // 4 for n in range(512)]
+    assert max(vals) <= 0xFFFF, f"S(511)={max(vals)} overflows u16"
+    return bytes(v & 0xFF for v in vals), bytes(v >> 8 for v in vals)
+
+
+UMUL = f"""
+        ld a,(0x{UB:04X})
+        ld c,a
+        ld a,(0x{UA:04X})
+        add a,c
+        ld l,a
+        ld a,0x{UPLANE_LO_PAGE:02X}
+        adc a,0
+        ld h,a
+        ld e,(hl)
+        inc h
+        inc h
+        ld d,(hl)
+        ld a,(0x{UA:04X})
+        sub c
+        jp nc,u_diff_ok
+        neg
+u_diff_ok:
+        ld l,a
+        ld h,0x{UPLANE_LO_PAGE:02X}
+        ld c,(hl)
+        inc h
+        inc h
+        ld a,(hl)
+        ld h,a
+        ld l,c
+        ex de,hl
+        or a
+        sbc hl,de
+        ld (0x{UPROD:04X}),hl
+        halt
+"""
+
+
+def selftest_umul():
+    code, _ = assemble(UMUL)
+    lo, hi = build_uplanes()
+    fails = 0
+    ts = []
+    for a in range(256):
+        for b in range(256):
+            mem = bytearray(0x10000)
+            mem[UPLANE_LO:UPLANE_LO + 512] = lo
+            mem[UPLANE_HI:UPLANE_HI + 512] = hi
+            mem[CODE:CODE + len(code)] = code
+            mem[UA], mem[UB] = a, b
+            cpu = Z80(mem)
+            cpu.run(CODE)
+            ts.append(cpu.t)
+            got = cpu.m[UPROD] | (cpu.m[UPROD + 1] << 8)
+            if got != a * b:
+                fails += 1
+                if fails <= 5:
+                    print(f"  FAIL: {a}*{b} want {a*b} got {got}")
+    print(f"=== LAYER 4: unsigned 8x8 -> 16 for column-solve, {len(code)} bytes ===")
+    print(f"cases=65536 (EXHAUSTIVE: the ENTIRE u8 x u8 domain)  fails={fails}")
+    if fails:
+        raise SystemExit(f"primitive is WRONG - {fails}/65536 failed")
+    print(f"PASS  mean={stt.mean(ts):.1f} T  min={min(ts)}  max={max(ts)}")
+    print(f"      ROM: 1 KiB (two 512-byte byte planes)\n")
+    return stt.mean(ts)
+
+
 def _stage_fast(code, slope, coord, shift):
     mem = bytearray(0x10000)
     lo, hi = build_qs_planes()
@@ -763,6 +872,7 @@ def main():
     selftest_magmul()
     qmul_code, mean_t_isolated = selftest_qmul_shr0()
     fast_code, mean_t_fast = selftest_qmul_fast()
+    umul_t = selftest_umul()
 
     print("=== SUBSTITUTED INTO THE REAL BEARING KERNEL'S OWN ORACLE ===")
     entries, hist = gather_leaves()
@@ -838,11 +948,45 @@ def main():
         total = line + decode_clip + gate + column_solve + emit
         print(f"  {label:20s} bearing {line:8,.0f} T   "
               f"TOTAL {total:8,.0f} T   {frame/total:.2f} updates/frame")
-    print(f"\n  column-solve is still carried at its 17,729 T PROJECTION, on the")
-    print(f"  shift-add primitive. It has 29.30 multiplies/update against the")
-    print(f"  bearing lookup's 18.24, so it stands to gain more from this")
-    print(f"  primitive than the bearing lookup did - but that is the next")
-    print(f"  kernel to build, not a number to assert here.")
+    print(f"\n  column-solve above is still carried at its 17,729 T PROJECTION,")
+    print(f"  built on the OLD shift-add primitive. Re-costed below.")
+
+    # Re-cost column-solve's multiply component on the measured LAYER 4
+    # primitive. Op counts from column_solve_workload.py (14,912 real poses);
+    # per-op cost measured here. This is still a projection - the kernel does
+    # not exist - but both of its inputs are now measurements rather than one
+    # measurement and one hand-count.
+    MUL8_OLD, MUL16_OLD = 432.0, 454.0    # derived costs used by the old projection
+    m8, m16 = 7.78, 21.52                  # measured op counts per update
+    OVERHEAD = 1.35                        # measured non-multiply factor
+    old_mul_component = (m8 * MUL8_OLD + m16 * MUL16_OLD) * OVERHEAD
+    new_mul_component = ((m8 + m16) * umul_t) * OVERHEAD
+    print(f"\n=== COLUMN-SOLVE, RE-COSTED ON THE MEASURED PRIMITIVE ===")
+    print(f"  multiplies/update       {m8 + m16:.2f}  "
+          f"(7.78 8x8 + 21.52 16x8, measured over 14,912 poses)")
+    print(f"  per multiply, shift-add   {MUL16_OLD:6.1f} T  [derived, never built]")
+    print(f"  per multiply, LAYER 4     {umul_t:6.1f} T  [MEASURED, 65,536 cases]")
+    print(f"  column-solve multiply component:")
+    print(f"    old projection        {old_mul_component:9,.0f} T")
+    print(f"    re-costed             {new_mul_component:9,.0f} T")
+    cs_new = 17729.0 - old_mul_component + new_mul_component
+    print(f"  column-solve total      {cs_new:9,.0f} T  (was 17,729 T)")
+
+    best_bearing = m_byte * distinct
+    tot = best_bearing + decode_clip + gate + cs_new + emit
+    print(f"\n=== PROJECTED WHOLE-UPDATE, BOTH STAGES ON THE NEW PRIMITIVE ===")
+    print(f"  bearing lookup (A12)  {best_bearing:9,.0f} T   [cycle-exact]")
+    print(f"  decode-clip           {decode_clip:9,.0f} T   [cycle-exact]")
+    print(f"  GATE                  {gate:9,.0f} T   [cycle-exact, OLD primitive]")
+    print(f"  column-solve          {cs_new:9,.0f} T   [projected, measured inputs]")
+    print(f"  emit                  {emit:9,.0f} T   [cycle-exact]")
+    print(f"  ------------------------------------")
+    print(f"  TOTAL                 {tot:9,.0f} T   {frame/tot:.2f} updates/frame")
+    print(f"\n  Treat the column-solve line as a floor, as before. Its op counts")
+    print(f"  and its per-op cost are both measured now, but the kernel that")
+    print(f"  glues them together is not built, and in this project the glue")
+    print(f"  has been where the surprises live - emit's hand-count missed by")
+    print(f"  94%, decode-clip's by 190%, on exactly this kind of reasoning.")
 
 
 if __name__ == "__main__":

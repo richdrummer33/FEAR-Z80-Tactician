@@ -372,6 +372,60 @@ Every number in this project that was hand-counted has been wrong, low by
 94% and 190% (emit, decode-clip) and high by 3.6x (A11's read of its own
 opportunity). Only the built-and-verified ones have held.
 
+### A13. Unsigned 8x8 primitive for column-solve — CLOSED. Exhaustive over the entire domain.
+
+Same file, LAYER 4. Column-solve's multiplies are a different shape from the
+bearing lookup's: both operands run to 255, so the sums exceed one byte and
+A12's table is too small. Ranges read from the C reference and its generated
+tables rather than assumed — `invd*dot` is 255x127 (sum <= 382), `q*sec` is
+253x~181 (sum <= 434), `(inv1-inv0)*recip` is 255x255 (sum <= 510).
+
+The table therefore grows to 512 entries. `S(511) = 65,280` still fits a u16
+with 255 to spare — asserted at build time, not hoped for. Byte planes become
+512 bytes each (1 KiB ROM total), `S_lo` across pages P/P+1 and `S_hi` across
+P+2/P+3, so the plane hop is `inc h` twice.
+
+**A12's trick survives the ninth index bit**, because that bit is exactly the
+carry `add a,c` already produced:
+
+    add a,c / ld l,a / ld a,P / adc a,0 / ld h,a
+
+`ld` does not disturb flags, so the carry is still live two instructions
+later. That costs 11 T over the 8-bit-index form — it is not a different
+lookup strategy. The DIFF index needs none of it: `|a-b| <= 255` for any two
+bytes, so it always lands in the first page and keeps the cheap `ld h,P`.
+
+**Measured 193.0 T, verified on all 65,536 u8 x u8 pairs — the complete
+input domain, with no sampling anywhere in it.**
+
+Do not read 193 T (A13) against 334 T (A12) as "unsigned is faster". They do
+different work: A13 is a bare product, A12 additionally strips and reapplies
+a sign and performs the `shr0` shift. Use A13 where the operands really are
+unsigned and no shift follows.
+
+**Column-solve re-costed on it.** Op counts from `column_solve_workload.py`
+(29.30 multiplies/update over 14,912 real poses), per-op cost from this
+kernel:
+
+| | column-solve |
+| --- | ---: |
+| old projection (shift-add, 454 T/multiply, derived) | 17,729 T |
+| re-costed (A13, 193 T/multiply, measured) | **7,636 T** |
+
+| stage | T/update | confidence |
+| --- | ---: | --- |
+| bearing lookup (A12) | 5,833 | cycle-exact |
+| decode-clip | 11,036 | cycle-exact |
+| GATE | 2,339 | cycle-exact, **still on the old primitive** |
+| column-solve | 7,636 | **projected**, but both inputs now measured |
+| emit | 21,756 | cycle-exact |
+| **TOTAL** | **48,600** | **1.23 updates/frame** |
+
+Still a floor. Both inputs to the column-solve line are measurements now,
+but the kernel gluing them together does not exist, and in this project the
+glue is exactly where the surprises have lived — emit's hand-count missed by
+94% and decode-clip's by 190%, on precisely this style of reasoning.
+
 ### Whole-update budget, current best measurement
 
 | stage | T/update | confidence |
@@ -379,9 +433,9 @@ opportunity). Only the built-and-verified ones have held.
 | bearing lookup (cached, A12 byte planes, 9.12 distinct x 639.6 T) | 5,833 | **cycle-exact**, 53,112 + 30,720 cases verified |
 | decode-clip (12.00 spans-tested x 919.7 T) | 11,036 | **cycle-exact**, 6,000 cases verified |
 | GATE (2.71 gates-tested x 863.1 T) | 2,339 | **cycle-exact**, 6,000 cases verified |
-| column-solve | 17,729 | **projected** from measured op counts — a floor |
+| column-solve (A13 re-cost; was 17,729 on the old primitive) | 7,636 | **projected**, both inputs measured — a floor |
 | emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
-| **TOTAL** | **58,693** | |
+| **TOTAL** | **48,600** | **1.23 updates/frame** |
 
 One NTSC frame at 59.9 Hz is 59,736 T; VBlank alone is 15,960 T. So the span
 interpreter now costs **1.02 updates per frame** — it fits inside a frame for
