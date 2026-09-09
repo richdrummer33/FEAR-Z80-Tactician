@@ -264,44 +264,85 @@ are SDCC-side and not in the generated pack, so the *exact endpoint path* was
 costed instead. The plane path can only be cheaper; costing the exact path
 keeps the budget honest.
 
-### A11. Quarter-square multiply table — the single largest remaining lever
+### A11. Quarter-square multiply table — CLOSED. Built, measured, and much
+### smaller than projected — a real correction, recorded rather than quietly
+### dropped.
 
-Now measurable rather than speculative. Multiplies dominate every stage:
+`tools/z80_qsquare_bench.py` (`make span-qsquare-bench`) builds
+`a*b = S(a+b) - S(|a-b|)`, `S(n) = floor(n^2/4)`, as a 256-entry x u16
+table (512 bytes ROM — the size this entry originally guessed, which was
+right) and substitutes it into the bearing kernel's own product step,
+re-verified against the **same 53,112-case oracle** `span-bearing-bench`
+uses. 53,112/53,112 exact.
 
-| stage | multiply loops | measured/projected T |
-| --- | ---: | ---: |
-| bearing lookup (cached) | 18.24 (2 per distinct corner) | 13,674 |
-| column-solve | 29.30 | 17,729 |
+Two real bugs, both caught by Layer 1's exhaustive self-test (every p in
+[0,128] x every q in [0,63], 8,256 cases — not a sample) before either
+reached the substitution step:
 
-A quarter-square table (`a*b = f(a+b) - f(a-b)`, `f(x)=x^2/4`, 512 bytes of
-ROM) replaces a ~430 T shift-add loop with two table reads and a subtract —
-roughly 60-80 T. At 47.5 multiply loops per update that is **on the order of
-17,000 T/update recovered**, which would take the whole update from ~66,500 T
-to roughly 35,000 T, i.e. from 0.90 updates/frame to about 1.7.
+1. The 16-bit table-value load `ld a,(hl); ld l,a; inc hl; ld a,(hl); ld
+   h,a` clobbers `L` with the loaded byte *before* using `HL` as a pointer
+   to fetch the second byte — `inc hl` then increments a corrupted
+   pointer. Every case initially failed at ~2x the correct answer. Fixed
+   by loading through `DE` (`ld e,(hl); inc hl; ld d,(hl)`, which never
+   touches the pointer register) and swapping into place with `ex de,hl`.
+2. After that fix, cases only involving zero still failed: the DIFF step's
+   `sbc hl,de` reused `DE` left over from the SUM step above it, which by
+   then held a stale pointer, not the coordinate. Fixed by reloading the
+   coordinate into `DE` immediately before the subtract rather than
+   trusting a register to still hold what it held two blocks earlier.
 
-- Worth: **≈17,000 T/update**, larger than A1, A2 and A4 combined
-- Costs: 512 bytes of ROM out of 128 KiB linked
-- Closes with: build the table kernel, self-test it across the real operand
-  ranges, then re-run `span-bearing-bench` and rebuild column-solve on it
-- **Do it before writing the column-solve kernel**, not after — the kernel's
-  whole shape depends on whether a multiply costs 430 T or 70 T
+**The projection above was wrong, and this file said so before this
+paragraph existed rather than after:** it assumed the 60-80 T textbook cost
+of a quarter-square lookup, which presumes page-aligned tables so an index
+is a single `ld l,a` (no 16-bit add). This build's table is **not**
+page-aligned, so each of the two lookups pays a full `add hl,hl` (double
+the sum to a word index) + `add hl,de` (add the table base) + two `(hl)`
+reads — about 45-50 T of addressing overhead per lookup, on top of the
+16-bit SUM/DIFF arithmetic and sign handling. Measured:
+
+| | T (mean, both products of one lookup) |
+| --- | ---: |
+| shift-add (`span-bearing-bench`) | 1,499.0 |
+| quarter-square table, as built | 1,311.4 |
+| **saving** | **187.6 T (12.5%)**, not the ≈26% this entry projected |
+
+Whole-update effect, bearing line only switched (measured):
+**66,531 -> 64,820 T**, 0.90 -> 0.92 updates/frame. Nowhere near the
+"~35,000 T, 1.7 updates/frame" this entry originally projected — that
+number is retracted, not carried forward.
+
+- **A12 (open): page-align the table.** If `QS_TABLE` starts at a page
+  boundary and never crosses one for the sums this kernel produces (max
+  sum 191, well inside 256), the index math collapses to `ld h,QS_TABLE>>8`
+  / `ld l,a` — no `add hl,hl`, no `add hl,de`. That was the assumption the
+  original 60-80 T estimate depended on and this build did not implement
+  it. Worth measuring before trusting a number here again.
+- **Do not re-cite this file's original ≈17,000 T claim.** It was a
+  projection, not a measurement, and the measurement came in at 187.6 T —
+  the same directional lesson as every hand-count in this project, just in
+  the opposite direction (over-promised instead of under-promised) this
+  time.
 
 ### Whole-update budget, current best measurement
 
 | stage | T/update | confidence |
 | --- | ---: | --- |
-| bearing lookup (cached, 9.12 distinct x 1,499 T) | 13,674 | **cycle-exact**, 53,112 cases verified |
+| bearing lookup (cached, quarter-square, 9.12 distinct x 1,311.4 T) | 11,960 | **cycle-exact**, 53,112 cases verified |
 | decode-clip (12.00 spans-tested x 919.7 T) | 11,036 | **cycle-exact**, 6,000 cases verified |
 | GATE (2.71 gates-tested x 863.1 T) | 2,339 | **cycle-exact**, 6,000 cases verified |
 | column-solve | 17,729 | **projected** from measured op counts — a floor |
 | emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
-| **TOTAL** | **66,534** | |
+| **TOTAL** | **64,820** | |
 
 One NTSC frame at 59.9 Hz is 59,736 T; VBlank alone is 15,960 T. So the span
-interpreter currently costs **0.90 updates per frame** — about **53.8 Hz** of
+interpreter currently costs **0.92 updates per frame** — about **55.0 Hz** of
 update rate if the Z80 did nothing else at all, which it must. That is the
 honest headline: the architecture works and lands in the right order of
-magnitude, and it is *not* comfortably inside budget until A11 lands.
+magnitude, and it is *not* comfortably inside budget. A11 closed for a much
+smaller gain than it originally projected (12.5%, not ≈26%) — see A12 for
+the unfinished half of that idea (page-aligned tables), and column-solve's
+own multiplies are still on the shift-add primitive, uncosted with the
+table substituted.
 
 ### A6. K under cylindrical projection
 
