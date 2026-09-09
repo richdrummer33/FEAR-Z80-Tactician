@@ -132,25 +132,64 @@ module docstring for the range-bound proof that `en`'s and `st`'s adjustment
 loops can fire at most once each, which is why they were implemented as
 straight-line conditionals rather than actual loops.
 
-What this kernel does NOT cover, still open:
+### A8. GATE selector kernel — CLOSED. Cycle-exact, 6,000/6,000 verified.
 
-- **GATE selector evaluation** (2.71/update measured) - a separate,
-  arithmetically simpler stage (two 8x8->16 products + add + sign test,
-  same shape as `ratio_q8_exact`), not yet built.
-- **The bearing lookup itself** (`a0`/`a1` fetch from the baked corner
-  field) - this kernel takes `a0`, `a1`, `yawq` as given inputs; producing
-  them is a separate, uncosted step.
-- **Column-solve** (`wall_d_q4`, `inv_for_dq4`, `inv_at_invd`, Q6 start/step)
-  - entirely uncosted.
+`tools/z80_gate_bench.py` (`make span-gate-bench`) is `selector_pass()`
+(`v = sel_a*lx + sel_b*ly + sel_c; pass = (v>=0) ^ sel_inv`) as real Z80,
+built with the same two-layer discipline: an isolated multiply primitive
+self-tested first, then the real kernel verified bit-for-bit against
+**6,000 real (selector, lx, ly) triples**.
 
-Confidence-labeled whole-update picture, updated:
+Real coefficient ranges were read from `src/generated`, not assumed:
+`sel_a` in [0,29], `sel_b` in [-69,37], `sel_c` in [-3712,1344]. `sel_a`
+happens to be non-negative in this map's data but its C type is `int8_t`,
+so the multiply primitive (signed-8 x unsigned-6bit -> signed-16, via
+sign-extend-then-6-iteration-shift-add) was self-tested across the full
+signed 8-bit domain - 4,050 cases, 0 failures - rather than the narrower
+range this map happens to exercise.
+
+Three real bugs, all caught by verification:
+
+1. **Sign-extension had source and fill bytes swapped** - the multiplicand
+   byte was loaded into the HIGH byte of the 16-bit pair with the sign-fill
+   in the LOW byte, backwards from correct two's-complement extension. The
+   isolated primitive self-test caught this immediately (3,964/4,050
+   failures) before it could reach the kernel.
+2. **Two register-form instructions** (`XOR A`, `XOR D`) were being
+   misparsed by the assembler's immediate-operand path as `XOR <label>`,
+   same class of bug as the clip kernel's `XOR A` issue in A7 - fixed by
+   special-casing both register forms.
+3. **A test-harness bug, not a kernel bug**: `run_kernel()` read results
+   from the *input* memory buffer after execution, not `cpu.m` - the
+   `Z80` class copies its input (`self.m = bytearray(mem)`), so the two
+   diverge the moment execution starts. Every result read "0" until this
+   was fixed. Cross-checked against `z80_decode_bench.py`, which reads
+   `cpu.m` correctly and was unaffected - this bug was isolated to the new
+   file, not a defect in the already-shipped decode-clip kernel.
+
+**Measured: 863.1 T/gate** (min 787, max 926). No prior instruction-counted
+estimate existed specifically for this stage in this document, but the very
+first ISA sketch (superseded) guessed ~115 T - **7.5x low**, the same
+directional miss as every hand-count in this project so far.
+
+Updated whole-update picture, all three components now cycle-exact:
 
 | stage | T/update | confidence |
 | --- | ---: | --- |
 | decode-clip (12.00 spans-tested x 919.7 T) | 11,036 | **cycle-exact**, 6,000 cases verified |
+| GATE (2.71 gates-tested x 863.1 T) | 2,339 | **cycle-exact**, 6,000 cases verified |
 | emit | 21,756 | **cycle-exact**, verified against 30 real viewports |
-| bearing lookup, GATE eval, column-solve | not yet costed | separate, uncosted stages |
-| **decode-clip + emit only** | **32,792** | excludes bearing lookup, GATE, column-solve |
+| **decode-clip + GATE + emit** | **35,131** | excludes bearing lookup and column-solve |
+
+Still open, deliberately not attempted:
+
+- **The bearing lookup itself** (`a0`/`a1` fetch from the baked corner
+  field) - this kernel takes `a0`, `a1`, `yawq` as given inputs; producing
+  them from the local-projection field is a separate, uncosted step.
+- **Column-solve** (`wall_d_q4`, `inv_for_dq4`, `inv_at_invd`, Q6
+  start/step) - a genuinely different kind of piece (LUT interpolation, not
+  pure arithmetic like the two kernels above), entirely uncosted, no
+  workload measurement yet even. Deserves its own focused pass.
 
 ### A6. K under cylindrical projection
 
