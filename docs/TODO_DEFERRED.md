@@ -482,13 +482,14 @@ sampled rows.
 > read that as spans/update — that number is 4.30, from
 > `span_decode_workload.py`.
 
-**Measured 4,541.6 T/span → 19,529 T/update.**
+**Measured 6,243.0 T/span → 26,845 T/update** for the complete chain.
 
 | column-solve | T/update | error |
 | --- | ---: | ---: |
 | projection on the shift-add primitive | 17,729 | — |
 | re-cost on the A13 primitive (A13) | 7,636 | — |
-| **measured (this kernel)** | **19,529** | **+156% over the A13 re-cost** |
+| measured, invd/inv0/inv1 only | 19,529 | +156% over the A13 re-cost |
+| **measured, complete chain** | **26,845** | **+252%** |
 
 **Why the projection failed, precisely.** It costed 29.30 multiplies/update at
 193 T and multiplied by 1.35 for "branches, table reads, staging". The
@@ -517,19 +518,39 @@ and costs 59 T. That fix alone was worth 748 T/span (5,292.9 -> 4,541.6).
 | bearing lookup (A12) | 5,833 | cycle-exact |
 | decode-clip | 11,036 | cycle-exact |
 | GATE | 2,339 | cycle-exact, **still on the old primitive** |
-| column-solve | 19,529 | **cycle-exact**, vs the shipped C |
+| column-solve (complete chain) | 26,845 | **cycle-exact**, vs the shipped C |
 | emit | 21,756 | cycle-exact |
-| **TOTAL** | **60,493** | **0.99 updates/frame** |
+| **TOTAL** | **67,809** | **0.88 updates/frame** |
 
-**The sub-frame crossing A12 claimed is withdrawn.** 60,493 T against a
-59,736 T frame is 0.99 updates/frame, not 1.23. A12's 1.23 was carrying
-column-solve at the projection this entry just refuted; the crossing was an
-artifact of the one unmeasured line, exactly as that entry warned it might be.
+**The sub-frame crossing A12 claimed is withdrawn.** 67,809 T against a
+59,736 T frame is 0.88 updates/frame, not 1.23. A12's 1.23 was carrying
+column-solve at a projection this entry refuted twice over - first by
+building the kernel, then by finishing it. The crossing was an artifact of
+unmeasured lines, exactly as that entry warned it might be.
 
-Two pieces are still outside this total, both small, both genuinely uncosted:
-**`angle_x`** (2 table lookups per span, sitting in the seam between
-decode-clip and column-solve, and in nobody's budget until now) and the **Q6
-`iq`/`step`** computation. Neither is guessed at here.
+**Efficiency work is explicitly parked here.** The project's priority is
+function over T-states: get a whole update running end to end on the Z80
+first, then optimise something that demonstrably works. Known-but-unpursued
+efficiency leads are logged in A15 rather than chased.
+
+**The chain is now complete.** `angle_x` (both endpoints, plus the swap and
+the `x1==x0` widen) and the Q6 `iq`/`step` computation were both in nobody's
+budget; they are now inside this kernel and inside its number. The kernel
+takes a clipped span and produces everything `draw_run` needs:
+**`invd inv0 inv1 x0 x1 c0 c1 n iq step` — all ten verified exact on
+10,765/10,765 oracle rows.** 1,189 bytes.
+
+Those two additions cost 1,701 T/span (4,541.6 -> 6,243.0), which is most of
+why this line grew. They were never free; they were just never counted.
+
+A third bug, caught the same way: `k_col_recip_q8` is `uint8_t` and the C
+promotes it to `int16_t`, so 255 means 255 - but it was fed to the *signed*
+multiply, which read it as -1 and flipped the sign of every `step` whose
+reciprocal has bit 7 set. 160 of 1,077 rows failed on `step` alone while the
+other nine outputs were already exact. Fixed with a separate unsigned-by-
+signed primitive (`smulw_u`). Worth noting how it presented: nine of ten
+outputs correct is exactly the shape a sign bug takes, and only a
+field-by-field oracle comparison surfaces it.
 
 Live leads, in the order they are worth taking:
 
@@ -541,6 +562,58 @@ Live leads, in the order they are worth taking:
    bearing kernel had).
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
+
+### A15. Parked efficiency leads and open unknowns
+
+**Standing direction: function over efficiency.** Get a whole update running
+end to end on the Z80, then optimise something that demonstrably works.
+Everything below is known, unpursued, and deliberately *not* estimated —
+this project has now been wrong on five straight estimates (emit 94% low,
+decode-clip 190% low, GATE 7.5x low, A11 3.6x high, column-solve 252% low),
+and writing another number here would only create something to retract.
+
+**Efficiency leads, unquantified on purpose:**
+
+- **Register-passing for multiply operands.** Every `MA`/`MB` is a store plus
+  a load, 5-6 times per span, plus `call`/`ret` per multiply. The single
+  biggest structural cost in column-solve. Unknown what it is worth.
+- **Re-run GATE on the A12 primitive.** 2,339 T, same two-product shape the
+  bearing kernel had; still on the old shift-add loop.
+- **emit is the largest single line** at 21,756 T. A1 (LITERAL) and A3
+  (retained vs unconditional) apply directly.
+- **Bearing cache.** The 9.12-distinct-corners figure is measured, but the
+  cache itself is *not built* — the 5,833 T line assumes it exists. That is a
+  functional gap, not just an efficiency one; see below.
+- **`inv_at_invd` is called twice per span** with the same `sid` and `invd`,
+  re-deriving `nx`/`ny` and the cardinal test both times. Hoistable.
+
+**Functional gaps — these matter more than any of the above:**
+
+1. **No end-to-end update exists.** Six verified kernels, each proving its own
+   stage against its own oracle, and *nothing that composes them*. Separate
+   memory maps, separate harnesses. Until one update runs start to finish —
+   block -> decode -> GATE -> bearing -> column-solve -> emit -> name table —
+   matching the host oracle's 360 words, the architecture is proven in pieces
+   and unproven as a whole. **This is the next thing to build.**
+2. **The bearing cache is assumed, not written** (see above). The budget line
+   depends on it.
+3. **The block walker does not exist.** Something has to read the per-cell
+   span program (`span_block_bake.py`'s output), dispatch SPAN/SPANC/GATE/END,
+   and feed the other kernels. That is the interpreter's actual main loop and
+   no version of it has been written in Z80.
+4. **C4: 7 corners with no accurate baked leaf**, `0xff` escape marker
+   unhandled at runtime. Still open.
+5. **Nothing has run on real hardware or a real emulator.** Every number here
+   comes from a from-scratch interpreter. `tools/z80core.py` was validated by
+   reproducing A13's independently-built result exactly (44 bytes, 193.0 T),
+   which is good evidence and is *not* the same as running on Gearsystem.
+
+**Also unresolved and worth stating plainly:** the five benches predating
+`z80core.py` each carry their own assembler/interpreter copy. Consolidating
+them onto the shared core is deferred; the check when it happens is that
+every bench reproduces its recorded T-state figure exactly. Until then the
+duplication is deliberate — swapping the substrate under a published
+measurement invalidates it.
 
 ### A6. K under cylindrical projection
 

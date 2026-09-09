@@ -54,6 +54,8 @@ SIN = 0x2400                        # int8[256]  - exactly one page
 SEC = 0x2500                        # uint8[513] - 9-bit index, 16-bit add
 INVZ = 0x2800                       # uint8[128]
 NX, NY, ANCHOR, VX, VY = 0x2900, 0x2A00, 0x2B00, 0x2C00, 0x2D00
+AXTAB = 0x2E00                      # uint8[513] angle_x_pos
+RECIP = 0x3100                      # uint8[21]  k_col_recip_q8
 
 # --- I/O ------------------------------------------------------------------
 SID = 0xD000
@@ -64,6 +66,8 @@ DQ4 = 0xD020
 MA, MB, MPROD, MSIGN = 0xD022, 0xD023, 0xD024, 0xD026
 REL, BEARING, OUTB = 0xD028, 0xD02A, 0xD02C
 SNX, SNY, ANCHV = 0xD02E, 0xD02F, 0xD030
+X0, X1, C0, C1, NCOL = 0xD031, 0xD032, 0xD033, 0xD034, 0xD035
+IQ, STEP, AXNEG, AXIN = 0xD036, 0xD038, 0xD03A, 0xD03C
 
 CODE = 0x0000
 
@@ -78,8 +82,14 @@ def arr(text, name):
 
 def load_tables():
     text = "\n".join(p.read_text() for p in sorted(GEN.glob("tilesector_polar_data_part*.inc")))
-    return {n: arr(text, "k_tspf_" + n) for n in
-            ("nx_q5", "ny_q5", "seg_anchor", "vx", "vy", "invz", "sin_q7", "sec_q7")}
+    T = {n: arr(text, "k_tspf_" + n) for n in
+         ("nx_q5", "ny_q5", "seg_anchor", "vx", "vy", "invz", "sin_q7",
+          "sec_q7", "angle_x_pos")}
+    # k_col_recip_q8 lives in the renderer source, not the generated pack.
+    # Parsed rather than transcribed, so it cannot drift from the C.
+    T["col_recip_q8"] = arr((ROOT / "src" / "tilesector_polar_renderer.c").read_text(),
+                            "k_col_recip_q8")
+    return T
 
 
 # ==========================================================================
@@ -117,7 +127,159 @@ SRC = f"""
         call inv_at
         ld a,({OUTB:#06x})
         ld ({INV1:#06x}),a
+
+; ---- angle_x on both endpoints, then the Q6 ramp (draw_run's prologue) ----
+        ld hl,({LO:#06x})
+        ld ({AXIN:#06x}),hl
+        call angle_x
+        ld ({X0:#06x}),a
+        ld hl,({HI:#06x})
+        ld ({AXIN:#06x}),hl
+        call angle_x
+        ld ({X1:#06x}),a
+
+        ld a,({X0:#06x})
+        ld b,a
+        ld a,({X1:#06x})
+        cp b
+        jp nc,ax_noswap              ; x1 >= x0, nothing to do
+        ld a,({X0:#06x})
+        ld c,a
+        ld a,({X1:#06x})
+        ld ({X0:#06x}),a
+        ld a,c
+        ld ({X1:#06x}),a
+ax_noswap:
+        ld a,({X0:#06x})
+        ld b,a
+        ld a,({X1:#06x})
+        cp b
+        jp nz,ax_wide
+        cp 159
+        jp nc,ax_wide
+        inc a
+        ld ({X1:#06x}),a             ; x1==x0 && x1<159  ->  ++x1
+ax_wide:
+        ld a,({X0:#06x})
+        srl a
+        srl a
+        srl a
+        cp 20
+        jp c,cs_c0ok
+        ld a,19
+cs_c0ok:
+        ld ({C0:#06x}),a
+        ld a,({X1:#06x})
+        srl a
+        srl a
+        srl a
+        cp 20
+        jp c,cs_c1ok
+        ld a,19
+cs_c1ok:
+        ld ({C1:#06x}),a
+        ld b,a
+        ld a,({C0:#06x})
+        cp b
+        jp z,cs_n
+        jp c,cs_n
+        xor a                        ; c1 < c0: degenerate, n = 0
+        ld ({NCOL:#06x}),a
         halt
+cs_n:
+        ld a,({C1:#06x})
+        ld b,a
+        ld a,({C0:#06x})
+        neg
+        add a,b
+        inc a
+        ld ({NCOL:#06x}),a           ; n = c1 - c0 + 1
+
+        ld a,({INV0:#06x})
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld ({IQ:#06x}),hl            ; iq = inv0 << 6
+
+        ld a,({INV1:#06x})
+        ld l,a
+        ld h,0
+        ld a,({INV0:#06x})
+        ld e,a
+        ld d,0
+        or a
+        sbc hl,de                    ; HL = inv1 - inv0 (signed)
+        ld a,({NCOL:#06x})
+        ld e,a
+        ld d,0
+        push hl
+        ld hl,{RECIP:#06x}
+        add hl,de
+        ld a,(hl)
+        ld ({MA:#06x}),a             ; MA = k_col_recip_q8[n], UNSIGNED
+        pop hl
+        call smulw_u
+        ld hl,({MPROD:#06x})
+        ld b,2
+        call shrn_signed
+        ld ({STEP:#06x}),hl
+        halt
+
+; -------------------------------------------------------------- angle_x ---
+; AXIN (i16 rel) -> A = screen x, matching angle_x() exactly.
+;
+; The 160-x subtraction is done in 8 bits where the C uses uint16. That is
+; safe, not a shortcut: when angle_x_pos[a] > 160 the C underflows to a huge
+; unsigned value and the >159 clamp catches it, while the 8-bit form wraps to
+; a value that is also >= 160 and hits the same clamp. Both land on 159.
+angle_x:
+        ld hl,({AXIN:#06x})
+        bit 7,h
+        jp z,ax_p
+        xor a
+        sub l
+        ld l,a
+        sbc a,a
+        sub h
+        ld h,a
+        ld a,1
+        ld ({AXNEG:#06x}),a
+        jp ax_cl
+ax_p:
+        xor a
+        ld ({AXNEG:#06x}),a
+ax_cl:
+        ld de,513
+        push hl
+        or a
+        sbc hl,de
+        pop hl
+        jp c,ax_ok
+        ld hl,512
+ax_ok:
+        ld de,{AXTAB:#06x}
+        add hl,de
+        ld a,(hl)
+        ld b,a
+        ld a,({AXNEG:#06x})
+        or a
+        jp z,ax_have
+        ld a,160
+        sub b
+        jp ax_clip
+ax_have:
+        ld a,b
+ax_clip:
+        cp 160
+        jp c,ax_ret
+        ld a,159
+ax_ret:
+        ret
 
 ; ---------------------------------------------------------------- UMUL ----
 ; MA (u8) * MB (u8) -> MPROD (u16), via the A13 quarter-square byte planes.
@@ -349,6 +511,44 @@ wd_general:
         or a
         sbc hl,de
         ld ({DQ4:#06x}),hl
+        ret
+
+; ------------------------------------------------------------- SMULW_U ----
+; MA (U8, unsigned) * HL (i16, |HL| <= 255) -> MPROD (i16).
+;
+; Distinct from smulw on purpose. k_col_recip_q8 is uint8_t and the C promotes
+; it to int16_t, so 255 means 255 - but smulw sign-extends its MA operand and
+; would read it as -1, flipping the sign of every step whose reciprocal has
+; bit 7 set. That is exactly what it did: 160 of 1,077 oracle rows failed on
+; `step` alone while the other nine outputs were already exact.
+smulw_u:
+        ld c,0
+        bit 7,h
+        jp z,swu_pos
+        xor a
+        sub l
+        ld l,a
+        sbc a,a
+        sub h
+        ld h,a
+        ld c,1
+swu_pos:
+        ld a,l
+        ld ({MB:#06x}),a
+        ld a,c
+        ld ({MSIGN:#06x}),a
+        call umul
+        ld a,({MSIGN:#06x})
+        or a
+        ret z
+        ld hl,({MPROD:#06x})
+        xor a
+        sub l
+        ld l,a
+        sbc a,a
+        sub h
+        ld h,a
+        ld ({MPROD:#06x}),hl
         ret
 
 ; --------------------------------------------------------------- SMULW ----
@@ -659,6 +859,8 @@ def build_mem(T):
     mem[SIN:SIN + 256] = bytes(v & 0xFF for v in T["sin_q7"])
     mem[SEC:SEC + 513] = bytes(T["sec_q7"])
     mem[INVZ:INVZ + 128] = bytes(T["invz"])
+    mem[AXTAB:AXTAB + 513] = bytes(T["angle_x_pos"])
+    mem[RECIP:RECIP + len(T["col_recip_q8"])] = bytes(T["col_recip_q8"])
     for base, key in ((NX, "nx_q5"), (NY, "ny_q5"), (ANCHOR, "seg_anchor"),
                       (VX, "vx"), (VY, "vy")):
         d = T[key]
@@ -675,7 +877,7 @@ def w16(mem, addr, v):
 def main():
     T = load_tables()
     code, labels = assemble(SRC, CODE)
-    print(f"=== COLUMN-SOLVE KERNEL (invd / inv0 / inv1), {len(code)} bytes ===")
+    print(f"=== COLUMN-SOLVE KERNEL (clipped span -> Q6 ramp), {len(code)} bytes ===")
 
     dump = ROOT / "build" / "column_solve_oracle.txt"
     if not dump.exists():
@@ -704,10 +906,15 @@ def main():
         cpu = Z80(mem)
         cpu.run(CODE)
         ts.append(cpu.t)
-        got = (cpu.m[INVD], cpu.m[INV0], cpu.m[INV1])
-        want = (invd, inv0, inv1)
+        def rd16(a):
+            v = cpu.m[a] | (cpu.m[a + 1] << 8)
+            return v - 0x10000 if v >= 0x8000 else v
+        got = (cpu.m[INVD], cpu.m[INV0], cpu.m[INV1], cpu.m[X0], cpu.m[X1],
+               cpu.m[C0], cpu.m[C1], cpu.m[NCOL], rd16(IQ), rd16(STEP))
+        want = (invd, inv0, inv1, x0, x1, c0, c1, n, iq, step)
         if got != want:
-            for i, nm in enumerate(("invd", "inv0", "inv1")):
+            for i, nm in enumerate(("invd", "inv0", "inv1", "x0", "x1",
+                                    "c0", "c1", "n", "iq", "step")):
                 if got[i] != want[i]:
                     fails[nm] += 1
             if shown < 8:
@@ -718,15 +925,17 @@ def main():
     if fails:
         print(f"\nFAILURES by field: {dict(fails)}")
         raise SystemExit(f"kernel is WRONG")
-    print(f"VERIFIED: {len(rows)}/{len(rows)} exact - invd, inv0 and inv1 all "
-          f"match the shipped C on every sampled span")
+    print(f"VERIFIED: {len(rows)}/{len(rows)} exact on ALL TEN outputs "
+          f"(invd inv0 inv1 x0 x1 c0 c1 n iq step)\n"
+          f"          - the whole project_key + draw_run prologue, matching "
+          f"the shipped C")
 
     mean_t = stt.mean(ts)
     print(f"\nT-states per span: mean={mean_t:.1f}  min={min(ts)}  max={max(ts)}")
 
     spans = 4.30
     line = mean_t * spans
-    print(f"\ncolumn-solve (invd/inv0/inv1) at {spans} visible spans/update: "
+    print(f"\ncolumn-solve (COMPLETE chain) at {spans} visible spans/update: "
           f"{line:,.0f} T/update")
     print(f"  projection this replaces (A13 re-cost)      7,636 T")
     print(f"  earlier projection (shift-add primitive)   17,729 T")
@@ -742,9 +951,10 @@ def main():
     print(f"  emit                  {emit:9,.0f} T   [cycle-exact]")
     print(f"  ------------------------------------")
     print(f"  TOTAL                 {tot:9,.0f} T   {frame/tot:.2f} updates/frame")
-    print(f"\n  Every line is now measured. Still missing from this total:")
-    print(f"  angle_x (2 lookups/span, between decode and column-solve) and")
-    print(f"  the Q6 iq/step computation - both small, both uncosted.")
+    print(f"\n  The chain from a clipped span to the Q6 ramp emit consumes is")
+    print(f"  now COMPLETE and verified end to end. angle_x and the iq/step")
+    print(f"  computation, previously in nobody's budget, are inside this")
+    print(f"  kernel and inside this number.")
 
 
 if __name__ == "__main__":
