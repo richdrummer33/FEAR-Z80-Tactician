@@ -563,6 +563,77 @@ Live leads, in the order they are worth taking:
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
+### A22. CARRY_EDGE_A — external review's diagnosis was exactly right, and worth 2.5%.
+
+External review identified a precise redundancy in the column materializer:
+per column it computes both endpoints from scratch, so the next column's
+`invl` recomputes the value the previous column already produced as `invr`.
+That reading of the code is **correct** — it is the runtime analogue of what
+`SPANC` does in the baker.
+
+`tools/z80_materialize_run_bench.py` (`make materialize-run-bench`) rebuilds
+the materializer run-scoped and carries the endpoint. **2,327/2,327 runs
+exact** against a per-run oracle dumped by the same self-checking probe.
+
+**The first measurement was a trap, and worth recording as one.** Against the
+per-column kernel's 7,798 T/column it looked like a 12.4% *regression*. That
+was a confound of my own making: the per-column baseline wrote into a
+single-column buffer (`r*2` addressing) while the run kernel writes a real
+20x18 map (`r*40 + c*2`). **The 7,798 T baseline was optimistic — it never
+paid realistic addressing** — so it is not a fair comparison and is retired
+as one.
+
+Re-run as a proper A/B, against a NOCARRY twin identical in every other
+respect (same addressing, same helpers, same tile logic):
+
+| | T/column |
+| --- | ---: |
+| NOCARRY twin | 8,983.5 |
+| **CARRY_EDGE_A** | **8,762.5 (−2.5%)** |
+
+**221 T/column — almost exactly the cost of one `shr6_clamp`.** The
+redundancy is real, is exactly where review said it was, and removing it buys
+2.5%. It is not a step toward the 5.4x the frame budget needs. Recorded
+because the diagnosis being right and the remedy being small are different
+facts, and conflating them would send the next session down the wrong path.
+
+### A23. Where the materializer's time ACTUALLY goes — profiled, not guessed.
+
+Rather than reason about the next optimisation, the Z80 interpreter was
+instrumented to attribute T-states to the enclosing subroutine. 402 runs,
+2,749 columns, 23.9M T:
+
+| routine | share | T/column | what it is |
+| --- | ---: | ---: | --- |
+| `cmps` | **16.3%** | 1,417.5 | signed 16-bit compare, as a `CALL` with push/pop |
+| `row_addr` | **14.6%** | 1,270.1 | `r*40` recomputed per row, as a `CALL` |
+| `df_loop` | 10.7% | 924.8 | interior fill |
+| `de_loop` | 5.6% | 487.3 | edge row walk |
+| `shr3_u` | 4.3% | 372.0 | the `>>3` inside `row_floor` |
+
+**Two routines are 31% of the kernel, and neither computes anything about the
+picture.** `cmps` is a comparison; `row_addr` is an address. Both are pure
+implementation overhead, and both are exactly what review predicted:
+"carry the name-table pointer" (+2 / +42 / −38 instead of `r*40`) and
+"hoist the invariants out of the row loop".
+
+That is the directed target, and it is now measured rather than intuited.
+
+**Corrected budget** (real map addressing, CARRY_EDGE_A):
+
+| stage | T/update |
+| --- | ---: |
+| bearing / decode-clip / GATE / column-solve / sort | 47,342 |
+| materialize | 256,519 |
+| **TOTAL** | **303,861 — 0.20 updates/frame** |
+
+**Methodological note, validated the hard way this run.** Review's advice was
+to change one thing at a time and oracle-check each. My first attempt changed
+the endpoint carry *and* the addressing model together, and the result read
+as a 12.4% regression that would have been easy to misattribute to the carry.
+Only the NOCARRY twin — identical but for the one line — recovered the truth.
+Every subsequent materializer experiment gets a twin.
+
 ### A21. COLUMN MATERIALIZER — built, exact, and it changes the whole budget picture.
 
 `make materialize-bench`. The seam the code review named in its section 12:

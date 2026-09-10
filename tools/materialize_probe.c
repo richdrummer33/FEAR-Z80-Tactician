@@ -48,6 +48,10 @@
 static uint16_t g_recon[TSP_MAP_CELLS];
 
 /* draw_run's column loop, verbatim in structure, writing into `out`. */
+static FILE *g_run_dump = 0;
+static unsigned g_run_stride = 11;
+static unsigned long g_run_seen = 0, g_run_emitted = 0;
+
 static void materialize_run(uint16_t *out, const PolarRun *r, FILE *dump,
                             unsigned long *emitted, unsigned stride,
                             unsigned long *seen)
@@ -63,6 +67,55 @@ static void materialize_run(uint16_t *out, const PolarRun *r, FILE *dump,
     step = (int16_t)(((int16_t)r->inv1 - (int16_t)r->inv0)
                      * (int16_t)k_col_recip_q8[n]);
     step = shr_signed(step, 2);
+
+    /* PER-RUN dump: the inputs a run-scoped kernel needs, then the whole
+     * column range it produces. This is what CARRY_EDGE_A is verified
+     * against - a kernel that walks the run cannot be checked one isolated
+     * column at a time, because carrying state across columns is the point. */
+    if (g_run_dump && (g_run_seen++ % g_run_stride == 0)) {
+        static uint16_t runmap[TSP_MAP_CELLS];
+        uint8_t cc, rr;
+        int16_t jq = iq;
+        unsigned save = g_touched_count;
+        map_init(runmap);
+        for (cc = c0; cc <= c1; ++cc) {
+            uint8_t il = (uint8_t)clamp_u8i((int16_t)((jq + 32) >> 6), 255u);
+            uint8_t ir = (uint8_t)clamp_u8i((int16_t)((jq + step + 32) >> 6), 255u);
+            uint8_t h0 = (uint8_t)(il >> 1), h1 = (uint8_t)(ir >> 1);
+            int16_t t0 = (int16_t)(TSPF_HORIZON - h0), t1 = (int16_t)(TSPF_HORIZON - h1);
+            int16_t b0 = (int16_t)(TSPF_HORIZON + h0), b1 = (int16_t)(TSPF_HORIZON + h1);
+            uint8_t bd = 0, sh;
+            if (profile == TSP_PROFILE_FULL) { t0--; t1--; }
+            if (cc == c0 && r->left_real) bd |= 1u;
+            if (cc == c1 && r->right_real) bd |= 2u;
+            sh = g_tspf_appearance_mode
+               ? shade_for((uint8_t)(((uint16_t)il + ir) >> 1),
+                           k_tspf_shade_bias[r->sid]) : 1u;
+            if (profile == TSP_PROFILE_LINTEL) {
+                b0 = (int16_t)(TSPF_HORIZON - (h0 >> 1));
+                b1 = (int16_t)(TSPF_HORIZON - (h1 >> 1));
+            } else if (profile == TSP_PROFILE_RAISED) {
+                b0 = (int16_t)(TSPF_HORIZON + h0 - (h0 >> 2));
+                b1 = (int16_t)(TSPF_HORIZON + h1 - (h1 >> 2));
+            } else if (profile == TSP_PROFILE_RISER) {
+                t0 = (int16_t)(TSPF_HORIZON + h0 - (h0 >> 2));
+                t1 = (int16_t)(TSPF_HORIZON + h1 - (h1 >> 2));
+            }
+            draw_edge(runmap, cc, t0, t1, sh, 0u);
+            draw_edge(runmap, cc, b0, b1, sh, 1u);
+            draw_full(runmap, cc, (int8_t)(row_floor(t0 > t1 ? t0 : t1) + 1),
+                      (int8_t)(row_floor(b0 < b1 ? b0 : b1) - 1), sh, bd);
+            jq = (int16_t)(jq + step);
+        }
+        g_touched_count = save;
+        fprintf(g_run_dump, "%d %d %u %u %u %u %u 1", iq, step, c0, c1,
+                profile, r->left_real, r->right_real);
+        for (cc = c0; cc <= c1; ++cc)
+            for (rr = 0; rr < TSP_ROWS; ++rr)
+                fprintf(g_run_dump, " %u", runmap[rr * TSP_COLS + cc]);
+        fputc('\n', g_run_dump);
+        ++g_run_emitted;
+    }
 
     for (c = c0; c <= c1; ++c) {
         uint8_t invl = (uint8_t)clamp_u8i((int16_t)((iq + 32) >> 6), 255u);
@@ -131,6 +184,7 @@ int main(int argc, char **argv) {
     unsigned long poses = 0, emitted = 0, seen = 0, recon_bad = 0;
 
     if (!dump) { fprintf(stderr, "cannot open %s\n", out_path); return 1; }
+    g_run_dump = fopen("build/materialize_run_oracle.txt", "w");
     fprintf(stderr, "appearance_mode = %u\n", g_tspf_appearance_mode);
 
     for (gy = 0; gy < GRID_H; ++gy) {
@@ -191,6 +245,8 @@ int main(int argc, char **argv) {
         }
     }
     fclose(dump);
+    if (g_run_dump) fclose(g_run_dump);
+    fprintf(stderr, "runs dumped %lu of %lu\n", g_run_emitted, g_run_seen);
     fprintf(stderr, "poses %lu, reconstruction mismatches %lu, "
                     "columns seen %lu, rows emitted %lu\n",
             poses, recon_bad, seen, emitted);
