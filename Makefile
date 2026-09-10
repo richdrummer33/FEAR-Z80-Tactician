@@ -89,7 +89,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
@@ -182,6 +182,15 @@ fused-host-path: build
 
 depth-sort-bench: fused-host-path
 	python3 tools/z80_depth_sort_bench.py 20000
+
+pairwise-order: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/pairwise_order_probe.c -o build/pairwise_order_probe
+	./build/pairwise_order_probe 4 16 build/flips.txt
+
+flip-boundary: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/flip_boundary_probe.c -o build/flip_boundary_probe
+	./build/flip_boundary_probe build/flip_maps.txt 6000
+	python3 tools/flip_boundary_analysis.py
 
 $(COLUMN_SOLVE_PROBE_BIN): build tools/column_solve_probe.c
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/column_solve_probe.c -o $@

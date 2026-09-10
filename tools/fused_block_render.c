@@ -85,7 +85,8 @@ static int load_blocks(const char *path) {
     return 1;
 }
 
-enum { ORDER_BLOCK = 0, ORDER_DEPTH = 1, ORDER_ORACLE_INSERT = 2 };
+enum { ORDER_BLOCK = 0, ORDER_DEPTH = 1, ORDER_ORACLE_INSERT = 2,
+       ORDER_ORACLE_STRICT = 3, ORDER_INVD = 4 };
 static uint8_t oracle_keys_fwd(const TSPState *s, uint8_t *keys);
 
 /* Mirrors tsp_polar_render's host path exactly, except that the active key
@@ -106,6 +107,53 @@ static uint8_t fused_render(const TSPState *s, uint16_t *out_map, int order,
     lx = (uint8_t)((uint16_t)s->x_q4 & 63u);
     ly = (uint8_t)((uint16_t)s->y_q4 & 63u);
 
+    if (order == ORDER_INVD) {
+        /* Sort by invd - the PERPENDICULAR wall distance - instead of
+         * inv_mid. invd is a function of camera translation only (wall_d_q4
+         * is affine in camera position), where inv_mid additionally carries
+         * the yaw-dependent normal-dot and secant terms. The pairwise probe
+         * shows invd ordering is constant over a cell for 94.08% of pairs
+         * against 74.27% for inv_mid, so if this renders correctly the sort
+         * key becomes precompilable. Same insertion rule, same strict-greater
+         * tie behaviour, only the key changes. */
+        uint8_t ks[64], nk = oracle_keys_fwd(s, ks), j;
+        static uint8_t key_invd[64];
+        for (j = 0; j < nk; ++j) {
+            uint8_t sid, k;
+            if (count >= TSPF_MAX_ACTIVE) break;
+            if (!project_key(ks[j], s, &g_runs[count])) continue;
+            sid = (uint8_t)(k_tspf_keys[ks[j]] & 31u);
+            key_invd[count] = inv_for_dq4(wall_d_q4(sid, k_tspf_seg_anchor[sid], s));
+            k = count;
+            i = count;
+            while (i > 0u && key_invd[g_run_order[i - 1u]] > key_invd[k]) {
+                g_run_order[i] = g_run_order[i - 1u]; --i;
+            }
+            g_run_order[i] = k;
+            ++count;
+        }
+        for (i = 0; i < count; ++i) draw_run(out_map, 0, &g_runs[g_run_order[i]]);
+        g_tspf_touched_cells = g_touched_count;
+        return count;
+    }
+    if (order == ORDER_ORACLE_STRICT) {
+        /* STRICT oracle insertion order, NO depth reordering whatsoever.
+         * Keys come straight from the recipe front end - the block file is
+         * not consulted at all, so the block export cannot be a confounder -
+         * and insert_run is never called. g_run_order is filled 0,1,2,...
+         * so draw order IS arrival order. This is the exact hypothesis:
+         * "recipe insertion order already encodes a valid painter order". */
+        uint8_t ks[64], nk = oracle_keys_fwd(s, ks), j;
+        for (j = 0; j < nk; ++j) {
+            if (count >= TSPF_MAX_ACTIVE) break;
+            if (!project_key(ks[j], s, &g_runs[count])) continue;
+            g_run_order[count] = count;
+            ++count;
+        }
+        for (i = 0; i < count; ++i) draw_run(out_map, 0, &g_runs[g_run_order[i]]);
+        g_tspf_touched_cells = g_touched_count;
+        return count;
+    }
     if (order == ORDER_ORACLE_INSERT) {
         /* Same key SET the block walk produces (proven identical), but fed to
          * insert_run in the oracle's own base-then-conditional order. If this
@@ -222,12 +270,14 @@ int main(int argc, char **argv) {
     unsigned yaw_step = (argc > 2) ? (unsigned)strtoul(argv[2], 0, 0) : 8u;
     static uint16_t oracle[TSP_MAP_CELLS], fused_b[TSP_MAP_CELLS];
     static uint16_t fused_d[TSP_MAP_CELLS], fused_o[TSP_MAP_CELLS];
+    static uint16_t fused_s[TSP_MAP_CELLS], fused_i[TSP_MAP_CELLS];
     static const int8_t off[][2] = { {0,0},{7,3},{3,7},{15,15},{11,5} };
     const unsigned n_off = sizeof off / sizeof off[0];
     TSPState s;
     unsigned gx, gy, yaw, oi, c;
     unsigned long poses = 0;
-    unsigned long ok_block = 0, ok_depth = 0, ok_oins = 0;
+    unsigned long ok_block = 0, ok_depth = 0, ok_oins = 0, ok_strict = 0;
+    unsigned long words_bad_strict = 0, ok_invd = 0, words_bad_invd = 0;
     unsigned long words_bad_block = 0, words_bad_depth = 0;
     unsigned long worst_block = 0, worst_depth = 0;
     unsigned shown = 0;
@@ -263,14 +313,28 @@ int main(int argc, char **argv) {
                     tsp_polar_renderer_reset();
                     fused_render(&s, fused_o, ORDER_ORACLE_INSERT, 0);
 
+                    tsp_polar_renderer_reset();
+                    fused_render(&s, fused_s, ORDER_ORACLE_STRICT, 0);
+
+                    tsp_polar_renderer_reset();
+                    fused_render(&s, fused_i, ORDER_INVD, 0);
+
                     {
-                        unsigned dobad = 0;
+                        unsigned dobad = 0, dsbad = 0;
                         for (c = 0; c < TSP_MAP_CELLS; ++c) {
                             if (oracle[c] != fused_b[c]) ++db;
                             if (oracle[c] != fused_d[c]) ++dd;
                             if (oracle[c] != fused_o[c]) ++dobad;
+                            if (oracle[c] != fused_s[c]) ++dsbad;
+                        }
+                        {
+                            unsigned dibad = 0;
+                            for (c = 0; c < TSP_MAP_CELLS; ++c)
+                                if (oracle[c] != fused_i[c]) ++dibad;
+                            if (!dibad) ++ok_invd; else words_bad_invd += dibad;
                         }
                         if (!dobad) ++ok_oins;
+                        if (!dsbad) ++ok_strict; else words_bad_strict += dsbad;
                     }
                     {
                         uint8_t na = oracle_keys_fwd(&s, ok_), nb = block_keys(&s, bk_);
@@ -312,6 +376,14 @@ int main(int argc, char **argv) {
     printf("ORDER_ORACLE_INSERT (same key set, oracle's insertion order):\n");
     printf("  poses matching exactly  %lu / %lu   (%.4f%%)\n\n",
            ok_oins, poses, 100.0 * (double)ok_oins / (double)poses);
+    printf("ORDER_INVD (sort by perpendicular distance - TRANSLATION ONLY):\n");
+    printf("  poses matching exactly  %lu / %lu   (%.4f%%)\n",
+           ok_invd, poses, 100.0 * (double)ok_invd / (double)poses);
+    printf("  total word mismatches   %lu\n\n", words_bad_invd);
+    printf("ORDER_ORACLE_STRICT (recipe order, NO depth sort AT ALL):\n");
+    printf("  poses matching exactly  %lu / %lu   (%.4f%%)\n",
+           ok_strict, poses, 100.0 * (double)ok_strict / (double)poses);
+    printf("  total word mismatches   %lu\n\n", words_bad_strict);
     printf("ORDER_BLOCK (strict baked order, NO runtime depth sort):\n");
     printf("  poses matching exactly  %lu / %lu   (%.4f%%)\n",
            ok_block, poses, 100.0 * (double)ok_block / (double)poses);

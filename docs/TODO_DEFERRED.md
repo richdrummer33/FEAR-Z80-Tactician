@@ -563,6 +563,65 @@ Live leads, in the order they are worth taking:
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
+### A20. Can the draw order be PRECOMPILED instead of sorted? Measured: mostly, but not enough to be worth it.
+
+Three experiments, in sequence. The conclusion is a **do-not-build**, which is
+worth as much as a green result and cheaper to act on.
+
+**1. Is recipe insertion order already a valid painter order?** No.
+`ORDER_ORACLE_STRICT` in `tools/fused_block_render.c` takes keys straight from
+the recipe front end (the block file is not consulted, so it cannot be a
+confounder), draws them in exactly that order, and **never calls
+`insert_run`**. Result: **30.5526%** of poses exact — bit-identical to
+`ORDER_BLOCK`'s 30.5526% and 750,068 mismatched words, which also
+cross-validates the block export as faithful to recipe order. Depth ordering
+is load-bearing. Only the final 3.2% of the depth-sorted path was a tie
+problem.
+
+**2. Pairwise order-flip census** (`make pairwise-order`,
+`tools/pairwise_order_probe.c`) — every pair of walls that can co-occur in a
+cell, swept over local (x,y) and yaw:
+
+| | pairs | share |
+| --- | ---: | ---: |
+| order CONSTANT over the whole cell | 10,999 | **72.40%** |
+| always EQUAL depth (tie, convention decides) | 284 | 1.87% |
+| order FLIPS — a real ownership boundary | 3,910 | **25.74%** |
+
+Of the flipping pairs, **55.45% flip within a fixed yaw** (a genuine
+translation boundary) and **44.55% are constant within every yaw slice but
+differ between slices** — those have *no* translation boundary at all and an
+affine selector in (lx,ly) cannot express them. They are yaw events.
+
+**The intuition about perpendicular distance was right.** Ordering by `invd`
+(`wall_d_q4` is affine in camera position, so `invd` is translation-only) is
+constant over the cell for **94.08%** of pairs against 74.27% for `inv_mid`.
+But substituting it as the sort key does **not** render correctly:
+`ORDER_INVD` scores **54.34%**. The yaw-dependent normal-dot and secant terms
+in `inv_at_invd` genuinely change which wall owns the screen.
+
+**3. Are the translation boundaries affine?** (`make flip-boundary`) Exhaustive
+**64x64** local sweep per pair per yaw, decided by exact convex-hull
+disjointness — a decision procedure, not a fitted classifier that could only
+ever report success. Ties are excluded from both sides, since equal depth
+makes either assignment valid.
+
+- two-sign slices linearly separable: **50.22%** (802 of 1,597)
+- flipping pairs where **one axis serves every yaw slice**: **20.11%**
+  (37 of the 184 pairs that have more than one slice — and only multi-slice
+  pairs actually test the claim, which is why that denominator is stated)
+
+**Verdict.** A fully precompiled ordering would cover the 74.3% that never
+flip, plus roughly half of the 25.7% that do, and would still need a fallback.
+Call it ~87% at best, bought with selector evaluations at ~860 T each. The
+runtime depth sort it would replace costs **1,314 T, or 1.9% of the update**
+(A19). **The ownership-selector machinery cannot pay for itself here.** Keep
+the sort.
+
+What the census *is* worth keeping: the 72.40% constant-order figure is a
+strong hint that a future baker could skip comparisons it knows are decided,
+if the sort ever became hot. It is not hot.
+
 ### A18. The depth sort is MANDATORY — my own optimism was wrong, and it is cheap anyway
 
 A17 measured baked order at 29.6% and I suggested the fix "might even be
