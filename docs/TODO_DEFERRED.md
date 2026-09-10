@@ -563,6 +563,73 @@ Live leads, in the order they are worth taking:
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
+### A24. Materializer optimisation ladder — 22.9% off, every rung twin-verified.
+
+Four changes, each an isolated A/B against the previous rung, each
+**2,327/2,327 runs exact** against the per-run oracle. `make
+materialize-run-bench` runs the whole ladder.
+
+| rung | T/column | vs previous |
+| --- | ---: | ---: |
+| NOCARRY twin (reference) | 8,983.5 | — |
+| CARRY_EDGE_A — carry the endpoint | 8,762.5 | −2.5% |
+| **ROWPTR_B** — carry the name-table pointer | 8,210.5 | **−6.3%** |
+| **INLINECMP_C** — inline the signed compare | 7,539.3 | **−8.2%** |
+| **FILLLOOP_D** — register-resident interior fill | **6,759.4** | **−10.3%** |
+| | | **−22.9% cumulative** |
+
+**ROWPTR_B.** Both hot loops walk rows by +1, so the destination advances by
+exactly +40. `row_addr` recomputed `r*40` from scratch every row — 156 T of
+shifts plus CALL and RET. Computed once per loop instead, then +39 (the two
+stores already advanced +2). It returned less than `row_addr`'s 14.6% profile
+share because the loops are short (~2.7 rows), so the one-time hoist only
+amortises partly.
+
+*Caught by the twin:* the first attempt read as **+4.9% slower**. The
+replacement had missed on a case difference — `0xC027` vs `0xc027` — so the
+per-row `CALL` was never removed and the hoist was pure added cost. Without a
+twin that would have been recorded as "pointer carry does not help".
+
+**INLINECMP_C.** `cmps` was 16.3%, and almost none of it was the comparison:
+CALL (17) + RET (10) + a second push/pop pair (21) wrapping ~70 T of work.
+Inlined the identical bias-then-SBC primitive. DE is no longer preserved —
+every site reloads it before comparing and none reads it after, but that is an
+assertion about the code and the twin is what settles it.
+
+**FILLLOOP_D.** The re-profile promoted `df_loop` to the top at 15.7%, and
+almost none of that was the fill: per row it reloaded the pointer from memory,
+reloaded both halves of a word that never changes, wrote the pointer back, and
+ran a compare-based loop test costing ~70 T alone. Everything it needs fits in
+registers — HL pointer, BC word, DE stride, A count — so nothing touches
+memory but the two stores that are the actual work.
+
+**The ranking reordered after every single change**, which is the whole
+argument for re-profiling rather than working down a list:
+
+| routine | before | after INLINECMP_C | after FILLLOOP_D |
+| --- | ---: | ---: | ---: |
+| `cmps` | 16.3% | inlined | inlined |
+| `row_addr` | 14.6% | 4.7% | 5.2% |
+| `df_loop` | 10.7% | **15.7%** | 5.5% |
+| `de_loop` | 5.6% | 7.5% | **8.3%** |
+
+**Budget now:** materialize 197,878 T, whole update **245,220 T, 0.24
+updates/frame** (from 0.20).
+
+**Next rung.** The profile is now flat — the top item is 8.3% and the top ten
+sum to ~54%. There is no single dominant target left, which means per-rung
+returns will shrink and the remaining wins are in the edge path as a whole
+(`de_loop` + `edge_entry` + `ee_hi_ok` + `shr3_u` + `de_yl_min` ≈ 27%).
+That path is the DDA candidate: carrying integer row + sub-row + fractional
+error would remove `shr3_u` and `row_floor` outright. It is now the largest
+*coherent* target even though no single routine dominates.
+
+**And the flatness is itself the signal** that the standing direction was
+right: at 6,759 T/column against emit's 60 T/word, the remaining gap is no
+longer obviously implementation slack. Further large wins probably need the
+architectural move — stop materializing unchanged cells at all — rather than
+more instruction-level work.
+
 ### A22. CARRY_EDGE_A — external review's diagnosis was exactly right, and worth 2.5%.
 
 External review identified a precise redundancy in the column materializer:

@@ -57,7 +57,7 @@ LOCL, ATTR, TMP = 0xC022, 0xC024, 0xC026
 HLH, HRH = 0xC028, 0xC029
 EDGEBASE, FULLBASE = 0xC02A, 0xC02C
 INVL, INVR, CURC, JQ, BORDER, COLPTR = 0xC02E, 0xC02F, 0xC030, 0xC032, 0xC034, 0xC036
-FULLNB = 0xC038
+FULLNB, RPTR, FCOUNT = 0xC038, 0xC03A, 0xC03C
 
 HORIZON, ROWS, COLS = 72, 18, 20
 
@@ -75,7 +75,7 @@ _HELPER_VARS['FULLBASE + 1'] = 0xC02D
 # The helper subroutines (rowfloor / draw_edge / edge_entry / draw_full /
 # cmps / sign-extends) are lifted VERBATIM from the per-column kernel, so the
 # A/B differs only in the run loop above them - not in how a row is drawn.
-HELPERS = open("/tmp/helpers.asm").read().format(**_HELPER_VARS)
+HELPERS = open(ROOT / "tools" / "materialize_helpers.asm").read().format(**_HELPER_VARS)
 
 SRC = f"""
 ; ---- per-RUN setup (hoisted out of the column loop) ----
@@ -349,6 +349,86 @@ row_addr:
 """
 
 
+# ---------------------------------------------------------------------------
+# ROWPTR_B: carry the name-table pointer down the row loops.
+#
+# Both hot loops walk rows by +1, so the destination address advances by
+# exactly +40 (one name-table row, 20 words). `row_addr` recomputed r*40 from
+# scratch every row - 156 T of shifts, a CALL and a RET - and the profile put
+# it at 14.6% of the kernel. Compute it ONCE per loop, then add 40.
+#
+# The store leaves HL at RPTR+1 (after `inc hl` for the high byte), so the
+# advance is +39, not +40. Off-by-one there would corrupt every row after the
+# first, which is exactly the sort of thing the twin catches.
+SRC_ROWPTR = SRC.replace("""de_loop:""", """        call row_addr
+        ld (0x{RPTR:04x}),hl
+de_loop:""".format(RPTR=RPTR)).replace("""df_loop:""", """        call row_addr
+        ld (0x{RPTR:04x}),hl
+df_loop:""".format(RPTR=RPTR)).replace("""        call row_addr
+        ld a,(0xc026)
+        ld (hl),a
+        inc hl
+        ld a,(0xC027)
+        ld (hl),a""", """        ld hl,(0x{RPTR:04x})
+        ld a,(0xc026)
+        ld (hl),a
+        inc hl
+        ld a,(0xC027)
+        ld (hl),a
+        ld de,39
+        add hl,de
+        ld (0x{RPTR:04x}),hl""".format(RPTR=RPTR)).replace("""        call row_addr
+        ld a,(0xc02c)
+        ld (hl),a
+        inc hl
+        ld a,(0xC02D)
+        ld (hl),a""", """        ld hl,(0x{RPTR:04x})
+        ld a,(0xc02c)
+        ld (hl),a
+        inc hl
+        ld a,(0xC02D)
+        ld (hl),a
+        ld de,39
+        add hl,de
+        ld (0x{RPTR:04x}),hl""".format(RPTR=RPTR))
+
+# ---------------------------------------------------------------------------
+# INLINECMP_C: inline the signed compare.
+#
+# `cmps` was 16.3% of the kernel. Almost none of that is the comparison - it
+# is CALL (17) + RET (10) + a second push/pop pair (21) wrapping ~70 T of
+# actual work. Inlining keeps the identical bias-then-SBC primitive and drops
+# 48 T per site.
+#
+# DE is NOT preserved by the inline form. Every call site loads DE fresh
+# immediately before comparing and none reads it afterwards - but that is an
+# assertion about the code, so the twin is what actually settles it.
+SRC_INLINECMP = SRC_ROWPTR.replace("""        call cmps""", """        push hl
+        ld a,h
+        xor 0x80
+        ld h,a
+        ld a,d
+        xor 0x80
+        ld d,a
+        or a
+        sbc hl,de
+        pop hl""")
+
+# ---------------------------------------------------------------------------
+# FILLLOOP_D: make the interior fill a register-resident loop.
+#
+# After INLINECMP_C the re-profile put `df_loop` on top at 15.7%. Almost none
+# of that is the fill itself: per row it reloaded the pointer from memory,
+# reloaded both halves of a word that never changes, wrote the pointer back,
+# then ran a compare-based loop test costing ~70 T on its own.
+#
+# Everything the loop needs fits in registers - HL the pointer, BC the word,
+# DE the row stride, A the count - so nothing touches memory except the two
+# stores that are the actual work. The two `inc hl` from storing the word are
+# why the stride added is 38 rather than 40.
+SRC_FILLLOOP = SRC_INLINECMP.replace('        call row_addr\n        ld (0xc03a),hl\ndf_loop:\n        ld hl,(0xc03a)\n        ld a,(0xc02c)\n        ld (hl),a\n        inc hl\n        ld a,(0xC02D)\n        ld (hl),a\n        ld de,39\n        add hl,de\n        ld (0xc03a),hl\n        ld a,(0xc01f)\n        ld b,a\n        ld a,(0xc020)\n        cp b\n        ret z\n        ld a,b\n        inc a\n        ld (0xc01f),a\n        jp df_loop', '        ld a,(0xc020)\n        ld b,a\n        ld a,(0xc01f)\n        neg\n        add a,b\n        inc a                        ; A = R1 - R0 + 1 = row count\n        ld (0xc03c),a\n        call row_addr                ; HL = first row address (clobbers A, DE)\n        ld bc,(0xc02c)               ; BC = the FULL word (C=lo, B=hi)\n        ld de,38                     ; two stores advance +2; +38 = one row\n        ld a,(0xc03c)\ndf_loop:\n        ld (hl),c\n        inc hl\n        ld (hl),b\n        inc hl\n        add hl,de\n        dec a\n        jp nz,df_loop\n        ret')
+assert SRC_FILLLOOP != SRC_INLINECMP, "FILLLOOP_D anchor did not match"
+
 SRC_NOCARRY = SRC.replace("""run_loop:
 ; ---- invr: the ONLY Q6 decode per column ----""",
 """run_loop:
@@ -380,7 +460,9 @@ def main():
     stepn = max(1, len(lines) // limit)
     cases = lines[::stepn]
 
-    variants = [("CARRY_EDGE_A", SRC), ("NOCARRY twin", SRC_NOCARRY)]
+    variants = [("CARRY_EDGE_A", SRC), ("NOCARRY twin", SRC_NOCARRY),
+                ("ROWPTR_B", SRC_ROWPTR), ("INLINECMP_C", SRC_INLINECMP),
+                ("FILLLOOP_D", SRC_FILLLOOP)]
     results = {}
     print(f"oracle: {len(cases)} runs strided across {len(lines)}\n")
 
@@ -390,13 +472,26 @@ def main():
         base = bytearray(0x10000)
         base[CODE:CODE + len(code)] = code
         results[vname] = run_variant(vname, code, base, bgm, cases)
-    a, b = results["CARRY_EDGE_A"], results["NOCARRY twin"]
+    a, b, rp = (results["CARRY_EDGE_A"], results["NOCARRY twin"],
+                results["ROWPTR_B"])
+    ic = results["INLINECMP_C"]
+    fl = results["FILLLOOP_D"]
     print(f"\n=== A/B: does carrying the endpoint pay? ===")
     print(f"  NOCARRY twin   {b:8.1f} T/column")
     print(f"  CARRY_EDGE_A   {a:8.1f} T/column   {(a/b - 1):+.1%}")
     print(f"\nBoth use IDENTICAL map addressing, helpers and tile logic, so this")
     print(f"difference is the carry and nothing else.")
     OLD_PER_COL = 7798.0
+    print(f"\n=== ROWPTR_B: carry the name-table pointer down the row loops ===")
+    print(f"  CARRY_EDGE_A   {a:8.1f} T/column   (baseline)")
+    print(f"  ROWPTR_B       {rp:8.1f} T/column   {(rp/a - 1):+.1%}")
+    print(f"\n=== INLINECMP_C: inline the signed compare ===")
+    print(f"  ROWPTR_B       {rp:8.1f} T/column   (baseline)")
+    print(f"  INLINECMP_C    {ic:8.1f} T/column   {(ic/rp - 1):+.1%}")
+    print(f"\n=== FILLLOOP_D: register-resident interior fill ===")
+    print(f"  INLINECMP_C    {ic:8.1f} T/column   (baseline)")
+    print(f"  FILLLOOP_D     {fl:8.1f} T/column   {(fl/ic - 1):+.1%}")
+    print(f"\ncumulative from CARRY_EDGE_A: {(fl/a - 1):+.1%}")
     print(f"\nFor reference the per-COLUMN kernel measured {OLD_PER_COL:.0f} T/column,")
     print(f"but it wrote into a single-column buffer (r*2 addressing) rather")
     print(f"than a real 20x18 map (r*40 + c*2). That baseline was therefore")
@@ -404,8 +499,8 @@ def main():
     print(f"fair comparison point and is not used as one here.")
     cols = 873084.0 / 29824.0
     other = 5833.0 + 11036.0 + 2339.0 + 26820.0 + 1314.0
-    line = a * cols
-    print(f"\nmaterialize (CARRY_EDGE_A, real addressing)  {line:,.0f} T/update")
+    line = fl * cols
+    print(f"\nmaterialize (FILLLOOP_D, real addressing)    {line:,.0f} T/update")
     print(f"whole update                                 {line+other:,.0f} T")
     print(f"updates/frame                                {59736.0/(line+other):.2f}")
     return
