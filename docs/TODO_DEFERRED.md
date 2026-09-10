@@ -630,6 +630,91 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A31. The Z80 A/B foundation — sequence oracle verified, and the obvious rung is WRONG.
+
+Two deliverables, and the second is the more valuable one.
+
+**1. A pose-SEQUENCE oracle, and DDA_G reproduces it exactly.**
+`make temporal-bench`. Every materializer bench so far verifies one pose
+against `coverage_pose_oracle.txt`. A temporal kernel carries state ACROSS
+poses, so a single-pose oracle cannot see the mechanism at all — the same gap
+A26 had to close when coverage state started crossing runs. The unit of
+verification is now a consecutive sequence of poses along a real trajectory,
+emitted by `temporal_boundary_probe.c` at a chosen cadence, in the same 8-field
+run format plus a 9th field, the key id, because a temporal kernel has to match
+a span to its retained state and draw order alone does not identify it.
+
+Before anything is built on it, the oracle itself is proved:
+`tools/z80_temporal_bench.py` renders every pose from scratch with the
+**unmodified DDA_G** and hard-fails unless the dumped name table matches.
+
+    sequence oracle: 5 trajectories, 300 poses, 295 consecutive pairs
+    ORACLE VERIFIED: DDA_G reproduces all 300 poses exactly
+    BASELINE_DDA   153,449.8 T/update   26.57 columns/update
+
+(That baseline is lower than the 194,761 whole-corpus figure because this
+sample is five rotation trajectories, not the whole map. It is the A/B's own
+reference, not a new budget line.)
+
+**2. The obvious first rung is INCORRECT, measured before writing it.**
+
+The natural cheap kernel is a purely local test: *if this span's column state is
+unchanged, skip the column.* No cross-span union, no second pass, no dirty set —
+which is attractive precisely because the union is what made A26's classifier
+cost 58,073 T against a 24,100 T saving.
+
+It does not work. Simulated exactly, starting from the previous name table and
+redrawing far->near only the columns whose own state changed:
+
+| corpus | pose pairs wrong | cells wrong /update |
+| --- | ---: | ---: |
+| all regimes, U=1 | **30.9%** | 3.05 |
+| pure rotation, U=1 | **76.7%** | 5.35 |
+| all regimes, U=4 | 33.8% | 8.08 |
+| pure rotation, U=4 | **82.7%** | 15.71 |
+
+**Why, precisely.** In far->near order an unchanged span writes the same words
+it wrote last update — but a NEARER span may have moved away, uncovering cells
+the unchanged span owns. Skipping it leaves the departed near span's stale
+pixels there. The span's own state being unchanged says nothing about whether
+its cells are still covered.
+
+**Note the shape of the failure**, because it is the dangerous kind: only 0.85%
+to 4.4% of cells are wrong, on 77% of frames. It would look almost right. A
+frame-average test, a screenshot, or a spot check would pass it. Only a
+cell-exact oracle on a sequence catches it, which is the third time this
+project's exactness rule has paid (A26's two pose-scope bugs, A29's
+`map_init`/`g_touched_bits` overrun, this).
+
+**What this forces on the kernel design.** `TEMP_BOUNDARY_A` must build the
+cross-span dirty union before drawing, i.e. two passes: classify every span's
+boundary events and mark cells, then draw only marked cells. That is precisely
+the shape whose cost killed A26, so **the classifier cost is the whole
+question** and it must be measured, not assumed. The budget it has to beat is
+concrete this time: A30 says an ordinary update at U=1 has 29.2 dirty cells and
+10.93 temporal ops against a baseline of 26.57 column-materializations.
+
+**What is NOT yet built:** the temporal kernel itself. The harness, the
+sequence oracle and the verified baseline exist; `TEMP_BOUNDARY_A` does not.
+No T-state figure is claimed for it.
+
+**Rungs, in the order the measurements justify** — one mechanism each, pose-
+sequence-exact, re-profiled after every rung as A24/A27 required:
+
+1. `TEMP_BOUNDARY_A` — persistent map, retained per-column `(il, ir, border)`,
+   cross-span dirty union, skip unchanged columns, keep the interior resident
+   on edge-only columns. **The interior-resident path is the valuable half**:
+   A30 puts full skipping at only 13.1% of columns under rotation at U=1 while
+   edge-only is 61.1%.
+2. `TEMP_BOUNDARY_B` — `V_COLUMN_SHIFT` as a run operation. A30 shows 97.3% of
+   spans move zero or one column at U=1, so this is `SHIFT_RUN dx=+/-1`.
+3. `TEMP_BOUNDARY_C` — `tile_id += delta` for phase and slope. Reachable on
+   53.7% of edge transitions under rotation at U=1, guarded by the attribute
+   bits and the `off`/`mag` clamps.
+4. `TEMP_BOUNDARY_D` — grow/shrink at the tips only.
+5. `TEMP_BOUNDARY_E` — restoration. A30 says a near->far scan over retained
+   state at mean depth ~3, not a baked token and not an underlay cache.
+
 ### A30. Cadence sweep — the workload is a feedback loop, and V_COLUMN_SHIFT collapses.
 
 `make temporal-cadence` reruns A29's verified boundary representation at U=1

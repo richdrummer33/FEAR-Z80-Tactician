@@ -79,6 +79,8 @@ typedef struct {
     uint8_t rank;                  /* far->near draw index */
     uint8_t x0, x1;                /* screen PIXEL extent, for sub-cell motion */
     uint8_t c0, c1;
+    int16_t iq, step;              /* run params, for the sequence oracle */
+    uint8_t profile, left_real, right_real, shade_run;
     ColState col[TSP_COLS];
 } SpanState;
 
@@ -91,6 +93,48 @@ typedef struct {
 } Pose;
 
 static Pose g_p[2];
+
+/* Pose-SEQUENCE oracle for the Z80 A/B. The masked/DDA benches verify one pose
+ * against `coverage_pose_oracle.txt`; a temporal kernel carries state ACROSS
+ * poses, so the unit of verification has to be a consecutive sequence. Same
+ * 8-field run format as that oracle so the baseline kernel needs no changes,
+ * plus a 9th field - the key id - because a temporal kernel has to match a
+ * span to its retained state and run order alone does not identify it.
+ *
+ *   line := <new_trajectory 0|1> <nruns> [iq stp c0 c1 prof lr rr sh keyid]*n
+ *           <360 final words>
+ *
+ * Runs are dumped near->far, matching coverage_pose_oracle.txt, so
+ * `run_pose(..., near_first=False)` reverses them into the far->near draw
+ * order the shipped path uses. */
+static FILE *g_seq = NULL;
+static unsigned long g_seq_stride = 1, g_seq_seen = 0, g_seq_emitted = 0;
+static unsigned long g_seq_traj = 0;
+static int g_seq_run = 0;
+
+static void dump_pose(const Pose *p, int new_traj)
+{
+    unsigned i, k;
+    if (!g_seq) return;
+
+    fprintf(g_seq, "%d %u", new_traj, p->nsp);
+    for (i = p->nsp; i-- > 0; ) {          /* near->far */
+        const SpanState *s = &p->sp[i];
+        int n = (int)s->c1 - (int)s->c0 + 1;
+        int iq = 0, stp = 0;
+        /* Re-derive iq/step exactly as draw_run does, from the retained
+         * per-column state's own inverse-depth endpoints is NOT possible -
+         * they are quantized. Carry the run's own values instead. */
+        iq = s->iq; stp = s->step;
+        fprintf(g_seq, " %d %d %u %u %u %u %u %u %u",
+                iq, stp, s->c0, s->c1, s->profile,
+                s->left_real, s->right_real, s->shade_run, s->keyid);
+        (void)n;
+    }
+    for (k = 0; k < TSP_MAP_CELLS; ++k) fprintf(g_seq, " %u", p->map[k]);
+    fputc('\n', g_seq);
+    ++g_seq_emitted;
+}
 
 /* ---- exact re-derivations of the renderer's own row ranges ---- */
 
@@ -214,11 +258,15 @@ static void build_pose(const TSPState *st, Pose *p)
         s->rank = (uint8_t)i;
         s->x0 = r->x0; s->x1 = r->x1;
         s->c0 = c0; s->c1 = c1;
+        s->profile = profile;
+        s->left_real = r->left_real; s->right_real = r->right_real;
+        s->shade_run = 1u;                 /* appearance mode 0 */
         n = (uint8_t)(c1 - c0 + 1u);
         iq = (int16_t)((int16_t)r->inv0 << 6);
         step = (int16_t)(((int16_t)r->inv1 - (int16_t)r->inv0)
                          * (int16_t)k_col_recip_q8[n]);
         step = shr_signed(step, 2);
+        s->iq = iq; s->step = step;
         jq = iq;
         for (c = c0; c <= c1; ++c) {
             uint8_t il = (uint8_t)clamp_u8i((int16_t)((jq + 32) >> 6), 255u);
@@ -345,6 +393,7 @@ static unsigned long n_restore_underlay_hit;
  * immediately behind in draw order, which a one-word "next owner" field in
  * retained state would answer for free. */
 static unsigned long n_scan_depth[8], n_scan_tot, n_scan_adjacent;
+static unsigned long n_naive_bad, n_naive_bad_cells, n_naive_cells;
 
 /* Is the edge LUT already a temporal state machine?
  *   TSP_TILE_EDGE = BASE + ((shade*16 + off_index)*8) + slope_index
@@ -736,6 +785,41 @@ static void classify(const Pose *prev, const Pose *cur)
         }
     }
 
+    /* IS PER-SPAN SKIPPING SAFE ON ITS OWN?
+     *
+     * The obvious Z80 rung is "if this span's column state is unchanged, skip
+     * the column" - a purely local test, no cross-span union, no second pass.
+     * It is worth knowing BEFORE writing that kernel whether it is correct,
+     * because the union is what makes the dirty set expensive and A26 died on
+     * exactly that kind of classifier cost.
+     *
+     * Simulate it: start from the previous name table, and for every span in
+     * far->near order redraw only the columns whose own state changed. Compare
+     * against the true new image. */
+    {
+        static uint16_t naive[TSP_MAP_CELLS];
+        memcpy(naive, prev->map, sizeof naive);
+        for (i = 0; i < cur->nsp; ++i) {
+            const SpanState *ps = find_span(prev, cur->sp[i].keyid);
+            for (c = 0; c < (int)TSP_COLS; ++c) {
+                const ColState *n = &cur->sp[i].col[c];
+                const ColState *o = ps ? &ps->col[c] : NULL;
+                if (!n->present) continue;
+                if (o && col_same(o, n)) continue;      /* the local skip */
+                for (r = 0; r < (int)TSP_ROWS; ++r) {
+                    uint16_t w;
+                    if (contrib(n, r, &w)) naive[k_row_base[r] + c] = w;
+                }
+            }
+        }
+        for (c = 0; c < (int)TSP_MAP_CELLS; ++c) {
+            ++n_naive_cells;
+            if (naive[c] != cur->map[c]) ++n_naive_bad_cells;
+        }
+        for (c = 0; c < (int)TSP_MAP_CELLS; ++c)
+            if (naive[c] != cur->map[c]) { ++n_naive_bad; break; }
+    }
+
     /* ---- metrics + the go/no-go verification ---- */
     for (c = 0; c < (int)TSP_COLS; ++c) {
         const SpanState *s;
@@ -820,11 +904,18 @@ int main(int argc, char **argv)
     unsigned frames = (argc > 2) ? (unsigned)strtoul(argv[2], 0, 0) : 240u;
     unsigned yaw_step = (argc > 3) ? (unsigned)strtoul(argv[3], 0, 0) : 64u;
     int only = (argc > 4) ? (int)strtol(argv[4], 0, 0) : -1;
+    const char *seq_path = (argc > 5) ? argv[5] : NULL;
     unsigned t, f, gx, gy, yy, i;
 
     if (!U) U = 1;
     if (!yaw_step) yaw_step = 64u;
     g_tspf_appearance_mode = 0u;
+    if (seq_path) {
+        g_seq = fopen(seq_path, "w");
+        if (!g_seq) { fprintf(stderr, "cannot open %s\n", seq_path); return 1; }
+        g_seq_stride = (argc > 6) ? (unsigned long)strtoul(argv[6], 0, 0) : 64ul;
+        if (!g_seq_stride) g_seq_stride = 1;
+    }
 
     for (t = 0; t < NREG; ++t) {
         if (only >= 0 && (int)t != only) continue;
@@ -838,6 +929,10 @@ int main(int argc, char **argv)
                 TSPState st;
                 Pose *prev = &g_p[0], *cur = &g_p[1], *sw;
                 int have_prev = 0;
+                /* Sample whole trajectories, not whole runs of every
+                 * trajectory - one in `g_seq_stride` spawn/yaw pairs
+                 * contributes its entire pose sequence. */
+                g_seq_run = g_seq && ((g_seq_traj++ % g_seq_stride) == 0);
                 tsp_reset(&st);
                 st.x_q4 = px; st.y_q4 = py;
                 st.yaw = (uint8_t)yy; st.manual = k_regime[t].manual;
@@ -846,6 +941,14 @@ int main(int argc, char **argv)
                     if ((f % U) != U - 1) continue;
                     build_pose(&st, cur);
                     if (have_prev) { selfcheck(cur); classify(prev, cur); }
+                    /* Emit whole consecutive RUNS of poses, never isolated
+                     * ones: a temporal kernel is only meaningful on a
+                     * sequence, and striding inside a trajectory would hand it
+                     * a delta the real runtime never sees. */
+                    if (g_seq) {
+                        if (!have_prev) { if (g_seq_run) dump_pose(cur, 1); }
+                        else if (g_seq_run) dump_pose(cur, 0);
+                    }
                     have_prev = 1;
                     sw = prev; prev = cur; cur = sw;
                 }
@@ -909,6 +1012,13 @@ int main(int argc, char **argv)
            (double)n_interior_preserved / n_pairs);
     printf("  interior cells entering/leaving              %7.2f /update\n",
            (double)n_interior_swapped / n_pairs);
+
+    printf("\nIS A PURELY LOCAL PER-SPAN SKIP CORRECT? (no cross-span union)\n");
+    printf("  update pairs whose image comes out WRONG   %lu / %lu   %.1f%%\n",
+           n_naive_bad, n_pairs, 100.0 * n_naive_bad / n_pairs);
+    printf("  cells wrong                                %.3f /update  %.3f%%\n",
+           (double)n_naive_bad_cells / n_pairs,
+           n_naive_cells ? 100.0 * n_naive_bad_cells / n_naive_cells : 0.0);
 
     printf("\nBY |dyaw| PER UPDATE - the physically meaningful variable\n");
     printf("  %-8s %9s %9s %9s %8s %8s %8s\n",
@@ -1031,5 +1141,10 @@ int main(int argc, char **argv)
     printf("  (clamped to +/-8; a small alphabet is what makes a transition\n"
            "   table bakeable. This counts geometry deltas only, not the\n"
            "   cell-level programs they expand into.)\n");
+    if (g_seq) {
+        fclose(g_seq);
+        fprintf(stderr, "sequence oracle: %lu poses dumped"
+                " (1 trajectory in %lu)\n", g_seq_emitted, g_seq_stride);
+    }
     return (verify_cells_missed || selfcheck_fail) ? 1 : 0;
 }
