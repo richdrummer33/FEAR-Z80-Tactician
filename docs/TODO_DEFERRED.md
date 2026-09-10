@@ -630,6 +630,149 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A28. Temporal delta — measured before building, and rotation kills it.
+
+`make temporal-delta` builds `tools/temporal_delta_probe.c`. It drives the real
+motion model (`tsp_step`, the shipped one) along eight motion regimes crossed
+with every walkable spawn cell and four yaws — 1,864 spawns, 879,808 update
+pairs at U=4 — and asks what a temporal skip could actually eliminate.
+
+**The measurement unit matters and is stated first.** The materializer's unit
+of work is one (run, screen column), and that unit's output is a pure function
+of `K = (profile, il, ir, border, shade)` where `il = clamp((jq+32)>>6)`. So the
+probe compares work KEYS, not pixels. It also asserts the invariant that an
+identical ordered run list must produce identical cells; that assertion fired
+(9 violations) the moment a scratch-column draw was added, because
+`map_init()` on the scratch cleared `g_touched_bits` while `g_touched_count`
+kept counting, so later `mark_touched` calls re-appended cells and overran
+`g_touched_list[360]` into neighbouring statics. Saving and restoring the whole
+bookkeeping fixed it. **Every number below is from a run with 0 violations.**
+
+| regime | mean dyaw | cells same | work skippable |
+| --- | ---: | ---: | ---: |
+| stand still | 0.00 | 100.0% | **100.0%** |
+| strafe | 0.00 | 96.0% | **74.3%** |
+| walk forward | 0.00 | 95.1% | **59.7%** |
+| walk, rare nudge | 1.47 | 92.7% | 48.8% |
+| walk, nudge turn | 3.00 | 86.1% | 18.6% |
+| demo path (shipped) | 2.62 | 89.0% | 3.3% |
+| turn in place | 12.00 | 70.8% | **0.1%** |
+| walk + turn | 12.00 | 70.6% | **0.1%** |
+
+**Rotation is the entire story, and it is not a matter of degree.** Bucketed by
+per-update yaw delta, work skippable is 64.3% at dyaw 0 and then falls off a
+cliff: 0.8% at dyaw 1–2, 0.7% at 3–4, 0.5% at 5–8, 0.1% at 9–16. There is no
+gentle slope. **One yaw unit of rotation — 1/256 of a turn — destroys the
+temporal delta almost completely.**
+
+The motion model turns at 3 yaw units per frame, and the materializer's
+194,761 T means an update lands about every 4th frame, so the real per-update
+rotation while turning is 12 units. Sweeping the update period does not rescue
+it: even at U=1, an update every single frame and four times faster than
+anything achievable today, turn-in-place still only reaches 3.7%.
+
+| U (frames/update) | all regimes | turn in place |
+| ---: | ---: | ---: |
+| 1 | 43.6% | 3.7% |
+| 2 | 40.1% | 0.9% |
+| 4 | 38.3% | 0.1% |
+| 8 | 37.4% | 0.0% |
+
+**Why rotation destroys it — mechanism, not speculation.** Under pure rotation
+a wall's corners keep exactly the range they had, so the naive expectation is
+that projected depth is invariant. It is not: `inv0`/`inv1` are unchanged on
+only **1.0%** of matched runs. Splitting by endpoint kind rules out FOV
+clipping as the cause — runs with BOTH endpoints real corners sit at 1.2%,
+clipped ones at 0.9%.
+
+The cause is in the shipped code. `inv_at_invd`
+(`src/tilesector_polar_renderer.c:378-386`) ends with
+
+```c
+sec = k_tspf_sec_q7[|rel|];  q = (q*sec+64u)>>7;
+```
+
+and `rel` is the bearing **relative to yaw** (`st = signed_q12(a0 - yawq)`).
+`k_tspf_sec_q7` is a true secant of that screen-relative bearing, verified
+against `128*sec(theta)`: 128/128 at 0°, 139/138.5 at 22.5°, 181/181 at 45°.
+So the projected depth carries an explicit `sec(bearing - yaw)` factor.
+Rotating the camera rescales every run's projected height even though nothing
+in the world moved. That is a property of RECTILINEAR projection, not a bug.
+
+**Hardware H-scroll cannot absorb it, and that was measured too.** The probe
+searches every whole-column shift and takes the best. Under rotation this moves
+work skipped from 0.1% to **0.6%** — nothing. The reason is the same tangent
+mapping: `k_tspf_angle_x_pos` is exactly `80 + 80*tan(theta)` at 90° FOV, so a
+yaw step shifts the screen centre and the screen edge by different amounts.
+
+| dyaw | shift at centre | shift at edge | spread |
+| ---: | ---: | ---: | ---: |
+| 1 | 2 px | 4 px | 2 px |
+| 4 | 8 px | 14 px | 6 px |
+| 12 (the real rate) | 24 px | 37 px | **13 px** |
+
+A rigid scroll can absorb a rotation only if that spread is zero. It is zero
+under a CYLINDRICAL mapping and only under a cylindrical mapping.
+
+**Row-write level, for direct comparison with A25's spatial 9.1%.** Of the
+230.54 row-writes per update, **77.5% already carry the word that is being
+stored** (59% even under pure rotation). This is a genuinely large number and
+it is NOT the same thing as the work figure: it bounds STORE elimination only.
+The gap exists because the tile vocabulary is coarse — a column's tile survives
+geometry changes that its derivation inputs do not — and A24 already showed the
+stores are the cheap part (`FILLLOOP_D` left the two stores as the only memory
+traffic in the fill loop). Knowing which stores to skip still costs the
+derivation. **This is exactly the shape of the A26 trap** (classifier 58,073 T
+against a 24,100 T saving) and must not be quoted as a saving.
+
+**Cross-validated against an independent probe.** `polar_transition_bake.c`
+already existed and had never been recorded here, in violation of this file's
+own rule 1. Run at full resolution (466 nodes x 256 yaws) it reports `turn±`
+changing 38.29 of 360 words per SINGLE yaw unit — 10.6% — against this probe's
+independently measured 8.3% cell change at dyaw 1–2. Two probes built from
+different directions agreeing within a couple of points is evidence the
+workload model is faithful.
+
+**And it prices the compiled-transition architecture, which is the finding that
+matters most for planning.** That bake emits **143,217,187 bytes — 136.58
+MiB** — for a coarse cell-centre state graph, against a 128 KiB ROM target.
+That is roughly **1,090x over budget**, and it is the *optimistic* case: cell
+centres only, no sub-cell offsets. Any "bake the transitions" proposal starts
+from that number.
+
+**Verdict.** Temporal skipping is real and large for translation (60–75%) and
+worth essentially nothing under rotation (0.1%). Since a first-person camera
+rotates constantly, the naive temporal skip is not the step change this project
+has been looking for. It is not closed the way coverage is closed — it is
+gated, on one specific thing:
+
+> **A6 (cylindrical projection) is a PREREQUISITE for the temporal
+> architecture, not an independent optimisation.** Under a cylindrical mapping
+> the image at yaw psi is `F(psi + k*(x-80))` for a static scene, so a yaw step
+> is an EXACT rigid shift, absorbed by the scroll register for free, leaving
+> only newly exposed columns to materialize. Under the shipped tangent mapping
+> it is a homography and nothing rigid survives.
+
+A6 is currently parked as a minor question about where K comes from. It should
+be re-read as the gate on the whole temporal direction.
+
+**What would close A28:** measure the same delta under a cylindrical
+`angle_x`/`sec` pair. That is a host-side change to two baked tables plus a
+re-run of this probe — no Z80 work — and it decides whether the temporal
+architecture is available at all. Do NOT build a Z80 temporal kernel first.
+That ordering is what A25 and A26 established, twice.
+
+**Unknowns, logged rather than guessed** (this project has now been wrong on
+five straight estimates, all in the same direction):
+- The Z80 cost of any certificate/skip test. Not estimated. A26's classifier
+  came in at 1,975 T per column against an ~800 T budget; there is no reason to
+  assume a temporal predicate is cheaper until one is built and profiled.
+- Whether a cylindrical projection is visually acceptable, and what it costs
+  elsewhere in the pipeline. A6 notes wall tops become cosine arcs needing a
+  second-order walker.
+- Whether the 77.5% store-level redundancy can be reached by any predicate
+  cheaper than the derivation it would skip. Currently no candidate.
+
 ### A27. DDA_G — row extents by walking, not dividing. −12.0%, and it settles coverage.
 
 `make dda-bench` verifies at pose scope, against the same oracle A26 used.
@@ -1206,7 +1349,17 @@ every bench reproduces its recorded T-state figure exactly. Until then the
 duplication is deliberate — swapping the substrate under a published
 measurement invalidates it.
 
-### A6. K under cylindrical projection
+### A6. K under cylindrical projection — PROMOTED: this is the gate on A28.
+
+**Read A28 first.** This entry was written as a minor question about where the
+per-span constant K comes from. A28 measured the temporal delta and found that
+the whole temporal architecture depends on this choice: under the shipped
+tangent mapping a yaw step is a homography and nothing rigid survives (best
+whole-column shift compensation buys 0.6%), while under a cylindrical mapping
+the image at yaw psi is `F(psi + k*(x-80))` for a static scene, so a yaw step
+is an exact rigid shift the scroll register absorbs for free. It is no longer
+a projection-flavour preference; it is the prerequisite.
+
 
 Under rectilinear projection the wall top is exactly a straight line, so one K
 per span is exact — but K depends on yaw and must be computed per span

@@ -73,6 +73,21 @@ A20–A27 (§A. Z80 span-interpreter micro-architecture).
   still +7.7% over DDA_G alone. **Coverage at column granularity is closed**,
   not deferred — measured twice, on two kernels, losing both times.
 
+## A28 ANSWERED THIS (read `docs/TODO_DEFERRED.md` A28 before A6)
+
+The temporal question below was measured, not built: `make temporal-delta`.
+Short version — temporal skipping is worth 60-75% under pure translation and
+**0.1% under rotation**, because `inv_at_invd` carries an explicit
+`sec(bearing - yaw)` factor, so rotating the camera rescales every run's
+projected depth even though nothing in the world moved. Hardware H-scroll
+cannot absorb it either: the projection is `80 + 80*tan(theta)`, so a 12-yaw-
+unit update shifts the screen centre 24 px and the edge 37 px.
+
+**A6 (cylindrical projection) is therefore the gate on this whole direction**,
+and the next step is a host-side cylindrical re-bake plus a re-run of the same
+probe — not a Z80 kernel. Also priced while there: the existing
+`polar_transition_bake.c` emits **136.58 MiB** against a 128 KiB target.
+
 ## The open question, explicitly aligned on with the user
 
 > "temporal question of not materializing unchanged cells at all"

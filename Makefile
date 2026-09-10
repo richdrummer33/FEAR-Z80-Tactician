@@ -15,8 +15,8 @@ GG_SEED42_ROM := build/$(ROM_BASENAME)-seed42.gg
 ROM_DIR := roms
 RELEASE_ROM := $(ROM_DIR)/$(ROM_BASENAME)-seed2.gg
 RELEASE_SEED42_ROM := $(ROM_DIR)/$(ROM_BASENAME)-seed42.gg
-GG_SRC_FIXED := src/main_gg.c src/sim.c src/tiles.c
-GG_SRC_BANKED := src/brain.c
+GG_SRC_FIXED := src/tactical_ai/main_gg.c src/tactical_ai/sim.c src/tactical_ai/tiles.c
+GG_SRC_BANKED := src/tactical_ai/brain.c
 GG_OBJS := build/main_gg.o build/sim.o build/tiles.o build/brain.o
 SMOKE_ROM := build/gg_smoke.gg
 
@@ -89,32 +89,32 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential temporal-delta masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
 	mkdir -p build
 
 host: build
-	$(CC) $(CFLAGS) -Isrc src/sim.c src/brain.c host/main_host.c -o $(HOST_BIN)
+	$(CC) $(CFLAGS) -Isrc/tactical_ai src/tactical_ai/sim.c src/tactical_ai/brain.c host/main_host.c -o $(HOST_BIN)
 
 test: build
-	$(CC) $(CFLAGS) -Isrc src/sim.c src/brain.c tests/test_sim.c -o $(TEST_BIN)
+	$(CC) $(CFLAGS) -Isrc/tactical_ai src/tactical_ai/sim.c src/tactical_ai/brain.c tests/test_sim.c -o $(TEST_BIN)
 	./$(TEST_BIN)
 
-build/main_gg.o: src/main_gg.c | build
+build/main_gg.o: src/tactical_ai/main_gg.c | build
 	$(LCC) $(GGFLAGS) -DDEFAULT_SEED=2u -c -o $@ $<
-build/sim.o: src/sim.c | build
+build/sim.o: src/tactical_ai/sim.c | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
-build/tiles.o: src/tiles.c | build
+build/tiles.o: src/tactical_ai/tiles.c | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
-build/brain.o: src/brain.c | build
+build/brain.o: src/tactical_ai/brain.c | build
 	$(LCC) $(GGFLAGS) -c -o $@ $<
 
 gg: $(GG_OBJS)
 	$(LCC) $(GGFLAGS) -o $(GG_ROM) $(GG_OBJS)
 
-build/main_gg_seed42.o: src/main_gg.c | build
+build/main_gg_seed42.o: src/tactical_ai/main_gg.c | build
 	$(LCC) $(GGFLAGS) -DDEFAULT_SEED=42u -c -o $@ $<
 
 gg-seed42: build/main_gg_seed42.o build/sim.o build/tiles.o build/brain.o
@@ -194,6 +194,11 @@ materialize-run-bench: build
 coverage-potential: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/coverage_potential_probe.c -o build/coverage_potential_probe
 	./build/coverage_potential_probe 16 build/coverage_pose_oracle.txt 12
+
+temporal-delta: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/temporal_delta_probe.c -o build/temporal_delta_probe
+	./build/temporal_delta_probe 4 240 64
+	./build/temporal_delta_probe 1 240 64
 
 masked-bench: build
 	python3 tools/z80_materialize_masked_bench.py 300

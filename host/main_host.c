@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../src/sim.h"
+#include "../src/tactical_ai/sim.h"
 
 static char cell_char(const Sim *s, uint8_t x, uint8_t y) {
     uint8_t i;

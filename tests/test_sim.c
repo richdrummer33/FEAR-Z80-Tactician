@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
-#include "../src/sim.h"
-#include "../src/brain.h"
+#include "../src/tactical_ai/sim.h"
+#include "../src/tactical_ai/brain.h"
 
 static uint16_t alive_mask(const Sim *s) {
     uint8_t i;
