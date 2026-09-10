@@ -51,6 +51,14 @@ typedef struct { uint8_t used, n; Rec r[MAX_RECS]; } Block;
 
 static Block g_blocks[GRID_H][GRID_W];
 
+/* Depth-sort workload: the sort is now known to be MANDATORY (two different
+ * static orders both land near 30% exact), so its cost is a real budget line
+ * and needs measuring, not assuming. */
+static unsigned long g_sort_items = 0, g_sort_shifts = 0, g_sort_poses = 0;
+static unsigned g_sort_max_items = 0, g_sort_max_shifts = 0;
+static FILE *g_sort_dump = 0;
+static uint8_t g_ins_seq[64];
+
 static int load_blocks(const char *path) {
     FILE *f = fopen(path, "r");
     char line[64];
@@ -120,12 +128,34 @@ static uint8_t fused_render(const TSPState *s, uint16_t *out_map, int order,
         if (count >= TSPF_MAX_ACTIVE) break;
         if (!project_key(r->val, s, &g_runs[count])) continue;
         if (order == ORDER_DEPTH) {
+            uint8_t before = count, j, pos = 0;
             insert_run(count, &count);           /* shipped far->near sort */
+            for (j = 0; j < count; ++j) if (g_run_order[j] == before) { pos = j; break; }
+            g_sort_shifts += (unsigned long)(before - pos);
+            if ((unsigned)(before - pos) > g_sort_max_shifts)
+                g_sort_max_shifts = (unsigned)(before - pos);
+            g_ins_seq[before] = g_runs[before].inv_mid;
         } else {
             g_run_order[count] = count;          /* strict baked order */
             ++count;
         }
         if (out_keys) out_keys[count - 1u] = r->val;
+    }
+    if (order == ORDER_DEPTH) {
+        g_sort_items += count;
+        ++g_sort_poses;
+        if (count > g_sort_max_items) g_sort_max_items = count;
+        /* One line per pose: the inv_mid values IN INSERTION ORDER, then the
+         * final g_run_order the shipped insert_run produced. This is the
+         * oracle for the Z80 sort kernel - the real code's own output, not a
+         * re-derivation of its tie-breaking rule. */
+        if (g_sort_dump && count) {
+            uint8_t j;
+            fprintf(g_sort_dump, "%u", count);
+            for (j = 0; j < count; ++j) fprintf(g_sort_dump, " %u", g_ins_seq[j]);
+            for (j = 0; j < count; ++j) fprintf(g_sort_dump, " %u", g_run_order[j]);
+            fputc('\n', g_sort_dump);
+        }
     }
     for (i = 0; i < count; ++i) draw_run(out_map, 0, &g_runs[g_run_order[i]]);
     g_tspf_touched_cells = g_touched_count;
@@ -205,6 +235,7 @@ int main(int argc, char **argv) {
     uint8_t ok_[64], bk_[64];
 
     if (!load_blocks(blocks)) return 1;
+    if (argc > 3) g_sort_dump = fopen(argv[3], "w");
 
     for (gy = 0; gy < GRID_H; ++gy) {
         for (gx = 0; gx < GRID_W; ++gx) {
@@ -273,6 +304,11 @@ int main(int argc, char **argv) {
            ok_depth, poses, 100.0 * (double)ok_depth / (double)poses);
     printf("  total word mismatches   %lu   worst pose %lu words\n\n",
            words_bad_depth, worst_depth);
+    printf("DEPTH-SORT WORKLOAD (the sort is mandatory - measure it):\n");
+    printf("  runs sorted / update     mean %.2f   max %u\n",
+           (double)g_sort_items / (double)g_sort_poses, g_sort_max_items);
+    printf("  insertion shifts/update  mean %.2f   max %u (single insert)\n\n",
+           (double)g_sort_shifts / (double)g_sort_poses, g_sort_max_shifts);
     printf("ORDER_ORACLE_INSERT (same key set, oracle's insertion order):\n");
     printf("  poses matching exactly  %lu / %lu   (%.4f%%)\n\n",
            ok_oins, poses, 100.0 * (double)ok_oins / (double)poses);
@@ -304,5 +340,6 @@ int main(int argc, char **argv) {
                "        not choose the same spans the recipe grid does. Fix that\n"
                "        before reasoning about order.\n");
     }
+    if (g_sort_dump) fclose(g_sort_dump);
     return 0;
 }

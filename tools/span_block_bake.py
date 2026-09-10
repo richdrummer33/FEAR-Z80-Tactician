@@ -112,6 +112,14 @@ def selector_pass(d, sel, lx, ly):
     return (1 if v >= 0 else 0) ^ d.sel_inv[sel]
 
 
+# DEFAULT: "recipe". Proven by `make fused-host-path` - recipe order plus the
+# runtime depth sort reproduces the shipped renderer's name table exactly on
+# 74,560/74,560 poses, where bearing order reaches only 96.8%. The 3.2% gap is
+# equal-inv_mid tie-breaking, and it costs 947 bytes (3.0%) of extra payload
+# because bearing order claims more SPANC. Correctness wins that trade.
+ORDER_MODE = "recipe"
+
+
 def build_block(d, gx, gy):
     """Emit the span program for one camera cell. Returns (ops, stats)."""
     ck = cell_keys(d, gx, gy)
@@ -128,10 +136,26 @@ def build_block(d, gx, gy):
         entries.append((k, sel))
 
     # Sweep order: world bearing of the span's left corner at the cell centre.
-    def sortkey(e):
-        _, v0, _ = keyparts(d.keys[e[0]])
-        return bearing(d, v0, cx, cy)
-    entries.sort(key=sortkey)
+    #
+    # ORDER_MODE selects between two orders that are NOT interchangeable:
+    #
+    #   "bearing" - sort by the left corner's bearing at the cell centre.
+    #               Maximises SPANC (consecutive spans share a vertex more
+    #               often), but the resulting DRAW order does not reproduce
+    #               the renderer's own painter order, which is a runtime
+    #               far->near inv_mid sort with insertion-order tie-breaking.
+    #               Measured at 29.6% exact name tables (make fused-host-path).
+    #
+    #   "recipe"  - keep the recipe's own base-then-conditional order, which
+    #               IS the order the shipped renderer inserts runs in.
+    #
+    # This is a real trade-off between storage and correctness, quantified in
+    # docs/TODO_DEFERRED.md A18 - not a preference.
+    if ORDER_MODE == "bearing":
+        def sortkey(e):
+            _, v0, _ = keyparts(d.keys[e[0]])
+            return bearing(d, v0, cx, cy)
+        entries.sort(key=sortkey)
 
     ops = []
     shared_total = 0          # consecutive pairs that share a corner

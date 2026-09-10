@@ -563,6 +563,65 @@ Live leads, in the order they are worth taking:
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
+### A18. The depth sort is MANDATORY — my own optimism was wrong, and it is cheap anyway
+
+A17 measured baked order at 29.6% and I suggested the fix "might even be
+free": emit blocks in the oracle's insertion order and the runtime sort might
+become unnecessary. **Tested, and half of that was wrong.**
+
+Switching the baker to recipe order (`ORDER_MODE`, `tools/span_block_bake.py`):
+
+| | bearing order | recipe order |
+| --- | ---: | ---: |
+| ORDER_DEPTH (with runtime sort) | 96.8% | **100.0%** |
+| ORDER_BLOCK (no runtime sort) | 29.6% | **30.6%** |
+
+So the tie-breaking half of the hypothesis was right — recipe order takes the
+depth-sorted path from 96.8% to **exactly 100%, 74,560/74,560**. The other
+half was wrong: baked order alone moved by one point. **Two different static
+orders both land near 30%, which is the practical proof that no static
+per-cell order can work** — `inv_mid` depends on sub-cell position *and* yaw,
+so the interpreter must sort at runtime. Recorded because I said otherwise in
+the previous session and a reader would otherwise carry that forward.
+
+**Cost of switching to recipe order:** SPANC share falls 44.5% -> 29.2%,
+payload 31,121 -> 32,068 bytes. **947 bytes, 3.0%.** Cheap for exactness, so
+`ORDER_MODE` now defaults to `"recipe"`.
+
+One honest nuance: a tie means two walls at equal midpoint depth, so which
+one wins is a *convention*, not a geometric truth. A future baker may pick
+either — the requirement is only that baker and runtime agree. Here the
+shipped renderer is the definition, so recipe order is what matches it.
+
+### A19. Depth-sort kernel — CLOSED. Cycle-exact, 24,854/24,854, and it is budget noise.
+
+`make depth-sort-bench` (`tools/z80_depth_sort_bench.py`). Since the sort is
+now known to be mandatory it became a real budget line, so it was measured
+rather than assumed. 62 bytes of Z80.
+
+Verified against the **shipped `insert_run`'s own output** — the fused
+renderer dumps, per pose, the `inv_mid` values in insertion order and the
+final `g_run_order` the real code produced, and the kernel must reproduce
+that array element for element, tie behaviour included. 24,854 poses strided
+across all 74,560 (strided, not the file's head — the oracle is written in
+map-scan order, so taking the head would have sampled one corner of the map,
+the same coverage trap as A16).
+
+**Measured 1,313.6 T/update** (min 135, max 7,932). Workload: mean 4.29 runs
+sorted, max 12; mean 5.42 insertion shifts.
+
+| stage | T/update |
+| --- | ---: |
+| bearing lookup (A12) | 5,833 |
+| decode-clip | 11,036 |
+| GATE | 2,339 |
+| column-solve | 26,820 |
+| **depth sort** | **1,314** |
+| emit | 21,756 |
+| **TOTAL** | **69,098** — 0.86 updates/frame |
+
+The last correctness unknown in the pipeline costs **1.9% of the update**.
+
 ### A17. FUSED HOST PATH — BUILT AND EXACT. Baked block in, 20x18 name table out.
 
 `make fused-host-path` (`tools/fused_block_render.c` + `tools/export_blocks.py`).

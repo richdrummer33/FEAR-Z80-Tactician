@@ -18,6 +18,10 @@ from local_projection_field_poc import GRID_W, GRID_H  # noqa: E402
 
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "build/blocks.txt"
+    if len(sys.argv) > 2:
+        import span_block_bake
+        span_block_bake.ORDER_MODE = sys.argv[2]
+        print(f"order mode: {sys.argv[2]}")
     d = load()
     n = recs_total = 0
     with open(out, "w") as f:
