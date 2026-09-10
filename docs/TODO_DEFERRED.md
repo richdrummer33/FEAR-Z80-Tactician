@@ -630,6 +630,79 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A27. DDA_G — row extents by walking, not dividing. −12.0%, and it settles coverage.
+
+`make dda-bench` verifies at pose scope, against the same oracle A26 used.
+
+| variant | T/update | vs baseline | bytes |
+| --- | ---: | ---: | ---: |
+| FILLLOOP_D (A24 ladder end) | 221,229 | — | 1,154 |
+| DDA_G | 194,761 | **−12.0%** | 1,293 |
+| MASKED_H (DDA + coverage) | 238,338 | +7.7% | 1,698 |
+
+**What DDA_G removes.** Two kinds of recomputation, both of something already
+known:
+
+1. **Row extents, six times per column.** Both edges and the interior each ran
+   two signed 16-bit compares and two `rowfloor` calls. Every endpoint is a
+   monotonic function of ONE height byte, so one byte compare per column picks
+   the min/max ends and the rows follow by three shifts. `col_bounds` does it
+   once and hands `draw_edge`/`draw_full` their bounds.
+2. **The sub-row offset.** `local_left = YL - (r<<3)` was rebuilt every row
+   from the row index. It is an affine walk — each row is exactly 8 less — so
+   it is carried and decremented. That is the DDA proper.
+
+`rowfloor`'s negative branch disappears entirely. A negative lower bound
+clamps to row 0 and a negative upper bound means nothing to draw, so the shift
+only ever sees a non-negative value and the negate/add-7/negate path is dead
+code.
+
+**The trap this hit twice** (both caught by the oracle, both the same shape):
+a value that is *large* is not a value that is *negative*. `72+h` reaches 199
+and `72+h-(h>>2)` reaches 168, so those shift as unsigned; testing bit 7 on
+them reads 168 as negative and blanks the column. That is the identical trap
+that bit RAISED in the per-column kernel. A second instance: `TOPR0` is
+overwritten with a sentinel when the whole top edge is above the screen, and
+the coverage mask must not see that sentinel — the column still draws its
+bottom edge from row 0 — so the true lower bound is kept separately.
+
+**MASKED_H settles A26 unconditionally.** A26's verdict on coverage was
+explicitly conditional: the classifier was expensive because knowing a
+column's rows was expensive, and DDA was supposed to make that free. It now
+IS free — `col_bounds` already has the extent, so MASKED_H's classifier just
+reads it — and coverage still costs **+22.4% over DDA_G**. The overhead was
+never the extent. It is the mask machinery itself: the range/owned table
+lookups, the three-byte accumulate, `cov_mark`, and the stash/restore on
+partial columns, together ~1,400 T per column against a ceiling of ~800.
+
+**Coverage at column granularity is closed.** Not deferred, not "revisit
+later" — measured twice, on two different kernels, image-exact both times, and
+losing both times. The remaining idea in this family is temporal, not spatial:
+skip cells that did not change between updates. That is a different mechanism
+with a different ceiling and it has not been measured.
+
+**Re-profiled after the change, as the standing rule requires** — and the
+ranking did NOT hold. The edge row-derivation that dominated before is gone,
+and what is left is flat: `df_loop` 7.9%, `bd_done` 7.2%, `pf_done` 6.8%,
+`de_loop` 6.4%, `row_addr` 5.8%, `ee_hi_ok` 5.5%. No single routine is above
+8%. The largest coherent group is now the `edge_entry` clamp family
+(`ee_hi_ok` + `edge_entry` + `ee_mag2` + `ee_lo_ok` + `de_sl_lo`) at ~18.6%,
+which is clamping done with generic 16-bit compares on values that are known
+to be small.
+
+**Budget after DDA_G:**
+
+| stage | T/update |
+| --- | ---: |
+| bearing | 5,833 |
+| decode-clip | 11,036 |
+| GATE | 2,339 |
+| column-solve | 26,820 |
+| depth sort | 1,314 |
+| materialize (DDA_G) | 194,761 |
+| **whole update** | **242,103** |
+| **updates/frame** | **0.25** |
+
 ### A26. The masked kernel — built, exact, and it LOSES. Coverage does not pay yet.
 
 `make masked-bench` builds the near->far coverage kernel A25 said was
