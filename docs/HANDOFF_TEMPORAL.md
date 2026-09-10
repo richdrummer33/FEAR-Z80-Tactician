@@ -132,10 +132,29 @@ not motion rate: across all regimes the max dirty stays pinned at 360 at every
 cadence while the mean halves, because doorway crossings do not get cheaper
 when you render faster.
 
-**Next:** the Z80 A/B. `TEMP_BOUNDARY_A` against `DDA_G`, pose-exact, one
-mechanism per rung as A24/A26/A27 were done, costed against the U=1 and U=2
-event distributions rather than U=4. Then the run-shift, tile-delta,
-grow/shrink and restoration rungs, one at a time.
+**A31** built the A/B foundation and found the trap in it. `make
+temporal-bench` emits a pose-SEQUENCE oracle, since a temporal kernel carries
+state across poses and every earlier bench verifies one pose. Unmodified DDA_G
+reproduces all 300 poses exactly at 153,450 T/update over 26.57 columns, so the
+oracle is proved before anything is built on it.
+
+**The obvious first rung is incorrect.** A purely local "if this span's column
+state is unchanged, skip the column" — no cross-span union, no second pass — is
+wrong on 76.7% of pose pairs under rotation at U=1, and on 30.9% across all
+regimes. In far->near order an unchanged span does write the same words, but a
+nearer span may have moved away and uncovered cells it owns, leaving stale
+pixels. Under 5% of cells wrong on three quarters of frames, so it would look
+almost right.
+
+So `TEMP_BOUNDARY_A` must build the cross-span dirty union before drawing,
+which is the shape whose cost killed A26. **The classifier cost is the whole
+question.**
+
+**Next:** build `TEMP_BOUNDARY_A` against the verified sequence oracle, costed
+against the U=1/U=2 distributions rather than U=4, with the interior-resident
+path as the valuable half (full skipping is 13.1% of columns under rotation,
+edge-only is 61.1%). Then B run-shift, C tile-delta, D grow/shrink, E
+restoration, one rung at a time and re-profiled after each.
 
 Also priced along the way: `polar_transition_bake.c` emits **136.58 MiB**
 against a 128 KiB target, so pose enumeration is out.
