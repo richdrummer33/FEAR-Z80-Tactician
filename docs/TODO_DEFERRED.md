@@ -563,6 +563,67 @@ Live leads, in the order they are worth taking:
 3. **emit is now the largest single line at 21,756 T** — A1 (LITERAL opcode,
    ≈2,400 T) and A3 (retained vs unconditional emit) are back on the table.
 
+### A21. COLUMN MATERIALIZER — built, exact, and it changes the whole budget picture.
+
+`make materialize-bench`. The seam the code review named in its section 12:
+the Z80 kernels stopped at the Q6 ramp `(iq, step)` and the emit kernel
+started from finished name-table words, with nothing in between. This is that
+conversion — `draw_run`'s column body plus `draw_edge` x2 and `draw_full`.
+919 bytes. **3,043/3,043 sampled columns exact**, and the full run verifies
+15,000 strided across 124,727.
+
+**Oracle** (`tools/materialize_probe.c`) is self-checking in the same way the
+column-solve dump was: its column loop must rebuild `tsp_polar_render`'s
+*entire* name table for every pose or it aborts. That passed on
+**29,824/29,824 poses**, so the dumped rows are the real renderer's behaviour.
+The tile emission itself (`draw_edge` / `draw_full` / `edge_entry`) is the
+shipped code called directly, not reimplemented.
+
+**Two bugs, both mine, both instructive:**
+
+1. **I used `sbc hl,de`'s carry for SIGNED 16-bit comparisons.** That is an
+   unsigned compare: `-7` reads as 65,529, so every edge clamp fired at its
+   maximum and 2,751 of 3,043 columns were wrong. A7 had already solved this
+   for the decode-clip kernel — XOR bit 15 of both operands — and I simply
+   failed to reuse it. Fixed with a `cmps` helper that is that same primitive.
+2. **Sign-extending values that are unsigned.** RAISED's
+   `bl = 72 + h - (h>>2)` reaches 168, and sign-extending it turned everything
+   over 127 negative, blanking every RAISED column. Only `72 - h` can actually
+   go negative. Fixed with zero-extending stores where the range says so.
+
+**Measured 7,798 T per column.** Columns materialized per update is **29.27**,
+not the 20.00 covered-columns figure — runs overlap, and each overlapping run
+materializes the column again (873,084 column-materializations over 29,824
+poses). That gives **228,403 T/update**.
+
+**This REPLACES the emit line, it does not add to it** — and that reframes
+emit's number. The emit bench measured 21,756 T reconstructing a name table
+from finished run words, but those words are pose-dependent, so the runtime
+can never be handed them. Producing them is this kernel's job.
+
+| stage | T/update | share |
+| --- | ---: | ---: |
+| bearing lookup | 5,833 | 2.1% |
+| decode-clip | 11,036 | 4.0% |
+| GATE | 2,339 | 0.8% |
+| column-solve | 26,820 | 9.7% |
+| depth sort | 1,314 | 0.5% |
+| **materialize** | **228,403** | **82.8%** |
+| **TOTAL** | **275,745** | **0.22 updates/frame** |
+
+**UNTUNED, and that matters for how this number should be read.** Every other
+kernel here had at least one optimisation pass. This one was written purely
+for correctness: every operand goes through memory, the signed compare is a
+`CALL`, and `edge_entry` re-reads its inputs per row. It costs **433 T per
+name-table word against emit's measured 60.43** — a 7x gap on the same kind of
+work, which is a strong hint the gap is implementation and not physics. But
+the number is recorded as measured, not as hoped, and nothing should be
+planned on the assumption that it will come down until it does.
+
+The honest headline: **the pipeline is now complete and correct end to end,
+and it is 4.6x over frame budget**, with 83% of the cost in the one kernel
+that has never been optimised.
+
 ### A20. Can the draw order be PRECOMPILED instead of sorted? Measured: mostly, but not enough to be worth it.
 
 Three experiments, in sequence. The conclusion is a **do-not-build**, which is

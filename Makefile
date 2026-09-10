@@ -89,7 +89,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
@@ -182,6 +182,11 @@ fused-host-path: build
 
 depth-sort-bench: fused-host-path
 	python3 tools/z80_depth_sort_bench.py 20000
+
+materialize-bench: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/materialize_probe.c -o build/materialize_probe
+	./build/materialize_probe build/materialize_oracle.txt 16 7
+	python3 tools/z80_materialize_bench.py 15000
 
 pairwise-order: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/pairwise_order_probe.c -o build/pairwise_order_probe
