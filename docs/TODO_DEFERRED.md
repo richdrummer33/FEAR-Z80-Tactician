@@ -630,6 +630,73 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A26. The masked kernel — built, exact, and it LOSES. Coverage does not pay yet.
+
+`make masked-bench` builds the near->far coverage kernel A25 said was
+available, and verifies it at POSE scope: every run of a pose, in near->far
+order, against the final 20x18 name table. A run-scoped oracle cannot check
+coverage — the mechanism *is* state carried across runs — so
+`coverage_potential_probe.c` now also dumps `build/coverage_pose_oracle.txt`,
+2,486 poses of run lists plus final images.
+
+All four variants reproduce the name table exactly on 311/311 poses.
+
+| variant | T/update | vs shipped | bytes |
+| --- | ---: | ---: | ---: |
+| FAR_NEAR_D (ships today) | 221,229 | — | 1,154 |
+| PREP_ONLY (classifier only, no skip/stash) | 279,302 | +26.3% | 1,619 |
+| MASKED_E (coverage, geometric classifier) | 277,264 | +25.3% | 1,614 |
+| MASKED_F (coverage, cheap classifier) | 264,840 | +19.7% | 1,670 |
+
+**The classifier is the entire story.** PREP_ONLY runs the column classifier
+and then throws its verdict away, drawing every column unmasked far->near, so
+it still has to produce the right image and it does. It costs +58,073 T. Set
+against that, everything coverage actually buys — skipping 10.9% of columns
+and rejecting rows in partial ones — is worth **−2,038 T, or 0.7%**.
+
+**The arithmetic that kills it.** Skipping 10.9% of columns is worth about
+24,100 T/update. Spread over ~29 columns that is a budget of **~800 T per
+column** for all coverage bookkeeping. MASKED_E's classifier alone spent
+1,975. MASKED_F cut that by deriving the row extent from the two height bytes
+and the profile instead of re-deriving it with two signed 16-bit compares and
+two `rowfloor` calls, which is worth 12,424 T — real, and still nowhere near
+enough. What remains (mask table lookups, the 3-byte owned/range accumulate,
+`cov_mark`, and the stash/restore path on partial columns) is ~1,490 T per
+column against an ~800 T budget.
+
+**This is not a verdict on coverage, it is a verdict on ORDERING.** The
+expensive part of classifying a column is knowing which rows it covers, and
+that is exactly what DDA is supposed to make free: carrying an integer row
+plus a fractional error removes `row_floor`/`shr3_u` outright, and the row
+extent falls out of the walk instead of being recomputed. Coverage on top of
+a DDA kernel is a different measurement, and the bench is kept in the repo so
+it can be re-run rather than re-argued. **Do DDA first, then re-decide.**
+
+**Design detail worth keeping** (it is why MASKED_E is exact rather than
+nearly-exact): the kernel classifies each column once into skip / free /
+partial, and a partial column stashes the words an earlier nearer run owns,
+draws freely, then puts them back. Gating each store and marking ownership as
+it goes would be wrong: within a column the top edge, bottom edge and interior
+can share a row (h=0 puts both edges on row 9; LINTEL and RISER move a whole
+edge across the horizon), and there the LAST writer must win. Stash-and-
+restore keeps last-writer-wins inside the column and first-writer-wins across
+runs, which is exactly the host semantics.
+
+**Two bugs the pose oracle caught**, both invisible to any run-scoped test:
+
+1. `row_addr` clobbers DE, and the restore loop held the stashed word there.
+   149/311 poses wrong, with name-table entries containing pointer values.
+2. Clamping `lo` UP to row 17 when the column starts below the screen. Such a
+   column draws nothing, but the clamp made it claim row 17, which then
+   suppressed the next farther run's real write there. One wrong cell in
+   311 poses — the kind of thing that would have shipped.
+
+**Also measured directly for the first time:** the shipped materializer costs
+**221,229 T/update** at pose scope with real map addressing, against the
+197,878 previously carried from per-run figures. The pose number is the one to
+use — it counts every run of a pose, including the ones the per-run sampling
+strided past.
+
 ### A25. Coverage / overdraw — image-exact, but the ceiling is 9.1%, not a third.
 
 `make coverage-potential` builds `tools/coverage_potential_probe.c`, which

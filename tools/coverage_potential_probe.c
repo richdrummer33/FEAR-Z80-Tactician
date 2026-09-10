@@ -46,6 +46,19 @@ static uint8_t g_owned[TSP_ROWS][TSP_COLS];    /* coverage mask */
 static unsigned long s_writes_far = 0, s_writes_near = 0;
 static unsigned long s_cols_far = 0, s_cols_near_skipped = 0;
 static unsigned long s_rows_rejected = 0;
+/* Split of near->far columns by how the coverage mask meets the drawn range.
+ * This decides the KERNEL SHAPE: a fully-occluded column can be skipped with
+ * one cheap per-column test, a fully-free column needs no per-row gating at
+ * all, and only a partial column has to pay for per-cell masking. */
+/* POSE-level oracle for the Z80 masked kernel. A run-scoped dump cannot
+ * verify coverage: the whole point is state carried ACROSS runs, so the unit
+ * of verification has to be a whole pose - every run of it, in near->far
+ * order, against the final name table. */
+static FILE *g_pose_dump = NULL;
+static unsigned long g_pose_emitted = 0, g_pose_stride = 1, g_pose_seen = 0;
+
+static unsigned long s_col_occluded = 0, s_col_free = 0, s_col_partial = 0;
+static unsigned long s_rows_rej_occluded = 0, s_rows_rej_partial = 0;
 
 /* Geometry for one column of a run - shared by both passes so the two differ
  * only in traversal order and masking, never in what they compute. */
@@ -91,6 +104,26 @@ static int col_rows(const ColGeom *g, int8_t *lo, int8_t *hi)
     return 1;
 }
 
+/* Same derivation as pass_run, emitted as the kernel's inputs. Returns 0 if
+ * the run draws nothing (c1 < c0), in which case it is not dumped. */
+static int run_params(const PolarRun *r, int *iq_o, int *step_o,
+                      int *c0_o, int *c1_o, int *prof_o)
+{
+    uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n;
+    int16_t iq, step;
+    if (c0 >= TSP_COLS) c0 = TSP_COLS - 1;
+    if (c1 >= TSP_COLS) c1 = TSP_COLS - 1;
+    if (c1 < c0) return 0;
+    n = (uint8_t)(c1 - c0 + 1u);
+    iq = (int16_t)((int16_t)r->inv0 << 6);
+    step = (int16_t)(((int16_t)r->inv1 - (int16_t)r->inv0)
+                     * (int16_t)k_col_recip_q8[n]);
+    step = shr_signed(step, 2);
+    *iq_o = iq; *step_o = step; *c0_o = c0; *c1_o = c1;
+    *prof_o = k_tspf_profile[r->sid];
+    return 1;
+}
+
 static void pass_run(uint16_t *out, const PolarRun *r, int near_first)
 {
     uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c;
@@ -125,8 +158,19 @@ static void pass_run(uint16_t *out, const PolarRun *r, int near_first)
             unsigned save = g_touched_count;
             int any = 0;
             if (!col_rows(&g, &lo, &hi)) continue;
-            for (rr = lo; rr <= hi; ++rr) if (!g_owned[rr][c]) { any = 1; break; }
-            if (!any) { ++s_cols_near_skipped; s_rows_rejected += (hi - lo + 1); continue; }
+            {
+                int owned_any = 0;
+                for (rr = lo; rr <= hi; ++rr) {
+                    if (g_owned[rr][c]) owned_any = 1; else any = 1;
+                }
+                if (!any) {
+                    ++s_cols_near_skipped; ++s_col_occluded;
+                    s_rows_rejected += (hi - lo + 1);
+                    s_rows_rej_occluded += (hi - lo + 1);
+                    continue;
+                }
+                if (owned_any) ++s_col_partial; else ++s_col_free;
+            }
             map_init(scratch);
             draw_edge(scratch, c, g.tl, g.tr, g.shade, 0u);
             draw_edge(scratch, c, g.bl, g.br, g.shade, 1u);
@@ -135,7 +179,7 @@ static void pass_run(uint16_t *out, const PolarRun *r, int near_first)
                       g.shade, g.border);
             g_touched_count = save;
             for (rr = lo; rr <= hi; ++rr) {
-                if (g_owned[rr][c]) { ++s_rows_rejected; continue; }
+                if (g_owned[rr][c]) { ++s_rows_rejected; ++s_rows_rej_partial; continue; }
                 out[rr * TSP_COLS + c] = scratch[rr * TSP_COLS + c];
                 g_owned[rr][c] = 1;
                 ++s_writes_near;
@@ -156,6 +200,12 @@ static void pass_run(uint16_t *out, const PolarRun *r, int near_first)
 
 int main(int argc, char **argv) {
     unsigned yaw_step = (argc > 1) ? (unsigned)strtoul(argv[1], 0, 0) : 16u;
+    if (argc > 2) {
+        g_pose_dump = fopen(argv[2], "w");
+        if (!g_pose_dump) { fprintf(stderr, "cannot open %s\n", argv[2]); return 1; }
+        g_pose_stride = (argc > 3) ? (unsigned long)strtoul(argv[3], 0, 0) : 8ul;
+        if (!g_pose_stride) g_pose_stride = 1;
+    }
     static const int8_t off[][2] = { {0,0},{7,3},{3,7},{11,5} };
     const unsigned n_off = sizeof off / sizeof off[0];
     TSPState s;
@@ -213,6 +263,27 @@ int main(int argc, char **argv) {
                     for (i = count; i-- > 0; )
                         pass_run(g_near, &g_runs[g_run_order[i]], 1);
 
+                    if (g_pose_dump && (g_pose_seen++ % g_pose_stride == 0)) {
+                        unsigned nd = 0, k;
+                        int iqv, stv, cc0, cc1, pv;
+                        for (i = count; i-- > 0; )
+                            if (run_params(&g_runs[g_run_order[i]], &iqv, &stv,
+                                           &cc0, &cc1, &pv)) ++nd;
+                        fprintf(g_pose_dump, "%u", nd);
+                        for (i = count; i-- > 0; ) {
+                            const PolarRun *rr = &g_runs[g_run_order[i]];
+                            if (!run_params(rr, &iqv, &stv, &cc0, &cc1, &pv))
+                                continue;
+                            fprintf(g_pose_dump, " %d %d %d %d %d %u %u 1",
+                                    iqv, stv, cc0, cc1, pv,
+                                    rr->left_real, rr->right_real);
+                        }
+                        for (k = 0; k < TSP_MAP_CELLS; ++k)
+                            fprintf(g_pose_dump, " %u", g_near[k]);
+                        fputc('\n', g_pose_dump);
+                        ++g_pose_emitted;
+                    }
+
                     for (c = 0; c < TSP_MAP_CELLS; ++c)
                         if (g_far[c] != g_near[c]) { ++image_mismatch; break; }
                     ++poses;
@@ -235,6 +306,26 @@ int main(int argc, char **argv) {
                  / (double)(s_writes_near + s_rows_rejected));
     printf("  columns eliminated           %.1f%%\n",
            100.0 * (double)s_cols_near_skipped / (double)s_cols_far);
+    {
+        double allc = (double)(s_col_occluded + s_col_free + s_col_partial);
+        double allr = (double)(s_rows_rej_occluded + s_rows_rej_partial);
+        printf("\nCOLUMN SHAPE SPLIT (near->far), what a kernel would have to pay:\n");
+        printf("  fully occluded  (skip whole column)   %.2f/update  %.1f%%\n",
+               (double)s_col_occluded / poses, 100.0 * s_col_occluded / allc);
+        printf("  fully free      (no per-row gating)   %.2f/update  %.1f%%\n",
+               (double)s_col_free / poses, 100.0 * s_col_free / allc);
+        printf("  partial         (needs per-cell mask) %.2f/update  %.1f%%\n",
+               (double)s_col_partial / poses, 100.0 * s_col_partial / allc);
+        printf("  rejected rows from occluded columns   %.1f%% of all rejections\n",
+               100.0 * s_rows_rej_occluded / allr);
+        printf("  rejected rows from partial columns    %.1f%%\n",
+               100.0 * s_rows_rej_partial / allr);
+    }
+    if (g_pose_dump) {
+        fclose(g_pose_dump);
+        fprintf(stderr, "pose oracle: %lu poses dumped (stride %lu)\n",
+                g_pose_emitted, g_pose_stride);
+    }
     printf("\nIMAGE EQUIVALENCE: %s  (%lu/%lu poses differ)\n",
            image_mismatch ? "*** MISMATCH ***" : "identical",
            image_mismatch, poses);
