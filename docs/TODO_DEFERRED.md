@@ -630,6 +630,60 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A25. Coverage / overdraw — image-exact, but the ceiling is 9.1%, not a third.
+
+`make coverage-potential` builds `tools/coverage_potential_probe.c`, which
+renders every pose twice from the same geometry (`col_geom()` is shared, so
+the two passes differ only in traversal order and masking):
+
+- **far->near, no mask** — exactly what the shipped host path and the current
+  Z80 column materializer do. Last writer wins, so nothing can be skipped
+  without knowing the future.
+- **near->far with a perfect per-cell coverage mask** — the order the shipped
+  GG assembly uses. A cell is written once, by the nearest run that covers it.
+
+Measured over **29,824 poses** (yaw step 16, four sub-cell offsets):
+
+| quantity | per update |
+| --- | ---: |
+| columns materialised, far->near | 29.27 |
+| row-writes, far->near | 277.34 |
+| row-writes surviving near->far + mask | 252.09 |
+| row-writes rejected by the mask | 25.26 |
+| columns skipped entirely | 3.16 |
+
+**Work eliminated: 9.1% of row-writes, 10.8% of columns. Images identical,
+0/29,824 poses differ.**
+
+**Correction to something I said earlier.** I had implied roughly a third of
+materializer work gets overwritten, inferring it from 29.27 columns
+materialised against 20 screen columns. That inference was wrong. Runs do
+overlap in *columns*, but they largely occupy different *vertical bands*
+within those columns, so column-level overlap massively overstates cell-level
+overdraw. The row-level number is the real one: 9.1%.
+
+**What this changes.** Near->far + coverage is proven correct and available,
+but it buys about one rung of the optimisation ladder (A24's rungs were 2.5%
+to 8.4%), not a step change. It is worth building on the Z80 as a normal rung
+with an A/B twin, not as an architectural move. The architectural move that
+does promise a step change is still *temporal*: stop materializing cells that
+did not change between updates. Coverage is spatial dedup within one frame;
+that ceiling is now measured at 9.1% and will not grow.
+
+**Bug found while building the probe** (worth recording, it is a trap the Z80
+kernel will hit too): the first version masked whole **columns** — if a column
+was fully owned, skip it — but the `draw_edge`/`draw_full` calls still wrote
+their full row range whenever a column was *not* fully owned, so a far wall
+could overwrite a near one. 13,737/29,824 poses mismatched. Masking has to be
+per **cell**: draw into a scratch column, then merge only the unowned rows.
+The Z80 kernel must do the same — a per-column skip test is not sufficient,
+the mask has to gate each row store.
+
+**Unknown, not estimated:** the Z80 cost of maintaining the coverage mask
+(18 rows x 20 columns of ownership bits, plus the per-row test in the store
+loop) is not yet measured. It could plausibly eat a meaningful fraction of the
+9.1%. Nothing is claimed until the A/B twin runs.
+
 ### A22. CARRY_EDGE_A — external review's diagnosis was exactly right, and worth 2.5%.
 
 External review identified a precise redundancy in the column materializer:
