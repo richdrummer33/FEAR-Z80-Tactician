@@ -107,10 +107,35 @@ renderer's output, and no cell outside the dirty set ever changed.
 an optional upper-bound comparison and nothing more. Do not change the
 projection to rescue a metric.
 
-**Next, in order:** `V_COLUMN_SHIFT` as a run operation (45.0% of rotation
-events); then the vacated-cell restoration mechanism, which is the real blocker
-and has no cheap candidate; then and only then a Z80 executor costed from this
-project's measured kernel costs and proved with an A/B twin against DDA_G.
+**A30** (`make temporal-cadence`) then swept the update period, because U=4 is
+the OLD renderer's cadence and designing against it bakes in its speed. The
+workload is a feedback loop and it moves a lot:
+
+| pure rotation | U=4 (dyaw 12) | U=1 (dyaw 3) |
+| --- | ---: | ---: |
+| dirty | 48.2% | **27.2%** |
+| columns edge-only | 49.9% | **61.1%** |
+| V_COLUMN_SHIFT | 45.0% | **16.0%** |
+| spans moving 0 or 1 column | 27% | **97.3%** |
+| `tile_id += delta` reachable | 30.1% | **53.7%** |
+
+So V_COLUMN_SHIFT is a `SHIFT_RUN dx=+/-1` case at realistic cadence, not an
+N-column rebuild. Restoration is measured too: 21.9% background, 74.0% a span
+already in retained state, 4.1% new. The underlay cache and the next-owner
+pointer are both refuted (5.1% and 27.5%); what works is a near->far scan over
+retained state, mean depth ~3.
+
+**Two things A30 says NOT to assume.** One shared delta per span does not
+improve with cadence (16-19% under rotation at every U), so most edge-only
+columns still need per-column geometry when turning. And the tail is topology,
+not motion rate: across all regimes the max dirty stays pinned at 360 at every
+cadence while the mean halves, because doorway crossings do not get cheaper
+when you render faster.
+
+**Next:** the Z80 A/B. `TEMP_BOUNDARY_A` against `DDA_G`, pose-exact, one
+mechanism per rung as A24/A26/A27 were done, costed against the U=1 and U=2
+event distributions rather than U=4. Then the run-shift, tile-delta,
+grow/shrink and restoration rungs, one at a time.
 
 Also priced along the way: `polar_transition_bake.c` emits **136.58 MiB**
 against a 128 KiB target, so pose enumeration is out.

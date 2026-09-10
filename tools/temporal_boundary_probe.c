@@ -77,6 +77,8 @@ typedef struct {
 typedef struct {
     uint8_t keyid;                 /* persistent span identity across poses */
     uint8_t rank;                  /* far->near draw index */
+    uint8_t x0, x1;                /* screen PIXEL extent, for sub-cell motion */
+    uint8_t c0, c1;
     ColState col[TSP_COLS];
 } SpanState;
 
@@ -210,6 +212,8 @@ static void build_pose(const TSPState *st, Pose *p)
         memset(s, 0, sizeof *s);
         s->keyid = run_key[ri];
         s->rank = (uint8_t)i;
+        s->x0 = r->x0; s->x1 = r->x1;
+        s->c0 = c0; s->c1 = c1;
         n = (uint8_t)(c1 - c0 + 1u);
         iq = (int16_t)((int16_t)r->inv0 << 6);
         step = (int16_t)(((int16_t)r->inv1 - (int16_t)r->inv0)
@@ -298,6 +302,50 @@ static unsigned long n_colmat, n_col_skip, n_col_edge_only, n_col_full;
 static unsigned long n_interior_preserved, n_interior_swapped;
 static unsigned long n_grow, n_shrink;
 
+/* Bucketed by |dyaw|, the physically meaningful variable. The cadence U only
+ * matters through the pose delta it produces, so report both. */
+#define NBK 6
+static unsigned bk;
+static const char *k_bk_name[NBK] = { "0", "1-2", "3-4", "5-8", "9-16", ">16" };
+static unsigned long b_pairs[NBK], b_rowwr[NBK], b_dirty[NBK], b_true[NBK];
+static unsigned long b_colmat[NBK], b_skip[NBK], b_edge[NBK], b_full[NBK];
+
+/* How far does a span slide per update, in PIXELS and in COLUMNS? The question
+ * is whether V_COLUMN_SHIFT collapses into sub-cell phase motion as cadence
+ * rises. A shift of 0 columns with non-zero pixels is exactly that collapse. */
+static unsigned long n_slide, n_slide_px[17], n_slide_col[9];
+static unsigned long n_slide_subcell;   /* moved pixels, crossed no column */
+
+/* Can a whole span be advanced by ONE shared delta, or does every column need
+ * its own? This decides whether advancing retained state is O(1) per span or
+ * O(columns) - i.e. whether an edge-only column escapes its geometry
+ * derivation or merely its interior writes. */
+static unsigned long n_span_delta_checked, n_span_delta_uniform;
+static unsigned long n_span_delta_uniform_top;
+
+/* What actually goes back into a vacated cell? This is the restoration
+ * question, and it decides whether a baked restore token is 2 bits or a
+ * visibility query. */
+enum { RS_BG = 0, RS_KNOWN_SPAN, RS_NEW_SPAN, RS_COUNT };
+static const char *k_rs_name[RS_COUNT] = {
+    "background (ceiling/floor/horizon)",
+    "a span ALREADY in retained state",
+    "a span that appeared this update"
+};
+static unsigned long n_restore[RS_COUNT], n_restore_tot;
+/* Of the known-span restores, how often was that span ALREADY contributing
+ * the very same word to this cell last update, hidden underneath? If that is
+ * high, a one-deep "second owner" underlay is the restore token and no
+ * visibility query is needed. */
+static unsigned long n_restore_underlay_hit;
+/* How expensive is "which retained span owns this vacated cell?" There are
+ * only a couple of visible spans, so the honest cost model is a near->far scan
+ * over retained state, not a coverage bitmap - A25/A26 already ruled those
+ * out. Measure the scan DEPTH, and how often the answer is simply the span
+ * immediately behind in draw order, which a one-word "next owner" field in
+ * retained state would answer for free. */
+static unsigned long n_scan_depth[8], n_scan_tot, n_scan_adjacent;
+
 /* Is the edge LUT already a temporal state machine?
  *   TSP_TILE_EDGE = BASE + ((shade*16 + off_index)*8) + slope_index
  * so within-cell vertical phase has stride 8 and quantized slope has stride 1,
@@ -382,15 +430,70 @@ static void selfcheck(const Pose *p)
         }
 }
 
+/* Index of the span that WINS cell (r,c) in this pose, or -1 for background. */
+static int winner_of(const Pose *p, int r, int c)
+{
+    int w = -1; uint8_t i; uint16_t cw;
+    for (i = 0; i < p->nsp; ++i)
+        if (contrib(&p->sp[i].col[c], r, &cw)) w = (int)i;
+    return w;
+}
+
 static void classify(const Pose *prev, const Pose *cur)
 {
     uint8_t i, j;
     int c, r, ops_this = 0;
     unsigned long dirty_here = 0;
+    int dy;
 
     memset(g_dirty, 0, sizeof g_dirty);
     memset(g_cause, 0, sizeof g_cause);
     ++n_pairs;
+
+    dy = (int)cur->yaw - (int)prev->yaw;
+    if (dy > 128) dy -= 256;
+    if (dy < -128) dy += 256;
+    if (dy < 0) dy = -dy;
+    bk = dy == 0 ? 0u : dy <= 2 ? 1u : dy <= 4 ? 2u : dy <= 8 ? 3u
+       : dy <= 16 ? 4u : 5u;
+    ++b_pairs[bk];
+
+    /* Span slide, in pixels and in columns, and whether it stayed sub-cell. */
+    for (i = 0; i < cur->nsp; ++i) {
+        const SpanState *ps = find_span(prev, cur->sp[i].keyid);
+        int dpx, dcol;
+        if (!ps) continue;
+        dpx = (int)cur->sp[i].x0 - (int)ps->x0;
+        dcol = (int)cur->sp[i].c0 - (int)ps->c0;
+        if (dpx < 0) dpx = -dpx;
+        if (dcol < 0) dcol = -dcol;
+        ++n_slide;
+        ++n_slide_px[dpx > 16 ? 16 : dpx];
+        ++n_slide_col[dcol > 8 ? 8 : dcol];
+        if (dcol == 0 && dpx != 0) ++n_slide_subcell;
+    }
+
+    /* Is one shared delta enough to advance a whole span's boundary state? */
+    for (i = 0; i < cur->nsp; ++i) {
+        const SpanState *ps = find_span(prev, cur->sp[i].keyid);
+        int have = 0, uni = 1, uni_top = 1;
+        int d0 = 0, d1 = 0, d2 = 0, d3 = 0;
+        if (!ps) continue;
+        for (c = 0; c < (int)TSP_COLS; ++c) {
+            const ColState *o = &ps->col[c], *n = &cur->sp[i].col[c];
+            int e0, e1, e2, e3;
+            if (!o->present || !n->present) continue;
+            e0 = n->tl - o->tl; e1 = n->tr - o->tr;
+            e2 = n->bl - o->bl; e3 = n->br - o->br;
+            if (!have) { d0 = e0; d1 = e1; d2 = e2; d3 = e3; have = 1; continue; }
+            if (e0 != d0 || e1 != d1 || e2 != d2 || e3 != d3) uni = 0;
+            if (e0 != d0 || e1 != d1) uni_top = 0;
+        }
+        if (!have) continue;
+        ++n_span_delta_checked;
+        if (uni) ++n_span_delta_uniform;
+        if (uni_top) ++n_span_delta_uniform_top;
+    }
 
     /* Ownership: if two spans present in both poses swapped relative draw
      * order, every cell either covers could flip winner. Cheap to detect from
@@ -458,7 +561,7 @@ static void classify(const Pose *prev, const Pose *cur)
                 top_rows(n, &a, &b); mark(a, b, c, CZ_TOPO);
                 bot_rows(n, &a, &b); mark(a, b, c, CZ_TOPO);
                 int_rows(n, &a, &b); if (a <= b) mark(a, b, c, CZ_TOPO);
-                ++n_colmat; ++n_col_full;
+                ++n_colmat; ++n_col_full; ++b_colmat[bk]; ++b_full[bk];
             }
             ++n_span_appear;
             ++n_op[OP_FALLBACK];
@@ -475,7 +578,7 @@ static void classify(const Pose *prev, const Pose *cur)
              * 71.7% NO_CHANGE, which was mostly the 20-column screen's blank
              * space congratulating itself. */
             if (!o->present && !n->present) continue;
-            if (n->present) ++n_colmat;
+            if (n->present) { ++n_colmat; ++b_colmat[bk]; }
             if (o->present != n->present) {
                 const ColState *s = o->present ? o : n;
                 top_rows(s, &oa, &ob); mark(oa, ob, c, CZ_COLSHIFT);
@@ -483,11 +586,13 @@ static void classify(const Pose *prev, const Pose *cur)
                 int_rows(s, &oa, &ob);
                 if (oa <= ob) mark(oa, ob, c, CZ_COLSHIFT);
                 if (o->present) ++n_vacated;
-                if (n->present) ++n_col_full;
+                if (n->present) { ++n_col_full; ++b_full[bk]; }
                 ++n_op[OP_V_COLUMN_SHIFT]; ++ops_this;
                 continue;
             }
-            if (col_same(o, n)) { ++n_op[OP_NO_CHANGE]; ++n_col_skip; continue; }
+            if (col_same(o, n)) {
+                ++n_op[OP_NO_CHANGE]; ++n_col_skip; ++b_skip[bk]; continue;
+            }
 
             note_transition(o, n);
             ++ops_this;
@@ -501,10 +606,10 @@ static void classify(const Pose *prev, const Pose *cur)
                 if (oa <= ob) mark(oa, ob, c, CZ_SHADE);
                 if (na <= nb) mark(na, nb, c, CZ_SHADE);
                 ++n_op[OP_FALLBACK];
-                ++n_col_full;
+                ++n_col_full; ++b_full[bk];
                 continue;
             }
-            ++n_col_edge_only;
+            ++n_col_edge_only; ++b_edge[bk];
 
             top_moved = (o->tl != n->tl || o->tr != n->tr);
             bot_moved = (o->bl != n->bl || o->br != n->br);
@@ -587,6 +692,50 @@ static void classify(const Pose *prev, const Pose *cur)
         }
     }
 
+    /* What replaces a vacated cell? Measured, because a runtime cannot afford
+     * the full ordered-run resolution this probe uses to find out.
+     *
+     * A cell is vacated only if the span OWNED it - won the far->near race -
+     * and no longer does. The first version of this counted every cell a span
+     * merely CONTRIBUTED to, including ones a nearer span was already
+     * covering, which inflated "replaced by a different span" to 79.9%. A far
+     * span losing a cell it was never showing is not a restoration event. */
+    for (i = 0; i < prev->nsp; ++i) {
+        const SpanState *cs = find_span(cur, prev->sp[i].keyid);
+        for (c = 0; c < (int)TSP_COLS; ++c) {
+            for (r = 0; r < (int)TSP_ROWS; ++r) {
+                uint16_t cw;
+                int wp, wn;
+                if (!contrib(&prev->sp[i].col[c], r, &cw)) continue;
+                wp = winner_of(prev, r, c);
+                if (wp < 0 || prev->sp[wp].keyid != prev->sp[i].keyid) continue;
+                wn = winner_of(cur, r, c);
+                if (wn >= 0 && cs && cur->sp[wn].keyid == cs->keyid) continue;
+                ++n_restore_tot;
+                if (wn < 0) { ++n_restore[RS_BG]; continue; }
+                {   /* near->far scan depth to find the new owner */
+                    int d = 0, q;
+                    for (q = (int)cur->nsp - 1; q >= 0; --q) {
+                        uint16_t tw;
+                        ++d;
+                        if (contrib(&cur->sp[q].col[c], r, &tw)) break;
+                    }
+                    ++n_scan_tot;
+                    ++n_scan_depth[d > 7 ? 7 : d];
+                    if (wp >= 0 && wn == wp - 1) ++n_scan_adjacent;
+                }
+                if (find_span(prev, cur->sp[wn].keyid)) {
+                    const SpanState *op = find_span(prev, cur->sp[wn].keyid);
+                    uint16_t noww, thenw;
+                    ++n_restore[RS_KNOWN_SPAN];
+                    contrib(&cur->sp[wn].col[c], r, &noww);
+                    if (contrib(&op->col[c], r, &thenw) && thenw == noww)
+                        ++n_restore_underlay_hit;
+                } else ++n_restore[RS_NEW_SPAN];
+            }
+        }
+    }
+
     /* ---- metrics + the go/no-go verification ---- */
     for (c = 0; c < (int)TSP_COLS; ++c) {
         const SpanState *s;
@@ -596,7 +745,11 @@ static void classify(const Pose *prev, const Pose *cur)
             int idx = k_row_base[r] + c;
             int changed = (prev->map[idx] != cur->map[idx]);
             if (!changed) ++n_cells_same; else ++n_cells_true_changed;
-            if (g_dirty[r][c]) { ++n_dirty; ++dirty_here; ++n_cause[g_cause[r][c]]; }
+            if (!changed) ; else ++b_true[bk];
+            if (g_dirty[r][c]) {
+                ++n_dirty; ++dirty_here; ++n_cause[g_cause[r][c]];
+                ++b_dirty[bk];
+            }
             /* A cell outside the dirty set must ALREADY be correct. */
             if (changed && !g_dirty[r][c]) {
                 ++verify_cells_missed;
@@ -622,7 +775,10 @@ static void classify(const Pose *prev, const Pose *cur)
             if (!n->present) continue;
             top_rows(n, &a, &b); lo = a; hi = b;
             bot_rows(n, &a, &b); if (a < lo) lo = a; if (b > hi) hi = b;
-            if (hi >= lo) n_rowwrites_full += (unsigned long)(hi - lo + 1);
+            if (hi >= lo) {
+                n_rowwrites_full += (unsigned long)(hi - lo + 1);
+                b_rowwr[bk] += (unsigned long)(hi - lo + 1);
+            }
         }
 
     ++hist_dirty[dirty_here > TSP_MAP_CELLS ? TSP_MAP_CELLS : dirty_here];
@@ -753,6 +909,66 @@ int main(int argc, char **argv)
            (double)n_interior_preserved / n_pairs);
     printf("  interior cells entering/leaving              %7.2f /update\n",
            (double)n_interior_swapped / n_pairs);
+
+    printf("\nBY |dyaw| PER UPDATE - the physically meaningful variable\n");
+    printf("  %-8s %9s %9s %9s %8s %8s %8s\n",
+           "|dyaw|", "pairs", "dirty%", "floor%", "skip%", "edge%", "full%");
+    for (i = 0; i < NBK; ++i) {
+        if (!b_pairs[i]) continue;
+        printf("  %-8s %9lu %8.1f%% %8.1f%% %7.1f%% %7.1f%% %7.1f%%\n",
+               k_bk_name[i], b_pairs[i],
+               b_rowwr[i] ? 100.0 * b_dirty[i] / b_rowwr[i] : 0.0,
+               b_rowwr[i] ? 100.0 * b_true[i] / b_rowwr[i] : 0.0,
+               b_colmat[i] ? 100.0 * b_skip[i] / b_colmat[i] : 0.0,
+               b_colmat[i] ? 100.0 * b_edge[i] / b_colmat[i] : 0.0,
+               b_colmat[i] ? 100.0 * b_full[i] / b_colmat[i] : 0.0);
+    }
+
+    printf("\nDOES V_COLUMN_SHIFT COLLAPSE? span slide per update\n");
+    printf("  spans tracked %lu   stayed sub-cell (pixels moved, no column"
+           " crossed) %.1f%%\n",
+           n_slide, n_slide ? 100.0 * n_slide_subcell / n_slide : 0.0);
+    printf("  |dcolumns|:");
+    for (i = 0; i < 9; ++i)
+        if (n_slide_col[i])
+            printf("  %u:%.1f%%", i, 100.0 * n_slide_col[i] / n_slide);
+    printf("\n  |dpixels| :");
+    for (i = 0; i < 17; ++i)
+        if (n_slide_px[i] && 100.0 * n_slide_px[i] / n_slide >= 0.5)
+            printf("  %u:%.1f%%", i, 100.0 * n_slide_px[i] / n_slide);
+    printf("\n");
+
+    printf("\nCAN A WHOLE SPAN BE ADVANCED BY ONE SHARED DELTA?\n");
+    printf("  (decides whether an edge-only column escapes its GEOMETRY\n"
+           "   derivation or only its interior writes - the open A29 question)\n");
+    printf("  spans present in both poses            %lu\n",
+           n_span_delta_checked);
+    printf("  one delta covers all four boundaries   %.1f%%\n",
+           n_span_delta_checked
+             ? 100.0 * n_span_delta_uniform / n_span_delta_checked : 0.0);
+    printf("  one delta covers the TOP edge alone    %.1f%%\n",
+           n_span_delta_checked
+             ? 100.0 * n_span_delta_uniform_top / n_span_delta_checked : 0.0);
+
+    printf("\nWHAT REPLACES A VACATED CELL? (the restoration question)\n");
+    for (i = 0; i < RS_COUNT; ++i)
+        printf("  %-36s %7.1f%%   %.2f /update\n", k_rs_name[i],
+               n_restore_tot ? 100.0 * n_restore[i] / n_restore_tot : 0.0,
+               (double)n_restore[i] / n_pairs);
+    printf("  total vacated cells                    %.2f /update\n",
+           (double)n_restore_tot / n_pairs);
+    printf("  of the known-span restores, the SAME word was already being\n"
+           "  contributed underneath last update      %.1f%%"
+           "   <- a one-deep underlay is enough here\n",
+           n_restore[RS_KNOWN_SPAN]
+             ? 100.0 * n_restore_underlay_hit / n_restore[RS_KNOWN_SPAN] : 0.0);
+
+    printf("  near->far scan depth to find the new owner:");
+    for (i = 0; i < 8; ++i)
+        if (n_scan_depth[i])
+            printf("  %u:%.1f%%", i, 100.0 * n_scan_depth[i] / n_scan_tot);
+    printf("\n  new owner is the span immediately behind the old one  %.1f%%\n",
+           n_scan_tot ? 100.0 * n_scan_adjacent / n_scan_tot : 0.0);
 
     printf("\nDIRTY CELLS BY CAUSE (first cause to claim the cell; the edge\n"
            "unions subsume most interior transitions, so read the column\n"

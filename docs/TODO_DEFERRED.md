@@ -630,6 +630,121 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A30. Cadence sweep — the workload is a feedback loop, and V_COLUMN_SHIFT collapses.
+
+`make temporal-cadence` reruns A29's verified boundary representation at U=1
+through U=8. **The go/no-go and self-check stay clean at every cadence**: 0
+cells changed outside the dirty set, 0 state-only re-derivation mismatches.
+
+**Why this had to be measured before designing anything.** A29's corpus ran at
+U=4 because that is what a 194,761 T materializer can afford — about 15 unique
+updates/sec. Designing the temporal renderer against that workload bakes in the
+old renderer's speed. The optimization is a loop: faster renderer, smaller
+camera delta, fewer boundaries crossed, fewer events, faster again. At the
+shipped turn rate of 3 yaw units/tick, U=1..4 is dyaw 3, 6, 9, 12, or 4.22 to
+16.88 degrees.
+
+**Pure rotation** — the case that decides everything:
+
+| U | dyaw | deg | dirty% | floor% | skip% | edge% | full% | V_COL% | vacated | tile_id+= |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 3 | 4.22 | **27.2** | 25.8 | 13.1 | **61.1** | 25.8 | **16.0** | 20.6 | **53.7%** |
+| 2 | 6 | 8.44 | 35.8 | 31.6 | 4.9 | 59.3 | 35.9 | 28.2 | 39.8 | 44.2% |
+| 3 | 9 | 12.66 | 42.4 | 35.1 | 2.4 | 54.8 | 42.8 | 37.6 | 57.7 | 36.4% |
+| 4 | 12 | 16.88 | 48.2 | 38.1 | 1.2 | 49.9 | 48.9 | 45.0 | 74.2 | 30.1% |
+| 8 | 24 | 33.75 | 66.8 | 47.3 | 0.1 | 33.8 | 66.0 | 61.1 | 126.5 | 13.7% |
+
+**All regimes:**
+
+| U | dirty% | floor% | skip% | edge% | full% | V_COL% | vacated | tile_id+= |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | **12.6** | 11.7 | **52.3** | 36.9 | 10.8 | **6.8** | 8.0 | **61.5%** |
+| 2 | 17.1 | 15.2 | 46.0 | 38.3 | 15.7 | 12.4 | 15.2 | 56.9% |
+| 4 | 23.8 | 19.4 | 41.7 | 35.8 | 22.5 | 20.9 | 28.2 | 51.7% |
+| 8 | 33.8 | 25.5 | 39.0 | 29.1 | 31.9 | 30.1 | 49.1 | 50.6% |
+
+**1. V_COLUMN_SHIFT collapses, as predicted.** 45.0% of rotation events at U=4,
+**16.0% at U=1**. And the shape of what remains is the important part — span
+slide per update, pure rotation:
+
+| U | 0 columns | 1 column | 2 | 3 | 4 | 5 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 39.9% | **57.4%** | 2.7% | — | — | — |
+| 2 | 28.6% | 20.9% | 46.8% | 3.7% | — | — |
+| 4 | 24.4% | 2.3% | 3.0% | 40.9% | 26.7% | 2.6% |
+
+At U=1, **97.3% of spans move zero or one column.** That is precisely the
+`SHIFT_RUN dx=+/-1` case, not an N-column rebuild. At U=4 the mode is a 3- or
+4-column jump, which is why it looked like an area problem there. It was an
+artefact of the old renderer's cadence.
+
+**2. The `tile_id += delta` fast path improves with cadence too**, 30.1% to
+53.7% under rotation and 51.7% to 61.5% overall, because the phase deltas that
+fall outside the increment are the large ones.
+
+**3. A negative result that constrains the design: one shared delta per span
+does NOT get better with cadence.** Whether a whole span's four boundaries can
+be advanced by a single `(dtl,dtr,dbl,dbr)` sits at 16-19% under rotation at
+EVERY cadence, and 52-58% across all regimes. So:
+
+> **The answer to A29's open question is "it depends on the motion".** Under
+> translation, roughly half of spans can have their whole boundary state
+> advanced by one shared delta, so an edge-only column escapes its geometry
+> derivation. Under rotation it is one in six, because the secant term A28
+> identified varies across the span, so most edge-only columns still need
+> per-column geometry and only escape the interior writes. Any T projection
+> that assumes the first case is wrong for turning, which is the expensive case.
+
+**4. Restoration — the blocker, now measured rather than described.** At U=1
+under rotation, 20.6 vacated cells/update:
+
+| what replaces it | share |
+| --- | ---: |
+| background (ceiling/floor/horizon) | 21.9% |
+| a span ALREADY in retained state | 74.0% |
+| a span that appeared this update | 4.1% |
+
+Two proposed mechanisms are **refuted by this**:
+
+- *A one-deep "second owner" underlay.* Only **5.1%** of known-span restores
+  had that span already contributing the same word underneath last update.
+  Everything moved; the underlay is stale exactly when it is needed.
+- *A "next owner" pointer.* The new owner is the span immediately behind the
+  old one only **27.5%** of the time.
+
+What the data DOES support is a near->far scan over retained span state, depth
+1:26.6%, 2:24.9%, 3:16.5%, 4:12.6%, rest 19.4% — **mean about 3**. With 4.24
+visible spans under rotation that is a short linear scan over state already
+held, not a coverage bitmap, and A25/A26's verdict against generic runtime
+coverage does not apply to it. Cost per test is the same interior/bottom/top
+range check `contrib` does. **20.6 cells x ~3 tests per update is the number to
+beat, and it is not yet costed on the Z80.**
+
+**5. The tail is topology, not motion rate, and cadence does not fix it.**
+Under rotation the max dirty falls 357 -> 223 from U=4 to U=1, but across all
+regimes the max stays pinned at **360, a whole screen, at every cadence**,
+while the mean falls from 54.8 to 29.2. That worst case is spans appearing and
+vanishing — doorway crossings — at 0.212 and 0.235 per update. Rendering faster
+does not make a doorway crossing cheaper.
+
+> **Consequence for the scheduler.** The deadline-driven or sliced update has to
+> be designed around TOPOLOGY events specifically, not around a generic
+> percentile. An ordinary update is 29 cells; a doorway crossing is up to 360
+> and no cadence increase reduces it. That is a two-population distribution, and
+> a budget cap that treats it as one will either be too slow for the common case
+> or blow the deadline on the rare one.
+
+**What this does NOT establish.** No T-state figure, and in particular the
+dirty-cell percentage is still not the T percentage — the interior fill it
+removes is ~7.9% of A27's profile. The fixed-point calculation the user asked
+for (measured cost at cadence X -> achievable cadence Y -> event distribution
+at Y -> revised cost) now has its first table, but it needs a measured Z80 cost
+to iterate on, and this project has been wrong on five straight estimates.
+
+**What closes A30:** the Z80 A/B. `TEMP_BOUNDARY_A` against `DDA_G`, pose-exact,
+one mechanism at a time as A24/A26/A27 were done, costed against the **U=1 and
+U=2 event distributions** above rather than U=4.
+
 ### A29. Temporal BOUNDARY events — the representation is complete, and it works under rotation.
 
 `make temporal-boundary` builds `tools/temporal_boundary_probe.c` on the same
@@ -719,6 +834,11 @@ wholly-new columns and vacates as many. But a newly covered column of the same
 wall is nearly its neighbour: same shade, usually the same border, edges one
 slope-step along. Encoding it as a run operation rather than N independent
 column derivations is the obvious lead and is NOT measured.
+
+**A30 answers the open question below and supersedes the U=4 numbers in this
+entry.** The workload is cadence-dependent: at U=1 the rotation figures become
+27.2% dirty, 61.1% edge-only and 16.0% V_COLUMN_SHIFT. Read A30 before using
+any number here for design.
 
 **The edge LUT is already laid out as a temporal state machine, half the time.**
 `TSP_TILE_EDGE = BASE + ((shade*16 + off)*8) + slope`, so within-cell vertical
