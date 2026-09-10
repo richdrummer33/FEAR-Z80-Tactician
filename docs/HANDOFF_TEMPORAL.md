@@ -73,22 +73,49 @@ A20–A27 (§A. Z80 span-interpreter micro-architecture).
   still +7.7% over DDA_G alone. **Coverage at column granularity is closed**,
   not deferred — measured twice, on two kernels, losing both times.
 
-## A28 ANSWERED THIS (read `docs/TODO_DEFERRED.md` A28 before A6)
+## WHERE THIS ACTUALLY LANDED — read A29 in `docs/TODO_DEFERRED.md`
 
-The temporal question below was measured, not built: `make temporal-delta`.
-Short version — temporal skipping is worth 60-75% under pure translation and
-**0.1% under rotation**, because `inv_at_invd` carries an explicit
-`sec(bearing - yaw)` factor, so rotating the camera rescales every run's
-projected depth even though nothing in the world moved. Hardware H-scroll
-cannot absorb it either: the projection is `80 + 80*tan(theta)`, so a 12-yaw-
-unit update shifts the screen centre 24 px and the edge 37 px.
+Two probes, in this order, and the second corrects the first.
 
-**A6 (cylindrical projection) is therefore the gate on this whole direction**,
-and the next step is a host-side cylindrical re-bake plus a re-run of the same
-probe — not a Z80 kernel. Also priced while there: the existing
-`polar_transition_bake.c` emits **136.58 MiB** against a 128 KiB target.
+**A28** (`make temporal-delta`) asked whether a whole `(run, column)` work key
+survives an update. Under rotation: 0.1%. It concluded the direction was gated
+on cylindrical projection. **That conclusion was withdrawn.** A whole-key match
+is not the condition for skipping work, and the tell was inside A28's own
+numbers: 70.8% of cells unchanged under the same rotation that gave 0.1% key
+stability.
 
-## The open question, explicitly aligned on with the user
+**A29** (`make temporal-boundary`) asks the right question. A wall column is a
+top edge, a bottom edge, and an interior of identical FULL tiles. The retained
+state is `(tl, tr, bl, br, shade, border)` per column, which is provably the
+complete determinant of that column's output. Interior rows that stay interior
+at the same shade and border are not dirty however far the geometry moved.
+
+**With the perspective projection untouched**, on A28's corpus:
+
+| | all regimes | pure rotation |
+| --- | ---: | ---: |
+| row-writes now | 230.54 | 275.61 |
+| dirty after the boundary filter | **23.8%** | **48.2%** |
+| exact floor | 19.4% | 38.1% |
+| columns fully skippable | 41.7% | 1.2% |
+| columns needing only boundary work | 35.8% | **49.9%** |
+
+Both checks clean on all 879,808 pairs: state-only re-derivation equals the
+renderer's output, and no cell outside the dirty set ever changed.
+
+**Cylindrical projection is NOT a gate.** A6 says so now. It stays available as
+an optional upper-bound comparison and nothing more. Do not change the
+projection to rescue a metric.
+
+**Next, in order:** `V_COLUMN_SHIFT` as a run operation (45.0% of rotation
+events); then the vacated-cell restoration mechanism, which is the real blocker
+and has no cheap candidate; then and only then a Z80 executor costed from this
+project's measured kernel costs and proved with an A/B twin against DDA_G.
+
+Also priced along the way: `polar_transition_bake.c` emits **136.58 MiB**
+against a 128 KiB target, so pose enumeration is out.
+
+## The open question as it was originally posed (kept for context; answered above)
 
 > "temporal question of not materializing unchanged cells at all"
 

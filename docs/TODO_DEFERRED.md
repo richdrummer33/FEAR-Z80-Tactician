@@ -630,6 +630,146 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A29. Temporal BOUNDARY events — the representation is complete, and it works under rotation.
+
+`make temporal-boundary` builds `tools/temporal_boundary_probe.c` on the same
+corpus A28 used, so the two are directly comparable: 1,864 spawns, 879,808
+update pairs, U=4. **Perspective projection unchanged.**
+
+**What is retained, and why exactly this.** The renderer's per-column output is
+a pure function of six values — `(tl, tr, bl, br, shade, border)` — through
+`draw_edge`(top), `draw_edge`(bottom), `draw_full`(interior) in that order,
+interior last so it wins on overlap. Nothing else about the projection can
+reach a cell. That sextuple IS the retained boundary state.
+
+**Two checks run on every pose pair, and both are load-bearing:**
+
+1. *Self-check.* Re-derive the whole 20x18 name table from span state alone and
+   require it to equal the renderer's own output. **0 mismatches.** If the
+   retained state were missing an input, every number below would be noise.
+2. *Go/no-go.* Every cell OUTSIDE the classifier's dirty set must already hold
+   the correct new word. **0 misses, 0/879,808 pairs.** The representation
+   describes every visual change; it is not a heuristic that mostly works.
+
+**The classifier reads retained state only.** It never renders a cell and
+compares — that would only prove stores are skippable, which A28 already showed
+and which is not the point. Its rules: column present in one pose only marks
+all its rows; shade or border change marks the column; a moved top or bottom
+edge marks the union of old and new edge rows; and the interior contributes
+only its **symmetric difference**. That last line is the entire hypothesis:
+rows that were interior and still are, at the same shade and border, are not
+dirty however far the geometry moved.
+
+| regime | dirty % of row-writes | col skip | col edge-only | col full |
+| --- | ---: | ---: | ---: | ---: |
+| stand still | 0.0% | 100.0% | 0.0% | 0.0% |
+| strafe | 8.1% | 81.8% | 10.9% | 7.4% |
+| walk forward | 8.3% | 64.5% | 30.9% | 4.6% |
+| walk, rare nudge | 13.0% | 53.7% | 37.4% | 8.9% |
+| walk, nudge turn | 24.4% | 24.5% | 59.5% | 16.0% |
+| demo path (shipped) | 39.2% | 11.5% | 64.1% | 24.4% |
+| turn in place | **48.2%** | 1.2% | 49.9% | 48.9% |
+| walk + turn | 50.4% | 1.1% | 47.9% | 51.1% |
+
+**Against A28, on the identical corpus and the identical rotation:**
+
+| metric, pure rotation | A28 | A29 |
+| --- | ---: | ---: |
+| whole `(run,column)` key survives | 0.1% | 1.2% |
+| columns needing only boundary work | not measured | **49.9%** |
+| row-writes eliminated | not measured | **51.8%** |
+
+A28's number was not wrong, it was answering a question that does not gate the
+architecture. The finer mechanism survives rotation; the coarse one does not.
+
+**All regimes:** 230.54 row-writes/update now, **54.84 dirty (23.8%)**, against
+an exact floor of 44.80 (19.4%). The classifier overshoots that floor by
+**1.22x**, so the cheap boundary test is close to the best any test could do.
+Interior cells left resident: 69.77/update. Column-materializations 21.39, of
+which 41.7% fully skippable, 35.8% edge-only, 22.5% needing full derivation.
+
+**The tail is real and must not be averaged away.** Dirty cells mean 54.84, p95
+**194**, max **360** — a whole screen. A kernel that is fast on the mean and
+falls back on the p95 has a frame-time distribution, not a frame time. Whatever
+gets built needs the deadline-driven or sliced upload the user raised, or a
+budget cap, not just a good average.
+
+**Event classes, empty-column non-events excluded** (counting a column neither
+pose touches as NO_CHANGE inflated this to 71.7%, which was mostly the screen's
+blank space congratulating itself):
+
+| class | all regimes | pure rotation |
+| --- | ---: | ---: |
+| NO_CHANGE | 37.4% | 0.9% |
+| PHASE_SHIFT | 4.5% | 1.4% |
+| PHASE_RAMP | 0.4% | 0.1% |
+| EDGE_CROSS | 8.5% | 5.4% |
+| SLOPE_CHANGE | 18.8% | 31.2% |
+| V_COLUMN_SHIFT | 20.9% | **45.0%** |
+| FALLBACK | 9.5% | 16.0% |
+
+Vertical grow 2.31/update, shrink 1.41/update. These are ATTRIBUTES, not
+exclusive classes — a column can ramp its top edge and grow downward in the
+same update — and counting them only when nothing else fired reported them as
+0.0% and hid a real 7.41 cells/update.
+
+**`V_COLUMN_SHIFT` is now the largest single item under rotation and it is the
+next thing to attack.** A run sliding 3-4 columns per update acquires that many
+wholly-new columns and vacates as many. But a newly covered column of the same
+wall is nearly its neighbour: same shade, usually the same border, edges one
+slope-step along. Encoding it as a run operation rather than N independent
+column derivations is the obvious lead and is NOT measured.
+
+**The edge LUT is already laid out as a temporal state machine, half the time.**
+`TSP_TILE_EDGE = BASE + ((shade*16 + off)*8) + slope`, so within-cell vertical
+phase has stride **8** and quantized slope has stride **1**, both constant.
+Measured over 6,335,103 edge-cell transitions: attribute bits (FLIPX/FLIPY/
+PALETTE) match on **90.4%**, and **51.7%** are reachable by `tile_id += small
+delta`. Phase deltas cluster where the user predicted: −1 at 15.0%, −2 at 8.7%,
++1 at 5.9%, +2 at 3.1%. The other half is blocked by the attribute bits, which
+`edge_entry` derives from the slope's sign, and by the `off`/`mag` clamps. So
+the increment is a real fast path with a real guard condition, not a universal
+one.
+
+**Baked-transition entropy:** 8,061,356 per-column boundary deltas observed,
+**1,426 distinct `(dtl,dtr,dbl,dbr)` codes** clamped to +/-8. A small alphabet,
+which is what makes a transition table bakeable. This counts geometry deltas
+only, not the cell programs they expand into, so it is indicative and not a ROM
+figure.
+
+**The restoration problem, stated as the next specific blocker rather than
+hidden.** 6.60 cells or column-runs per update are vacated by a shrinking or
+departing boundary. Their correct new content is background, a FULL interior of
+the same span, or another farther span. This probe recomputes them from the
+full run list, which a runtime cannot afford. **The Z80 cost of deciding what
+goes back into a vacated cell is not measured and there is no candidate cheap
+mechanism yet.** Topology events per update: 0.212 spans appearing, 0.235
+vanishing, 0.320 draw-order flips.
+
+**A bug the ownership rule caught in itself.** The first draft marked every
+cell of both spans when two spans swapped draw order. That cost 48.6% of the
+dirty set under rotation, nearly all of it cells only one span ever touched.
+Restricting the mark to cells both spans cover dropped the dirty set from
+165.96 to 131.84 per update with the go/no-go still clean. Order flips are rare
+(0.320/update) but marking them wrong is expensive.
+
+**What is explicitly NOT claimed.** None of this is a T-state figure. The
+row-write reduction is not the T reduction: A27's profile puts the interior
+fill (`df_loop`) at ~7.9%, so the cells this removes are the cheap ones, while
+an edge-only column still needs its geometry derived unless the retained-state
+delta path replaces that derivation too. **That is the question the Z80 A/B has
+to answer, and this project has been wrong on five straight estimates, so no
+number is written here.**
+
+**What closes A29:**
+1. Attack `V_COLUMN_SHIFT` as a run operation and re-measure. Largest item
+   under rotation.
+2. Decide the vacated-cell restoration mechanism. It is the blocker, not a
+   detail.
+3. Only then build a Z80 executor, costed from this project's own MEASURED
+   kernel costs, and prove it with an A/B twin against DDA_G at pose scope,
+   exactly as A24/A26/A27 were proven.
+
 ### A28. Temporal delta — measured before building, and rotation kills it.
 
 `make temporal-delta` builds `tools/temporal_delta_probe.c`. It drives the real
@@ -740,38 +880,42 @@ That is roughly **1,090x over budget**, and it is the *optimistic* case: cell
 centres only, no sub-cell offsets. Any "bake the transitions" proposal starts
 from that number.
 
-**Verdict.** Temporal skipping is real and large for translation (60–75%) and
-worth essentially nothing under rotation (0.1%). Since a first-person camera
-rotates constantly, the naive temporal skip is not the step change this project
-has been looking for. It is not closed the way coverage is closed — it is
-gated, on one specific thing:
+**Verdict — SUPERSEDED BY A29. Read that before acting on anything here.**
 
-> **A6 (cylindrical projection) is a PREREQUISITE for the temporal
-> architecture, not an independent optimisation.** Under a cylindrical mapping
-> the image at yaw psi is `F(psi + k*(x-80))` for a static scene, so a yaw step
-> is an EXACT rigid shift, absorbed by the scroll register for free, leaving
-> only newly exposed columns to materialize. Under the shipped tangent mapping
-> it is a homography and nothing rigid survives.
+The measurements above stand. The conclusion drawn from them did not, and the
+error is worth stating precisely because it is a repeatable kind of mistake.
 
-A6 is currently parked as a minor question about where K comes from. It should
-be re-read as the gate on the whole temporal direction.
+This entry measured whether a whole `(run, column)` work key survived an
+update, found 0.1% under rotation, and concluded the temporal direction was
+gated on cylindrical projection. That is the right answer to a question nobody
+needed answered. **A whole-key match is not the condition for skipping work.**
+A wall column is a top edge of a few cells, a bottom edge of a few cells, and
+an interior of identical FULL tiles. Move the geometry a pixel and every one of
+`il`, `ir`, the endpoints and the slope changes, so the key never matches — but
+the interior tiles are bit-identical and only the boundary cells can differ.
 
-**What would close A28:** measure the same delta under a cylindrical
-`angle_x`/`sec` pair. That is a host-side change to two baked tables plus a
-re-run of this probe — no Z80 work — and it decides whether the temporal
-architecture is available at all. Do NOT build a Z80 temporal kernel first.
-That ordering is what A25 and A26 established, twice.
+The tell was sitting inside this entry the whole time: **70.8% of final cells
+unchanged under the same rotation that gave 0.1% key stability.** A 700x gap
+between two metrics of the same phenomenon is a statement about the metric, not
+about the phenomenon, and it should have been chased before a verdict was
+written. A29 chases it and finds 51.8% of row-writes eliminable under pure
+rotation, with the perspective projection untouched.
 
-**Unknowns, logged rather than guessed** (this project has now been wrong on
-five straight estimates, all in the same direction):
-- The Z80 cost of any certificate/skip test. Not estimated. A26's classifier
-  came in at 1,975 T per column against an ~800 T budget; there is no reason to
-  assume a temporal predicate is cheaper until one is built and profiled.
-- Whether a cylindrical projection is visually acceptable, and what it costs
-  elsewhere in the pipeline. A6 notes wall tops become cosine arcs needing a
-  second-order walker.
-- Whether the 77.5% store-level redundancy can be reached by any predicate
-  cheaper than the derivation it would skip. Currently no candidate.
+**The A6 promotion below is therefore withdrawn as a gate.** Cylindrical
+projection remains a legitimate optional comparison — the best case if yaw were
+a rigid screen shift — and the tangent/secant measurements above are the honest
+statement of what it would buy. It is not a prerequisite, and the visual target
+stays the existing perspective-projected viewport.
+
+**What survives from this entry, unchanged and still useful:**
+- The mechanism. `inv_at_invd` carries an explicit `sec(bearing - yaw)`, so
+  yaw really does rescale every run's projected depth. A29 does not dispute
+  this; it shows the rescaling mostly fails to reach the screen.
+- H-scroll cannot absorb yaw under this projection. Measured twice.
+- `polar_transition_bake.c` emits 136.58 MiB. Any pose-enumerating scheme
+  starts from that number.
+- The row-write figure, 77.5% of stores already correct, which A29 reinterprets
+  rather than discards.
 
 ### A27. DDA_G — row extents by walking, not dividing. −12.0%, and it settles coverage.
 
@@ -1349,16 +1493,21 @@ every bench reproduces its recorded T-state figure exactly. Until then the
 duplication is deliberate — swapping the substrate under a published
 measurement invalidates it.
 
-### A6. K under cylindrical projection — PROMOTED: this is the gate on A28.
+### A6. K under cylindrical projection — OPTIONAL COMPARISON, not a gate.
 
-**Read A28 first.** This entry was written as a minor question about where the
-per-span constant K comes from. A28 measured the temporal delta and found that
-the whole temporal architecture depends on this choice: under the shipped
-tangent mapping a yaw step is a homography and nothing rigid survives (best
-whole-column shift compensation buys 0.6%), while under a cylindrical mapping
-the image at yaw psi is `F(psi + k*(x-80))` for a static scene, so a yaw step
-is an exact rigid shift the scroll register absorbs for free. It is no longer
-a projection-flavour preference; it is the prerequisite.
+A28 briefly promoted this to "the gate on the temporal architecture". **That
+promotion is withdrawn.** A29 gets 51.8% of row-writes off under pure rotation
+with the shipped perspective projection untouched, so cylindrical is not a
+prerequisite for anything.
+
+What remains true and worth keeping: under a cylindrical mapping the image at
+yaw psi is `F(psi + k*(x-80))` for a static scene, so a yaw step is an exact
+rigid shift the scroll register absorbs for free, whereas under the shipped
+tangent mapping a 12-yaw-unit update shifts the screen centre 24 px and the
+edge 37 px and no rigid shift exists. That makes cylindrical a useful **upper
+bound experiment** — what the temporal renderer could reach if yaw were free —
+and nothing more. **The visual target is the existing perspective viewport.**
+Do not change the projection to rescue a metric.
 
 
 Under rectilinear projection the wall top is exactly a straight line, so one K
