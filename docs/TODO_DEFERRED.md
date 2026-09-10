@@ -630,6 +630,140 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A32. Bounded-error temporal rendering — measured, and it does not pay. But the union is cheap.
+
+`make temporal-error`. Three questions, three answers, one of them the opposite
+of what was expected.
+
+**Reduction test first.** `tools/temporal_error_probe.c` runs three independent
+simulations, one per error budget, each with its own displayed state and name
+table. **At E=0 the displayed image must equal the exact render on every
+frame** — 0 mismatches, checked every invocation. Without that the approximate
+path could be measuring its own bugs. The span-state model is now a shared
+header, `tools/temporal_span_state.h`, included by both probes, because
+duplicating it is exactly where an exact/approximate drift would hide; the
+exact probe's output is byte-identical after the refactor.
+
+**1. Bounded error buys little, and the reason is not what it looks like.**
+Savings are measured against the EXACT temporal path (A29/A31), never against
+the full render — measuring against the full render would re-bank what A29
+already banked.
+
+| corpus | E=1 | E=2 | wrong cells/frame | worst frame |
+| --- | ---: | ---: | ---: | ---: |
+| rotation, U=1 | **87.5%** | 80.9% | 9.3 | 88 |
+| rotation, U=2 | 93.9% | 89.5% | 5.1 | 52 |
+| rotation, U=4 | 97.5% | 95.1% | 2.2 | 30 |
+| all regimes, U=1 | 84.3% | 76.1% | 6.8 | 88 |
+
+So 12.5% off the exact path at 1 px under rotation at U=1, 15.7% across all
+regimes, and it gets *worse* with cadence — 2.5% at U=4 — because a bigger
+per-update delta rarely fits inside a 1 px budget.
+
+**The obvious explanation is wrong and was checked.** One would guess the
+saving is small because deferral mostly suppresses geometry changes that
+produce no tile change, which A29 already gets for free. It does not:
+**87.8% of deferred columns at U=1 (92.0% at U=4) would have changed a tile.**
+Deferral is suppressing real work. The saving is small because the dirty set is
+dominated by things that are never deferrable — `V_COLUMN_SHIFT`, columns
+entering or leaving a span, and topology, all held exact by construction per
+A31's finding that ownership errors look almost right.
+
+**The bound holds and convergence is one frame.** Measured maximum error equals
+the budget exactly, 1 and 2 px. Convergence needed an explicit clause — when
+the target has not moved since the previous update, adopt it exactly — and with
+it, settling after motion stops is **0 frames**: the first stationary update is
+exact. Without that clause a within-budget error would persist forever, which
+is a silent permanent wrongness rather than a lag.
+
+**Verdict: do not build the bounded-error path.** 12–16% off the exact path, in
+exchange for 7–9 visibly wrong cells per frame with peaks near 90, an error
+accumulator per boundary, and a second code path that must converge correctly.
+The exact path is both cheaper to reason about and nearly as fast.
+
+**2. H-scroll as a first-order yaw approximation — better than A28 measured,
+still not enough.** A28 tested a whole-COLUMN shift against EXACT matching and
+got 0.6%. A per-PIXEL scroll with a tolerance is a different question and does
+much better on the horizontal axis:
+
+| | rotation U=1 | all regimes U=1 |
+| --- | ---: | ---: |
+| mean residual after the best single scroll | 2.34 px | 1.53 px |
+| endpoints within 1 px | **73.1%** | 87.3% |
+
+But a scroll register moves the image horizontally and does nothing to heights,
+and the secant term A28 identified rescales every height under yaw. That half:
+
+| vertical boundary motion, same column | rotation U=1 | all regimes U=1 |
+| --- | ---: | ---: |
+| mean | 1.76 px | 1.02 px |
+| within 1 px | **64.5%** | 78.7% |
+| max | 23 px | 94 px |
+
+A column is only reusable if BOTH axes are inside budget, so under rotation
+roughly **47%** of columns qualify — and the scroll displaces the whole image
+including the 27% of endpoints outside budget, which become wrong by up to
+12 px. It is a trade, not a free win, and a worse one than the plain
+bounded-error path above.
+
+**3. The important positive: the mandatory cross-span union is CHEAP.** A31
+proved the union is required and flagged its cost as "the whole question",
+because A26 died on a classifier costing 1,975 T per column. Counted:
+
+| union work, per update | all regimes U=1 | rotation U=1 |
+| --- | ---: | ---: |
+| 6-byte state comparisons | 22.30 | 31.69 |
+| row-range marks into the masks | 33.07 | 83.63 |
+| rows containing any dirty cell | 5.85 of 18 | 14.61 of 18 |
+
+**This is not A26's shape at all.** A26's classifier was expensive because
+knowing a column's row extent was expensive; here the extent comes from
+retained state and costs nothing to look up. The union is a couple of dozen
+six-byte compares over the whole update, not per column. **A31's blocker is
+much smaller than A31 feared** — still to be confirmed in Z80, but the
+operation count is now known rather than assumed.
+
+**4. Row/column summary masks help, unevenly.** The viewport is 20x18, so a row
+mask is 20 bits and an 18-bit summary says which rows contain anything. Cells
+visited when scanning the dirty set:
+
+| | flat 360-cell scan | with the 18-bit row summary |
+| --- | ---: | ---: |
+| all regimes U=1 | 360 | **117 (33%)** |
+| rotation U=1 | 360 | 292 (81%) |
+
+Worth having, and worth nothing under rotation, where 14.6 of 18 rows are dirty
+anyway. Size the expectation to the regime.
+
+**5. The three VDP-ignored name-table bits (13-15): a clear loss for
+restoration, on maintenance cost.** They are genuinely free — the renderer uses
+tile id bits 0-8 plus FLIPX/FLIPY/PALETTE in 9-11, and nothing reads 13-15.
+But:
+
+| | all regimes U=1 | rotation U=1 |
+| --- | ---: | ---: |
+| cells whose semantic class changes | **9.27** /update | 21.15 /update |
+| dirty cells the union already produces | 29.21 | 74.91 |
+
+Maintaining the tag costs about **32%** more cell writes on top of the dirty
+set. What it buys on restoration is narrow by construction: **3 bits cannot
+name which of up to 20 spans lies behind a cell**, so the most it can do is
+flag "background is behind, do not scan", and A30 puts that at 21.9% of the
+8.03 vacated cells — about **1.8 skipped scans per update**. Paying 9.27 writes
+to save 1.8 shallow scans is a loss, and it is the A26 trap in miniature:
+maintaining the metadata costs more than consulting it saves.
+
+**If it is ever revisited**, the caveat the user raised is real and belongs
+here: with metadata in bits 13-15, every visual equality test and dirty compare
+must mask them, or a metadata-only change triggers a VRAM write. Semantic
+comparisons keep them; visual ones must not.
+
+**Where this leaves the plan.** Build `TEMP_BOUNDARY_A` exact, as A31 laid out.
+Bounded error is closed — measured, bound verified, convergence verified, and
+the saving is too small for the visual cost. The scroll variant is closed with
+it. The 3-bit tag is closed on maintenance cost. What is NOT closed and just
+got much more promising is the exact union itself.
+
 ### A31. The Z80 A/B foundation — sequence oracle verified, and the obvious rung is WRONG.
 
 Two deliverables, and the second is the more valuable one.
@@ -690,7 +824,10 @@ project's exactness rule has paid (A26's two pose-scope bugs, A29's
 cross-span dirty union before drawing, i.e. two passes: classify every span's
 boundary events and mark cells, then draw only marked cells. That is precisely
 the shape whose cost killed A26, so **the classifier cost is the whole
-question** and it must be measured, not assumed. The budget it has to beat is
+question** and it must be measured, not assumed. **A32 has since counted it and
+it is small** — 22.30 state comparisons and 33.07 row-range marks per update,
+because the row extent comes from retained state instead of being re-derived,
+which is exactly what made A26's classifier expensive. The budget it has to beat is
 concrete this time: A30 says an ordinary update at U=1 has 29.2 dirty cells and
 10.93 temporal ops against a baseline of 26.57 column-materializations.
 

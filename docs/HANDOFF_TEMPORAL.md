@@ -150,6 +150,31 @@ So `TEMP_BOUNDARY_A` must build the cross-span dirty union before drawing,
 which is the shape whose cost killed A26. **The classifier cost is the whole
 question.**
 
+**A32** (`make temporal-error`) tested bounded-error rendering, H-scroll and a
+semantic metadata layer. All three are closed; one surprise came out of it.
+
+Bounded error buys 12.5% off the exact path at 1 px under rotation at U=1, and
+15.7% across all regimes, in exchange for 7-9 visibly wrong cells per frame
+with peaks near 90. The bound holds exactly and convergence after motion stops
+is one frame, but the saving is too small for the visual cost, and it shrinks
+with cadence. Not because deferral wastes itself on free transitions - 87.8% of
+deferred columns would have changed a tile - but because the dirty set is
+dominated by column shifts and topology, which are never deferrable.
+
+A per-pixel H-scroll leaves 73.1% of endpoints within 1 px under rotation,
+much better than A28's whole-column 0.6%, but it cannot touch heights and only
+64.5% of columns are within 1 px vertically, so under half qualify on both
+axes.
+
+The three unused name-table bits lose on maintenance: 9.27 cells change
+semantic class per update against about 1.8 restoration scans saved.
+
+**The surprise, and it is good news.** A31 called the mandatory cross-span
+union "the whole question" because A26 died on classifier cost. Counted, the
+union is 22.30 six-byte state comparisons and 33.07 row-range marks per update.
+It is not A26's shape: A26 was expensive because knowing a column's row extent
+was expensive, and here the extent comes from retained state for free.
+
 **Next:** build `TEMP_BOUNDARY_A` against the verified sequence oracle, costed
 against the U=1/U=2 distributions rather than U=4, with the interior-resident
 path as the valuable half (full skipping is 13.1% of columns under rotation,

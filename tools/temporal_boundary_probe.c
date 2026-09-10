@@ -68,29 +68,7 @@
 
 #define MAXSPAN TSPF_MAX_ACTIVE
 
-typedef struct {
-    uint8_t present;
-    int16_t tl, tr, bl, br;
-    uint8_t shade, border;
-} ColState;
-
-typedef struct {
-    uint8_t keyid;                 /* persistent span identity across poses */
-    uint8_t rank;                  /* far->near draw index */
-    uint8_t x0, x1;                /* screen PIXEL extent, for sub-cell motion */
-    uint8_t c0, c1;
-    int16_t iq, step;              /* run params, for the sequence oracle */
-    uint8_t profile, left_real, right_real, shade_run;
-    ColState col[TSP_COLS];
-} SpanState;
-
-typedef struct {
-    uint16_t map[TSP_MAP_CELLS];
-    SpanState sp[MAXSPAN];
-    uint8_t nsp;
-    int16_t x_q4, y_q4;
-    uint8_t yaw;
-} Pose;
+#include "temporal_span_state.h"
 
 static Pose g_p[2];
 
@@ -136,66 +114,6 @@ static void dump_pose(const Pose *p, int new_traj)
     ++g_seq_emitted;
 }
 
-/* ---- exact re-derivations of the renderer's own row ranges ---- */
-
-static void top_rows(const ColState *s, int *r0, int *r1)
-{
-    int a = row_floor(s->tl < s->tr ? s->tl : s->tr);
-    int b = row_floor(s->tl > s->tr ? s->tl : s->tr);
-    if (a < 0) a = 0;
-    if (b >= (int)TSP_ROWS) b = (int)TSP_ROWS - 1;
-    *r0 = a; *r1 = b;
-}
-static void bot_rows(const ColState *s, int *r0, int *r1)
-{
-    int a = row_floor(s->bl < s->br ? s->bl : s->br);
-    int b = row_floor(s->bl > s->br ? s->bl : s->br);
-    if (a < 0) a = 0;
-    if (b >= (int)TSP_ROWS) b = (int)TSP_ROWS - 1;
-    *r0 = a; *r1 = b;
-}
-static void int_rows(const ColState *s, int *r0, int *r1)
-{
-    int a = row_floor(s->tl > s->tr ? s->tl : s->tr) + 1;
-    int b = row_floor(s->bl < s->br ? s->bl : s->br) - 1;
-    if (a < 0) a = 0;
-    if (b >= (int)TSP_ROWS) b = (int)TSP_ROWS - 1;
-    *r0 = a; *r1 = b;
-}
-
-/* This span's contribution to one cell, or 0 if it writes nothing there.
- * Mirrors draw_run's within-column order: top, then bottom, then interior. */
-static int contrib(const ColState *s, int row, uint16_t *w)
-{
-    int a, b;
-    if (!s->present) return 0;
-    int_rows(s, &a, &b);
-    if (a <= b && row >= a && row <= b) {
-        *w = TSP_TILE_FULL(s->shade, TSP_CAP_NONE, s->border);
-        return 1;
-    }
-    bot_rows(s, &a, &b);
-    if (row >= a && row <= b) {
-        *w = edge_entry(s->shade, (int16_t)(s->bl - (row << 3)),
-                        clamp_s8((int16_t)(s->br - s->bl), -7, 7), 1u);
-        return 1;
-    }
-    top_rows(s, &a, &b);
-    if (row >= a && row <= b) {
-        *w = edge_entry(s->shade, (int16_t)(s->tl - (row << 3)),
-                        clamp_s8((int16_t)(s->tr - s->tl), -7, 7), 0u);
-        return 1;
-    }
-    return 0;
-}
-
-static int col_same(const ColState *a, const ColState *b)
-{
-    if (a->present != b->present) return 0;
-    if (!a->present) return 1;
-    return a->tl == b->tl && a->tr == b->tr && a->bl == b->bl
-        && a->br == b->br && a->shade == b->shade && a->border == b->border;
-}
 
 /* ---- pose construction: same run list and draw order as tsp_polar_render ---- */
 
@@ -394,6 +312,33 @@ static unsigned long n_restore_underlay_hit;
  * retained state would answer for free. */
 static unsigned long n_scan_depth[8], n_scan_tot, n_scan_adjacent;
 static unsigned long n_naive_bad, n_naive_bad_cells, n_naive_cells;
+
+/* COST OF THE CROSS-SPAN DIRTY UNION, in countable operations.
+ *
+ * A31 proved the union is mandatory. A26 proved that a classifier costing more
+ * than it saves kills the whole idea. So count what the union actually has to
+ * do, and what a hierarchical row/column summary would save on the scan.
+ *
+ * The viewport is 20x18, so a row mask is 20 bits (3 bytes) and a column mask
+ * 18 bits (3 bytes), with an 18-bit "rows containing anything" summary and a
+ * 20-bit column summary on top. */
+static unsigned long u_state_cmp;     /* 6-byte state comparisons */
+static unsigned long u_row_marks;     /* row-range marks into the masks */
+static unsigned long u_rows_touched;  /* rows with any dirty cell */
+static unsigned long u_cols_touched;  /* columns with any dirty cell */
+static unsigned long u_scan_flat;     /* cells visited scanning all 360 */
+static unsigned long u_scan_summary;  /* cells visited using the summaries */
+
+/* SEMANTIC TAG in the three VDP-ignored name-table bits (13-15).
+ *
+ * The restoration payoff a 3-bit tag can actually deliver is narrow: it cannot
+ * name WHICH of up to 20 spans lies behind a cell, so the most it can do is
+ * say "background is behind this, do not scan". A30 puts that at ~22% of
+ * vacated cells. The cost side is maintenance - every cell whose class changes
+ * needs its tag rewritten - and that is the A26 trap, so it is counted too. */
+enum { TG_BG = 0, TG_INTERIOR, TG_TOP_EDGE, TG_BOT_EDGE, TG_COUNT };
+static uint8_t g_tag[TSP_ROWS][TSP_COLS], g_tag_prev[TSP_ROWS][TSP_COLS];
+static unsigned long t_changed, t_cells, t_have_prev;
 
 /* Is the edge LUT already a temporal state machine?
  *   TSP_TILE_EDGE = BASE + ((shade*16 + off_index)*8) + slope_index
@@ -820,6 +765,66 @@ static void classify(const Pose *prev, const Pose *cur)
             if (naive[c] != cur->map[c]) { ++n_naive_bad; break; }
     }
 
+    /* Union cost, counted rather than estimated. */
+    {
+        uint8_t rowmask_any = 0, q;
+        int rows_hit = 0, cols_hit = 0;
+        for (i = 0; i < cur->nsp; ++i) {
+            const SpanState *ps = find_span(prev, cur->sp[i].keyid);
+            for (c = 0; c < (int)TSP_COLS; ++c) {
+                if (!cur->sp[i].col[c].present
+                    && !(ps && ps->col[c].present)) continue;
+                ++u_state_cmp;
+                if (ps && col_same(&ps->col[c], &cur->sp[i].col[c])) continue;
+                u_row_marks += 3;      /* top range, bottom range, interior */
+            }
+        }
+        (void)rowmask_any; (void)q;
+        for (r = 0; r < (int)TSP_ROWS; ++r) {
+            int any = 0;
+            for (c = 0; c < (int)TSP_COLS; ++c) if (g_dirty[r][c]) { any = 1; break; }
+            if (any) ++rows_hit;
+        }
+        for (c = 0; c < (int)TSP_COLS; ++c) {
+            int any = 0;
+            for (r = 0; r < (int)TSP_ROWS; ++r) if (g_dirty[r][c]) { any = 1; break; }
+            if (any) ++cols_hit;
+        }
+        u_rows_touched += (unsigned long)rows_hit;
+        u_cols_touched += (unsigned long)cols_hit;
+        u_scan_flat += TSP_MAP_CELLS;
+        /* With an 18-bit row summary, only rows that contain something are
+         * scanned at all, and within a row the 20-bit mask is walked by bit. */
+        u_scan_summary += (unsigned long)rows_hit * TSP_COLS;
+    }
+
+    /* Semantic tag maintenance cost. */
+    {
+        for (r = 0; r < (int)TSP_ROWS; ++r)
+            for (c = 0; c < (int)TSP_COLS; ++c) {
+                int w = winner_of(cur, r, c);
+                uint8_t tg;
+                if (w < 0) tg = TG_BG;
+                else {
+                    int a, b2;
+                    const ColState *cc = &cur->sp[w].col[c];
+                    int_rows(cc, &a, &b2);
+                    if (a <= b2 && r >= a && r <= b2) tg = TG_INTERIOR;
+                    else {
+                        bot_rows(cc, &a, &b2);
+                        tg = (r >= a && r <= b2) ? TG_BOT_EDGE : TG_TOP_EDGE;
+                    }
+                }
+                g_tag[r][c] = tg;
+                if (t_have_prev) {
+                    ++t_cells;
+                    if (tg != g_tag_prev[r][c]) ++t_changed;
+                }
+            }
+        memcpy(g_tag_prev, g_tag, sizeof g_tag);
+        t_have_prev = 1;
+    }
+
     /* ---- metrics + the go/no-go verification ---- */
     for (c = 0; c < (int)TSP_COLS; ++c) {
         const SpanState *s;
@@ -1012,6 +1017,33 @@ int main(int argc, char **argv)
            (double)n_interior_preserved / n_pairs);
     printf("  interior cells entering/leaving              %7.2f /update\n",
            (double)n_interior_swapped / n_pairs);
+
+    printf("\nCOST OF THE MANDATORY CROSS-SPAN DIRTY UNION (counted ops)\n");
+    printf("  6-byte state comparisons               %7.2f /update\n",
+           (double)u_state_cmp / n_pairs);
+    printf("  row-range marks into the masks         %7.2f /update\n",
+           (double)u_row_marks / n_pairs);
+    printf("  rows containing any dirty cell         %7.2f of 18\n",
+           (double)u_rows_touched / n_pairs);
+    printf("  columns containing any dirty cell      %7.2f of 20\n",
+           (double)u_cols_touched / n_pairs);
+    printf("  cells visited, flat 360-cell scan      %7.2f /update\n",
+           (double)u_scan_flat / n_pairs);
+    printf("  cells visited, 18-bit row summary      %7.2f /update   (%.0f%%"
+           " of flat)\n",
+           (double)u_scan_summary / n_pairs,
+           u_scan_flat ? 100.0 * u_scan_summary / u_scan_flat : 0.0);
+
+    printf("\nSEMANTIC TAG IN NAME-TABLE BITS 13-15 - MAINTENANCE COST\n");
+    printf("  cells whose semantic class changes     %7.2f /update   (%.1f%%"
+           " of 360)\n",
+           (double)t_changed / n_pairs,
+           t_cells ? 100.0 * t_changed / t_cells : 0.0);
+    printf("  dirty cells the union already produces %7.2f /update\n",
+           (double)n_dirty / n_pairs);
+    printf("  A 3-bit tag cannot name WHICH span is behind a cell, so the most\n"
+           "  it buys on restoration is skipping the scan where BACKGROUND is\n"
+           "  behind. Compare that share against this maintenance cost.\n");
 
     printf("\nIS A PURELY LOCAL PER-SPAN SKIP CORRECT? (no cross-span union)\n");
     printf("  update pairs whose image comes out WRONG   %lu / %lu   %.1f%%\n",
