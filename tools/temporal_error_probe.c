@@ -177,6 +177,7 @@ static void build_pose(const TSPState *st, Pose *p)
                 cs->tr = (int16_t)(TSPF_HORIZON + hr - (hr >> 2));
             }
             cs->shade = 1u;
+            cs->hl = hl; cs->hr = hr;
             cs->border = (uint8_t)(((c == c0 && r->left_real) ? 1u : 0u)
                                  | ((c == c1 && r->right_real) ? 2u : 0u));
             jq = (int16_t)(jq + step);

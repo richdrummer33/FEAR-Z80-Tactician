@@ -630,6 +630,125 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A33. The Z80 union, measured. It costs 35-55% of a full render and the tail exceeds it.
+
+`make union-bench`. This is the go/no-go A31 named and A32 was optimistic
+about, and the answer is negative in this form.
+
+**What was built.** `tools/temporal_union.asm`, the cross-span dirty union as
+real Z80, verified against the host classifier's own mask. The boundary probe
+dumps, per pose pair, exactly what the kernel reads — the retained
+3-byte-per-column state of both poses — and exactly what the host produces from
+it as an 18x20-bit mask. **The kernel must produce a SUPERSET: conservative is
+allowed, missing a cell is not**, because a missed cell is a wrong image. That
+check is the bench's first act and it caught four separate defects (below).
+
+**The retained state is (hl, hr, border), and NOT (il, ir).** Every endpoint
+derives from `hl = il>>1`, so `il` and `il+1` across an even boundary give
+identical geometry. Retaining `il` reports change where there is none:
+**3,568,759 spurious columns in 73,521,834, 4.9%**, each one a column the union
+would dirty for nothing. The host now asserts the equivalence of the 3-byte
+compare and the full one on every column — 0 disagreements with the height
+bytes. DDA_G already holds them as HLH/HRH.
+
+**Measured, on the same U=1 corpora A30 used:**
+
+| corpus | UNION_C mean | % of DDA_G's 153,450 T | p95 | p95 as % |
+| --- | ---: | ---: | ---: | ---: |
+| U=1, pure rotation | 84,307 T | **54.9%** | 202,489 | **132%** |
+| U=1, all regimes | 53,282 T | **34.7%** | 189,292 | **123%** |
+
+**The tail is the disqualifying part, not the mean.** DDA_G is a full render at
+~153,450 T with low variance. On 5% of updates the union ALONE costs more than
+a complete render — 132% of it — before a single cell is drawn or restored.
+That is A30's topology population arriving exactly where it was predicted to,
+and a renderer whose cheap path saves 45% while its 5% path loses 32% is not
+obviously faster; it is differently shaped.
+
+**The ladder, one mechanism per rung as A24/A26/A27 required:**
+
+| variant | T/update | marks | over host | exact |
+| --- | ---: | ---: | ---: | :-: |
+| UNION_A — one conservative profile-free range per column | 82,955 | 249.81 | +249% | yes |
+| UNION_B — the two EDGE ranges only, interior stays resident | 87,700 | 97.92 | +37% | yes |
+| UNION_C — B plus table-driven marking | **84,400** | 97.92 | +37% | yes |
+| UNION_D — no presence test in the inner loop | 84,372 | 273.07 | +281% | **NO** |
+
+**UNION_A is the instructive failure.** `[71-hmax, 72+hmax]` contains the drawn
+rows for every profile, so it needs no branch and is correct by construction —
+and it marks 249.81 cells against the host's 71.65, because it marks whole
+columns and so **throws away the interior-resident mechanism that is the entire
+point of A29**. Correct, cheap-looking, and architecturally self-defeating.
+
+**UNION_B fixes that and costs 5.7% MORE.** Marking only the two edge ranges
+cuts the marks to 0.39x, and the extra profile branching eats the saving. The
+interior's own boundary rows need no separate mark: the interior start is
+`row_floor(max top)+1`, so it moves with the top edge and always lands inside
+that edge's own old/new union — which is why the host attributed 0.00 cells to
+interior enter/leave over 3.5M pose pairs.
+
+**UNION_C is the rung that matters, and it returned 3.8%.** The profile put the
+mark family at 33% — `mk_sh`'s bit-shift loop 6.3%, `mk_have`'s pointer
+arithmetic 11.8% — so three tables (COLBIT, COLBYTE, ROWBASE) were supposed to
+remove most of it. They removed 3.8%. **The profile share did not translate
+because there are only ~40 marks per update**, so per-call savings are small
+against the total. That is the third time in this project a profile share has
+failed to convert (A24's ROWPTR_B, A27's re-profile, this).
+
+**Where the time actually goes, re-profiled after the change as the standing
+rule requires:** the per-column machinery, not the row extents.
+`ub_o_done` + `ub_n_done` + `ub_one_col` + `ub_col` ≈ 18% and `ub_off` 6.4% —
+all of it presence testing and iteration, none of it work. UNION_B sweeps the
+UNION of both column ranges for every span and asks "present in new? in old?"
+with four push/pop pairs and two calls, per column.
+
+**So the diagnosis differs from A26 even though the verdict so far matches.**
+A26 was expensive because deriving a column's row extent cost 1,975 T. Here the
+extent is free — A32's counting was right about that — and the cost moved to
+iterating and testing columns. Fixing it needs the loop restructured so the
+inner loop contains no presence test at all: overlap, new-only, old-only as
+three separate sweeps. **UNION_D is that attempt and it is NOT CORRECT** — 68
+missed cells and 281% over-marking — so its 84,372 T is not a result, it is
+what an incorrect kernel costs. It is left in the tree, clearly marked, as the
+next thing to finish.
+
+**Four defects the superset check caught**, each invisible to anything weaker:
+
+1. **Only new spans were visited.** Vanished spans own cells that must be
+   restored and nothing in pass 1 reaches them. 22,099 missed cells.
+2. **Draw-order inversions ignored.** Two retained spans swapping rank changes
+   the winner of any cell they share with neither span's own state moving —
+   A31's failure mode. Detected for free by requiring the old slot indices to
+   increase as new spans are walked in rank order.
+3. **Marking only the span AT the inversion.** Every span it jumped over
+   swapped with it too. Now handled once in a tail, conservatively.
+4. **The border byte compared last.** A column whose height AND border both
+   moved took the edges-only path, because the border flag only got set when
+   the border happened to be the first differing byte. A border bit lives on
+   the FULL interior tile, so the whole column is dirty. 151 missed cells, and
+   the fix is to compare the border first.
+
+Defect 2 fires on **11.2%** of rotating updates and costs 202,883 T against
+73,189 T without, so it contributes ~14,500 T of the mean on its own.
+
+**What this does NOT say.** It does not refute the mechanism. This is a first
+implementation, and A24 took four rungs to get 22.9% out of code of exactly
+this shape; UNION_D's target is identified and unfinished. What it does say is
+concrete: **the union needs roughly a 3x implementation improvement to be worth
+continuing, and the p95 needs a separate answer, because no amount of mean-case
+work fixes a tail that exceeds a full render.**
+
+**What closes A33:**
+1. Finish UNION_D correctly — three sweeps, no inner-loop presence test — and
+   re-profile. This is the identified 3x target.
+2. Answer the tail separately. A30 already said the tail is topology and does
+   not shrink with cadence. A full render is 153,450 T and bounded; the union's
+   p95 is 202,489 T and is not. The sliced/deadline scheduler was deferred
+   pending a CPU cost distribution — this IS that distribution, and it says
+   the exceptional path needs a budget cap or a fall-back-to-full-render rule.
+3. Only then TEMP_BOUNDARY_A. Building the executor on a union that costs half
+   a render would be building on the wrong number.
+
 ### A32. Bounded-error temporal rendering — measured, and it does not pay. But the union is cheap.
 
 `make temporal-error`. Three questions, three answers, one of them the opposite

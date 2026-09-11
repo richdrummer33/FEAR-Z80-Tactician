@@ -26,6 +26,22 @@ typedef struct {
     uint8_t present;
     int16_t tl, tr, bl, br;
     uint8_t shade, border;
+    /* The RETAINED form a Z80 would actually hold, three bytes.
+     *
+     * NOT (il, ir): every endpoint derives from hl = il>>1, so il and il+1
+     * across an even boundary give identical geometry, and retaining il
+     * reports a change where there is none. Measured: 3,568,759 spurious
+     * disagreements in 73,521,834 columns, 4.9%, every one of them a column
+     * the union would have dirtied for nothing.
+     *
+     * The height bytes ARE the state. (tl,tr,bl,br) are pure functions of
+     * (hl, hr, profile); profile is constant per span since it is
+     * k_tspf_profile[sid] and sid is fixed for a key; shade is 1 in appearance
+     * mode 0. The probes assert the equivalence rather than assume it - a
+     * 3-byte compare instead of a 10-byte one is the difference between a
+     * cheap union and A26's classifier. DDA_G already holds these two bytes
+     * as HLH/HRH. */
+    uint8_t hl, hr;
 } ColState;
 
 typedef struct {
@@ -97,6 +113,14 @@ static int contrib(const ColState *s, int row, uint16_t *w)
         return 1;
     }
     return 0;
+}
+
+/* The 3-byte retained-state comparison a Z80 kernel would do. */
+static int col_same_retained(const ColState *a, const ColState *b)
+{
+    if (a->present != b->present) return 0;
+    if (!a->present) return 1;
+    return a->hl == b->hl && a->hr == b->hr && a->border == b->border;
 }
 
 static int col_same(const ColState *a, const ColState *b)

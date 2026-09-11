@@ -175,7 +175,40 @@ union is 22.30 six-byte state comparisons and 33.07 row-range marks per update.
 It is not A26's shape: A26 was expensive because knowing a column's row extent
 was expensive, and here the extent comes from retained state for free.
 
-**Next:** build `TEMP_BOUNDARY_A` against the verified sequence oracle, costed
+**A33** (`make union-bench`) built the cross-span union as real Z80 and
+measured it. **This is the go/no-go and the answer is negative in this form.**
+
+| U=1 corpus | union alone | % of DDA_G's 153,450 T | p95 as % |
+| --- | ---: | ---: | ---: |
+| pure rotation | 84,307 T | 54.9% | **132%** |
+| all regimes | 53,282 T | 34.7% | **123%** |
+
+The tail disqualifies it, not the mean: on 5% of updates the union alone costs
+more than a complete render, before a cell is drawn or restored.
+
+Four rungs, one mechanism each, all verified as a superset of the host's mask
+except the last. UNION_A's profile-free conservative range marks 249.81 cells
+against the host's 71.65 and throws away the interior-resident mechanism.
+UNION_B fixes that and costs 5.7% MORE. UNION_C's table-driven marking returned
+3.8% against a profile that attributed 33% to marking, because there are only
+~40 marks per update. UNION_D, the restructure that removes the per-column
+presence test, is NOT CORRECT yet and its number is not a result.
+
+Re-profiled: the cost is per-column iteration and presence testing, not row
+extents. A32 was right that the extents are free; the cost simply moved.
+
+**Do NOT build TEMP_BOUNDARY_A yet.** It would sit on a union costing half a
+render. Finish UNION_D first (three sweeps: overlap, new-only, old-only, no
+inner-loop presence test), then answer the p95 separately - a full render is
+bounded at 153,450 T and the union's p95 is not, so the exceptional path needs
+a budget cap or a fall-back-to-full-render rule.
+
+**Retained state is (hl, hr, border), never (il, ir):** every endpoint derives
+from il>>1, so retaining il reports change where there is none on 4.9% of
+columns. Asserted on the host now, 0 disagreements.
+
+**Superseded plan below; read A33 first.** Build `TEMP_BOUNDARY_A` against the
+verified sequence oracle, costed
 against the U=1/U=2 distributions rather than U=4, with the interior-resident
 path as the valuable half (full skipping is 13.1% of columns under rotation,
 edge-only is 61.1%). Then B run-shift, C tile-delta, D grow/shrink, E

@@ -210,6 +210,7 @@ static void build_pose(const TSPState *st, Pose *p)
             cs->shade = g_tspf_appearance_mode
                       ? shade_for((uint8_t)(((uint16_t)il + ir) >> 1),
                                   k_tspf_shade_bias[r->sid]) : 1u;
+            cs->hl = hl; cs->hr = hr;
             cs->border = (uint8_t)(((c == c0 && r->left_real) ? 1u : 0u)
                                  | ((c == c1 && r->right_real) ? 2u : 0u));
             jq = (int16_t)(jq + step);
@@ -312,6 +313,7 @@ static unsigned long n_restore_underlay_hit;
  * retained state would answer for free. */
 static unsigned long n_scan_depth[8], n_scan_tot, n_scan_adjacent;
 static unsigned long n_naive_bad, n_naive_bad_cells, n_naive_cells;
+static unsigned long n_retained_cmp, n_retained_disagree;
 
 /* COST OF THE CROSS-SPAN DIRTY UNION, in countable operations.
  *
@@ -431,6 +433,52 @@ static int winner_of(const Pose *p, int r, int c)
     for (i = 0; i < p->nsp; ++i)
         if (contrib(&p->sp[i].col[c], r, &cw)) w = (int)i;
     return w;
+}
+
+/* ---- union oracle: what a Z80 union kernel is given, and must produce ----
+ *
+ * A Z80 kernel cannot be priced against a description. Dump exactly what it
+ * reads - the retained 3-byte-per-column state of both poses - and exactly
+ * what the host classifier produces from it, as the 18x20-bit dirty mask. The
+ * Z80 kernel must then produce a SUPERSET of that mask (it is allowed to be
+ * conservative, not to miss a cell), and its inflation is reported.
+ *
+ *   line := <n_cur> [keyid c0 c1 profile (hl hr border)*ncols]*n_cur
+ *           <n_prev> [same]*n_prev
+ *           <54 mask bytes, row-major, 3 bytes per row>
+ */
+static FILE *g_umask = NULL;
+static unsigned long g_umask_stride = 1, g_umask_seen = 0, g_umask_out = 0;
+
+static void dump_span_set(const Pose *p)
+{
+    uint8_t i; int c;
+    fprintf(g_umask, "%u", p->nsp);
+    for (i = 0; i < p->nsp; ++i) {
+        const SpanState *s = &p->sp[i];
+        fprintf(g_umask, " %u %u %u %u", s->keyid, s->c0, s->c1, s->profile);
+        for (c = s->c0; c <= (int)s->c1; ++c)
+            fprintf(g_umask, " %u %u %u", s->col[c].hl, s->col[c].hr,
+                    s->col[c].border);
+    }
+}
+
+static void dump_union(const Pose *prev, const Pose *cur)
+{
+    int r, c;
+    if (!g_umask) return;
+    if (g_umask_seen++ % g_umask_stride) return;
+    dump_span_set(cur);
+    fputc(' ', g_umask);
+    dump_span_set(prev);
+    for (r = 0; r < (int)TSP_ROWS; ++r) {
+        unsigned m = 0;
+        for (c = 0; c < (int)TSP_COLS; ++c) if (g_dirty[r][c]) m |= 1u << c;
+        fprintf(g_umask, " %u %u %u", m & 0xffu, (m >> 8) & 0xffu,
+                (m >> 16) & 0xffu);
+    }
+    fputc('\n', g_umask);
+    ++g_umask_out;
 }
 
 static void classify(const Pose *prev, const Pose *cur)
@@ -584,6 +632,11 @@ static void classify(const Pose *prev, const Pose *cur)
                 ++n_op[OP_V_COLUMN_SHIFT]; ++ops_this;
                 continue;
             }
+            /* The 3-byte retained compare must agree with the 10-byte one on
+             * every column, or the Z80 kernel's cheap test is not the same
+             * test. Asserted, not assumed. */
+            if (col_same(o, n) != col_same_retained(o, n)) ++n_retained_disagree;
+            ++n_retained_cmp;
             if (col_same(o, n)) {
                 ++n_op[OP_NO_CHANGE]; ++n_col_skip; ++b_skip[bk]; continue;
             }
@@ -855,6 +908,7 @@ static void classify(const Pose *prev, const Pose *cur)
         }
     }
     if (verify_cells_missed) ++verify_fail;
+    dump_union(prev, cur);
 
     /* Row-writes the CURRENT materializer performs, for the ratio. */
     for (i = 0; i < cur->nsp; ++i)
@@ -909,7 +963,8 @@ int main(int argc, char **argv)
     unsigned frames = (argc > 2) ? (unsigned)strtoul(argv[2], 0, 0) : 240u;
     unsigned yaw_step = (argc > 3) ? (unsigned)strtoul(argv[3], 0, 0) : 64u;
     int only = (argc > 4) ? (int)strtol(argv[4], 0, 0) : -1;
-    const char *seq_path = (argc > 5) ? argv[5] : NULL;
+    const char *seq_path = (argc > 5 && argv[5][0]) ? argv[5] : NULL;
+    const char *umask_path = (argc > 7 && argv[7][0]) ? argv[7] : NULL;
     unsigned t, f, gx, gy, yy, i;
 
     if (!U) U = 1;
@@ -920,6 +975,12 @@ int main(int argc, char **argv)
         if (!g_seq) { fprintf(stderr, "cannot open %s\n", seq_path); return 1; }
         g_seq_stride = (argc > 6) ? (unsigned long)strtoul(argv[6], 0, 0) : 64ul;
         if (!g_seq_stride) g_seq_stride = 1;
+    }
+    if (umask_path) {
+        g_umask = fopen(umask_path, "w");
+        if (!g_umask) { fprintf(stderr, "cannot open %s\n", umask_path); return 1; }
+        g_umask_stride = (argc > 8) ? (unsigned long)strtoul(argv[8], 0, 0) : 997ul;
+        if (!g_umask_stride) g_umask_stride = 1;
     }
 
     for (t = 0; t < NREG; ++t) {
@@ -1017,6 +1078,12 @@ int main(int argc, char **argv)
            (double)n_interior_preserved / n_pairs);
     printf("  interior cells entering/leaving              %7.2f /update\n",
            (double)n_interior_swapped / n_pairs);
+
+    printf("\nIS A 3-BYTE RETAINED COMPARE THE SAME TEST AS THE 10-BYTE ONE?\n");
+    printf("  columns compared %lu   disagreements %lu   %s\n",
+           n_retained_cmp, n_retained_disagree,
+           n_retained_disagree ? "*** NOT EQUIVALENT ***"
+                               : "equivalent - (hl,hr,border) is enough");
 
     printf("\nCOST OF THE MANDATORY CROSS-SPAN DIRTY UNION (counted ops)\n");
     printf("  6-byte state comparisons               %7.2f /update\n",
@@ -1173,10 +1240,16 @@ int main(int argc, char **argv)
     printf("  (clamped to +/-8; a small alphabet is what makes a transition\n"
            "   table bakeable. This counts geometry deltas only, not the\n"
            "   cell-level programs they expand into.)\n");
+    if (g_umask) {
+        fclose(g_umask);
+        fprintf(stderr, "union oracle: %lu pose pairs dumped (stride %lu)\n",
+                g_umask_out, g_umask_stride);
+    }
     if (g_seq) {
         fclose(g_seq);
         fprintf(stderr, "sequence oracle: %lu poses dumped"
                 " (1 trajectory in %lu)\n", g_seq_emitted, g_seq_stride);
     }
-    return (verify_cells_missed || selfcheck_fail) ? 1 : 0;
+    return (verify_cells_missed || selfcheck_fail || n_retained_disagree)
+         ? 1 : 0;
 }
