@@ -630,6 +630,86 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A35. The union's p95 was my own conservatism. Pairwise inversions fix it.
+
+`make union-bench`. A33 ended with the union at 34.7-54.9% of a full render and
+a **p95 of 123-132%** — on 5% of updates the union alone cost more than
+rendering the frame from scratch — and called that tail the disqualifying
+number. It was not topology being expensive. It was my handling of it.
+
+**What the blanket tail was doing.** When two retained spans swap draw order, a
+cell they BOTH cover can change winner with neither span's own state moving —
+A31's failure mode. A33 handled that by marking every span in both streams
+whole. Measured: inversions fire on **11.2%** of rotating updates, and those
+updates cost **202,883 T against 73,189 T** without. That single rule was the
+entire tail.
+
+**Only the intersection can flip.** Two spans that swap order can only change
+the winner of cells they both cover, so only the intersection of their column
+ranges is dirty. Inversions are rare enough that an O(n²) pass over the few
+spans involved is affordable where marking everything is not. Each new span now
+records its old slot index, and the tail walks pairs whose order inverted and
+marks the column overlap from each one's own heights.
+
+| all variants, U=1 rotation | before | after |
+| --- | ---: | ---: |
+| UNION_C mean | 84,747 | **76,019** |
+| UNION_C p95 | 205,957 | **139,536** |
+| UNION_C max | 337,927 | **180,395** |
+| marks/update | 97.92 | **82.69** |
+| over the host's exact set | +37% | **+15%** |
+
+**The blocker A33 named is resolved.** Current state, both corpora:
+
+| corpus | variant | T/update | % of a render | p95 | p95 % |
+| --- | --- | ---: | ---: | ---: | ---: |
+| U=1 rotation | UNION_C | 76,019 | 49.5% | 139,536 | **91%** |
+| U=1 all regimes | **UNION_E** | **40,503** | **26.4%** | 130,705 | **85%** |
+
+Against A33's 53,282 / 84,307 at 34.7% / 54.9% with a p95 of 123% / 132%. The
+union's worst case is now below a full render rather than above it, which is
+what makes a fall-back-to-full-render rule meaningful instead of pointless.
+
+**A34's span-record pre-check confirms on the improved base:** UNION_E is
+**−16.8%** against UNION_C on mixed motion (48,696 → 40,503) and +1.8% under
+pure rotation, where nearly every span changes and the check never fires. The
+sign of that trade is unchanged; its size grew because the rest got cheaper.
+
+**UNION_G — hoisting the marking setup — LOSES, and that is the fourth time.**
+The re-profile put `mark_col_t` at 15.0% against `mkt_loop`'s 8.2%, so most of
+the marking cost is setup — three table lookups and a pointer assembly, about
+146 T per call — and `mark_span_b` calls it twice for the SAME column. Computing
+the column's bit and byte offset once per column should have removed half of
+that. It made things **worse**: 43,043 vs 40,503 all regimes, 82,838 vs 77,379
+under rotation.
+
+Why: `mark_span_a` is the majority path and marks ONCE, so it has nothing to
+share, and the prep routine's call plus three register-pair pushes costs more
+than the two table lookups it saves. **A profile share is not a saving** —
+A24's ROWPTR_B, A27's re-profile, A33's UNION_C and now this.
+
+**Re-profiled after the change, as the rule requires.** Flat again, top item
+15%: marking 23.2%, presence testing and iteration 17.9%, `ub_off` 5.8%,
+clearing the 54 mask bytes 4.2% (1,503 T, at 26 T per byte). No single
+dominant target.
+
+**Still open, unchanged:**
+1. **UNION_D remains incorrect** — 68 missed cells and 281% over-marking. Its
+   target, removing the per-column presence test, is still the largest
+   coherent item at 17.9% and is still unfinished.
+2. The union is **26.4% (mixed) to 49.5% (rotation) of a full render before any
+   drawing**. A33 asked for 3x; this session delivered 1.3x, and the honest
+   share of that is the inversion fix rather than any micro-optimization.
+3. **No T-state figure is claimed for the executor.** What drawing only the
+   dirty cells costs is the next measurement, not a projection from cell
+   counts — the interior fill A29 removes is ~7.9% of A27's profile, so cells
+   and T do not scale together.
+
+**What closes A35:** build `TEMP_BOUNDARY_A` on UNION_E against the verified
+sequence oracle. The union is now cheap enough and bounded enough that the
+executor's cost is the thing that decides the architecture, which was not true
+at A33's numbers.
+
 ### A34. Sparse span stream — exact, 3.7x smaller, and SLOWER as a replacement. Useful as a pre-check.
 
 `make span-stream` and `make union-stream`. Two experiments: is the span the

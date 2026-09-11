@@ -221,6 +221,33 @@ removes its interpolation with no banking. The bigger `inv_at_invd` tables are
 27-47 KB for a prize of about 1.7% of the update, so they are not worth
 banking for.
 
+**A35** fixed the p95, and it turned out to be my own conservatism rather than
+topology being expensive. When two retained spans swap draw order only the cells
+they BOTH cover can change winner; A33 marked every span in both streams whole.
+That one rule was the entire tail: inversions fire on 11.2% of rotating updates
+and cost 202,883 T against 73,189 T without.
+
+| corpus | best variant | T/update | % of a render | p95 % |
+| --- | --- | ---: | ---: | ---: |
+| U=1 rotation | UNION_C | 76,019 | 49.5% | 91% |
+| U=1 all regimes | **UNION_E** | **40,503** | **26.4%** | 85% |
+
+Against A33's 34.7-54.9% with a p95 of 123-132%. **The union's worst case is now
+below a full render rather than above it.** A34's span-record pre-check confirms
+at -16.8% on mixed motion.
+
+UNION_G, hoisting the marking setup out of the per-column loop, LOSES: the prep
+call and its register preservation cost more than the two table lookups it
+saves. Fourth time a profile share has failed to convert.
+
+**NOW build TEMP_BOUNDARY_A**, on UNION_E, against the verified sequence
+oracle. The union is finally cheap enough and bounded enough that the
+executor's cost is what decides the architecture. UNION_D is still incorrect
+and its target, the per-column presence test, is still the largest coherent
+item at 17.9%.
+
+**Superseded below.**
+
 **Do NOT build TEMP_BOUNDARY_A yet.** It would sit on a union costing half a
 render. Finish UNION_D first (three sweeps: overlap, new-only, old-only, no
 inner-loop presence test), then answer the p95 separately - a full render is

@@ -195,8 +195,26 @@ ub_fnc:
         ld (0xC016),a
         djnz ub_find
 ub_no_old:
+        ld a,0xff
+        ld (0xC016),a
+        call ub_note_slot
         ld hl,0x0000                 ; 0 = span is new this update
         jp ub_dispatch
+
+; oldslot[new slot] at 0xE300, 0xff when the span is new this update.
+ub_note_slot:
+        push hl
+        push bc
+        ld a,(0xC024)
+        ld c,a
+        ld b,0
+        ld hl,0xE300
+        add hl,bc
+        ld a,(0xC016)
+        ld (hl),a
+        pop bc
+        pop hl
+        ret
 
 ub_found_slot:
         ; Pass 3, for free: walking new spans in rank order, the old slot
@@ -214,6 +232,7 @@ ub_found_slot:
 ub_order_ok:
         ld a,(0xC016)
         ld (0xC015),a
+        call ub_note_slot
         jp ub_dispatch
 ub_order_broken:
         ; Marking only the span AT the inversion is not enough: every span it
@@ -223,6 +242,7 @@ ub_order_broken:
         ; rather than with a per-pair search.
         ld a,(0xC016)
         ld (0xC015),a
+        call ub_note_slot
         ld a,1
         ld (0xC021),a
 
@@ -294,49 +314,206 @@ up2_alive:
         pop hl
         ret
 
-; ---- tail: settle any draw-order inversion ----
+; ---- tail: settle draw-order inversions, PAIRWISE ----
+;
+; The blanket version marked every span in both streams whole. Measured, that
+; is the p95: inversions fire on 11.2% of rotating updates and those updates
+; cost 202,883 T against 73,189 T without, which is the entire tail that made
+; the union's p95 exceed a full render.
+;
+; Only cells that BOTH flipped spans cover can change winner, so only the
+; intersection of their column ranges is dirty. Inversions are rare, so an
+; O(n^2) pass over the few spans involved is affordable where marking
+; everything is not.
 ub_tail:
         ld a,(0xC021)
         or a
         ret z
         ld a,(0xC000)
-        or a
-        jp z,uaa_old
+        cp 2
+        ret c                        ; fewer than two spans: nothing can flip
+        xor a
+        ld (0xC025),a                ; i
+ubt_i:
+        ld a,(0xC025)
+        inc a
+        ld (0xC026),a                ; j = i+1
+ubt_j:
+        ld a,(0xC026)
         ld b,a
-        ld hl,0xC100
-uaa_new:
-        push bc
-        push hl
-        call ub_mark_all
-        pop hl
-        ld a,l
-        add a,64
-        ld l,a
-        jp nc,uaa_n1
-        inc h
-uaa_n1:
-        pop bc
-        djnz uaa_new
-uaa_old:
-        ld a,(0xC001)
-        or a
+        ld a,(0xC000)
+        cp b
+        jp z,ubt_i_next
+        jp c,ubt_i_next
+        call ubt_pair
+        ld a,(0xC026)
+        inc a
+        ld (0xC026),a
+        jp ubt_j
+ubt_i_next:
+        ld a,(0xC025)
+        inc a
+        ld (0xC025),a
+        ld b,a
+        ld a,(0xC000)
+        cp b
+        ret z
+        ret c
+        jp ubt_i
+
+; Did spans i and j swap? i is earlier in new order by construction, so a flip
+; is oldslot[i] > oldslot[j], with neither being 0xff.
+ubt_pair:
+        ld a,(0xC025)
+        ld c,a
+        ld b,0
+        ld hl,0xE300
+        add hl,bc
+        ld a,(hl)
+        cp 0xff
+        ret z
+        ld (0xC027),a
+        ld a,(0xC026)
+        ld c,a
+        ld b,0
+        ld hl,0xE300
+        add hl,bc
+        ld a,(hl)
+        cp 0xff
         ret z
         ld b,a
-        ld hl,0xC800
-uaa_o:
-        push bc
+        ld a,(0xC027)
+        cp b
+        ret c                        ; oldslot[i] < oldslot[j]: order held
+        ret z
+        ; flipped: mark the column intersection, in both streams
+        ld a,(0xC025)
+        call ubt_rec_new
         push hl
-        call ub_mark_all
+        ld a,(0xC026)
+        call ubt_rec_new
+        pop de
+        call ubt_overlap             ; DE = span i, HL = span j
+        ld a,(0xC027)
+        call ubt_rec_old
+        push hl
+        ld a,(0xC026)
+        ld c,a
+        ld b,0
+        ld hl,0xE300
+        add hl,bc
+        ld a,(hl)
+        call ubt_rec_old
+        pop de
+        jp ubt_overlap
+
+; A = slot -> HL = record address
+ubt_rec_new:
+        ld c,a
+        ld b,0
+        ld hl,0xC100
+        jp ubt_rec_add
+ubt_rec_old:
+        ld c,a
+        ld b,0
+        ld hl,0xC800
+ubt_rec_add:
+        ; HL = base, BC = slot -> HL += slot*64, by shifting rather than by
+        ; sixty-four adds
+        push hl
+        ld h,b
+        ld l,c
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld b,h
+        ld c,l
         pop hl
-        ld a,l
-        add a,64
-        ld l,a
-        jp nc,uaa_o1
-        inc h
-uaa_o1:
-        pop bc
-        djnz uaa_o
+        add hl,bc
         ret
+
+; DE and HL are two records: mark every column both occupy, from each one's
+; own heights.
+ubt_overlap:
+        push de
+        push hl
+        ; lo = max(c0 of both), hi = min(c1 of both)
+        inc hl
+        ld a,(hl)
+        ld b,a
+        inc hl
+        ld a,(hl)
+        ld c,a
+        ex de,hl
+        inc hl
+        ld a,(hl)
+        cp b
+        jp c,ubt_lo_ok
+        ld b,a
+ubt_lo_ok:
+        inc hl
+        ld a,(hl)
+        cp c
+        jp nc,ubt_hi_ok
+        ld c,a
+ubt_hi_ok:
+        ld a,b
+        cp c
+        jp z,ubt_go
+        jp nc,ubt_none
+ubt_go:
+        ld a,b
+        ld (0xC012),a
+        ld a,c
+        ld (0xC01E),a
+        pop hl
+        pop de
+        push de
+        call ubt_mark_range
+        pop hl
+        jp ubt_mark_range
+ubt_none:
+        pop hl
+        pop de
+        ret
+
+; HL = record, columns (0xC012)..(0xC01E) -> mark each from its own heights
+ubt_mark_range:
+        push hl
+        inc hl
+        inc hl
+        inc hl
+        ld a,(hl)
+        ld (0xC018),a                ; profile
+        pop hl
+ubt_mr_col:
+        push hl
+        call ub_off
+        ld a,(hl)
+        ld b,a
+        ld c,a
+        inc hl
+        ld a,(hl)
+        call ub_o2acc
+        ld a,c
+        ld (0xC019),a
+        ld a,b
+        ld (0xC01A),a
+        ld a,b
+        call mark_span_a
+        pop hl
+        ld a,(0xC012)
+        ld b,a
+        ld a,(0xC01E)
+        cp b
+        ret z
+        ld a,b
+        inc a
+        ld (0xC012),a
+        jp ubt_mr_col
 
 ; ---- mark every column of one span, conservatively, from its own heights ----
 ub_mark_all:
@@ -1029,6 +1206,72 @@ rr_lo_pos:
 ; small tables remove both, the same treatment A24's ROWPTR_B applied to
 ; row_addr. Tables at 0xE000: COLBIT[20], COLBYTE[20], ROWBASE[18] as 16-bit
 ; pointers straight into the mask.
+; ---- UNION_G: hoist the per-column setup out of the per-range marking ----
+; The profile put mark_col_t at 15.0% against mkt_loop's 8.2%, i.e. most of the
+; marking cost is SETUP, not stores - three table lookups and a pointer
+; assembly, ~146 T per call over ~37 calls. mark_span_b calls it twice for the
+; SAME column, so half of that setup is done twice for nothing. Compute the
+; column's bit and byte offset once per column and let both ranges use them.
+mark_col_prep:
+        push hl
+        push bc
+        push de
+        ld a,(0xC012)
+        ld c,a
+        ld b,0
+        ld hl,0xE000                 ; COLBIT
+        add hl,bc
+        ld a,(hl)
+        ld (0xC013),a
+        ld hl,0xE014                 ; COLBYTE
+        add hl,bc
+        ld a,(hl)
+        ld (0xC028),a
+        pop de
+        pop bc
+        pop hl
+        ret
+
+; Marks rows LO..HI of the prepared column. No table lookups.
+mark_col_p:
+        ld a,(0xC011)
+        ld b,a
+        ld a,(0xC010)
+        ld c,a
+        ld a,b
+        sub c
+        ret c
+        inc a
+        ld (0xC022),a
+        ld a,(0xC013)
+        ld d,a                       ; column bit
+        ld a,(0xC010)
+        ld c,a
+        ld b,0
+        ld hl,0xE028                 ; ROWBASE
+        add hl,bc
+        add hl,bc
+        ld c,(hl)
+        inc hl
+        ld a,(hl)
+        ld h,a
+        ld l,c
+        ld a,(0xC028)
+        ld c,a
+        ld b,0
+        add hl,bc
+        ld a,(0xC022)
+        ld b,a
+mkp_loop:
+        ld a,(hl)
+        or d
+        ld (hl),a
+        inc hl
+        inc hl
+        inc hl
+        djnz mkp_loop
+        ret
+
 mark_col_t:
         ld a,(0xC011)
         ld b,a

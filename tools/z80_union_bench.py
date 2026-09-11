@@ -46,14 +46,22 @@ _D = _C.replace("        jp ub_pair\n", "        jp ub_pair_d\n")
 # thing: whether a 6-byte span record is consulted before any column work.
 _NOP = "us_precheck_nop"
 _E = _C.replace("US_PRECHECK_HOOK", "us_precheck")
+# UNION_G is UNION_E plus one thing: the column bit and byte offset are
+# computed once per column instead of once per marked range.
+_G = _E.replace("        call mark_col\n", "        call mark_col_p\n") \
+       .replace("        jp mark_col\n", "        jp mark_col_p\n") \
+       .replace("mark_span_a:\n", "mark_span_a:\n        call mark_col_prep\n") \
+       .replace("mark_span_b:\n", "mark_span_b:\n        call mark_col_prep\n")
 VARIANTS = tuple(
-    (n, v.replace("US_PRECHECK_HOOK", _NOP) if n != "UNION_E" else v)
+    (n, v.replace("US_PRECHECK_HOOK", _NOP)
+        if n not in ("UNION_E", "UNION_G") else v)
     for n, v in (
         ("UNION_A", BASE.replace("UB_MARK_HOOK", "mark_span_a")),
         ("UNION_B", _B),
         ("UNION_C", _C),
         ("UNION_D", _D),
         ("UNION_E", _E),
+        ("UNION_G", _G),
     ))
 
 SUMNEW, SUMOLD = 0xE200, 0xE280
