@@ -197,6 +197,30 @@ presence test, is NOT CORRECT yet and its number is not a result.
 Re-profiled: the cost is per-column iteration and presence testing, not row
 extents. A32 was right that the extents are free; the cost simply moved.
 
+**A34** (`make span-stream`, `make union-stream`) tested whether the span, not
+the column, is the right retained unit. Answer: it is the right thing to STORE
+and COMPARE, and the wrong thing to WORK FROM.
+
+The 6-byte record (sid, inv0, inv1, c0, c1, flags) reconstructs the name table
+**pixel-for-pixel on all 1,789,440 frames**. 3.19 visible spans per frame, 19.2
+retained bytes against the column form's 71.7, a 3.74x reduction. And
+`draw_run` reads only `x0>>3` and `x1>>3`, so an edge is 5 bits, not a byte -
+sub-tile X is not part of the exact state at all.
+
+But replacing the columns with it is **1.24x to 1.55x SLOWER**, because the
+heights then have to be recomputed from the iq/step walk instead of read. The
+comparison saving is ~600 T; the recomputation costs thousands. Per-column
+derivation is the expensive axis and the span form adds to it.
+
+Used as a PRE-CHECK beside the column form it does pay: UNION_E is **-14.7% on
+mixed motion** and +1.6% under pure rotation, where nearly every span changes
+and the check never fires.
+
+Also: `inv_for_dq4` is a pure function of |dq4| and a **2,033-byte exact table**
+removes its interpolation with no banking. The bigger `inv_at_invd` tables are
+27-47 KB for a prize of about 1.7% of the update, so they are not worth
+banking for.
+
 **Do NOT build TEMP_BOUNDARY_A yet.** It would sit on a union costing half a
 render. Finish UNION_D first (three sweeps: overlap, new-only, old-only, no
 inner-loop presence test), then answer the p95 separately - a full render is

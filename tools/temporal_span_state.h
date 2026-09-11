@@ -50,6 +50,7 @@ typedef struct {
     uint8_t x0, x1;                /* screen PIXEL extent, for sub-cell motion */
     uint8_t c0, c1;
     int16_t iq, step;              /* run params, for the sequence oracle */
+    uint8_t inv0, inv1, sid;       /* the span-level record UNION_E compares */
     uint8_t profile, left_real, right_real, shade_run;
     ColState col[TSP_COLS];
 } SpanState;

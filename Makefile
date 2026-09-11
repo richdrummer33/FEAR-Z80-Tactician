@@ -89,7 +89,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential temporal-delta temporal-boundary temporal-cadence temporal-error temporal-bench union-bench masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential temporal-delta temporal-boundary temporal-cadence temporal-error temporal-bench union-bench span-stream union-stream masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
@@ -205,6 +205,15 @@ temporal-boundary: build
 	./build/temporal_boundary_probe 4 240 64
 	@echo "--- pure rotation, the case A28 called hopeless ---"
 	./build/temporal_boundary_probe 4 240 64 2
+
+span-stream: build
+	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/temporal_span_stream_probe.c -o build/temporal_span_stream_probe
+	./build/temporal_span_stream_probe 1 120 64
+	./build/temporal_span_stream_probe 1 120 128 2 build/span_stream_rot.txt 41
+	./build/temporal_span_stream_probe 1 120 64 -1 build/span_stream_all.txt 700
+
+union-stream: span-stream
+	python3 tools/z80_union_stream_bench.py 300
 
 union-bench: temporal-boundary
 	./build/temporal_boundary_probe 1 120 128 2 "" 0 build/temporal_union_oracle.txt 37

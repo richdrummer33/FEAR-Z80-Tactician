@@ -42,14 +42,31 @@ _B = BASE.replace("UB_MARK_HOOK", "mark_span_b")
 _C = _B.replace("call mark_col", "call mark_col_t") \
        .replace("jp mark_col", "jp mark_col_t")
 _D = _C.replace("        jp ub_pair\n", "        jp ub_pair_d\n")
-VARIANTS = (
-    ("UNION_A", BASE.replace("UB_MARK_HOOK", "mark_span_a")),
-    ("UNION_B", _B),
-    ("UNION_C", _C),
-    ("UNION_D", _D),
-)
+# The precheck is a no-op in every variant but E, so the twins differ in one
+# thing: whether a 6-byte span record is consulted before any column work.
+_NOP = "us_precheck_nop"
+_E = _C.replace("US_PRECHECK_HOOK", "us_precheck")
+VARIANTS = tuple(
+    (n, v.replace("US_PRECHECK_HOOK", _NOP) if n != "UNION_E" else v)
+    for n, v in (
+        ("UNION_A", BASE.replace("UB_MARK_HOOK", "mark_span_a")),
+        ("UNION_B", _B),
+        ("UNION_C", _C),
+        ("UNION_D", _D),
+        ("UNION_E", _E),
+    ))
+
+SUMNEW, SUMOLD = 0xE200, 0xE280
 
 COLBIT, COLBYTE, ROWBASE = 0xE000, 0xE014, 0xE028
+
+
+def summaries(mem, base, spans):
+    """The 6-byte span record UNION_E compares: sid, inv0, inv1, c0, c1, flags."""
+    for i, sp in enumerate(spans[:MAXSLOT]):
+        o = base + i * 6
+        for k, v in enumerate(sp[5]):
+            mem[o + k] = v
 
 
 def tables(mem):
@@ -73,11 +90,12 @@ def parse(path):
             n = f[p]; p += 1
             spans = []
             for _ in range(n):
-                keyid, c0, c1, prof = f[p:p + 4]; p += 4
+                keyid, c0, c1, prof, sid, inv0, inv1, fl = f[p:p + 8]; p += 8
                 cols = {}
                 for c in range(c0, c1 + 1):
                     cols[c] = tuple(f[p:p + 3]); p += 3
-                spans.append((keyid, c0, c1, prof, cols))
+                spans.append((keyid, c0, c1, prof, cols,
+                              (sid, inv0, inv1, c0, c1, fl)))
             return spans
 
         cur = take_set()
@@ -91,7 +109,7 @@ def parse(path):
 
 
 def lay(mem, base, spans):
-    for i, (keyid, c0, c1, prof, cols) in enumerate(spans[:MAXSLOT]):
+    for i, (keyid, c0, c1, prof, cols, _sum) in enumerate(spans[:MAXSLOT]):
         o = base + i * STRIDE
         mem[o] = keyid
         mem[o + 1] = c0
@@ -127,6 +145,8 @@ def main():
             mem[NOLD] = len(prev)
             lay(mem, NEWBASE, cur)
             lay(mem, OLDBASE, prev)
+            summaries(mem, SUMNEW, cur)
+            summaries(mem, SUMOLD, prev)
             cpu = Z80(mem)
             cpu.run(CODE)
             ts.append(cpu.t)

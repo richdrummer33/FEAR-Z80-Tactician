@@ -179,6 +179,7 @@ static void build_pose(const TSPState *st, Pose *p)
         s->profile = profile;
         s->left_real = r->left_real; s->right_real = r->right_real;
         s->shade_run = 1u;                 /* appearance mode 0 */
+        s->inv0 = r->inv0; s->inv1 = r->inv1; s->sid = r->sid;
         n = (uint8_t)(c1 - c0 + 1u);
         iq = (int16_t)((int16_t)r->inv0 << 6);
         step = (int16_t)(((int16_t)r->inv1 - (int16_t)r->inv0)
@@ -456,7 +457,10 @@ static void dump_span_set(const Pose *p)
     fprintf(g_umask, "%u", p->nsp);
     for (i = 0; i < p->nsp; ++i) {
         const SpanState *s = &p->sp[i];
-        fprintf(g_umask, " %u %u %u %u", s->keyid, s->c0, s->c1, s->profile);
+        fprintf(g_umask, " %u %u %u %u %u %u %u %u", s->keyid, s->c0, s->c1,
+                s->profile, s->sid, s->inv0, s->inv1,
+                (unsigned)((s->left_real ? 1u : 0u)
+                         | (s->right_real ? 2u : 0u)));
         for (c = s->c0; c <= (int)s->c1; ++c)
             fprintf(g_umask, " %u %u %u", s->col[c].hl, s->col[c].hr,
                     s->col[c].border);

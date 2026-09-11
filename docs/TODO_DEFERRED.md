@@ -630,6 +630,143 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A34. Sparse span stream — exact, 3.7x smaller, and SLOWER as a replacement. Useful as a pre-check.
+
+`make span-stream` and `make union-stream`. Two experiments: is the span the
+right retained unit instead of the column, and can the projection path become
+ROM lookup?
+
+**The premise about pixel-precision edges is void, and that simplifies things.**
+The proposal assumed an edge X is one byte — 5 bits of tile column plus 3 of
+sub-tile pixel — and that several edges share a tile. `draw_run` reads only
+`x0>>3` and `x1>>3` and nothing else touches `x0`/`x1`. The span footprint is
+**tile-column granular**, so an edge is 5 bits and "two edges in one tile" is
+just two spans whose `c0` matches. Not asserted from the source — proven by
+reconstruction below.
+
+**The record is six bytes and it is complete.**
+
+    sid | inv0 | inv1 | c0 | c1 | flags        (flags = left_real, right_real)
+
+**Exactness gate: rebuild the whole 20x18 name table from those six bytes per
+span and nothing else — 0 mismatches in 1,789,440 frames.** Identity needs a
+seventh byte, the key id, because **sid is not unique**: 1,340 frames carry two
+visible spans with the same sid, and matching on it silently pairs the wrong
+spans.
+
+| stream size, U=1 all regimes | |
+| --- | ---: |
+| visible spans/frame | mean **3.19**, median 2, p95 9, max 13 |
+| boundary events/frame | 6.39 |
+| events sharing a tile with an earlier one | 50.1% |
+| column-materializations/frame | 23.90 |
+| retained bytes, span form | **19.2** |
+| retained bytes, column form | 71.7 |
+| ratio | **3.74x smaller** |
+
+| temporal change per update | |
+| --- | ---: |
+| spans unchanged | 1.26 (**39.6%**) |
+| spans changed | 1.87 (58.6%) |
+| appearing / vanishing | 0.06 / 0.07 |
+| changed spans | median 1, p95 8, max 13 |
+| left edge stationary, of changed spans | 60.0%; when it moves, mean 1.07 columns |
+| columns belonging to changed spans | 13.88 of 23.90 |
+| **within a changed span, columns whose own state differs** | **82.6%** |
+
+Cross-checks against A30: 39.6% unchanged plus 60% of the changed with a
+stationary edge is 74.8% of spans not crossing a column, against A30's 74.4%
+measured independently.
+
+**Then the Z80 A/B, and the answer is not the one the host figures suggest.**
+`UNION_S` replaces the retained columns with the span stream and derives each
+column's heights from the same `iq/step` walk `draw_run` uses. Verified against
+a stricter oracle than A33's — the set of cells that ACTUALLY changed between
+the two rendered frames, not the host classifier's own mask.
+
+| variant | U=1 rotation | all regimes | marks | changed | exact |
+| --- | ---: | ---: | ---: | ---: | :-: |
+| UNION_C (A33, column form) | 84,747 | 55,796 | 97.92 | 72.05 | yes |
+| UNION_S_A (span stream) | 130,963 | 66,132 | 269.53 | 72.05 | yes |
+| UNION_S_B (span stream, edge ranges) | 155,557 | 78,115 | 71.22 | 72.05 | **NO** |
+
+**The span stream is 1.24x to 1.55x SLOWER.** It compares 19.12 bytes instead
+of 71.57 — and then has to recompute two clamped 16-bit shifts per column to
+recover the heights the column form simply stored. The comparison saving is
+about 600 T; the recomputation costs several thousand. **The expensive axis is
+per-column derivation, and the span form adds to it in order to save on an axis
+that was never expensive.**
+
+Worth recording: UNION_S_B marks 71.22 cells against 72.05 actually changed —
+essentially perfect precision — and still misses, because edge-only marking
+cannot cover the whole-column cases (border change, column entered or left).
+Precision was never the problem.
+
+**What DOES pay is the record as a PRE-CHECK, not as a replacement.** `UNION_E`
+is `UNION_C` plus one thing: compare the 6-byte span record before touching any
+column, and skip the span entirely if it matches.
+
+| corpus | UNION_C | UNION_E | |
+| --- | ---: | ---: | ---: |
+| U=1 all regimes | 55,796 | **47,603** | **−14.7%** |
+| U=1 pure rotation | 84,747 | 86,107 | +1.6% |
+
+Under rotation almost every span changes, so the pre-check never fires and is
+pure overhead. Across realistic motion it removes 10.02 of 23.90 columns from
+consideration for six byte-compares. **Keep it, and keep it conditional in
+spirit: it is a bet on motion being mixed rather than all-turning.**
+
+**Against the DDA_G baseline the union is still 31.0% (all regimes) to 56.1%
+(rotation) of a full render before any drawing.** A33 said roughly 3x was
+needed. The span stream delivered 1.15x on the mixed corpus and nothing under
+rotation.
+
+### The projection lookup tables — exact, and worth about 1.7% of the update
+
+Domain enumerated over 59,648 poses and 512,028 endpoint evaluations rather
+than assumed.
+
+**`inv_for_dq4` is a pure function of `|dq4|` alone.** It clamps below 160 and
+at or above 2032, so the entire non-clamped domain is 1,871 values and **a
+direct 2,033-byte table is exact**, removing the two `k_tspf_invz` reads, the
+difference, the multiply, the rounding and the shift. It fits a fixed bank with
+no banking cost. **This one is worth doing.**
+
+**`inv_at_invd` is `q1 = (invd*dot+64)>>7` then `q = (q1*sec+64)>>7`.**
+
+| | reached | domain |
+| --- | ---: | ---: |
+| distinct `invd` | 221 | 256 |
+| distinct `|dot|` | **50** | 128 |
+| distinct `(invd,dot)` pairs | 7,216 | 32,768 |
+| distinct `sec` values in the whole table | 54 | 513 indices |
+
+Dense: `T1[invd][dot]` 32,768 bytes plus `T2[q1][secidx]` 13,824 plus a
+513-byte `rel`→`secidx` map = **47,105 bytes**. Compacted through the 50 real
+`dot` values and 54 `sec` values: about **27 KB**, but the 50 is a property of
+THIS map's wall orientations and must be re-derived per map.
+
+**The prize is small and that is the point.** Per update the corpus shows 4.29
+`inv_for_dq4` calls and 8.58 `inv_at_invd` calls. At A13's measured 193 T per
+multiply the whole projection multiply budget is roughly 4,000 T against a
+242,103 T update — **about 1.7%**. The projection path is not where the time
+is; the materializer is. So: take the 2 KB table, skip the 27-47 KB ones, and
+do not bank-switch for 1.7%.
+
+### Verdict
+
+**The better abstraction is still "which screen columns changed".** The span
+stream is a better thing to STORE and COMPARE — 3.74x smaller, exact, and it
+proves a whole span unchanged in six bytes — but it is a worse thing to WORK
+FROM, because the dirty region still has to be derived per column and the
+stream makes that derivation more expensive, not less.
+
+So: keep A29/A31's retained-column form, add the span record beside it as a
+pre-check (UNION_E, −14.7% on mixed motion), and continue down the A33 path.
+The identified 3x target there — UNION_D's restructure removing the
+per-column presence test — is still unfinished and is still the thing to
+finish.
+
 ### A33. The Z80 union, measured. It costs 35-55% of a full render and the tail exceeds it.
 
 `make union-bench`. This is the go/no-go A31 named and A32 was optimistic

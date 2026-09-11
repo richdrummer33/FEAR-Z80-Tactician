@@ -82,6 +82,8 @@ ub_clr:
         or a
         jp z,ub_pass2
         ld b,a
+        xor a
+        ld (0xC024),a                ; new slot index, for the span summary
         ld hl,0xC100
 ; The per-span body is a CALL, not inline: djnz is a relative jump and the
 ; body outgrew its +/-128 range once passes 2 and 3 were added.
@@ -96,11 +98,77 @@ ub_span:
         jp nc,ub_snc
         inc h
 ub_snc:
+        ld a,(0xC024)
+        inc a
+        ld (0xC024),a
         pop bc
         djnz ub_span
         jp ub_pass2
 
 ; ---- one new span: find its retained twin, check order, dispatch ----
+; ---- UNION_E's span-level early-out ----
+; The span-stream experiment showed a 6-byte record compare proves EVERY column
+; of that span matches, and that 39.6% of spans are unchanged at U=1, holding
+; 10.02 of the 23.90 column-materializations. UNION_S tried to replace the
+; retained columns with the record and came out SLOWER, because it then had to
+; recompute each column's heights from the iq/step walk. The hybrid keeps both:
+; the record decides whether to look at the columns at all.
+;
+; Summaries live at 0xE200 + slot*6 (new) and 0xE280 + slot*6 (old):
+;   sid, inv0, inv1, c0, c1, flags
+us_precheck_nop:
+        ld a,1
+        or a                         ; always NZ: do the column work
+        ret
+
+us_precheck:
+        ; C = new slot index, (0xC016) = old slot index. Returns Z if the two
+        ; span records are byte-identical.
+        push hl
+        push de
+        ld a,(0xC024)
+        ld c,a
+        ld b,0
+        ld hl,0xE200
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        ld a,(0xC016)
+        ld c,a
+        ld b,0
+        ld de,0xE280
+        ex de,hl
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        add hl,bc
+        ex de,hl                     ; HL -> new summary, DE -> old summary
+        ld b,6
+usp_l:
+        ld a,(hl)
+        ex de,hl
+        cp (hl)
+        jp nz,usp_diff
+        ex de,hl
+        inc hl
+        inc de
+        djnz usp_l
+        pop de
+        pop hl
+        xor a                        ; Z: identical
+        ret
+usp_diff:
+        pop de
+        pop hl
+        ld a,1
+        or a                         ; NZ: differs
+        ret
+
 ub_one_span:
         push hl
         ld a,(hl)                    ; keyid
@@ -159,6 +227,11 @@ ub_order_broken:
         ld (0xC021),a
 
 ub_dispatch:
+        call US_PRECHECK_HOOK
+        jp nz,ub_dispatch2
+        pop hl                       ; identical span: no column work at all
+        ret
+ub_dispatch2:
         ex de,hl                     ; DE = old record or 0000
         pop hl                       ; HL = new record
         ld a,(0xC017)
