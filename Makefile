@@ -226,6 +226,12 @@ edge-hoist: edge-lut
 edge-walk: edge-lut
 	python3 tools/z80_edge_walk_bench.py 60
 
+edge-cycle: build
+	$(CC) $(CFLAGS) -Isrc tools/edge_cycle_probe.c src/tilesector_polar_motion.c -o build/edge_cycle_probe
+	./build/edge_cycle_probe 16
+	$(CC) $(CFLAGS) -Isrc tools/edge_ring_bake.c src/tilesector_polar_motion.c -o build/edge_ring_bake
+	./build/edge_ring_bake
+
 edge-phase: build
 	$(CC) $(CFLAGS) -Isrc tools/edge_phase_probe.c src/tilesector_polar_motion.c -o build/edge_phase_probe
 	./build/edge_phase_probe 8

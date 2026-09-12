@@ -630,6 +630,115 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A43. EDGE_CYCLE — the dense phase ring. The architecture WORKS and misses
+### the ROM budget by 1.7x. Verdict: RED on ROM, not on mechanism.
+
+`make edge-cycle`. A42 tested a weaker representation than intended: it keyed
+sequences on the EXACT step (2,332 values) and stored one per run-edge, getting
+591 KiB with no reuse. The stronger proposal is a DENSE RING per step class,
+walked by pointer increment. This is that experiment, and it deserves a
+different verdict from A42's.
+
+### The 1024 figure is correct, and the state model is exact
+
+The renderer computes `hl = clamp((iq+32)>>6, 255) >> 1`, so **128 accumulator
+units is one screen pixel and 1024 is one 8-pixel tile row**. Within a known
+tile row the appearance depends only on `phase = (iq+32) mod 1024`, and the
+phase advances by `step`. (Note the identity with A42: 1024 = 64 x 16, so this
+phase is exactly A42's `(phase&63, inv&15)` fused. What is new is keying the
+class on `step mod 1024` and the dense layout.)
+
+Over **873,084 columns**, the mapping
+
+```
+    (step mod 1024, step >> 10, top-edge family)  +  phase  ->  (tile code, rows spanned, row advance)
+```
+
+is deterministic to **77 conflicts, 0.009%**. The proposal's core claim is
+correct.
+
+**A trap caught in the first draft:** the ring entry must be
+position-INDEPENDENT. Including the absolute tile row `hl>>3` in the entry gave
+240,102 conflicts (27.5%), because the same phase recurs at different heights.
+The absolute row belongs to the destination cursor, not to the ring. Fixing
+that dropped conflicts by a factor of 3,400.
+
+### It fails on class count, and the rings do not deduplicate AT ALL
+
+| | |
+| --- | ---: |
+| **reachable** classes (corpus) | **3,380** |
+| of which FULL/LINTEL/RAISED share one top-edge formula | 2,100 |
+| RISER, which uses a different top formula | 1,280 |
+| exhaustive classes, non-RISER family | 5,120 |
+| exhaustive classes, both families | 10,240 |
+| **distinct rings after exact deduplication** | **10,240 of 10,240** |
+
+**Not one ring collapses.** Generated analytically for all 1024 phases and
+hashed, every class is distinct. Splitting the entry helps the tile code only
+(5,120 -> 2,817 rings) while the row advance does not dedup at all (5,120 ->
+5,120), and the split total is **worse**: 7.75 MB against 5 MB combined.
+
+| representation | ROM |
+| --- | ---: |
+| reachable classes, 2 B/entry | **6.76 MB** |
+| exhaustive non-RISER, 2 B/entry | 10.0 MB |
+| exhaustive both families, 2 B/entry | 20.0 MB |
+| split tile + advance rings, 1 B/entry each | 7.75 MB |
+| *the estimate this was tested against* | *2 MB* |
+
+**Why the 2 MB estimate was 3.4x low.** It assumed 1,024 step classes, i.e.
+that `step mod 1024` is the whole key. It is not: `step` exceeds +/-1024 often
+enough that its whole-tile component takes 5 distinct values and changes the
+ring, because the row advance is not clamped even though the slope saturates at
++/-7. RISER is a second top-edge family. 1,024 x 5 x 2 = 10,240.
+
+An entry cannot fit in one byte either: 7 bits of tile code (16 offsets x 8
+slopes = 128), about 3 bits of row advance and 2 of row span is 12 bits.
+
+**Sparse storage is not available.** Only **4.17%** of a class's phases are ever
+observed (42.7 of 1024), which would be 289 KiB — but the corpus samples just 4
+sub-cell positions per cell, so real play reaches strictly MORE phases, and a
+pose entering at an unbaked phase would render wrong. A ring must be complete
+or it is not exact. It also destroys the pointer walk, which is the entire
+point.
+
+### What makes this a near miss rather than a blowout
+
+This is worth stating plainly because it is the opposite of A42's verdict. The
+architecture would have **worked**, and would have attacked the right 54%:
+
+| | T/pose |
+| --- | ---: |
+| stages 4+5+6+8 that the ring replaces | 106,494 |
+| a ring walk at roughly 50 T/row over 64.8 rows | ~3,240 |
+| materializer 175,827 -> | **~72,500 (−59%)** |
+| the 3x sequence line needs | 58,600 |
+
+So the exchange rate on offer is roughly **6.76 MB of ROM for 103,000 T per
+pose**, which lands within striking distance of the 3x target — and the stated
+envelope is 4 MB. It misses by **1.7x on the realistic corpus figure** and by
+2.5x to 5x exhaustively, and the corpus number is a LOWER bound.
+
+**No Z80 kernel was built.** The pre-registered condition was to kill it if ROM
+explodes. It did not explode so much as overshoot, and a kernel measuring 45 or
+55 T per cell cannot change a 1.7x ROM overshoot.
+
+### What would close the gap, if anyone wants to reopen this
+
+The gap is a factor of 1.7, which is small enough to be worth naming:
+
+- **Collapse the whole-tile component.** It is 5 of the 10,240 and buys 5x on
+  its own. It exists only because the row advance is unclamped. Clamping
+  `step` to +/-1024 would collapse it but is a **behaviour change, not an exact
+  transform**, and would need its own oracle comparison.
+- **Drop RISER to a slow path.** 1,280 of 3,380 reachable classes for 6.0% of
+  cells. Worth 1.6x on its own and is exact.
+
+Those two together are 8x and would put the table near 850 KB. Neither was
+attempted here because the first is not exact and the second needs the fallback
+path costed first.
+
 ### A42. EDGE_PHASE — the compiled microsequence. The state theory is RIGHT
 ### and the architecture is dead anyway. Verdict: RED.
 
