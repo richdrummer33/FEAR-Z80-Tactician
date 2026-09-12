@@ -220,6 +220,16 @@ edge-lut: build
 	./build/edge_lut_gen > build/edge_lut.txt
 	python3 tools/z80_edge_lut_bench.py 300
 
+edge-hoist: edge-lut
+	python3 tools/z80_edge_hoist_bench.py
+
+edge-walk: edge-lut
+	python3 tools/z80_edge_walk_bench.py 60
+
+edge-chain: build
+	$(CC) $(CFLAGS) -Isrc tools/edge_chain_probe.c src/tilesector_polar_motion.c -o build/edge_chain_probe
+	./build/edge_chain_probe 8
+
 edge-emit: edge-lut
 	python3 tools/z80_edge_emit_bench.py 120
 

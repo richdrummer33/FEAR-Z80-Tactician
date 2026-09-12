@@ -630,6 +630,130 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A41. The persistent edge walker — built, exact, and it LOSES to a flat
+### stream. But the ownership layer is far more tractable than feared.
+
+`make edge-walk`, `make edge-chain`, `make edge-hoist`. A40 showed an edge row
+costs 49.2 T to emit from an oracle stream against the shipped path's 1,023 T.
+This asks whether a walker that KEEPS its state across columns can close that
+gap without needing a stream producer at all.
+
+### The walk recurrence is exact
+
+Derived from the shipped kernel, not assumed, and it holds on **2,683/2,683**
+column-to-column steps:
+
+```
+    locl' = locl + dy - 8 * (row' - row)          dy = YL' - YL
+```
+
+so the entire edge state is the left endpoint `YL`, advanced once per column.
+**The first attempt used the tile `slope` and failed on 6.2% of steps** — every
+counterexample at slope ±7, the clamp value. The clamped tile slope is not the
+geometric step; the true `YL` delta is. Recorded because the two are easy to
+conflate and the failure is silent.
+
+### The walker is exact and it still loses
+
+| kernel | T/edge row | exact | what it is |
+| --- | ---: | :-: | --- |
+| **WALK_FLAT** | **66.2** | yes | persistent walker, one setup per segment |
+| EMIT_B (A40) | 49.2 | yes | flat `(dest, word)` stream through SP |
+| shipped (A39) | 1,023 | — | stages 6 + 7 + 8 |
+
+**Given the SAME oracle, carrying state costs more than re-reading it.** Both
+kernels were handed the tile words; the walker additionally carries the
+destination instead of streaming it, and is 34% slower for it.
+
+**The reason is chain length.** Over 593 run-edges and 3,832 edge rows, a
+walkable segment averages **1.91 rows**, and **1,672 of 2,003 segments (83.5%)
+are a single row.** Segment setup cannot amortise over 1.91 rows.
+
+**Why the chains are short, and this is the finding that matters:** a chain
+breaks when the destination is not +2 OR **when the tile word changes**, and
+zero vertical movement does not imply a constant tile. The tile is selected by
+the column's own slope `(yr - yl)`, which changes while the left endpoint
+stands still. Measured directly: run-edges with `dy == 0` throughout still
+emit differing tile words. A walk can persist its *addressing* across a long
+chain but must re-derive its *tile* almost every column.
+
+Shape census over 412 run-edges, classified by the carried endpoint:
+
+| walk shape | run-edges | edge rows |
+| --- | ---: | ---: |
+| flat, `dy == 0` throughout | 43.2% | 38.8% |
+| multi-row column | 38.6% | 41.9% |
+| varying `dy` | 14.3% | 18.5% |
+| linear, `dy` constant nonzero | 3.9% | 0.8% |
+
+WALK_STEP, the moving walker, measured **164.9 T/row** on a small sample
+(n=10): the per-column LUT re-read needs HL, HL holds the destination, and
+stacking it costs more than the setup it saves. Same mechanism as EMIT_A's 86 T
+against EMIT_B's 49 T. **The Z80 does not have the registers to carry this
+state, and that is a hardware fact, not an implementation slack.**
+
+### EDGE_CHAIN: ownership IS coherent, and corners dominate
+
+`make edge-chain`, 59,648 poses, exhaustive over the walkable grid.
+
+| | per pose |
+| --- | ---: |
+| visible runs | 4.29 |
+| endpoint projections | 8.58 |
+| shared-vertex incidences | 12.50 |
+| runs sharing a vertex with another visible run | **97.6%** |
+| screen-column ownership chains | **2.59**, mean length **7.72 columns** |
+| owner changes | 1.59 |
+
+Owner changes classified:
+
+| class | per pose | share |
+| --- | ---: | ---: |
+| **CORNER** — the two owners share an authored vertex | 1.54 | **97.0%** |
+| REVEAL — a farther wall becomes the owner | 0.03 | 1.7% |
+| OCCLUSION — nearer, no shared vertex | 0.02 | 1.3% |
+| GAP — background on one side | 0.00 | 0.1% |
+
+**This contradicts the pessimism in A36 and in my own reading of it.** The
+visible boundary really is a small number of long chains joined at physical
+corners. Ownership changes are almost never occlusion events: 97% are authored
+corners, which are bakeable from the map with no runtime search, no dirty union
+and no graph traversal. The cross-span union that cost 28% of a full render in
+A36 was solving a problem that occurs **0.05 times per pose**.
+
+**The coherence is real at the geometry level and does not survive into the
+tile vocabulary.** 2.59 ownership chains of 7.72 columns, but 2,003 tile
+segments of 1.91 rows. That gap is the whole result of this entry.
+
+### HOIST_A — the conventional competitor, and it ships
+
+`make edge-hoist`. 20.1% of `draw_edge` calls emit zero rows, and the shipped
+order pays the full signed slope clamp before finding out. Swapping the
+early-out ahead of the slope block is exact by construction.
+
+| | T/pose | bytes | exact |
+| --- | ---: | ---: | :-: |
+| EDGELUT3 | 175,924.4 | 1,225 | yes |
+| **HOIST_A** | **173,257.1 (−1.5%)** | 1,225 | yes |
+
+Whole update 223,266 -> 220,599 T. Sequence baseline 138,609 -> 136,507 T. Not
+architectural, but free and it is real.
+
+### Verdict
+
+**The persistent walker is RED.** It is exact, it is 15x better than the
+shipped path, and it is still worse than simply streaming the answer, because
+the chains are 1.91 rows long and the Z80 cannot hold the state. Do not build
+the continuous-walk architecture.
+
+**The compiled-stream direction (A40) survives unchanged** — 49.2 T/row remains
+the mechanism, and it needs a producer, which is still the open problem.
+
+**The ownership layer is promoted, not deferred.** 97% of owner changes are
+authored corners at 1.59 changes per pose. That is small enough to bake
+outright, and it is the one part of this architecture the measurements now
+favour rather than warn against.
+
 ### A40. EDGE_EMIT — an edge row costs 49.2 T to emit, not 1,023. The 3x line
 ### is reachable, with nothing to spare.
 
