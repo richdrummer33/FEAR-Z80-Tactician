@@ -31,12 +31,13 @@
 ; the inflation it costs is measured against the host's exact mask rather than
 ; argued about.
 ;
-; MEMORY
-;   0xC000 n_new          0xC001 n_old
-;   0xC010 LO  0xC011 HI  0xC012 COL  0xC013 BIT
-;   0xC100 new span records, 20 slots x 64 bytes  (0xC100-0xC5FF)
-;   0xC800 old span records, same                 (0xC800-0xCCFF)
-;   0xCD00 dirty mask, 18 rows x 3 bytes, bit c of row r = cell (r,c)
+; MEMORY  (relocated above 0xD000: the executor drives the verified DDA_G
+;          materializer, whose own map is 0xC000-0xC8FF)
+;   0xD000 n_new          0xD001 n_old
+;   0xD010 LO  0xD011 HI  0xD012 COL  0xD013 BIT
+;   0xD100 new span records, 20 slots x 64 bytes  (0xD100-0xD5FF)
+;   0xD600 old span records, same                 (0xD600-0xDAFF)
+;   0xDB00 dirty mask, 18 rows x 3 bytes, bit c of row r = cell (r,c)
 ;
 ; 20 slots, not 8. TSPF_MAX_ACTIVE is 20 and the corpus really does reach 12
 ; spans in one pose; a 8-slot bench silently dropped the rest and showed 852
@@ -65,7 +66,7 @@
         halt
 
 union_build:
-        ld hl,0xCD00                 ; clear the 54 mask bytes
+        ld hl,0xDB00                 ; clear the 54 mask bytes
         ld b,54
         xor a
 ub_clr:
@@ -74,17 +75,17 @@ ub_clr:
         djnz ub_clr
 
         xor a
-        ld (0xC017),a                ; "also mark the new span" flag
-        ld (0xC021),a                ; draw-order inversion seen
+        ld (0xD017),a                ; "also mark the new span" flag
+        ld (0xD021),a                ; draw-order inversion seen
         ld a,0xff
-        ld (0xC015),a                ; last old slot seen: none yet
-        ld a,(0xC000)
+        ld (0xD015),a                ; last old slot seen: none yet
+        ld a,(0xD000)
         or a
         jp z,ub_pass2
         ld b,a
         xor a
-        ld (0xC024),a                ; new slot index, for the span summary
-        ld hl,0xC100
+        ld (0xD024),a                ; new slot index, for the span summary
+        ld hl,0xD100
 ; The per-span body is a CALL, not inline: djnz is a relative jump and the
 ; body outgrew its +/-128 range once passes 2 and 3 were added.
 ub_span:
@@ -98,9 +99,9 @@ ub_span:
         jp nc,ub_snc
         inc h
 ub_snc:
-        ld a,(0xC024)
+        ld a,(0xD024)
         inc a
-        ld (0xC024),a
+        ld (0xD024),a
         pop bc
         djnz ub_span
         jp ub_pass2
@@ -122,11 +123,11 @@ us_precheck_nop:
         ret
 
 us_precheck:
-        ; C = new slot index, (0xC016) = old slot index. Returns Z if the two
+        ; C = new slot index, (0xD016) = old slot index. Returns Z if the two
         ; span records are byte-identical.
         push hl
         push de
-        ld a,(0xC024)
+        ld a,(0xD024)
         ld c,a
         ld b,0
         ld hl,0xE200
@@ -136,7 +137,7 @@ us_precheck:
         add hl,bc
         add hl,bc
         add hl,bc
-        ld a,(0xC016)
+        ld a,(0xD016)
         ld c,a
         ld b,0
         ld de,0xE280
@@ -173,13 +174,13 @@ ub_one_span:
         push hl
         ld a,(hl)                    ; keyid
         ld c,a
-        ld a,(0xC001)
+        ld a,(0xD001)
         or a
         jp z,ub_no_old
         ld b,a
-        ld hl,0xC800
+        ld hl,0xD600
         xor a
-        ld (0xC016),a                ; slot index being probed
+        ld (0xD016),a                ; slot index being probed
 ub_find:
         ld a,(hl)
         cp c
@@ -190,13 +191,13 @@ ub_find:
         jp nc,ub_fnc
         inc h
 ub_fnc:
-        ld a,(0xC016)
+        ld a,(0xD016)
         inc a
-        ld (0xC016),a
+        ld (0xD016),a
         djnz ub_find
 ub_no_old:
         ld a,0xff
-        ld (0xC016),a
+        ld (0xD016),a
         call ub_note_slot
         ld hl,0x0000                 ; 0 = span is new this update
         jp ub_dispatch
@@ -205,12 +206,12 @@ ub_no_old:
 ub_note_slot:
         push hl
         push bc
-        ld a,(0xC024)
+        ld a,(0xD024)
         ld c,a
         ld b,0
         ld hl,0xE300
         add hl,bc
-        ld a,(0xC016)
+        ld a,(0xD016)
         ld (hl),a
         pop bc
         pop hl
@@ -221,17 +222,17 @@ ub_found_slot:
         ; indices must strictly increase. If they do not, two retained spans
         ; swapped draw order and a cell they share can change winner without
         ; either span's own state moving - exactly A31's failure mode.
-        ld a,(0xC015)
+        ld a,(0xD015)
         cp 0xff
         jp z,ub_order_ok
         ld b,a
-        ld a,(0xC016)
+        ld a,(0xD016)
         cp b
         jp c,ub_order_broken
         jp z,ub_order_broken
 ub_order_ok:
-        ld a,(0xC016)
-        ld (0xC015),a
+        ld a,(0xD016)
+        ld (0xD015),a
         call ub_note_slot
         jp ub_dispatch
 ub_order_broken:
@@ -240,11 +241,11 @@ ub_order_broken:
         ; change winner. Detected here, handled once at the end - a rare event
         ; (A30: 0.32 draw-order flips per update) paid for conservatively
         ; rather than with a per-pair search.
-        ld a,(0xC016)
-        ld (0xC015),a
+        ld a,(0xD016)
+        ld (0xD015),a
         call ub_note_slot
         ld a,1
-        ld (0xC021),a
+        ld (0xD021),a
 
 ub_dispatch:
         call US_PRECHECK_HOOK
@@ -254,11 +255,11 @@ ub_dispatch:
 ub_dispatch2:
         ex de,hl                     ; DE = old record or 0000
         pop hl                       ; HL = new record
-        ld a,(0xC017)
+        ld a,(0xD017)
         or a
         jp z,ub_normal
         xor a
-        ld (0xC017),a
+        ld (0xD017),a
         jp ub_mark_all               ; order broke: mark the new span whole
 ub_normal:
         jp ub_pair
@@ -267,11 +268,11 @@ ub_normal:
 ; Nothing in pass 1 visits these, and every cell they owned has to be restored.
 ; Leaving this out cost 22,099 missed dirty cells.
 ub_pass2:
-        ld a,(0xC001)
+        ld a,(0xD001)
         or a
         jp z,ub_tail
         ld b,a
-        ld hl,0xC800
+        ld hl,0xD600
 up2_span:
         push bc
         push hl
@@ -291,11 +292,11 @@ up2_one:
         push hl
         ld a,(hl)
         ld c,a                       ; keyid
-        ld a,(0xC000)
+        ld a,(0xD000)
         or a
         jp z,up2_gone
         ld b,a
-        ld hl,0xC100
+        ld hl,0xD100
 up2_find:
         ld a,(hl)
         cp c
@@ -326,36 +327,36 @@ up2_alive:
 ; O(n^2) pass over the few spans involved is affordable where marking
 ; everything is not.
 ub_tail:
-        ld a,(0xC021)
+        ld a,(0xD021)
         or a
         ret z
-        ld a,(0xC000)
+        ld a,(0xD000)
         cp 2
         ret c                        ; fewer than two spans: nothing can flip
         xor a
-        ld (0xC025),a                ; i
+        ld (0xD025),a                ; i
 ubt_i:
-        ld a,(0xC025)
+        ld a,(0xD025)
         inc a
-        ld (0xC026),a                ; j = i+1
+        ld (0xD026),a                ; j = i+1
 ubt_j:
-        ld a,(0xC026)
+        ld a,(0xD026)
         ld b,a
-        ld a,(0xC000)
+        ld a,(0xD000)
         cp b
         jp z,ubt_i_next
         jp c,ubt_i_next
         call ubt_pair
-        ld a,(0xC026)
+        ld a,(0xD026)
         inc a
-        ld (0xC026),a
+        ld (0xD026),a
         jp ubt_j
 ubt_i_next:
-        ld a,(0xC025)
+        ld a,(0xD025)
         inc a
-        ld (0xC025),a
+        ld (0xD025),a
         ld b,a
-        ld a,(0xC000)
+        ld a,(0xD000)
         cp b
         ret z
         ret c
@@ -364,7 +365,7 @@ ubt_i_next:
 ; Did spans i and j swap? i is earlier in new order by construction, so a flip
 ; is oldslot[i] > oldslot[j], with neither being 0xff.
 ubt_pair:
-        ld a,(0xC025)
+        ld a,(0xD025)
         ld c,a
         ld b,0
         ld hl,0xE300
@@ -372,8 +373,8 @@ ubt_pair:
         ld a,(hl)
         cp 0xff
         ret z
-        ld (0xC027),a
-        ld a,(0xC026)
+        ld (0xD027),a
+        ld a,(0xD026)
         ld c,a
         ld b,0
         ld hl,0xE300
@@ -382,22 +383,22 @@ ubt_pair:
         cp 0xff
         ret z
         ld b,a
-        ld a,(0xC027)
+        ld a,(0xD027)
         cp b
         ret c                        ; oldslot[i] < oldslot[j]: order held
         ret z
         ; flipped: mark the column intersection, in both streams
-        ld a,(0xC025)
+        ld a,(0xD025)
         call ubt_rec_new
         push hl
-        ld a,(0xC026)
+        ld a,(0xD026)
         call ubt_rec_new
         pop de
         call ubt_overlap             ; DE = span i, HL = span j
-        ld a,(0xC027)
+        ld a,(0xD027)
         call ubt_rec_old
         push hl
-        ld a,(0xC026)
+        ld a,(0xD026)
         ld c,a
         ld b,0
         ld hl,0xE300
@@ -411,12 +412,12 @@ ubt_pair:
 ubt_rec_new:
         ld c,a
         ld b,0
-        ld hl,0xC100
+        ld hl,0xD100
         jp ubt_rec_add
 ubt_rec_old:
         ld c,a
         ld b,0
-        ld hl,0xC800
+        ld hl,0xD600
 ubt_rec_add:
         ; HL = base, BC = slot -> HL += slot*64, by shifting rather than by
         ; sixty-four adds
@@ -466,9 +467,9 @@ ubt_hi_ok:
         jp nc,ubt_none
 ubt_go:
         ld a,b
-        ld (0xC012),a
+        ld (0xD012),a
         ld a,c
-        ld (0xC01E),a
+        ld (0xD01E),a
         pop hl
         pop de
         push de
@@ -480,14 +481,14 @@ ubt_none:
         pop de
         ret
 
-; HL = record, columns (0xC012)..(0xC01E) -> mark each from its own heights
+; HL = record, columns (0xD012)..(0xD01E) -> mark each from its own heights
 ubt_mark_range:
         push hl
         inc hl
         inc hl
         inc hl
         ld a,(hl)
-        ld (0xC018),a                ; profile
+        ld (0xD018),a                ; profile
         pop hl
 ubt_mr_col:
         push hl
@@ -499,20 +500,20 @@ ubt_mr_col:
         ld a,(hl)
         call ub_o2acc
         ld a,c
-        ld (0xC019),a
+        ld (0xD019),a
         ld a,b
-        ld (0xC01A),a
+        ld (0xD01A),a
         ld a,b
         call mark_span_a
         pop hl
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld b,a
-        ld a,(0xC01E)
+        ld a,(0xD01E)
         cp b
         ret z
         ld a,b
         inc a
-        ld (0xC012),a
+        ld (0xD012),a
         jp ubt_mr_col
 
 ; ---- mark every column of one span, conservatively, from its own heights ----
@@ -523,7 +524,7 @@ ub_mark_all:
         inc hl
         inc hl
         ld a,(hl)
-        ld (0xC018),a                ; profile
+        ld (0xD018),a                ; profile
         pop hl
         inc hl
         ld a,(hl)
@@ -533,7 +534,7 @@ ub_mark_all:
         ld c,a                       ; c1
         pop hl
         ld a,b
-        ld (0xC012),a
+        ld (0xD012),a
 uma_col:
         push bc
         push hl
@@ -545,18 +546,18 @@ uma_col:
         ld a,(hl)
         call ub_o2acc
         ld a,c
-        ld (0xC019),a
+        ld (0xD019),a
         ld a,b
-        ld (0xC01A),a
+        ld (0xD01A),a
         ld a,b
         call mark_span_a
         pop hl
         pop bc
-        ld a,(0xC012)
+        ld a,(0xD012)
         cp c
         ret z
         inc a
-        ld (0xC012),a
+        ld (0xD012),a
         jp uma_col
 
 ; ---- one span pair. HL = new record, DE = old record (0 if none) ----
@@ -599,10 +600,10 @@ ub_have_old:
         inc hl
         inc hl
         ld a,(hl)
-        ld (0xC018),a                ; profile, constant for the whole span
+        ld (0xD018),a                ; profile, constant for the whole span
         pop hl
         ld a,b
-        ld (0xC012),a
+        ld (0xD012),a
 ub_col:
         push bc
         push hl
@@ -611,11 +612,11 @@ ub_col:
         pop de
         pop hl
         pop bc
-        ld a,(0xC012)
+        ld a,(0xD012)
         cp c
         ret z
         inc a
-        ld (0xC012),a
+        ld (0xD012),a
         jp ub_col
 
 ; ================= UNION_D: no presence test in the inner loop =================
@@ -639,18 +640,18 @@ ub_col:
 ;   3. columns in OLD only  - left, whole column
 ; The inner loop then contains no presence test at all.
 ;
-; scratch: 0xC023 c0n  0xC024 c1n  0xC025 c0o  0xC026 c1o
+; scratch: 0xD023 c0n  0xD024 c1n  0xD025 c0o  0xD026 c1o
 ub_pair_d:
         push hl
         inc hl
         ld a,(hl)
-        ld (0xC023),a
+        ld (0xD023),a
         inc hl
         ld a,(hl)
-        ld (0xC024),a
+        ld (0xD024),a
         inc hl
         ld a,(hl)
-        ld (0xC018),a                ; profile, constant for the span
+        ld (0xD018),a                ; profile, constant for the span
         pop hl
         ld a,d
         or e
@@ -661,33 +662,33 @@ upd_have_old:
         ex de,hl
         inc hl
         ld a,(hl)
-        ld (0xC025),a
+        ld (0xD025),a
         inc hl
         ld a,(hl)
-        ld (0xC026),a
+        ld (0xD026),a
         ex de,hl
         pop hl
 
         ; ---- 1. overlap ----
-        ld a,(0xC023)
+        ld a,(0xD023)
         ld b,a
-        ld a,(0xC025)
+        ld a,(0xD025)
         cp b
         jp nc,upd_lo_ok
         ld a,b
 upd_lo_ok:
-        ld (0xC012),a                ; lo = max(c0n, c0o)
-        ld a,(0xC024)
+        ld (0xD012),a                ; lo = max(c0n, c0o)
+        ld a,(0xD024)
         ld b,a
-        ld a,(0xC026)
+        ld a,(0xD026)
         cp b
         jp c,upd_hi_ok
         ld a,b
 upd_hi_ok:
-        ld (0xC027),a                ; hi = min(c1n, c1o)
-        ld a,(0xC012)
+        ld (0xD027),a                ; hi = min(c1n, c1o)
+        ld a,(0xD012)
         ld b,a
-        ld a,(0xC027)
+        ld a,(0xD027)
         cp b
         jp c,upd_side                ; no overlap at all
 upd_ov:
@@ -696,14 +697,14 @@ upd_ov:
         call ub_one_col_d
         pop de
         pop hl
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld b,a
-        ld a,(0xC027)
+        ld a,(0xD027)
         cp b
         jp z,upd_side
         ld a,b
         inc a
-        ld (0xC012),a
+        ld (0xD012),a
         jp upd_ov
 
         ; ---- 2 and 3. the non-overlapping ends ----
@@ -711,21 +712,21 @@ upd_ov:
         ; realistic cadence (A30: 97.3% at U=1) - so they keep the cheap
         ; in-range test rather than being split into sub-intervals.
 upd_side:
-        ld a,(0xC023)
-        ld (0xC012),a
+        ld a,(0xD023)
+        ld (0xD012),a
 upd_new_only:
         ; "outside the old range" is col < c0o OR col > c1o. The first version
         ; tested c0o >= col, which is true at col == c0o - a column that IS in
         ; the old range - and marked it anyway. 68 missed cells, because the
         ; column then never got its overlap treatment either.
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld b,a
-        ld a,(0xC025)
+        ld a,(0xD025)
         ld c,a
         ld a,b
         cp c
         jp c,upd_no_mark             ; col < c0o
-        ld a,(0xC026)
+        ld a,(0xD026)
         ld c,a
         ld a,b
         cp c
@@ -735,33 +736,33 @@ upd_no_mark:
         push hl
         push de
         ld a,b
-        ld (0xC012),a
+        ld (0xD012),a
         call upd_whole_new
         pop de
         pop hl
 upd_no_skip:
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld b,a
-        ld a,(0xC024)
+        ld a,(0xD024)
         cp b
         jp z,upd_old_side
         ld a,b
         inc a
-        ld (0xC012),a
+        ld (0xD012),a
         jp upd_new_only
 
 upd_old_side:
-        ld a,(0xC025)
-        ld (0xC012),a
+        ld a,(0xD025)
+        ld (0xD012),a
 upd_old_only:
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld b,a
-        ld a,(0xC023)
+        ld a,(0xD023)
         ld c,a
         ld a,b
         cp c
         jp c,upd_oo_mark             ; col < c0n
-        ld a,(0xC024)
+        ld a,(0xD024)
         ld c,a
         ld a,b
         cp c
@@ -775,14 +776,14 @@ upd_oo_mark:
         pop de
         pop hl
 upd_oo_skip:
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld b,a
-        ld a,(0xC026)
+        ld a,(0xD026)
         cp b
         ret z
         ld a,b
         inc a
-        ld (0xC012),a
+        ld (0xD012),a
         jp upd_old_only
 
 ; whole column from the record in HL, using its own two heights
@@ -795,9 +796,9 @@ upd_whole_new:
         ld a,(hl)
         call ub_o2acc
         ld a,c
-        ld (0xC019),a
+        ld (0xD019),a
         ld a,b
-        ld (0xC01A),a
+        ld (0xD01A),a
         ld a,b
         jp mark_span_a
 
@@ -815,11 +816,11 @@ ub_one_col_d:
         ld c,a
         inc hl
         ld a,(hl)
-        ld (0xC014),a
+        ld (0xD014),a
         ex de,hl
         inc hl
         inc hl
-        ld a,(0xC014)
+        ld a,(0xD014)
         cp (hl)
         jp nz,upd_bdiff
         dec hl
@@ -851,7 +852,7 @@ upd_geom:
 ub_one_col:
         push hl
         push de
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld c,a
         inc hl
         ld a,(hl)
@@ -922,19 +923,19 @@ ub_o_done:
         ld c,a                       ; old hr
         inc hl
         ld a,(hl)
-        ld (0xC014),a                ; old border
+        ld (0xD014),a                ; old border
         ex de,hl                     ; HL -> new col base
         inc hl
         inc hl                       ; HL -> new border
-        ld a,(0xC014)
+        ld a,(0xD014)
         cp (hl)
         jp nz,ubc_bdiff
         xor a
-        ld (0xC01E),a
+        ld (0xD01E),a
         jp ubc_h
 ubc_bdiff:
         ld a,1
-        ld (0xC01E),a
+        ld (0xD01E),a
         jp ubc_changed
 ubc_h:
         dec hl
@@ -957,7 +958,7 @@ ubc_changed:
         call ub_off2                 ; hmin/hmax over all four height bytes
         pop de
         pop hl
-        ld a,(0xC01E)
+        ld a,(0xD01E)
         or a
         jp nz,mark_span_a            ; border moved: whole column
         jp ub_mark
@@ -980,9 +981,9 @@ ub_os_new:
         ld a,(hl)
         call ub_o2acc
         ld a,c
-        ld (0xC019),a
+        ld (0xD019),a
         ld a,b
-        ld (0xC01A),a
+        ld (0xD01A),a
         ld a,b
         pop de
         pop hl
@@ -996,7 +997,7 @@ ub_mark:
 ; here precisely so the cost of that shortcut is a number rather than an
 ; assumption.
 mark_span_a:
-        ld a,(0xC01A)
+        ld a,(0xD01A)
         call row_range
         jp mark_col
 
@@ -1015,87 +1016,87 @@ mark_span_a:
 ;   RAISED  top 72-h        (can go negative)  bottom 72+h-h>>2 (reaches 168)
 ;   RISER   top 72+h-h>>2   (never negative)   bottom 72+h   (reaches 199)
 mark_span_b:
-        ld a,(0xC018)
+        ld a,(0xD018)
         cp 3
         jp z,msb_top_riser
         ; decreasing top: lo comes from hmax, hi from hmin
-        ld a,(0xC018)
+        ld a,(0xD018)
         or a
         ld a,71
         jp z,msb_t_base
         ld a,72
 msb_t_base:
-        ld (0xC01D),a                ; top base, 71 for FULL else 72
-        ld a,(0xC01D)
+        ld (0xD01D),a                ; top base, 71 for FULL else 72
+        ld a,(0xD01D)
         ld b,a
-        ld a,(0xC01A)                ; hmax
+        ld a,(0xD01A)                ; hmax
         ld c,a
         ld a,b
         sub c
         call row_signed              ; -> LO
-        ld (0xC010),a
-        ld a,(0xC01D)
+        ld (0xD010),a
+        ld a,(0xD01D)
         ld b,a
-        ld a,(0xC019)                ; hmin
+        ld a,(0xD019)                ; hmin
         ld c,a
         ld a,b
         sub c
         call row_signed
-        ld (0xC011),a
+        ld (0xD011),a
         jp msb_top_done
 msb_top_riser:
-        ld a,(0xC019)                ; increasing top: lo from hmin
+        ld a,(0xD019)                ; increasing top: lo from hmin
         call riser_form
         call row_unsigned
-        ld (0xC010),a
-        ld a,(0xC01A)
+        ld (0xD010),a
+        ld a,(0xD01A)
         call riser_form
         call row_unsigned
-        ld (0xC011),a
+        ld (0xD011),a
 msb_top_done:
         call mark_col
         ; ---- bottom edge ----
-        ld a,(0xC018)
+        ld a,(0xD018)
         cp 1
         jp z,msb_bot_lintel
         cp 2
         jp z,msb_bot_raised
         ; FULL or RISER: bottom = 72+h, increasing
-        ld a,(0xC019)
+        ld a,(0xD019)
         add a,72
         call row_unsigned
-        ld (0xC010),a
-        ld a,(0xC01A)
+        ld (0xD010),a
+        ld a,(0xD01A)
         add a,72
         call row_unsigned
-        ld (0xC011),a
+        ld (0xD011),a
         jp mark_col
 msb_bot_raised:
-        ld a,(0xC019)
+        ld a,(0xD019)
         call riser_form
         call row_unsigned
-        ld (0xC010),a
-        ld a,(0xC01A)
+        ld (0xD010),a
+        ld a,(0xD01A)
         call riser_form
         call row_unsigned
-        ld (0xC011),a
+        ld (0xD011),a
         jp mark_col
 msb_bot_lintel:
         ; bottom = 72-(h>>1), decreasing: lo from hmax
-        ld a,(0xC01A)
+        ld a,(0xD01A)
         srl a
         ld b,a
         ld a,72
         sub b
         call row_unsigned
-        ld (0xC010),a
-        ld a,(0xC019)
+        ld (0xD010),a
+        ld a,(0xD019)
         srl a
         ld b,a
         ld a,72
         sub b
         call row_unsigned
-        ld (0xC011),a
+        ld (0xD011),a
         jp mark_col
 
 ; A = h -> 72 + h - (h>>2). Reaches 168, so it is UNSIGNED from here on.
@@ -1129,7 +1130,7 @@ row_unsigned:
 ; HL += 4 + 3*COL -- the offset of this column's three retained bytes
 ub_off:
         push bc
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld c,a
         add a,a
         add a,c
@@ -1158,9 +1159,9 @@ ub_off2:
         ld a,(hl)
         call ub_o2acc
         ld a,c
-        ld (0xC019),a                ; hmin
+        ld (0xD019),a                ; hmin
         ld a,b
-        ld (0xC01A),a                ; hmax
+        ld (0xD01A),a                ; hmax
         ret
 ub_o2acc:
         cp b
@@ -1186,18 +1187,18 @@ row_range:
         jp c,rr_hi_ok
         ld a,17
 rr_hi_ok:
-        ld (0xC011),a
+        ld (0xD011),a
         ld a,71
         sub b
         jp nc,rr_lo_pos
         xor a
-        ld (0xC010),a
+        ld (0xD010),a
         ret
 rr_lo_pos:
         srl a
         srl a
         srl a
-        ld (0xC010),a
+        ld (0xD010),a
         ret
 
 ; ---- UNION_C's marking: the same ranges, table-driven ----
@@ -1216,17 +1217,17 @@ mark_col_prep:
         push hl
         push bc
         push de
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld c,a
         ld b,0
         ld hl,0xE000                 ; COLBIT
         add hl,bc
         ld a,(hl)
-        ld (0xC013),a
+        ld (0xD013),a
         ld hl,0xE014                 ; COLBYTE
         add hl,bc
         ld a,(hl)
-        ld (0xC028),a
+        ld (0xD028),a
         pop de
         pop bc
         pop hl
@@ -1234,18 +1235,18 @@ mark_col_prep:
 
 ; Marks rows LO..HI of the prepared column. No table lookups.
 mark_col_p:
-        ld a,(0xC011)
+        ld a,(0xD011)
         ld b,a
-        ld a,(0xC010)
+        ld a,(0xD010)
         ld c,a
         ld a,b
         sub c
         ret c
         inc a
-        ld (0xC022),a
-        ld a,(0xC013)
+        ld (0xD022),a
+        ld a,(0xD013)
         ld d,a                       ; column bit
-        ld a,(0xC010)
+        ld a,(0xD010)
         ld c,a
         ld b,0
         ld hl,0xE028                 ; ROWBASE
@@ -1256,11 +1257,11 @@ mark_col_p:
         ld a,(hl)
         ld h,a
         ld l,c
-        ld a,(0xC028)
+        ld a,(0xD028)
         ld c,a
         ld b,0
         add hl,bc
-        ld a,(0xC022)
+        ld a,(0xD022)
         ld b,a
 mkp_loop:
         ld a,(hl)
@@ -1273,19 +1274,19 @@ mkp_loop:
         ret
 
 mark_col_t:
-        ld a,(0xC011)
+        ld a,(0xD011)
         ld b,a
-        ld a,(0xC010)
+        ld a,(0xD010)
         ld c,a
         ld a,b
         sub c
         ret c                        ; empty range
         inc a
-        ld (0xC022),a                ; row count parked in memory: B is needed
+        ld (0xD022),a                ; row count parked in memory: B is needed
                                      ; as the zero half of BC for every table
                                      ; index below, and holding the count there
                                      ; corrupted all three lookups
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld c,a
         ld b,0
         ld hl,0xE000                 ; COLBIT
@@ -1296,7 +1297,7 @@ mark_col_t:
         add hl,bc
         ld a,(hl)
         ld e,a                       ; E = byte offset inside the row
-        ld a,(0xC010)
+        ld a,(0xD010)
         ld c,a
         ld b,0
         ld hl,0xE028                 ; ROWBASE, 2 bytes per row
@@ -1310,7 +1311,7 @@ mark_col_t:
         ld c,e
         ld b,0
         add hl,bc                    ; + byte offset
-        ld a,(0xC022)
+        ld a,(0xD022)
         ld b,a
 mkt_loop:
         ld a,(hl)
@@ -1324,7 +1325,7 @@ mkt_loop:
 
 ; OR column COL's bit into mask rows LO..HI
 mark_col:
-        ld a,(0xC012)
+        ld a,(0xD012)
         ld c,a
         and 7
         inc a
@@ -1337,25 +1338,25 @@ mk_sh:
         jp mk_sh
 mk_have:
         ld d,a                       ; D = column bit
-        ld a,(0xC010)
+        ld a,(0xD010)
         ld l,a
         ld h,0
         add hl,hl
         ld b,0
         ld c,a
         add hl,bc                    ; 3*LO
-        ld bc,0xCD00
+        ld bc,0xDB00
         add hl,bc
-        ld a,(0xC012)
+        ld a,(0xD012)
         srl a
         srl a
         srl a
         ld c,a
         ld b,0
         add hl,bc                    ; + COL>>3
-        ld a,(0xC011)
+        ld a,(0xD011)
         ld b,a
-        ld a,(0xC010)
+        ld a,(0xD010)
         ld c,a
         ld a,b
         sub c

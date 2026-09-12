@@ -467,9 +467,31 @@ static void dump_span_set(const Pose *p)
     }
 }
 
+/* Run parameters in the form the SHIPPED materializer consumes, so the
+ * executor can drive the verified DDA_G kernel rather than a parallel path.
+ *
+ * FAR->NEAR, which is the order draw_run is actually called in and therefore
+ * the order the executor must replay. coverage_pose_oracle.txt dumps near->far
+ * and its bench reverses on load; emitting the draw order directly here means
+ * the kernel walks the array forward, which is cheaper and one less place to
+ * get the direction wrong. Getting it wrong cost 2,328 wrong cells, all of
+ * them border bits on FULL tiles, because the nearest run must write last. */
+static void dump_runs(const Pose *p)
+{
+    uint8_t i;
+    fprintf(g_umask, " %u", p->nsp);
+    for (i = 0; i < p->nsp; ++i) {
+        const SpanState *s = &p->sp[i];
+        fprintf(g_umask, " %d %d %u %u %u %u %u %u",
+                s->iq, s->step, s->c0, s->c1, s->profile,
+                s->left_real, s->right_real, s->shade_run);
+    }
+}
+
 static void dump_union(const Pose *prev, const Pose *cur)
 {
     int r, c;
+    unsigned k;
     if (!g_umask) return;
     if (g_umask_seen++ % g_umask_stride) return;
     dump_span_set(cur);
@@ -481,6 +503,11 @@ static void dump_union(const Pose *prev, const Pose *cur)
         fprintf(g_umask, " %u %u %u", m & 0xffu, (m >> 8) & 0xffu,
                 (m >> 16) & 0xffu);
     }
+    dump_runs(cur);
+    for (k = 0; k < TSP_MAP_CELLS; ++k)
+        fprintf(g_umask, " %u", prev->map[k]);
+    for (k = 0; k < TSP_MAP_CELLS; ++k)
+        fprintf(g_umask, " %u", cur->map[k]);
     fputc('\n', g_umask);
     ++g_umask_out;
 }

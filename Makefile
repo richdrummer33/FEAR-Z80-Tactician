@@ -89,7 +89,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential temporal-delta temporal-boundary temporal-cadence temporal-error temporal-bench union-bench span-stream union-stream masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential temporal-delta temporal-boundary temporal-cadence temporal-error temporal-bench union-bench span-stream union-stream temporal-exec masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
@@ -214,6 +214,11 @@ span-stream: build
 
 union-stream: span-stream
 	python3 tools/z80_union_stream_bench.py 300
+
+temporal-exec: temporal-boundary
+	./build/temporal_boundary_probe 1 120 128 2 "" 0 build/temporal_exec_rot.txt 220
+	./build/temporal_boundary_probe 1 120 64 -1 "" 0 build/temporal_exec_all.txt 4200
+	python3 tools/z80_temporal_exec_bench.py 150
 
 union-bench: temporal-boundary
 	./build/temporal_boundary_probe 1 120 128 2 "" 0 build/temporal_union_oracle.txt 37

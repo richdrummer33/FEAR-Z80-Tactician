@@ -56,6 +56,7 @@
 typedef struct {
     uint8_t sid, inv0, inv1, c0, c1, flags;
     uint8_t keyid;      /* persistent identity; NOT part of the 6-byte record */
+    uint8_t inv_mid;    /* the DEPTH SORT KEY, for the inversion classifier */
 } SpanRec;
 
 typedef struct {
@@ -167,9 +168,102 @@ static void build_frame(const TSPState *st, Frame *f)
         s->flags = (uint8_t)((r->left_real ? 1u : 0u)
                            | (r->right_real ? 2u : 0u));
         s->keyid = g_key_of_run[g_run_order[i]];
+        s->inv_mid = r->inv_mid;
         f->x0[f->n] = r->x0; f->x1[f->n] = r->x1;
         ++f->n;
     }
+}
+
+/* ================= DRAW-ORDER INVERSION CLASSIFIER =================
+ *
+ * A35 found that inversions caused the union's whole tail, and fixed the
+ * handling. But the mechanism was never established, and the premise deserves
+ * scrutiny: under PURE ROTATION the camera does not move, so two static
+ * non-intersecting walls cannot exchange world-space depth. Something else is
+ * reordering them.
+ *
+ * The sort key is `inv_mid = (inv0 + inv1) >> 1` - the midpoint inverse depth
+ * of the span's PROJECTED, FOV-CLIPPED endpoints. A28 established that inv0
+ * and inv1 carry an explicit sec(bearing - yaw) factor, so they move under pure
+ * yaw even for a corner at constant range. A key built from them can therefore
+ * cross with no physical depth reversal at all.
+ *
+ * Classification is by COUNTERFACTUAL, not by inspection: re-render the new
+ * frame with the pair forced back to their previous relative order. If the
+ * image changes, the inversion was load-bearing. If not, it was stream order
+ * and nothing else.
+ */
+static const SpanRec *find_rec(const Frame *f, uint8_t keyid);
+static unsigned long pct(const unsigned long *h, unsigned n, double q);
+
+static unsigned long inv_pairs, inv_loadbearing, inv_streamonly;
+static unsigned long inv_tie_prev, inv_tie_cur, inv_key_crossed;
+static unsigned long inv_clip_changed, inv_extent_changed, inv_no_overlap;
+static unsigned long inv_overlap_sum, inv_overlap_max, inv_hist_ov[TSP_COLS + 1];
+static unsigned long inv_updates, inv_updates_any;
+
+static void render_order(const SpanRec *sp, const uint8_t *ord, uint8_t n,
+                         uint16_t *out)
+{
+    uint8_t i;
+    unsigned save = g_touched_count;
+    map_init(out);
+    for (i = 0; i < n; ++i) replay_span(out, &sp[ord[i]]);
+    g_touched_count = save;
+}
+
+static void classify_inversions(const Frame *p, const Frame *c)
+{
+    uint8_t i, j, ord[MAXSPAN];
+    static uint16_t alt[TSP_MAP_CELLS];
+    int any = 0;
+    ++inv_updates;
+    for (i = 0; i < c->n; ++i) ord[i] = i;
+    for (i = 0; i < c->n; ++i) {
+        const SpanRec *pi = find_rec(p, c->sp[i].keyid);
+        int ri;
+        if (!pi) continue;
+        ri = (int)(pi - p->sp);
+        for (j = (uint8_t)(i + 1); j < c->n; ++j) {
+            const SpanRec *pj = find_rec(p, c->sp[j].keyid);
+            int rj, ov, lo, hi;
+            uint8_t t;
+            if (!pj) continue;
+            rj = (int)(pj - p->sp);
+            if (ri < rj) continue;              /* order held */
+            ++inv_pairs;
+            any = 1;
+
+            /* mechanism */
+            if (pi->inv_mid == pj->inv_mid) ++inv_tie_prev;
+            if (c->sp[i].inv_mid == c->sp[j].inv_mid) ++inv_tie_cur;
+            if ((pi->inv_mid > pj->inv_mid)
+                != (c->sp[i].inv_mid > c->sp[j].inv_mid)) ++inv_key_crossed;
+            if (pi->flags != c->sp[i].flags || pj->flags != c->sp[j].flags)
+                ++inv_clip_changed;
+            if (pi->c0 != c->sp[i].c0 || pi->c1 != c->sp[i].c1
+                || pj->c0 != c->sp[j].c0 || pj->c1 != c->sp[j].c1)
+                ++inv_extent_changed;
+
+            /* overlap width in the new frame */
+            lo = c->sp[i].c0 > c->sp[j].c0 ? c->sp[i].c0 : c->sp[j].c0;
+            hi = c->sp[i].c1 < c->sp[j].c1 ? c->sp[i].c1 : c->sp[j].c1;
+            ov = hi - lo + 1;
+            if (ov < 0) ov = 0;
+            inv_overlap_sum += (unsigned long)ov;
+            if ((unsigned long)ov > inv_overlap_max) inv_overlap_max = (unsigned long)ov;
+            ++inv_hist_ov[ov > (int)TSP_COLS ? TSP_COLS : ov];
+            if (!ov) { ++inv_no_overlap; ++inv_streamonly; continue; }
+
+            /* counterfactual: force the pair back to the old relative order */
+            t = ord[i]; ord[i] = ord[j]; ord[j] = t;
+            render_order(c->sp, ord, c->n, alt);
+            t = ord[i]; ord[i] = ord[j]; ord[j] = t;
+            if (memcmp(alt, c->map, sizeof alt)) ++inv_loadbearing;
+            else ++inv_streamonly;
+        }
+    }
+    if (any) ++inv_updates_any;
 }
 
 /* ---- oracle for the Z80 span-stream union ----
@@ -417,7 +511,11 @@ int main(int argc, char **argv)
                     if (memcmp(rebuilt, cur->map, sizeof rebuilt)) ++n_exact_fail;
 
                     measure_frame(cur);
-                    if (have_prev) { compare_frames(prev, cur); dump_pair(prev, cur); }
+                    if (have_prev) {
+                        compare_frames(prev, cur);
+                        classify_inversions(prev, cur);
+                        dump_pair(prev, cur);
+                    }
                     have_prev = 1;
                     sw = prev; prev = cur; cur = sw;
                 }
@@ -489,6 +587,35 @@ int main(int argc, char **argv)
     printf("  within a CHANGED span, columns whose own state actually"
            " differs  %.1f%%\n",
            n_chcol_tot ? 100.0 * n_chcol_diff / n_chcol_tot : 0.0);
+
+    printf("\nDRAW-ORDER INVERSIONS - what are they physically?\n");
+    if (!inv_pairs) {
+        printf("  none observed\n");
+    } else {
+        printf("  updates with any inversion   %.1f%%   inverted pairs/update %.3f\n",
+               100.0 * inv_updates_any / inv_updates,
+               (double)inv_pairs / inv_updates);
+        printf("  LOAD-BEARING (forcing the old order changes the image)"
+               "   %6.2f%%\n", 100.0 * inv_loadbearing / inv_pairs);
+        printf("  STREAM-ORDER ONLY (image identical either way)"
+               "          %6.2f%%\n", 100.0 * inv_streamonly / inv_pairs);
+        printf("   of which the pair does not overlap at all"
+               "              %6.2f%%\n", 100.0 * inv_no_overlap / inv_pairs);
+        printf("  mechanism, not exclusive:\n");
+        printf("    sort key inv_mid genuinely crossed      %6.2f%%\n",
+               100.0 * inv_key_crossed / inv_pairs);
+        printf("    inv_mid TIED in the previous frame      %6.2f%%\n",
+               100.0 * inv_tie_prev / inv_pairs);
+        printf("    inv_mid TIED in the current frame       %6.2f%%\n",
+               100.0 * inv_tie_cur / inv_pairs);
+        printf("    an FOV-clip flag changed                %6.2f%%\n",
+               100.0 * inv_clip_changed / inv_pairs);
+        printf("    a column extent changed                 %6.2f%%\n",
+               100.0 * inv_extent_changed / inv_pairs);
+        printf("  overlap width  mean %.2f cols   p95 %lu   max %lu\n",
+               (double)inv_overlap_sum / inv_pairs,
+               pct(inv_hist_ov, TSP_COLS + 1, 0.95), inv_overlap_max);
+    }
 
     printf("\nCOMPARISON WORK IMPLIED (bytes compared per update)\n");
     printf("  span form    %7.2f\n", (double)cmp_bytes_span / n_pairs);

@@ -28,8 +28,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 from z80core import assemble, Z80                       # noqa: E402
 
 CODE = 0x0000
-NNEW, NOLD = 0xC000, 0xC001
-NEWBASE, OLDBASE, DMASK = 0xC100, 0xC800, 0xCD00
+NNEW, NOLD = 0xD000, 0xD001
+NEWBASE, OLDBASE, DMASK = 0xD100, 0xD600, 0xDB00
 STRIDE, MAXSLOT = 64, 20
 ROWS, COLS = 18, 20
 
@@ -65,6 +65,9 @@ VARIANTS = tuple(
     ))
 
 SUMNEW, SUMOLD = 0xE200, 0xE280
+VARIANTS_BY_NAME = {}
+
+VARIANTS_BY_NAME.update(dict(VARIANTS))
 
 COLBIT, COLBYTE, ROWBASE = 0xE000, 0xE014, 0xE028
 

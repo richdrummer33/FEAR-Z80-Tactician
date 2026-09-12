@@ -630,6 +630,146 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A36. TEMP_BOUNDARY_A — built, exact, and it LOSES. Verdict: RED.
+
+`make temporal-exec`. The complete exact temporal update, measured end to end
+against the verified 153,450 T full-render sequence baseline. **Union +
+executor + retained-state maintenance as one number**, with the whole 20x18
+name table required to match the reference renderer.
+
+**What was built.** The executor runs after UNION_E, collapses the row-major
+dirty mask into a dirty-column bitmap, resets those columns to background, and
+replays every run over its dirty sub-ranges through the **verified DDA_G
+materializer** rather than a parallel tile-selection path. That is exact by
+construction: the union guarantees no cell outside the dirty set changed, so
+clean columns already hold the right words, and a dirty column reset and
+replayed far->near is exactly what the full renderer does to it.
+
+Driving DDA_G over a sub-range `[a,b]` inside `[c0,c1]` keeps `step` (it came
+from the ORIGINAL column count), advances `iq` by `step*(a-c0)`, and keeps
+`left_real` only when `a==c0` and `right_real` only when `b==c1`.
+
+**RESULT: exact on both corpora, 0 wrong cells.** And:
+
+| | all regimes | pure rotation |
+| --- | ---: | ---: |
+| mean | **150,552 T (98.1%)** | **282,083 T (183.8%)** |
+| median | 136,788 (89.1%) | 229,764 (149.7%) |
+| p95 | 461,515 (300.8%) | 480,287 (313.0%) |
+| max | 604,871 (394.2%) | 618,632 (403.1%) |
+| updates costing MORE than a full render | **45.3%** | **98.4%** |
+
+**Where the loss comes from — profiled, not guessed:**
+
+| stage | all regimes | rotation |
+| --- | ---: | ---: |
+| DDA_G materializer | **51.1%** (80,022 T) | **56.5%** (154,047 T) |
+| union (UNION_E) | 28.1% (43,915) | 27.5% (75,009) |
+| dirty-column test | 7.7% (12,090) | 4.6% (12,422) |
+| background reset | 6.6% (10,310) | 7.3% (19,823) |
+| sub-range scan | 4.6% (7,218) | 3.2% (8,610) |
+| mask collapse | 1.8% (2,837) | 1.0% (2,837) |
+
+**The blocker is boundary reconstruction, not the union and not bookkeeping.**
+Under rotation the materializer ALONE costs 154,047 T against a full render's
+153,450 T. The executor redraws whole dirty columns, and **47.5% (mixed) /
+80.6% (rotation) of all column-materializations fall in a dirty column** —
+under rotation the dirty columns cover 14.72 of 20, so there is almost nothing
+to save.
+
+**The ceiling, stated plainly.** Even with a FREE union and zero bookkeeping,
+the materializer alone is 80,022 T on mixed motion (52%, 1.9x) and 154,047 T
+under rotation (100%, no win). **1.9x is the ceiling for mixed motion under
+this executor, and rotation cannot win at all.** Row-level gating inside dirty
+columns is the only lever left — only 4.49 of 18 rows are dirty — but A27's
+profile puts the per-row work at a minority of a column's cost, so it cannot
+bridge a 2x gap.
+
+**Fallback analysis, with the cost honestly charged.** The predictor is
+available only AFTER the union, so a fallback frame pays union + full render.
+Dirty-column count is an excellent predictor (0 false negatives at a threshold
+of 3), and it still does not rescue it:
+
+| policy | all regimes | rotation |
+| --- | ---: | ---: |
+| raw temporal | 98.1% | 183.8% |
+| fallback when dirty cols > 3 | **84.5% (1.18x)** | **150.7% (0.66x)** |
+| perfect hindsight, union still charged | ~84% | ~150% |
+
+A pre-union predictor would be free but cruder; nothing changes the rotation
+picture, where the mean dirty-column count is 17.8 of 20.
+
+**VERDICT: RED.** Once execution is included, temporal boundaries do not beat
+the full renderer. Mixed motion is a wash raw (98.1%) and 1.18x with fallback;
+rotation is a 1.5x to 1.8x LOSS. That does not justify persistent span state, a
+two-pass kernel, ~3.5 KB of code and the retained-state maintenance.
+
+**A bug worth keeping.** The first run dump was near->far, matching
+`coverage_pose_oracle.txt`, while the executor walks the array forward — so the
+draw order was reversed and 2,328 cells came out wrong, every one of them a
+border bit on a FULL tile, because the nearest run must write last. The new
+dump emits far->near, the actual draw order.
+
+### The draw-order inversions, classified
+
+A35 fixed their handling without establishing what they are. Under pure
+rotation the camera does not move, so two static walls cannot exchange
+world-space depth. Classified by COUNTERFACTUAL — re-render the new frame with
+the pair forced back to their old relative order and see whether the image
+changes:
+
+| | pure rotation | all regimes |
+| --- | ---: | ---: |
+| updates with any inversion | 11.7% | 5.8% |
+| inverted pairs per update | 0.172 | 0.086 |
+| **load-bearing** (image changes) | **51.6%** | 60.6% |
+| stream-order only | 48.4% | 39.4% |
+| ... of which the pair does not overlap at all | 44.4% | 35.3% |
+| sort key `inv_mid` genuinely crossed | **79.6%** | 73.2% |
+| `inv_mid` TIED in the previous frame | 20.4% | 26.8% |
+| `inv_mid` TIED in the current frame | 24.6% | 28.4% |
+| an FOV-clip flag changed | 13.3% | 8.7% |
+| a column extent changed | 99.2% | 69.0% |
+| overlap width | mean 0.75 cols, p95 1, max 14 | mean 0.76, p95 1, max 15 |
+
+**None of these is a physical depth reversal.** The sort key is
+`inv_mid = (inv0 + inv1) >> 1`, the midpoint inverse depth of the span's
+FOV-CLIPPED projected endpoints. A28 established that `inv0`/`inv1` carry an
+explicit `sec(bearing - yaw)` factor, so they move under pure yaw even for a
+corner at constant range, and the clip slides along the wall as the camera
+turns. So the category is **sort-key crossover** (79.6%), with **ties**
+(20-28%) as the second mechanism and clipping/extent motion driving both.
+
+**A latent instability worth recording separately:** `insert_run` uses `<=` in
+its comparison for appearance mode < 2, so spans with EQUAL `inv_mid` reverse
+their relative order on every insertion. That alone accounts for the 20-28%
+tie-driven inversions and is a one-character fix to `<`, but it would change
+shipped output on tied spans and so needs its own verification pass. Logged,
+not done.
+
+**And a cheap rejection that already exists:** 44.4% of inverted pairs do not
+overlap in columns at all, and `ubt_overlap` already returns early on those.
+Mean overlap is 0.75 columns, so A35's "mark the intersection" rule is already
+tight and there is no remaining cost opportunity here.
+
+### What this closes, and what it does not
+
+**Closed:** the exact temporal-boundary architecture as a replacement for the
+full renderer. Measured end to end, exact, and it loses. Per the standing
+instruction, the measurements are preserved and no further complexity is
+layered on.
+
+**NOT closed, and worth saying precisely:** the individual findings stand.
+A29's representation is exact and complete. A30's cadence feedback loop is
+real. A34's six-byte span record reconstructs the frame pixel-for-pixel. The
+union is bounded. What fails is the economics of the executor: the work saved
+is whole columns, and under any rotation most columns are dirty.
+
+**If this is ever revisited**, the one measurement that would change the
+verdict is a materializer whose cost scales with dirty ROWS rather than dirty
+columns. A27's profile says that is a minority of the per-column cost, which is
+why this entry is RED rather than YELLOW.
+
 ### A35. The union's p95 was my own conservatism. Pairwise inversions fix it.
 
 `make union-bench`. A33 ended with the union at 34.7-54.9% of a full render and
