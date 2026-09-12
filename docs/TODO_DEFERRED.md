@@ -630,6 +630,125 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A42. EDGE_PHASE — the compiled microsequence. The state theory is RIGHT
+### and the architecture is dead anyway. Verdict: RED.
+
+`make edge-phase`. A41 killed a walker that carried an endpoint and re-derived
+the tile. It did not test the stronger claim: that the whole per-column
+derivation is a quantized recurrence which can be compiled, so that tile
+identity may change every column and traversal still stays cheap. **A41's
+"chains break when the tile word changes" is NOT the stopping criterion for
+this architecture** and was not used as one here.
+
+### Corpus provenance, printed before anything is interpreted
+
+The A41 and A40 statistics come from this sampling, which is now stated rather
+than implied:
+
+| | |
+| --- | --- |
+| scene | the single authored map in `src/generated`, a 48x24 grid of 4-world-unit cells |
+| walkable cells carrying a recipe | **466** |
+| sub-cell offsets per cell | **4** — `{0,0} {7,3} {3,7} {11,5}` in Q4 |
+| camera positions | **1,864** = 466 x 4 |
+| headings | yaw 0..255 |
+| `edge-chain` / `edge-phase` | yaw step 8 -> 32 headings -> **59,648 poses** |
+| `coverage_pose_oracle.txt` (A40/A41) | yaw step 16 -> 16 headings, then 1 pose in 12 kept -> **2,486 poses** |
+
+**So yes: the "four" is the four sub-cell offsets, and 59,648 = 466 x 4 x 32.**
+Every pose is a static camera placement; there is no motion trajectory in this
+corpus at all. It is exhaustive over position and heading on ONE map, which
+makes it a fair sample of *geometry* and no sample whatsoever of *motion
+continuity*. It is not an E1M1-style connected-room workload and nothing here
+should be read as one. No second geometry corpus exists in the repo.
+
+### The state theory is correct
+
+Splitting the shipped accumulator `a = iq + 32` as `a = 64*inv + phase`:
+
+```
+    phase' = (phase + step) & 63
+    inv'   = inv + ((phase + step) >> 6)
+```
+
+and the emitted tile needs `inv` only through `inv & 15`, because
+`local_left` needs `hl & 7` and `hl = inv >> 1`. Tested over **1,746,366
+column observations**:
+
+| candidate state | states | conflicts |
+| --- | ---: | ---: |
+| `(step, phase, inv&15, profile)` — **unclamped output** | 379,476 | **267 (0.015%)** |
+| `(step, phase, inv, profile)` — full accumulator | 566,171 | 0 |
+| `(step, phase, inv&15, profile)` — clamped output | 379,476 | 180,533 |
+| `(phase, inv&15, profile)` — step dropped | 4,096 | 1,684,788 |
+| `(step, phase, profile)` — inv dropped | 85,862 | 1,362,061 |
+| `(step, inv&15, profile)` — phase dropped | 101,925 | 1,168,941 |
+
+**The reduction to `inv & 15` is essentially exact** once screen clamping is
+treated separately, which it should be — the 180,533 clamped conflicts are the
+row clamp firing on 25.11% of columns, not a failure of the state model. All
+three ablations fail, so every term is load-bearing. The model is right.
+
+### It dies on step diversity
+
+| | |
+| --- | ---: |
+| distinct `step` values in the corpus | **2,332** |
+| steps needed to cover 50% of emitted cells | **241** |
+| most common single step | 3.5% of cells |
+| columns with `\|step\| >= 128` | **69.5%** |
+
+`step` is the per-column Q6 inverse-depth advance, and it is large: the wall
+height moves more than a pixel per screen column most of the time. That is the
+mechanism behind A41's short chains, now explained rather than observed.
+
+A compiled microsequence needs one table per step class, and there are 2,332 of
+them.
+
+### The whole-run vocabulary does not collapse either
+
+| | |
+| --- | ---: |
+| run-edges observed | 256,014 |
+| **distinct microsequences** | **32,597** |
+| mean length | 9.29 columns |
+| ROM at 2 bytes/column | **591.4 KiB** |
+
+Against a 128 KiB ROM target that is **4.6x over even a 128 KiB budget and
+still over a 512 KiB cart**. Each sequence repeats only 7.9 times on average
+over an output alphabet of roughly 480 symbols: the sequences are close to
+arbitrary.
+
+### And even if it fit, it would be attacking 3%
+
+This is the argument that makes the ROM number academic. The compiled
+microsequence replaces the *recurrence* — `iq += step`, one 16-bit add. A39's
+semantic profile measures that accumulator advance (`M_carry`) at **5,329
+T/pose, 3.0%** of the materializer. Everything expensive is the *derivation*
+from `iq` to a tile: the Q6 decode, the endpoint subtract, `row_floor`, the
+slope clamp, the local-left construction and the LUT index — stages 4, 5 and 6,
+**54% together**. A microsequence does not compute those more cheaply; it
+stores their answers, and storing their answers is the 591 KiB.
+
+**The circular process was not hiding a small state transition. It was hiding a
+large table, and A40 already found the cheap way to consume one: generate it
+per frame at 259 bytes instead of baking 591 KiB.**
+
+### Verdict — RED, and the Z80 rung was deliberately NOT built
+
+The pre-registered condition was "if exact state-transition complexity or ROM
+size explodes, show the numbers and kill it". It exploded. No Z80 microkernel
+was written, because a kernel measuring 55 T/cell would not change a verdict
+that turns on 591 KiB of ROM to remove 3% of the work.
+
+**What survives, unchanged:**
+- A40's flat stream at 49.2 T/row, which costs zero ROM because it is produced
+  per frame. The open problem is still the producer.
+- HOIST_A at −1.5%, exact, free, and shippable.
+- A41's ownership result, which this entry does not touch: 2.59 chains per
+  pose, 97.0% of owner changes authored corners. Corner seeding was not
+  separately re-tested here because the phase machine it would seed is dead.
+
 ### A41. The persistent edge walker — built, exact, and it LOSES to a flat
 ### stream. But the ownership layer is far more tractable than feared.
 
