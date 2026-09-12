@@ -630,6 +630,127 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A37. MICRO_BOUNDARY_A census — the vocabulary is already baked and tiny. Verdict: RED as a rescue, GREEN as a baseline optimization.
+
+`make micro-boundary`. The question was whether a dirty boundary cell's final
+8x8 result can be NAMED from retained state instead of reconstructed through
+DDA_G. The census answers it without needing a Z80 rung, which is what the gate
+asked for.
+
+**The premise needs correcting first, and the correction is good news.** There
+is no new micro-boundary vocabulary to invent. `edge_entry` does not rasterize
+anything — it SELECTS from a set the renderer already bakes:
+
+| | count |
+| --- | ---: |
+| edge tiles, 3 shades x 16 offsets x 8 slopes | 384 |
+| FULL tiles, 3 shades x 3 caps x 4 borders | 36 |
+| ceiling, floor, horizon | 3 |
+| **total baked vocabulary** | **423** |
+| at 32 bytes of 4bpp pattern each | 13,536 bytes VRAM |
+
+The 7.25 KiB estimate was the right order of magnitude for the pattern data and
+the wrong thing to budget for: **that VRAM is already spent.** Measured over
+the corpus, only **100 of the 423 tile IDs (23.6%) are ever reached**, and
+**303 distinct name-table words** are observed. Under flip canonicalization
+those 303 collapse to 162 (HFLIP), 155 (VFLIP), **84 (both)** — so the true
+geometric vocabulary is 84 patterns.
+
+**The lookup that would replace the derivation is tiny and exact.**
+`edge_entry(shade, local_left, slope, bottom) -> tile id | flips` over its full
+appearance-mode-0 domain is **990 entries producing 480 distinct words = 1,980
+bytes**. Restricted to the domain the corpus actually visits — `local_left`
+-14..22, `slope` -7..7, 369 distinct triples — it is **738 bytes**.
+
+So the answer to "can we name it instead of reconstructing it" is **yes, in
+under 2 KB, exactly**. And it does not rescue anything, for a reason the
+profile makes unambiguous.
+
+**`edge_entry` is only 19.6% of DDA_G.** Profiled directly rather than cited
+from A27: 38,806 T of 197,919 T per pose, about 250 T per call. A table lookup
+would cost roughly 50 T, so the whole prize is **~16% of the materializer**.
+
+Applied to A36's measured TEMP_BOUNDARY_A totals:
+
+| | measured | with a free `edge_entry` | with a FREE materializer |
+| --- | ---: | ---: | ---: |
+| rotation | 282,083 (183.8%) | ~253,000 (165%) | ~118,000 (77%) |
+| mixed | 150,552 (98.1%) | ~135,500 (88%) | ~76,500 (50%) |
+
+**Even with the materializer entirely free, rotation is 77% of a render and
+mixed is 50%** — because the union and the bookkeeping are 48% of the update.
+Naming the boundary instead of reconstructing it is worth about 10% of the
+update. **A36's RED stands.**
+
+**Why the deeper version of the idea also fails.** "Name the answer from
+retained state plus a small delta" needs the new `local_left` and `slope`,
+which need the new `tl`/`tr`, which need the DDA walk. A30 already measured
+that a single shared delta covers a whole span's four boundaries on only
+**16-19% of spans under rotation** (52-58% mixed), so the per-column walk
+cannot be replaced by a per-span delta. That is the same blocker, reached from
+a new direction.
+
+### Temporal deferral has almost no mass
+
+The useful quantity is the pixelwise old->new difference — how wrong the screen
+would be if a change were left undrawn for one update — not the new edge's
+length. Measured against the exact reconstructed 8x8 patterns:
+
+| pixels wrong if deferred | rotation | all regimes |
+| --- | ---: | ---: |
+| 0 | 0.3% | 0.5% |
+| 1-2 | **5.1%** | **4.2%** |
+| 3-4 | 4.1% | 3.9% |
+| 5-8 | 41.1% | 36.7% |
+| 9-16 | 15.8% | 21.8% |
+| 17+ | 33.6% | 33.0% |
+| **mean wrong pixels of 64** | **18.98** | **19.97** |
+
+**Only 4-5% of transitions are the 1-2 pixel changes the deferral idea needs,
+and a third of them are 17+ pixels.** Deferring the safe class would skip ~4%
+of boundary work; deferring anything larger puts a third of a tile wrong. And
+**99.9% of transitions change the tile ID rather than just the flip bits**, so
+there is no cheap "same pattern, different orientation" shortcut either.
+
+The deferral rung was not built: the mass is not there, and building it would
+have measured a 4% opportunity against a policy, an owed-mask and a
+convergence path.
+
+### The observation mix explains all of it
+
+| | rotation | all regimes |
+| --- | ---: | ---: |
+| edge tiles | 13.4% | 11.0% |
+| FULL interior | 56.0% | 57.2% |
+| background | 30.6% | 31.8% |
+
+**Boundary cells are 11-13% of the image.** The cost was never in naming them.
+
+### What is worth doing, separately from all of this
+
+**The 738-byte exact lookup is a ~16% optimization of the FULL RENDERER**, with
+no temporal machinery involved. `edge_entry` is 19.6% of DDA_G, it is a pure
+function of three small values in appearance mode 0, and replacing it with a
+table indexed as `((local_left+16)*15 + (slope+7)) + 495*bottom` — where the
+x15 is a shift-and-subtract — would take the 153,450 T baseline to roughly
+127,000 T. **That improves the baseline for everything, including any future
+temporal work.** It is the actionable finding from this census and it is NOT
+built here, because it changes the shipped materializer and belongs in its own
+verified rung.
+
+### Verdict
+
+**RED** for micro-boundary lookup as a rescue of the temporal architecture: the
+vocabulary is already baked, the lookup is already tiny, and it is only worth
+10% of an update.
+
+**GREEN**, separately, for the same lookup as a standalone materializer
+optimization worth about 16% of the full renderer.
+
+The census is preserved: 423 baked tiles, 100 reached, 303 words, 84
+flip-canonical patterns, a 738-byte exact state->word table, and the pixel-delta
+distribution above.
+
 ### A36. TEMP_BOUNDARY_A — built, exact, and it LOSES. Verdict: RED.
 
 `make temporal-exec`. The complete exact temporal update, measured end to end

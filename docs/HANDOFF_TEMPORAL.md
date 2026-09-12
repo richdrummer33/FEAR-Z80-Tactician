@@ -73,7 +73,34 @@ A20–A27 (§A. Z80 span-interpreter micro-architecture).
   still +7.7% over DDA_G alone. **Coverage at column granularity is closed**,
   not deferred — measured twice, on two kernels, losing both times.
 
-## WHERE THIS LANDED: RED. Read `docs/TODO_DEFERRED.md` A36 first.
+## WHERE THIS LANDED: RED. Read `docs/TODO_DEFERRED.md` A37 then A36.
+
+**A37 (`make micro-boundary`) asked whether a dirty boundary cell's final 8x8
+result can be NAMED from retained state instead of reconstructed. It can, in
+738 bytes, exactly - and it does not rescue anything.**
+
+There was no new vocabulary to invent. `edge_entry` selects from a set the
+renderer already bakes: 384 edge tiles + 36 FULL + 3 background = **423 tiles,
+13,536 bytes of VRAM already spent**. Only 100 are ever reached, 303 distinct
+words are observed, and under both flips those collapse to **84 patterns**.
+
+The lookup is 990 entries (1,980 bytes) over the full mode-0 domain, or **738
+bytes** over the domain the corpus visits. But **`edge_entry` is only 19.6% of
+DDA_G** (profiled: 38,806 T of 197,919 per pose), so the whole prize is ~10% of
+an update. Even with a FREE materializer, A36's totals are 77% of a render
+under rotation and 50% mixed, because the union and bookkeeping are 48%.
+
+**Temporal deferral has no mass either**: only 4-5% of transitions change 1-2
+pixels, a third change 17+, the mean is 20 wrong pixels of 64, and 99.9% change
+the tile ID rather than just the flips. Boundary cells are only 11-13% of the
+image; the cost was never in naming them.
+
+**The one actionable finding:** that same 738-byte lookup is a **~16%
+optimization of the full renderer**, independent of any temporal machinery -
+153,450 T would become roughly 127,000 T. Not built here; it changes the
+shipped materializer and deserves its own verified rung.
+
+## A36: TEMP_BOUNDARY_A, the exact column-oriented executor
 
 **`make temporal-exec`. TEMP_BOUNDARY_A is built, verified exact on both
 corpora, and it loses to the full renderer.**
