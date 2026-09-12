@@ -220,6 +220,9 @@ edge-lut: build
 	./build/edge_lut_gen > build/edge_lut.txt
 	python3 tools/z80_edge_lut_bench.py 300
 
+semantic-profile: edge-lut
+	python3 tools/z80_semantic_profile.py 120
+
 micro-boundary: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/micro_boundary_probe.c -o build/micro_boundary_probe
 	./build/micro_boundary_probe 1 60 128 2
