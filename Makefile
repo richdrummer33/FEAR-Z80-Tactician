@@ -89,7 +89,7 @@ GGFLAGS := -mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo4 -Isrc
 # inlined renderer makes compile time explode.
 TILESECTOR_FASTFLAGS := -Wf--opt-code-speed
 
-.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential temporal-delta temporal-boundary temporal-cadence temporal-error temporal-bench union-bench span-stream union-stream temporal-exec micro-boundary masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
+.PHONY: all host test gg gg-seed42 release smoke gear-tools emu-smoke tilesector-test tilesector-host gg-tilesector polar-test span-workload-probe span-block-bake span-decode-workload span-decode-bench span-gate-bench span-emit-bench span-bearing-bench column-solve-workload span-qsquare-bench column-solve-bench fused-host-path depth-sort-bench pairwise-order flip-boundary materialize-bench materialize-run-bench coverage-potential temporal-delta temporal-boundary temporal-cadence temporal-error temporal-bench union-bench span-stream union-stream temporal-exec micro-boundary edge-lut masked-bench dda-bench polar-transition-bake polar-demo-patch-gen gg-polar-patch-demo gg-tilesector-polar clean
 all: host test
 
 build:
@@ -214,6 +214,11 @@ span-stream: build
 
 union-stream: span-stream
 	python3 tools/z80_union_stream_bench.py 300
+
+edge-lut: build
+	$(CC) $(CFLAGS) -Isrc tools/edge_lut_gen.c src/tilesector_polar_motion.c -o build/edge_lut_gen
+	./build/edge_lut_gen > build/edge_lut.txt
+	python3 tools/z80_edge_lut_bench.py 300
 
 micro-boundary: build
 	$(CC) $(CFLAGS) -Isrc src/tilesector_polar_motion.c tools/micro_boundary_probe.c -o build/micro_boundary_probe
