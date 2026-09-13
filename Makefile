@@ -252,6 +252,13 @@ colsolve-census: $(COLUMN_SOLVE_PROBE_BIN)
 border-hoist: edge-lut
 	python3 tools/z80_border_hoist_bench.py 300
 
+progjoin: build
+	$(CC) $(CFLAGS) -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+	mkdir -p build/progjoin
+	python3 tests/test_z80_ld_sp_hl.py
+	./build/edge_progjoin_bake build/coverage_pose_oracle.txt 6 0
+	python3 tools/z80_progjoin_bench.py 63 40
+
 edge-dispatch: build
 	$(CC) $(CFLAGS) -Isrc tools/edge_dispatch_verify.c src/tilesector_polar_motion.c -o build/edge_dispatch_verify
 	./build/edge_dispatch_verify 6 0

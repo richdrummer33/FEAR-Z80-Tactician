@@ -9,6 +9,11 @@ Rebuilt from evidence on **2026-09-13** at commit `8991f14`, branch
 `claude/renderer-forensic-reconstruction-azzocg`. Every figure marked RE-RUN
 below was re-executed during that rebuild, not copied from prior prose.
 
+**Updated 2026-09-13 with the PROGJOIN result (§8a):** the compiled
+edge-program chain has now been executed end to end on real corpus inputs and
+is oracle-EXACT, and its measured cost is materially higher than the composed
+65,785 T figure. See §8a before quoting any compiled-edge-program number.
+
 ---
 
 ## 1. Clock and budget reference
@@ -515,6 +520,128 @@ That is a well-founded *architecture*. It is not a materializer.
 
 ---
 
+## 8a. PROGJOIN — the compiled edge-program chain, executed
+
+**Experiment:** PROGJOIN, `make progjoin`. **What it does:** takes real
+run-edges from the pose corpus, runs a real Z80 **rank dispatcher** (the lookup
+that selects which precompiled edge program to execute), points the stack at the
+selected program with `ld sp,hl`, plays the program back into the name table,
+and compares the cells against the renderer's own `draw_edge`.
+
+This is the first time any generated compiled-edge-program data has been
+consumed by any kernel.
+
+### What was built
+
+| piece | what it is |
+| --- | --- |
+| `tools/z80core.py` | **`ld sp,hl` (0xF9, 6 T) implemented**, with `tests/test_z80_ld_sp_hl.py` checking encoding, timing, HL→SP copy, flag preservation, `pop` usability and full-range round trip. |
+| `tools/edge_progjoin_bake.c` | **Writes actual bytes** — step→slot map, descriptors, threshold lists, dispatch blocks and program bodies — unlike `edge_program_bake.c`, which contains no `fopen`. Programs are built from the MODEL's formulas, never from renderer output. |
+| `tools/z80_progjoin_bench.py` | 293-byte Z80 kernel: dispatch → `ld sp,hl` → playback, looping the chunks of a run-edge with the destination cursor carried across them. |
+
+### Result: the chain works and is EXACT
+
+| | |
+| --- | ---: |
+| poses | 2,486 |
+| run-edges in corpus | 20,840 |
+| run-edges executed | **16,700 (80.13%)** |
+| dispatches executed | 24,587 |
+| cells played | 115,089 |
+| **wrong cells** | **0** |
+| **stray writes** | **0** |
+| **verdict** | **EXACT** vs the renderer's own `draw_edge` |
+
+### Result: the cost is much higher than composed
+
+Cycles attributed by program counter, not fitted:
+
+| stage | measured | prior figure | ratio |
+| --- | ---: | ---: | ---: |
+| **rank dispatch** | **1,038.8 T** per dispatch | 381 T claimed | **2.73x** |
+| **playback** | **68.4 T** per cell | 71.1 T composed | 0.96x — **the playback composition was sound** |
+| chunk advance | 243.7 T per chunk | **absent from every composed figure** | — |
+| per-run-edge setup | 167.0 T per run-edge | **absent from every composed figure** | — |
+
+The 381 T figure priced a **fragment**: its description covers masking `u`,
+extracting the base, indexing a threshold list and four compares. It does not
+include the family/length dimension, the body-pointer indirection, the
+cell-count lookup, or forming the program address — all of which a dispatch must
+do to hand playback something to execute. The kernel measured here is also
+**untuned**; the descriptor lookup is re-done per chunk although family is
+constant per run-edge, so there is real headroom. Neither fact closes a 2.7x gap.
+
+### Three defects the published verification could not have caught
+
+`edge_dispatch_verify.c`'s "zero conflicts over 34.7M observations" hashed only
+each program's C-column tile sequence — **with no successor column, no
+partial-chunk case, and multi-row columns truncated at four rows**
+(`if (n > 4) n = 4;`). Running the chain found:
+
+1. **The key does not distinguish chunk length.** A full C-column chunk and a
+   short final chunk of a run are different programs; `T[fam][step][base][rank]`
+   maps them to one entry. First hit at family 0, step 0, base 6, rank 6.
+2. **The key needs C+1 thresholds, not C.** A C-column program's drawn cells
+   need heights h_0..h_C, which C thresholds cover. But the self-chaining
+   destination delta also needs where the NEXT chunk starts, and that depends on
+   h_{C+1} — the lookahead column's right endpoint. So the selector reads **C+2
+   heights**. First hit at family 0, step 5, base 7, rank 0, with accumulators
+   3008 and 2974 agreeing on every drawn cell and disagreeing only on the final
+   chaining delta. Fixing this costs one more rank row.
+3. **Programs carry no screen clipping, and 19.2% of run-edges need it.**
+   `draw_edge` clamps rows to the 18-row viewport; a position-independent
+   program cannot. A further 0.65% hit the 255 inverse-depth clamp. **Only
+   80.13% of run-edges are bakeable at all**; the rest need a fallback that
+   exists in no A46 budget.
+
+### What this does to the 65,785 T figure
+
+On the 80.13% of run-edges it can handle, the architecture is a large real win:
+the stages it replaces cost **95,979 T/pose** for that subset and the measured
+compiled-program path costs **17,001 T/pose** — **5.6x cheaper**. The idea works.
+
+The whole-materializer arithmetic, however, moves against it:
+
+| | materializer T/pose | provenance |
+| --- | ---: | --- |
+| composed claim | 65,785 | COMPOSED, largely unexecuted |
+| **measured path + old-path fallback for the 19.87%** | **96,848** | **COMPOSED from Z80-SIM-MEASURED per-unit costs + CORPUS-MEASURED frequencies** |
+| if clipping were free and every edge baked | 77,269 | COMPOSED, optimistic bound |
+
+Whole update, adding the five corrected front-end stages (41,760 T), BORDERHOIST
+(−3,709 T) and a representative pure-yaw upload (7,995 T):
+
+| | T/update | implied rate |
+| --- | ---: | ---: |
+| composed claim (superseded) | 111,831 | 32.0 /s |
+| **best case, clipping free** | **123,315** | **29.0 /s** |
+| **measured + fallback** | **142,894** | **25.1 /s** |
+
+> **IMPLIED FROM COMPOSED COST — NOT MEASURED FPS.**
+
+**The 30 Hz gate is 119,318 T. The measured compiled-edge-program architecture
+does not reach it** — not even in the clipping-free bound. It clears the 20 Hz
+gate (178,977 T) comfortably, which the current implemented pipeline does not.
+
+### What PROGJOIN still does not close
+
+The forensic answers in §8 change as follows, and only these:
+
+| # | question | was | now |
+| ---: | --- | --- | --- |
+| 3 | correct program selected for a real span/pose? | NO | **YES** — 24,587 dispatches on corpus inputs, output verified by the cells it produced |
+| 4 | rank/dispatch functionally verified? | NO | **YES** — real Z80 kernel, output read back and checked |
+| 6 | playback fed real generated program data? | NO | **YES** — programs emitted to disk and consumed |
+| 7 | dispatch joined to playback? | NO | **YES** — `ld sp,hl` implemented, tested, and used |
+| 1 | vocabulary generated correctly? | PARTIAL | **YES** for the bakeable 80.13%; the excluded 19.87% has no program |
+| 2 | coverage over the pose corpus verified? | PARTIAL | **PARTIAL** — now quantified: 80.13% covered, 19.21% needs clipping, 0.65% clamped |
+| 8 | complete materializer executed? | NO | **PARTIAL** — the edge path is executed; column walk, interior fill, borders and row addressing are untouched and not re-integrated |
+| 9 | output compared against the oracle? | NO | **PARTIAL** — edge cells vs the renderer's `draw_edge`, not a whole 20x18 name table |
+| 10 | complete cycle count measured? | NO | **PARTIAL** — the edge path is measured; the whole materializer is still composed |
+| 5, 11, 12 | playback verified / ROM / emulator | YES, NO, NO | unchanged |
+
+---
+
 ## 9. INVALIDATED / SUPERSEDED — numbers that must not return
 
 | number | what it was | why it is void |
@@ -527,6 +654,9 @@ That is a well-founded *architecture*. It is not a materializer.
 | **223,266 T** | previous "current pipeline" headline | Used the wrong column-solve and pre-BORDERHOIST materializer. Superseded by 211,308. |
 | **113,127 T** | previous A46 whole-update | Used the wrong (fallback) column-solve. Superseded by 103,836 / 111,831. |
 | **1.07 MB A46 ROM** | A44 | Corrected by A45 to 3.00 MB at L=4; 2.91 MB at C=6 under the dispatch model. |
+| **65,785 T A46 materializer** | composed compiled-edge-program cost | Superseded by PROGJOIN (§8a): dispatch measured at 2.73x the assumed cost, two cost terms were missing entirely, and 19.87% of run-edges cannot be baked at all. Measured recomposition **96,848 T**; clipping-free bound **77,269 T**. |
+| **381 T rank dispatch** | assumed dispatch cost | Measured at **1,038.8 T** for a dispatch that actually returns a playable program (§8a). |
+| **A46 reaches ~32 updates/s** | composed whole update | Superseded: **25.1 /s** measured+fallback, **29.0 /s** clipping-free bound. Does not reach the 30 Hz gate. |
 | **"37.9"** | GOAP AI demo | Video frames per logical AI tick, not a rate and not the renderer. Real rate: 1.58 world ticks/s. |
 | **"60 fps"** | GOAP runtime verification | ffmpeg capture rate / NTSC display cadence. |
 

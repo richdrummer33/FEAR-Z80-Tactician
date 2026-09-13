@@ -117,6 +117,10 @@ def encode(line, pc, labels, sizing):
     # --- 16-bit block ---
     if op == "ld" and n == 2:
         d, s = a[0], a[1]
+        if d == "sp" and s == "hl":
+            # 0xF9, 6 T. Must precede the `ld rr,nn` branch below, which would
+            # otherwise try to evaluate "hl" as an immediate.
+            return bytes([0xF9])
         if d in R16 and is_ind(s):
             v = _num(inner(s), labels, sizing)
             if d == "hl":
@@ -385,6 +389,9 @@ class Z80:
             self.set16(nm, self.get16(nm) + (1 if op & 0x08 == 0 else -1))
             self.t += 6
             return
+        if op == 0xF9:                                    # ld sp,hl
+            self.sp = self.hl
+            self.t += 6; return
         if op == 0x32: m[self._rd16()] = self.r["a"]; self.t += 13; return
         if op == 0x3A: self.r["a"] = m[self._rd16()]; self.t += 13; return
         if op == 0x22:
