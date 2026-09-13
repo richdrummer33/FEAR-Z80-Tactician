@@ -37,6 +37,7 @@
 #define CELL_Q4 64
 
 static unsigned long g_dp_iters;
+static int16_t g_lo, g_hi;
 static int8_t g_nf[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static int8_t g_sf[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 
@@ -81,8 +82,17 @@ static uint8_t seen_iq[65536], seen_step[65536], seen_phase[4096];
 static uint8_t seen_invd[256], seen_mid[256], seen_c0c1[512];
 static unsigned long s_mul_dp, s_mul_fb;
 
+static FILE *g_dump;
+static unsigned long g_stride = 1, g_seen;
+
 int main(int argc, char **argv) {
     unsigned yaw_step = (argc > 1) ? (unsigned)strtoul(argv[1], 0, 0) : 16u;
+    if (argc > 2) {
+        g_dump = fopen(argv[2], "w");
+        if (!g_dump) { fprintf(stderr, "cannot open %s\n", argv[2]); return 1; }
+        g_stride = (argc > 3) ? strtoul(argv[3], 0, 0) : 1;
+        if (!g_stride) g_stride = 1;
+    }
     static const int8_t off[][2] = { {0,0},{7,3},{3,7},{11,5} };
     TSPState s; unsigned gx, gy, yaw, oi, i, j;
     unsigned long poses = 0;
@@ -135,6 +145,21 @@ int main(int argc, char **argv) {
                     if (c1 >= TSP_COLS) c1 = TSP_COLS - 1;
                     if (c1 < c0) continue;
                     ++s_runs;
+                    /* lo/hi, re-derived exactly as project_key computes them
+                     * (renderer lines 424-429), so the Z80 twin can still run
+                     * the angle_x stage instead of being handed x0/x1. */
+                    {
+                        uint16_t a0 = bearing_vertex_q12(rr->v0, &s);
+                        uint16_t a1 = bearing_vertex_q12(rr->v1, &s);
+                        uint16_t len = (uint16_t)((a1 - a0) & 4095u);
+                        uint16_t yawq = (uint16_t)s.yaw << 4;
+                        int16_t st2 = signed_q12((uint16_t)(a0 - yawq));
+                        int16_t en = (int16_t)(st2 + (int16_t)len);
+                        while (en < -512) { st2 += 4096; en += 4096; }
+                        while (st2 > 512) { st2 -= 4096; en -= 4096; }
+                        g_lo = st2 < -512 ? -512 : st2;
+                        g_hi = en > 512 ? 512 : en;
+                    }
                     invd = inv_for_dq4(wall_d_q4(rr->sid, k_tspf_seg_anchor[rr->sid], &s));
                     seen_invd[invd] = 1;
                     if (dp_solve(rr->sid, invd, c0, c1, &t)) {
@@ -149,6 +174,12 @@ int main(int argc, char **argv) {
                         seen_phase[((a % 1024) + 1024) % 1024] = 1;
                         sadd(((uint64_t)(uint16_t)t.step << 16)
                              | (uint32_t)(((a % 1024) + 1024) % 1024));
+                        if (g_dump && (g_seen++ % g_stride == 0))
+                            fprintf(g_dump,
+                                "%d %d %u %u %u %u %u %u %u %d %d %d %d\n",
+                                px, py, yaw, rr->sid, invd, c0, c1,
+                                (unsigned)(c1 - c0 + 1), t.inv_mid,
+                                t.iq, t.step, g_lo, g_hi);
                     } else {
                         ++s_dp_fail;
                         s_mul_fb += 4;                 /* two inv_at_invd calls */
@@ -190,6 +221,8 @@ int main(int argc, char **argv) {
         printf("  inv_mid              %6lu of 256\n", nmid);
         printf("  (c0,c1) pairs        %6lu of 400\n", ncc);
         printf("  distinct (step,phase) A46 keys  %lu\n", g_setn);
+        if (g_dump) { fclose(g_dump);
+            printf("\noracle rows written (depth-plane successes only)\n"); }
     }
     return 0;
 }

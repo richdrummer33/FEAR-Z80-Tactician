@@ -630,6 +630,83 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A50. DPSOLVE — the target column-solve kernel, built and exact.
+### 21,238 T/update, not 26,891 and not the 13,300 I modelled.
+
+`make target-solve-bench`. A49 showed the shipped build takes the depth plane on
+99.10% of runs, so A14's kernel — and the 26,820 T budget line every rung on
+this branch has carried — prices a path the target almost never runs. A49
+modelled the target at about 13,300 T and said plainly that no kernel existed.
+Now one does.
+
+**Built as a twin, not a rewrite.** `wall_d_q4`, `inv_for_dq4` and the
+`angle_x` / `c0` / `c1` / `n` stage are the SAME code as A14's kernel. Only the
+stage turning `invd` into `(iq, step)` is swapped: the two `inv_at_invd` calls
+and the Q6 ramp come out, the depth-plane solve goes in.
+
+| | T/span | T/update | exact |
+| --- | ---: | ---: | :-: |
+| A14 fallback kernel | 6,253.7 | 26,891 | yes |
+| **DPSOLVE (target path)** | **4,939.0** | **21,238** | **6,039/6,039** |
+| A49's model | — | ~13,300 | — |
+
+1,345 bytes. Verified against `build/target_solve_oracle.txt`, emitted by the
+probe whose `dp_solve` is diffed against the shipped source by
+`tools/target_solve_equiv.py`.
+
+**Whole update 223,266 -> 217,613 T**, a −5,653 T correction to the budget line.
+
+### A49's model was 37% too optimistic, and that is the headline
+
+I modelled ~13,300 T by composing measured component costs. The measurement is
+**21,238 T**. The gap is the depth-plane solve itself: two multiplies, the
+12.95-iteration column walk, the sign-crossing test, the three-way negate and
+`inv_mid` come to far more than the `inv_at_invd` pair they replace was
+credited with saving. **Composing component costs across a path change does not
+predict the result** — the same lesson A24's ROWPTR_B, A27, A33, A35 and A38
+each taught, now repeated for a whole-stage swap.
+
+Column-solve is still the largest non-materializer stage at 21,238 T.
+
+### Four bugs, all caught by the oracle, all worth keeping
+
+1. **`lo`/`hi` never supplied.** Every `c0`/`c1` came out as 10, the screen
+   centre column, because `angle_x` was fed zero. The oracle now re-derives
+   `lo`/`hi` exactly as `project_key` does so the twin still runs the real
+   `angle_x` stage instead of being handed `x0`/`x1`.
+2. **`smul` uses register C as its sign flag**, which destroyed the saved
+   normal class between the two coefficient lookups, so `sf` read as 0 and
+   every `step` came out zero. The class now goes to scratch memory.
+3. **`smul` reads BOTH operands as `i8`, but `invd` is unsigned.** `invd = 255`
+   became −1 and every near-wall run came out roughly 256x small — 348 rows of
+   1,208. Fixed with an explicit unsigned-by-signed helper: magnitude through
+   `umul`, the coefficient's sign applied once.
+4. **An XOR of sign bits is not a signed comparison, because zero is neither
+   positive nor negative.** The C is
+   `if ((iq<0 && endq>0) || (iq>0 && endq<0)) return 0;` followed by
+   `if (iq<0 || endq<0) negate`. The XOR trick got this wrong twice in opposite
+   directions: it rejected `iq==0, endq>0` which the C accepts (5 rows), and it
+   skipped the negate on `iq==0, endq<0` which the C performs (3 rows). Written
+   out literally. **Sign-bit tricks and signed comparisons diverge exactly at
+   zero, and a corpus that under-samples zero will not show it.**
+
+### Where this leaves the budget
+
+| stage | T/update | status |
+| --- | ---: | --- |
+| bearing lookup | 5,833 | cycle-exact |
+| decode-clip | 11,036 | cycle-exact |
+| GATE | 2,339 | cycle-exact |
+| **column-solve** | **21,238** | **cycle-exact, TARGET path (was 26,820, wrong path)** |
+| depth sort | 1,314 | cycle-exact |
+| materializer (BORDERHOIST) | 169,548 | cycle-exact |
+| **whole update** | **211,308** | |
+
+**The next question is what DPSOLVE's own 4,939 T/span is made of.** It has
+never been split, and the obvious candidates — the 12.95-iteration walk, the
+two multiplies, the negate — are all things the census technique already knows
+how to price. That split, not another architecture, is the next rung.
+
 ### A49. TARGET_SOLVE_CENSUS — the depth plane succeeds 99.10% of the time,
 ### so `inv_at_invd` is ALREADY DEAD on target. A48's recommendation is
 ### WITHDRAWN, and so is the 26,891 T column-solve line.

@@ -226,6 +226,10 @@ edge-hoist: edge-lut
 edge-walk: edge-lut
 	python3 tools/z80_edge_walk_bench.py 60
 
+target-solve-bench: target-solve-census
+	./build/target_solve_census 16 build/target_solve_oracle.txt 1 > /dev/null
+	python3 tools/z80_target_solve_bench.py 6000
+
 target-solve-census: build
 	mkdir -p build/generated/polar_depthplane build/gbdk/gbdk
 	python3 experiments/adaptive_polar_field/screen_depth_plane_lut.py --emit-dir build/generated/polar_depthplane
