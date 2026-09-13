@@ -76,6 +76,8 @@ static const char *k_famname[NFAM] = {
 static int fam_M(int fam) { return k_famperiod[fam] / 128; }
 
 static long g_clipok, g_cliptot, g_clipdrop, g_clipall;
+static int g_rowmin = 99, g_rowmax = -99;   /* unclamped row extremes */
+static long g_clampcols, g_clampdrawn;      /* invdepth-clamped columns */
 static int g_off_h;                     /* height at the last offscreen hit */
 static long g_off_fam[NFAM][3];         /* [fam][1=top,2=bottom] exclusions */
 static long g_off_hsum[NFAM], g_off_hn[NFAM];
@@ -105,7 +107,17 @@ static int column_cells(int fam, int16_t iq_col, int16_t step, uint8_t shade,
     int hl, hr, r, n = 0;
     int16_t tl, tr;
     int8_t slope, r0, r1;
-    if (rl != (int32_t)invl || rw != (int32_t)invr) { *hit_clamp = 1; if (!clip) return -1; }
+    /* clip modes: 0 = reject clamp and offscreen (original bake)
+     *              1 = the RENDERER's behaviour, clamp rows to the viewport
+     *              2 = keep unclamped rows, tolerate the clamp (diagnostic)
+     *              3 = keep unclamped rows, reject the inverse-depth clamp
+     *                  (the guard-band bake: off-screen rows are absorbed by
+     *                   scratch rows, but a saturated inverse depth leaves the
+     *                   linear height model the dispatch key depends on) */
+    if (rl != (int32_t)invl || rw != (int32_t)invr) {
+        *hit_clamp = 1;
+        if (clip == 0 || clip == 3) return -1;
+    }
     hl = invl >> 1; hr = invr >> 1;
     tl = endpoint_of(fam, hl); tr = endpoint_of(fam, hr);
     slope = clamp_s8((int16_t)(tr - tl), -7, 7);
@@ -119,12 +131,16 @@ static int column_cells(int fam, int16_t iq_col, int16_t step, uint8_t shade,
         *hit_offscreen |= (r0 < 0) ? 1 : 0;
         *hit_offscreen |= (r1 >= (int8_t)TSP_ROWS) ? 2 : 0;
         g_off_h = hl;
-        if (!clip) return -1;
+        if (clip == 0) return -1;
         if (clip == 1) {
             if (r0 < 0) r0 = 0;
             if (r1 >= (int8_t)TSP_ROWS) r1 = (int8_t)(TSP_ROWS - 1u);
         }
         /* clip == 2: leave the range unclamped, rows may fall outside */
+    }
+    if (clip == 2) {
+        if (r0 < g_rowmin) g_rowmin = r0;
+        if (r1 > g_rowmax) g_rowmax = r1;
     }
     for (r = r0; r <= r1 && n < MAXCELLS; ++r) {
         words[n] = edge_entry(shade, (int16_t)(tl - ((int16_t)r << 3)), slope, bottom);
@@ -167,7 +183,7 @@ static int build_program(int fam, int16_t iq0, int16_t step, uint8_t shade,
     for (c = 0; c < ncols; ++c) {
         uint16_t w[MAXCELLS]; int rws[MAXCELLS]; int k, m;
         m = column_cells(fam, (int16_t)(iq0 + (int16_t)(c * step)), step, shade,
-                         bottom, 0, w, rws, hit_clamp, hit_offscreen);
+                         bottom, 3, w, rws, hit_clamp, hit_offscreen);
         if (m <= 0) return -1;
         for (k = 0; k < m; ++k) {
             if (n >= MAXCELLS) return -1;
@@ -189,7 +205,7 @@ static int build_program(int fam, int16_t iq0, int16_t step, uint8_t shade,
     {
         uint16_t w[MAXCELLS]; int rws[MAXCELLS]; int m;
         m = column_cells(fam, (int16_t)(iq0 + (int16_t)(ncols * step)), step,
-                         shade, bottom, 0, w, rws, hit_clamp, hit_offscreen);
+                         shade, bottom, 3, w, rws, hit_clamp, hit_offscreen);
         if (m <= 0) return -1;
         dests[n] = (int32_t)rws[0] * (TSP_COLS * 2) + (int32_t)ncols * 2;
     }
@@ -331,7 +347,11 @@ int main(int argc, char **argv) {
                 int M = fam_M(fam), slot = g_slot_of[step + 2048], cs;
                 int hit_clamp = 0, hit_off = 0, edge_ok = 1;
                 /* stage the whole run-edge, commit only if every chunk bakes */
-                uint32_t offs[32]; int ncs = 0, want_of[32], first_dest = -1;
+                /* first_dest must NOT use a negative sentinel: with the guard
+                 * band the first cell's row can legitimately be off-screen, so
+                 * a negative offset is a valid value. Use an explicit flag. */
+                uint32_t offs[32]; int ncs = 0, want_of[32];
+                int first_dest = 0, have_first = 0;
                 uint8_t stage[32][MAXC + 1 + 4 * MAXCELLS]; size_t stagelen[32];
                 int keybase[32], keyrank[32];
                 ++edges;
@@ -381,17 +401,37 @@ int main(int argc, char **argv) {
                      * the kernel does. */
                     keybase[ncs] = H & (M - 1);
                     keyrank[ncs] = rank;
-                    if (first_dest < 0) {
+                    if (!have_first) {
+                        have_first = 1;
                         /* run setup supplies the absolute cursor once per edge */
                         uint16_t w[MAXCELLS]; int rws[MAXCELLS]; int hc = 0, ho = 0;
                         column_cells(fam, iq, (int16_t)step, (uint8_t)sh,
-                                     (uint8_t)(fam_is_bottom(fam) ? 1u : 0u), 0,
+                                     (uint8_t)(fam_is_bottom(fam) ? 1u : 0u), 3,
                                      w, rws, &hc, &ho);
                         first_dest = rws[0] * (TSP_COLS * 2) + c0 * 2;
                     }
                     cells += prefix[want];
                     ++ncs;
                     if (ncs >= 32) { edge_ok = 0; break; }
+                }
+                {   /* every column, unconditionally: row extremes, and
+                     * whether an inverse-depth-clamped column draws anything */
+                    int c;
+                    uint8_t bt = (uint8_t)(fam_is_bottom(fam) ? 1u : 0u);
+                    for (c = 0; c < ncol; ++c) {
+                        uint16_t w[MAXCELLS]; int rw2[MAXCELLS];
+                        int hc = 0, ho = 0, m;
+                        int16_t iqc = (int16_t)(iq0 + (int16_t)(c * step));
+                        (void)column_cells(fam, iqc, (int16_t)step, (uint8_t)sh,
+                                           bt, 2, w, rw2, &hc, &ho);
+                        if (hc) {
+                            hc = ho = 0;
+                            m = column_cells(fam, iqc, (int16_t)step, (uint8_t)sh,
+                                             bt, 1, w, rw2, &hc, &ho);
+                            ++g_clampcols;
+                            if (m > 0) g_clampdrawn += m;
+                        }
+                    }
                 }
                 if (!edge_ok && hit_off) {
                     /* For each drawn column, compare the RENDERER's clamped
@@ -428,15 +468,13 @@ int main(int argc, char **argv) {
                         if (ok) ++g_clipok;
                     }
                 }
-                if (!edge_ok) {
-                    if (hit_off) {
-                        ++ex_off;
-                        if (hit_off & 1) ++g_off_fam[fam][1];
-                        if (hit_off & 2) ++g_off_fam[fam][2];
-                        g_off_hsum[fam] += g_off_h; ++g_off_hn[fam];
-                    } else ++ex_clamp;
-                    continue;
+                if (hit_off) {              /* absorbed by the guard band now */
+                    ++ex_off;
+                    if (hit_off & 1) ++g_off_fam[fam][1];
+                    if (hit_off & 2) ++g_off_fam[fam][2];
+                    g_off_hsum[fam] += g_off_h; ++g_off_hn[fam];
                 }
+                if (!edge_ok) { ++ex_clamp; continue; }
                 ++ok_edges;
                 if (!emit) continue;
                 /* commit bodies and dispatch entries */
@@ -516,10 +554,23 @@ int main(int argc, char **argv) {
     printf("run-edges                   %ld\n", edges);
     printf("  fully bakeable            %ld  (%.2f%%)\n",
            ok_edges, 100.0 * ok_edges / (edges ? edges : 1));
-    printf("  excluded, row offscreen   %ld  (%.2f%%)  <- programs carry no clipping\n",
+    printf("  off-screen, GUARD-BAND ABSORBED  %ld  (%.2f%%)  <- no longer excluded\n",
            ex_off, 100.0 * ex_off / (edges ? edges : 1));
     printf("  excluded, invdepth clamp  %ld  (%.2f%%)\n",
            ex_clamp, 100.0 * ex_clamp / (edges ? edges : 1));
+    printf("\nHOW FAR OFF-SCREEN DO ROWS ACTUALLY GO?\n");
+    printf("  unclamped row range over the whole corpus   [%d, %d]\n",
+           g_rowmin, g_rowmax);
+    printf("  viewport is rows [0, %u)\n", TSP_ROWS);
+    printf("  guard rows needed: %d above, %d below\n",
+           g_rowmin < 0 ? -g_rowmin : 0,
+           g_rowmax >= (int)TSP_ROWS ? g_rowmax - (int)TSP_ROWS + 1 : 0);
+
+    printf("\nDO INVERSE-DEPTH-CLAMPED COLUMNS DRAW ANYTHING?\n");
+    printf("  clamped columns                  %ld\n", g_clampcols);
+    printf("  cells they actually draw         %ld%s\n", g_clampdrawn,
+           g_clampdrawn == 0 ? "   NONE - they are entirely off-screen" : "");
+
     printf("\nIS CLIPPING JUST \"DROP THE OUT-OF-RANGE CELLS\"?\n");
     printf("  clipped-equals-filtered columns   %ld of %ld", g_clipok, g_cliptot);
     printf("%s\n", g_clipok == g_cliptot ? "   YES, EXACTLY" : "   NO");

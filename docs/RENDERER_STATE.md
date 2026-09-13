@@ -3,8 +3,8 @@
 **Read this first, then `docs/PERFORMANCE_GROUND_TRUTH.md` for the full ledger
 with provenance on every figure.**
 
-Last updated: **2026-09-13**, after PROGJOIN — the compiled edge-program chain
-executed end to end for the first time. Branch
+Last updated: **2026-09-13**, after GUARDBAND — clipping solved at zero cycles,
+compiled-edge-program coverage 80% -> 95.55%. Branch
 `claude/renderer-forensic-reconstruction-azzocg`.
 
 Provenance labels used throughout: **TARGET-MEASURED / Z80-SIM-MEASURED /
@@ -52,18 +52,19 @@ starting phase. The runtime would then only play programs back.
 
 | | materializer | provenance |
 | --- | ---: | --- |
-| **measured path + fallback for the 19.87% it cannot bake** | **96,848 T** | **COMPOSED from Z80-SIM-MEASURED per-unit costs + CORPUS-MEASURED frequencies** |
-| bound if clipping were free and every edge baked | 77,269 T | COMPOSED, optimistic |
+| **guard band + fallback for the 4.45% it cannot bake** | **83,627 T** | **COMPOSED from Z80-SIM-MEASURED per-unit costs + CORPUS-MEASURED frequencies** |
+| earlier, excluding off-screen edges | 96,848 T | superseded by the guard band |
 | composed claim (SUPERSEDED) | ~~65,785 T~~ | see Invalidated |
 
-Whole update, with BORDERHOIST and a representative upload: **142,894 T
-(25.1 updates/s)** measured+fallback, **123,315 T (29.0 /s)** clipping-free bound.
+Whole update, with BORDERHOIST and a representative upload: **129,673 T,
+27.6 updates/s**.
 
 > IMPLIED FROM COMPOSED COST — NOT MEASURED FPS.
 
-**This CLEARS the 20 Hz solid target (178,977 T) with 25% margin**, in the
-pessimistic case, while the current implemented pipeline does not clear it at
-all. The 30 Hz aspiration is missed — that is a stretch goal, not the spec.
+**This CLEARS the 20 Hz solid target (178,977 T) with 28% margin**, while the
+current implemented pipeline does not clear it at all. The 30 Hz aspiration is
+now missed by only 8.7% — and dispatch, 59.9% of the compiled path, is still
+untuned.
 
 ### How much of A46 is actually built — after PROGJOIN
 
@@ -74,21 +75,21 @@ all. The 30 Hz aspiration is missed — that is a stretch goal, not the spec.
 | dispatch selects the right program on corpus inputs | **YES** — 24,587 dispatches, output verified by the cells produced |
 | dispatch joined to playback | **YES** — `ld sp,hl` implemented, tested, used |
 | playback fed real generated programs | **YES** — no longer captured renderer output |
-| edge cells vs the renderer's own `draw_edge` | **EXACT** — 0 wrong, 0 stray, over 16,700 run-edges |
-| edge-path cycle count | **Z80-SIM-MEASURED**, 17,001 T/pose |
+| edge cells vs the renderer's own `draw_edge` | **EXACT** — 0 wrong, 0 stray, over 19,912 run-edges |
+| viewport clipping | **SOLVED at zero cycles** by a 7-row guard band; coverage 80.13% -> **95.55%** |
+| edge-path cycle count | **Z80-SIM-MEASURED**, 22,240 T/pose |
 | complete materializer (column walk, interior fill, borders, addressing) | **NOT re-integrated** |
 | whole 20x18 name table vs oracle | **NOT done** — edge cells only |
 | in a ROM, emulator, or hardware | **NO** |
 
-**On the 80.13% of run-edges it can handle the architecture is a real 5.6x
-win**: the stages it replaces cost 95,979 T/pose for that subset, the compiled
-path costs 17,001 T/pose. The shortfall is in dispatch cost and the un-bakeable
-remainder, not in the idea.
+**On the 95.55% of run-edges it covers the architecture is a real 5.1x win**:
+the stages it replaces cost 114,440 T/pose for that subset, the compiled path
+costs 22,240 T/pose. What is left is dispatch cost, which is untuned.
 
 | measured per-unit cost | value | prior figure |
 | --- | ---: | --- |
-| rank dispatch | **1,038.8 T** | 381 T claimed — **2.73x** |
-| playback | **68.4 T/cell** | 71.1 T composed — sound |
+| rank dispatch | **1,041.7 T** | 381 T claimed — **2.73x**, and untuned |
+| playback | **68.2 T/cell played** | 71.1 T composed — sound |
 | chunk advance | 243.7 T/chunk | **absent from every composed figure** |
 | per-run-edge setup | 167.0 T/run-edge | **absent from every composed figure** |
 
@@ -118,17 +119,17 @@ row walk 13,279, edge tile select 11,550.
 - **C4 — seven corners have no accurate baked leaf**; the `0xff` escape marker is
   unhandled at runtime.
 - **C5 — Polar vs TileSector oracle divergence**, traced upstream.
-- **A46 has no clipping story yet — but it is cheap.** Compiled programs are
-  position-independent and carry no screen clipping, while `draw_edge` clamps
-  the drawn row range to the 18-row viewport. **19.21% of run-edges need it**;
-  a further 0.65% hit the inverse-depth clamp. This is **near-wall frustum
-  clipping, not occlusion** (occlusion is the depth sort plus near-to-far
-  ownership): close walls whose top leaves the top of the screen or bottom the
-  bottom, at half-heights 95-111 against a ~72 threshold.
-  **Measured: the clipped output is exactly the unclipped program's cells with
-  out-of-range rows dropped — 39,570 of 39,570 columns.** So the fallback is a
-  skip count plus a shortened play count over the SAME program, not a second
-  renderer.
+- **Viewport clipping: SOLVED.** It was **near-wall frustum clipping, not
+  occlusion** (occlusion is the depth sort plus near-to-far ownership): close
+  walls whose top leaves the top of the screen or bottom the bottom, at
+  half-heights 95-111 against a ~72 threshold. Since the clipped output is
+  exactly the unclipped cells with out-of-range rows dropped (39,570/39,570
+  columns) and rows span only [-7, 24], a **7-row guard band above and below
+  the name table** absorbs them at **zero cycles**. Coverage 80.13% -> 95.55%.
+- **The inverse-depth clamp (4.45%) is a real boundary.** Very close walls
+  saturate `a>>6` at 255, which pins the heights and breaks the linear model the
+  dispatch key assumes. Verified: including them produces a genuine dispatch
+  conflict. They need the existing edge path as a fallback.
 - **The published dispatch key was wrong twice**, both found only by executing
   it: it does not distinguish a full chunk from a short final one, and it needs
   C+1 thresholds rather than C, because the self-chaining destination delta
@@ -159,6 +160,7 @@ row walk 13,279, edge tile select 11,550.
 | committed ROMs | 2 x 65,536 B — **GOAP tactical-AI demo only, not the renderer** |
 | generated ROM tables in `src/generated` | 8,884 B across 24 arrays |
 | Game Gear persistent WRAM | 381 B |
+| guard-banded name table (A46) | 1,280 B, up from 720 B — **+560 B** |
 | host-oracle-only state (not in cartridge) | 768 B |
 | A46 ROM in `src/` | **0 bytes, 0 files** |
 | A46 ROM if built, at C=6 | **~2.91 MB — affordable inside 4 MiB; above the 1 MiB comfort point, so worth shrinking** |
@@ -177,8 +179,7 @@ change, not a platform problem.
 | **30 Hz — aspiration / fallback** | ~119.3k T | nice to reach, not required |
 | **20 Hz — SOLID TARGET, clearing it is success** | ~179.0k T | — |
 | current implemented pipeline | 219,300 T | **misses 20 Hz by 23%** |
-| **A46, measured + clipping fallback** | **142,894 T** | **CLEARS 20 Hz, 25% margin** |
-| A46, clipping-free bound | 123,315 T | clears 20 Hz; just misses 30 Hz |
+| **A46, guard band + 4.45% fallback** | **129,673 T** | **CLEARS 20 Hz, 28% margin; misses 30 Hz by 8.7%** |
 
 Neither gate includes game logic, input, audio, VBlank service, inter-stage
 glue, VDP wait states, or banking.
@@ -187,57 +188,56 @@ glue, VDP wait states, or banking.
 
 ## Last completed experiment
 
-**PROGJOIN** — `make progjoin`. The compiled edge-program chain, executed end to
-end on real corpus inputs for the first time:
+**GUARDBAND** — `make progjoin`. Closed the compiled-edge-program
+architecture's clipping gap at zero cycles.
 
-    corpus run-edge -> rank dispatch -> real generated program
-                    -> `ld sp,hl` -> playback -> name-table cells
-                    -> compared against the renderer's own draw_edge
+**What it does.** Compiled programs are position-independent, so they cannot
+carry the row clamp `draw_edge` applies at the viewport edges. Rather than test
+bounds per cell, the 20x18 name table now sits inside a **32-row buffer with 7
+guard rows above and below**, and off-screen cells land in scratch rows nobody
+reads. Three corpus measurements made this sound: the clipped output is exactly
+the unclipped cells with out-of-range rows dropped (39,570/39,570 columns),
+rows span exactly [-7, 24], and cell content is a pure function of the row.
 
-**Result: EXACT.** 2,486 poses, 16,700 run-edges, 24,587 dispatches, 115,089
-cells, **0 wrong cells, 0 stray writes**.
+**Result: EXACT**, and coverage rises **80.13% -> 95.55%** of run-edges.
+19,912 run-edges, 31,806 dispatches, 160,717 cells played (20.1% absorbed
+off-screen), **0 wrong cells, 0 stray writes** — including a check that nothing
+escapes the buffer at all.
+
+**Cost:** zero cycles, zero table growth, zero dispatch change. **+560 bytes of
+WRAM** (1,280-byte buffer instead of 720).
 
 **What we learned:**
-1. **The mechanism works.** Dispatch retrieves the right program and playback
-   reproduces the renderer's edge cells exactly.
-2. **Dispatch costs 1,038.8 T, not 381 T** — 2.73x. The 381 T priced a fragment
-   that did not include the family/length dimension, the body-pointer
-   indirection, the cell-count lookup, or forming the program address. The
-   kernel measured is also untuned.
-3. **The playback composition was sound**: 68.4 T/cell measured vs 71.1 T.
-4. **Two cost terms were missing from every A46 budget**: chunk advance
-   (243.7 T/chunk) and per-run-edge setup (167.0 T/run-edge).
-5. **Two real defects in the published dispatch key**, neither catchable by the
-   published verifier — it hashed only tile sequences, with no successor
-   column, no partial chunks, and multi-row columns truncated at four rows.
-6. **19.87% of run-edges cannot be baked at all** — programs carry no clipping.
-7. `ld sp,hl` is implemented and tested. Also recorded: the assembler accepts
-   `exx`, `ex af,af'` and `daa`, which the interpreter cannot execute; they
-   raise rather than mis-execute, but `z80core.py`'s docstring claims an
-   instruction cannot be assembled into a form the interpreter will not run.
+1. The materializer drops **96,848 -> 83,627 T/pose**, and the whole update
+   **142,894 -> 129,673 T (25.1 -> 27.6 updates/s)**.
+2. The remaining **4.45% is a genuine boundary**, not laziness: including the
+   inverse-depth-clamped run-edges produces a real dispatch conflict, because
+   saturation pins the heights and breaks the linear model the key assumes.
+   They need the existing edge path as a fallback.
+3. A bug the checks caught: the baker used a negative sentinel for "first
+   destination not yet set", which the guard band made a legitimate value.
+   Every chunk then re-set the cursor. It showed up as a uniform +30-byte
+   offset in the written cells.
 
 ## Next experiment — ONE rung only
 
-**Implement clipping in the compiled-program path, and recover the 19.87%.**
+**Tune the rank dispatcher.** It is now the dominant cost and the only large
+lever left: **59.9% of the compiled path** at 1,041.7 T per dispatch, entirely
+untuned. Two concrete wins are already visible in the kernel:
 
-This is now the highest-value rung and it is well understood. Clipping is a pure
-row-range filter over an unchanged program body (39,570/39,570 columns verified),
-so the work is: compute a leading skip count and a shortened play count at
-dispatch — from the absolute row the destination cursor already holds — then play
-the same baked program. Verify against the renderer's `draw_edge` on the
-currently-excluded run-edges, and cycle-count the addition.
+1. The descriptor lookup repeats per chunk although **family is constant per
+   run-edge**, and the played-column count is C for every chunk but the last.
+   Hoist it to per-run-edge setup.
+2. The chunk advance (245.1 T) computes `iq += want*step` with a `djnz` add
+   loop. For the common case `want == C` that is a constant multiple.
 
-Success would take the architecture from 80.13% coverage to full coverage, and
-from ~25 updates/s toward the ~29 /s clipping-free bound.
+Halving dispatch would put the whole update near 123k T (~29 /s), within
+touching distance of the 30 Hz aspiration. Nothing depends on it — the
+architecture already clears the solid target.
 
-Two follow-ons, in order, neither a gate on the above:
-
-1. **Tune the rank dispatcher.** It measured 1,038.8 T untuned: the descriptor
-   lookup repeats per chunk although family is constant per run-edge, and the
-   chunk advance uses a `djnz` add loop. This is upside on an already-successful
-   result, not a condition for continuing.
-2. **Integrate a complete materializer** — column walk, interior fill, borders —
-   and compare a whole 20x18 name table, which PROGJOIN did not do.
+Then, in order: price the 4.45% inverse-depth fallback, and integrate a
+complete materializer (column walk, interior fill, borders) with a whole 20x18
+name-table comparison, which PROGJOIN still has not done.
 
 ## Invalidated / superseded — must not return
 
@@ -253,7 +253,8 @@ Two follow-ons, in order, neither a gate on the above:
 | **1.07 MB** A46 ROM | corrected to 3.00 MB at L=4 / 2.91 MB at C=6 |
 | **65,785 T** A46 materializer | superseded by PROGJOIN: **96,848 T** measured+fallback, **77,269 T** clipping-free bound |
 | **381 T** rank dispatch | measured at **1,038.8 T** for a dispatch that returns a playable program |
-| **~32 updates/s** for A46 | superseded: **25.1 /s** measured+fallback, **29.0 /s** bound. Clears the 20 Hz solid target; misses the 30 Hz aspiration. |
+| **~32 updates/s** for A46 | superseded twice: 25.1 /s excluding off-screen edges, then **27.6 /s** with the guard band. Clears the 20 Hz solid target with 28% margin. |
+| **"A46 covers only 80% of run-edges"** | superseded by the guard band: **95.55%** |
 | **"37.9"** | video frames per logical **AI** tick, GOAP demo. Real rate 1.58 ticks/s |
 | **"60 fps"** | ffmpeg capture rate / NTSC display cadence |
 

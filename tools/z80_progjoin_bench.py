@@ -52,8 +52,19 @@ class Overflow(Exception):
 
 
 CODE = 0x0000
-MAP = 0xC200                 # 20x18 words, row*40 + col*2  (as in the benches)
 ROWS, COLS = 18, 20
+# GUARD BAND. Compiled programs are position-independent and so cannot carry
+# the row clamp draw_edge applies at the viewport edges. Measured over the
+# corpus, unclamped rows span exactly [-7, 24] and the renderer's clipped output
+# is EXACTLY the unclipped cells with out-of-range rows dropped (39,570/39,570
+# columns). So instead of clipping in the loop, the name table sits inside a
+# taller buffer and off-screen cells land in scratch rows nobody reads.
+# Cost: zero cycles, zero table growth, +560 bytes of WRAM.
+GUARD = 7
+BUF_ROWS = ROWS + 2 * GUARD          # 32 rows
+MAP = 0xC200                         # buffer base
+WIN = MAP + GUARD * COLS * 2         # the real 20x18 name table
+BUF_BYTES = BUF_ROWS * COLS * 2
 
 # scratch
 V_FAM, V_FAMC, V_MASK, V_SLOT = 0xBF00, 0xBF01, 0xBF02, 0xBF03
@@ -272,10 +283,14 @@ def run_window(acc, quiet=False):
         (labels["chunk_done"], CODE + len(code), "chunk advance"),
     ]
 
+    WP = labels["wp_loop"]
+
     class Traced(Z80):
         def _step(self):
             t0 = self.t
             pc = self.pc
+            if pc == WP:
+                self.played += 1
             Z80._step(self)
             d = self.t - t0
             for lo, hi, nm in REGIONS:
@@ -294,7 +309,7 @@ def run_window(acc, quiet=False):
     cases = [l.split() for l in open(BUILD / "progjoin_cases.txt") if l.strip()]
 
     total_t = 0
-    n_edges = n_chunks = n_cells = 0
+    n_edges = n_chunks = n_cells = n_played = 0
     wrong_cells = wrong_edges = stray = 0
     rows = []
     region_tot = {}
@@ -313,8 +328,9 @@ def run_window(acc, quiet=False):
         i += 2 * ncell
 
         mem = bytearray(img)
-        # a sentinel background so any stray write is visible
-        for a in range(MAP, MAP + ROWS * COLS * 2):
+        # sentinel the whole buffer AND a margin either side, so a write that
+        # escapes the guard band is caught rather than silently tolerated
+        for a in range(MAP - 256, MAP + BUF_BYTES + 256):
             mem[a] = 0x5A
         mem[V_FAM] = fam
         mem[V_STEP] = step & 0xFF
@@ -322,30 +338,54 @@ def run_window(acc, quiet=False):
         mem[V_IQ] = iq0 & 0xFF
         mem[V_IQ + 1] = (iq0 >> 8) & 0xFF
         mem[V_NREM] = ncol
-        cur = MAP + first_dest
+        cur = WIN + first_dest
         mem[V_CUR] = cur & 0xFF
         mem[V_CUR + 1] = (cur >> 8) & 0xFF
 
         cpu = Traced(mem)
         cpu.region = {}
+        cpu.played = 0
         cpu.run(CODE)
         total_t += cpu.t
         n_edges += 1
         n_chunks += ncs
         n_cells += ncell
+        n_played += cpu.played
 
-        want_map = {MAP + d: w for d, w in expect}
+
+        want_map = {WIN + d: w for d, w in expect}
         bad = 0
         for a, w in want_map.items():
             got = cpu.m[a] | (cpu.m[a + 1] << 8)
             if got != w:
                 bad += 1
+        # strays: anything written inside the REAL 20x18 window that the
+        # renderer did not write. Guard rows are scratch and ignored.
         st = 0
-        for a in range(MAP, MAP + ROWS * COLS * 2, 2):
+        for a in range(WIN, WIN + ROWS * COLS * 2, 2):
             if a in want_map:
                 continue
             if cpu.m[a] != 0x5A or cpu.m[a + 1] != 0x5A:
                 st += 1
+        esc = 0
+        for a in range(MAP - 256, MAP):
+            if cpu.m[a] != 0x5A:
+                esc += 1
+        for a in range(MAP + BUF_BYTES, MAP + BUF_BYTES + 256):
+            if cpu.m[a] != 0x5A:
+                esc += 1
+        acc["escape"] = acc.get("escape", 0) + esc
+        st += esc
+        if (bad or st) and acc.get("dumped", 0) < 1:
+            acc["dumped"] = 1
+            print(f"  FIRST FAULT: fam={fam} step={step} iq0={iq0} c0={c0} "
+                  f"ncol={ncol} ncs={ncs} wants={wants} escape={esc}")
+            print(f"    expected {ncell} cells: {expect[:8]}")
+            got = []
+            for a in range(WIN, WIN + ROWS * COLS * 2, 2):
+                if cpu.m[a] != 0x5A or cpu.m[a + 1] != 0x5A:
+                    got.append(((a - WIN), cpu.m[a] | (cpu.m[a + 1] << 8)))
+            print(f"    wrote    {len(got)} cells: {got[:8]}")
         wrong_cells += bad
         stray += st
         if bad or st:
@@ -358,6 +398,7 @@ def run_window(acc, quiet=False):
     acc["edges"] = acc.get("edges", 0) + n_edges
     acc["chunks"] = acc.get("chunks", 0) + n_chunks
     acc["cells"] = acc.get("cells", 0) + n_cells
+    acc["played"] = acc.get("played", 0) + n_played
     acc["wrong_cells"] = acc.get("wrong_cells", 0) + wrong_cells
     acc["stray"] = acc.get("stray", 0) + stray
     acc["wrong_edges"] = acc.get("wrong_edges", 0) + wrong_edges
@@ -396,7 +437,7 @@ def main():
             f = line.split()
             if "fully bakeable" in line:
                 stats["ok"] = int(f[2])
-            elif "row offscreen" in line:
+            elif "GUARD-BAND ABSORBED" in line:
                 stats["off"] = int(f[3])
             elif "invdepth clamp" in line:
                 stats["clamp"] = int(f[3])
@@ -420,6 +461,7 @@ def main():
 
     total_t = acc["t"]
     n_edges, n_chunks, n_cells = acc["edges"], acc["chunks"], acc["cells"]
+    n_played = acc.get("played", 0)
     print("=== PROGJOIN - dispatch + ld sp,hl + playback, on corpus inputs ===")
     print(f"kernel {acc['code']} bytes, C = {acc['C']} columns per program")
     print(f"{nwin} windows x {wpose} poses = {nwin*wpose} poses"
@@ -432,12 +474,15 @@ def main():
     be = bake_stats.get("edges", 0)
     print(f"run-edges in corpus       {be:,}")
     print(f"  bakeable / executed     {n_edges:,}  ({100.0*n_edges/max(be,1):.2f}%)")
-    print(f"  excluded, offscreen     {bake_stats.get('off',0):,}"
+    print(f"  off-screen, absorbed    {bake_stats.get('off',0):,}"
           f"  ({100.0*bake_stats.get('off',0)/max(be,1):.2f}%)"
-          f"   <- programs carry no clipping")
-    print(f"  excluded, invd clamp    {bake_stats.get('clamp',0):,}")
+          f"   <- by the guard band, at zero cycles")
+    print(f"  excluded, invd clamp    {bake_stats.get('clamp',0):,}"
+          f"  ({100.0*bake_stats.get('clamp',0)/max(be,1):.2f}%)")
     print(f"dispatches                {n_chunks:,}")
-    print(f"cells played              {n_cells:,}")
+    print(f"cells landing on screen    {n_cells:,}")
+    print(f"cells played (incl. guard) {n_played:,}"
+          f"  ({100.0*(n_played-n_cells)/max(n_played,1):.1f}% absorbed off-screen)")
 
     print("\nCORRECTNESS, against the renderer's own draw_edge")
     print(f"  wrong cells             {acc['wrong_cells']}")
@@ -459,7 +504,7 @@ def main():
         if nm == "dispatch":
             per = f"{v / max(n_chunks,1):8.1f} T per dispatch"
         elif nm == "playback":
-            per = f"{v / max(n_cells,1):8.1f} T per cell"
+            per = f"{v / max(n_played,1):8.1f} T per cell played"
         elif nm == "chunk advance":
             per = f"{v / max(n_chunks,1):8.1f} T per chunk"
         else:
@@ -467,7 +512,7 @@ def main():
         print(f"    {nm:16} {v:10,} T  {100.0*v/total_t:5.1f}%   {per}")
 
     disp = reg.get("dispatch", 0) / max(n_chunks, 1)
-    play = reg.get("playback", 0) / max(n_cells, 1)
+    play = reg.get("playback", 0) / max(n_played, 1)
     adv = reg.get("chunk advance", 0) / max(n_chunks, 1)
     setup = reg.get("per-edge setup", 0) / max(n_edges, 1)
     print("\n  AGAINST THE COMPOSED FIGURES")

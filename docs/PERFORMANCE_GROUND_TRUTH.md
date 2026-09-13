@@ -701,6 +701,75 @@ The forensic answers in §8 change as follows, and only these:
 
 ---
 
+## 8b. GUARDBAND — clipping solved at zero cycles, coverage 80% -> 95.55%
+
+**Experiment:** GUARDBAND, `make progjoin`. **What it does:** removes the
+compiled-edge-program architecture's inability to clip at the viewport edges,
+without adding a single cycle to the playback loop.
+
+### The idea
+
+Three measurements over the whole corpus made this possible:
+
+1. The renderer's clipped output is **exactly** the unclipped program's cells
+   with out-of-range rows dropped — **39,570 of 39,570 columns**. Cell content
+   never changes, because each tile is a pure function of its row.
+2. Unclamped rows span exactly **[-7, 24]** across the entire corpus, against a
+   viewport of rows [0, 18).
+3. So the clip needs no test at all: put the 20x18 name table inside a **32-row
+   buffer with 7 guard rows above and below**, and off-screen cells land in
+   scratch rows nobody reads.
+
+**Cost: zero cycles in the loop, zero table growth, zero dispatch change.**
+The only price is **+560 bytes of WRAM** (1,280-byte buffer instead of 720) and
+playing the off-screen cells — 20.1% of all cells played are absorbed.
+
+### Result
+
+| | before (exclude off-screen) | after (guard band) |
+| --- | ---: | ---: |
+| run-edges covered | 16,700 (80.13%) | **19,912 (95.55%)** |
+| dispatches | 24,587 | 31,806 |
+| cells landing on screen | 115,089 | 128,361 |
+| cells played | 115,089 | 160,717 (20.1% absorbed) |
+| **verdict vs the renderer's `draw_edge`** | EXACT | **EXACT** |
+| wrong cells / stray writes | 0 / 0 | **0 / 0** |
+
+Per-unit costs are unchanged, confirming the guard band is free: dispatch
+**1,041.7 T**, playback **68.2 T per cell played**, chunk advance 245.1 T,
+per-run-edge setup 167.0 T.
+
+### The remaining 4.45% is a real boundary
+
+The inverse-depth clamp (`a>>6` saturating at 255, i.e. a very close wall) is
+**not** absorbable. Tested directly: including those run-edges produces a
+genuine dispatch conflict on the full corpus (first at family 0, step 1376,
+base 2, rank 3). Saturation pins the heights, so two chunks sharing a key but
+differing in absolute H disagree on content. **They need the existing edge path
+as a fallback** — 4.45% of run-edges.
+
+### What this does to the figure
+
+| | materializer T/pose | whole update | implied rate |
+| --- | ---: | ---: | ---: |
+| composed claim (superseded) | 65,785 | 111,831 | 32.0 /s |
+| measured, exclude off-screen (§8a) | 96,848 | 142,894 | 25.1 /s |
+| **measured, guard band + 4.45% fallback** | **83,627** | **129,673** | **27.6 /s** |
+
+> **IMPLIED FROM COMPOSED COST — NOT MEASURED FPS.**
+
+**Against the 20 Hz solid target (178,977 T) this clears with 28% margin.**
+The 30 Hz aspiration (119,318 T) is now missed by only **8.7%**, down from 20%.
+
+On the 95.55% it covers, the architecture replaces **114,440 T/pose** of
+materializer work with **22,240 T/pose** — **5.1x cheaper**.
+
+**Dispatch is 59.9% of the compiled path and is still untuned.** That is the
+one large remaining lever: the descriptor lookup repeats per chunk although
+family is constant per run-edge, and the chunk advance uses a `djnz` add loop.
+
+---
+
 ## 9. INVALIDATED / SUPERSEDED — numbers that must not return
 
 | number | what it was | why it is void |
@@ -715,7 +784,8 @@ The forensic answers in §8 change as follows, and only these:
 | **1.07 MB A46 ROM** | A44 | Corrected by A45 to 3.00 MB at L=4; 2.91 MB at C=6 under the dispatch model. |
 | **65,785 T A46 materializer** | composed compiled-edge-program cost | Superseded by PROGJOIN (§8a): dispatch measured at 2.73x the assumed cost, two cost terms were missing entirely, and 19.87% of run-edges cannot be baked at all. Measured recomposition **96,848 T**; clipping-free bound **77,269 T**. |
 | **381 T rank dispatch** | assumed dispatch cost | Measured at **1,038.8 T** for a dispatch that actually returns a playable program (§8a). |
-| **A46 reaches ~32 updates/s** | composed whole update | Superseded: **25.1 /s** measured+fallback, **29.0 /s** clipping-free bound. Does not reach the 30 Hz gate. |
+| **A46 reaches ~32 updates/s** | composed whole update | Superseded twice: 25.1 /s excluding off-screen edges (§8a), then **27.6 /s** with the guard band (§8b). Clears the 20 Hz solid target with 28% margin; misses the 30 Hz aspiration by 8.7%. |
+| **"A46 covers only 80% of run-edges"** | §8a | Superseded by the guard band: **95.55%**. Only the 4.45% inverse-depth-clamped remainder needs a fallback. |
 | **"37.9"** | GOAP AI demo | Video frames per logical AI tick, not a rate and not the renderer. Real rate: 1.58 world ticks/s. |
 | **"60 fps"** | GOAP runtime verification | ffmpeg capture rate / NTSC display cadence. |
 
