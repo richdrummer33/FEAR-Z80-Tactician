@@ -233,6 +233,77 @@ cartridge is currently configured for 64 KiB, and **none of it exists in
 
 ---
 
+## 6a. Forensic breakdown of the 65,785 T compiled-program materializer
+
+This is the lowest-confidence figure in this document and the one most likely
+to be misquoted, so here is its complete derivation.
+
+```
+  65,785  =  175,827            measured EDGELUT3 materializer, whole
+            − 119,773           measured sub-total of the stages it replaces
+            +   4,609           playback, composed from measured pieces
+            +   5,121           dispatch, composed from an UNVERIFIED kernel
+```
+
+| term | value | what produced it |
+| --- | ---: | --- |
+| baseline | 175,827 | MEASURED Z80 KERNEL. The shipped 1,225-byte EDGELUT3 materializer run over 125 poses on `tools/z80core.py`, re-verified 125/125 against the pose oracle in the same pass. |
+| stages removed | 119,773 | MEASURED. Sum of five label-attributed stages of that same run: edge setup 41,424, endpoint geometry 28,163, row extents 25,357, edge row walk 13,279, edge tile select 11,550. |
+| playback | 4,609 | COMPOSED: 64.8 measured edge cells/pose x 71.125 T/cell, where 71.125 = 65.0 (measured loop body) + 43.0 (measured per-chain setup) / 7.02, and 7.02 = 6 columns x a 1.17 cells-per-non-empty-column ratio derived from the rows-per-`draw_edge` histogram. |
+| dispatch | 5,121 | COMPOSED: 13.44 dispatches/pose (host arithmetic over the pose-oracle run lengths) x 381 T. |
+
+### Exactly what executable code ran
+
+**Everything ran on `tools/z80core.py`, a cycle-accurate Z80 interpreter
+written in Python and part of this repository. Nothing ran on a Game Gear, an
+emulator, or a real Z80.**
+
+**1. The playback loop**, 20 bytes, in `tools/z80_edge_prog_bench.py`:
+`pop de / ld (hl),e / inc hl / ld (hl),d / pop bc / add hl,bc / dec a / jp nz`.
+- *Input*: a 4-byte-per-cell stream. **That stream was captured from the
+  shipped EDGELUT3 kernel's own stores during a run over the pose oracle** —
+  it is the renderer's output replayed, NOT data read from a baked table.
+- *Output*: the 20x18 name table, compared cell by cell against the captured
+  writes applied in order. **EXACT on every run-edge tested.**
+- *Loop body and setup* were separated by running synthetic programs of length
+  2, 4, 8 and 200 and taking the slope: 65.0 T/cell body, 43 T setup.
+
+**2. The rank dispatch**, 82 bytes, measured at 381 T. **Three defects in this
+measurement, all mine:**
+- *Its output was never checked.* The routine writes a program pointer to
+  memory and the harness never reads it back. **381 T is the timing of a
+  routine that was never shown to compute the right answer.**
+- *Its inputs were random*, not corpus data: random thresholds, a random
+  accumulator, a random step.
+- *It was never committed.* It ran from a scratch file outside the repository.
+
+**3. The join between them has never existed.** The playback loop sets its
+program address with a compile-time constant (`ld sp,0x8000`). The real
+architecture must take that address from the dispatch, which needs `ld sp,hl`
+— an instruction `z80core.py` does not implement. **The dispatch-to-playback
+hand-off has never been assembled, let alone measured.**
+
+### What "never generated" means, precisely
+
+The 2.91 MB is **a count multiplied by a bytes-per-entry constant, not a
+measurement of emitted bytes.**
+
+- `tools/edge_program_bake.c` computes each program into a small stack array,
+  hashes it into a set, and **discards it**. It never holds a table and never
+  writes a file. The body figure is `distinct programs x L x bytes/entry`.
+- `tools/edge_dispatch_verify.c` does the same for the dispatch: it counts
+  reachable `(family, step, base, rank)` entries and never materialises them.
+  2.58 MB is `1,350,306 x 2`.
+- Neither emits a `.inc`, `.bin` or `.s`. Nothing was assembled. Nothing was
+  linked. `src/` contains no A46 artefact of any kind.
+
+So: the contents were generated **transiently, one program at a time, purely to
+be counted**, and then thrown away. Not emitted, not linked, and — because the
+playback measurement fed on captured renderer output instead — never even
+consumed by the kernel that was timed.
+
+---
+
 ## 7. Standing rules
 
 1. The **normal** column-solve path is the depth-plane solve (99.10%). The
