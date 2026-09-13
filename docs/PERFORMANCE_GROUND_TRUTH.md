@@ -173,23 +173,55 @@ conclusion.** The renderer was never close to frame rate in these budgets.
 | column materializer, border-hoist version | 169,548 |
 | **sum** | **211,308** |
 
-### Not in that number at all
+### VRAM transfer — now measured, and it is small
 
-- **VRAM transfer.** The materializer writes a name table in RAM. Moving it to
-  video memory is a separate cost and appears in **no** budget on this branch.
+This was the one pipeline cost that had never appeared in any budget, and it
+was worth checking before trusting any target. `make vram-upload-census`.
+
+The shipped uploader (`src/tilesector_polar_ntupload_raw_gg.s`) walks 18 rows
+and, for each row whose cells CHANGED since the previous update, sets a VDP
+address and streams the changed interval with `otir`. Its cost therefore
+depends on camera motion, not on a single pose. Priced from its own
+instruction sequence with documented Z80 timings — straight-line code with
+measured iteration counts.
+
+| camera motion | changed cells | dirty rows | bytes streamed | **upload cost** |
+| --- | ---: | ---: | ---: | ---: |
+| pure yaw, 1 unit per update | 29.4 of 360 | 9.3 of 18 | 85.5 | **7,995 T** |
+| forward walk, 4 q4 per update | 19.2 of 360 | 6.2 of 18 | 52.9 | **5,892 T** |
+| worst case observed | — | 18 | — | 23,587 T |
+| a full 720-byte table | — | 18 | 720 | 25,183 T |
+| floor, nothing changed | — | 0 | 0 | 2,035 T |
+
+**About 6,000-8,000 T/update, which is 3-4% of the pipeline. It does not change
+which target is reachable.** That is the useful result: the gap was flagged as
+potentially decisive and it is not.
+
+Two caveats. This is CPU cycles only — VDP wait states are not modelled, and
+`otir` at 21 T/byte is faster than the VDP accepts outside VBlank, so a real
+machine either runs this inside VBlank or pays more. And the per-update motion
+step assumed here is small; a renderer running at 17 updates/s sees roughly
+3.5 display frames of camera movement per update, so the real dirty area is
+larger than the pure-yaw row above.
+
+### Still not in any number
+
 - Game logic, input handling, VBlank service, audio.
 - Any integration overhead between stages.
-
-So 211,308 T is a **floor for the render pipeline alone**, not a frame cost.
+- VDP wait states, as above.
 
 ### Implied rate
 
 **IMPLIED FROM COMPOSED COST, NOT MEASURED FPS:**
-3,579,545 / 211,308 = **16.9 renderer updates per second**, before VRAM
-transfer and before any game logic.
 
-Against the project gates: **20 Hz needs 178,977 T. We are 18% over the solid
-target and 77% over the 30 Hz aspiration.**
+| | T/update | implied updates/s |
+| --- | ---: | ---: |
+| six measured kernels | 211,308 | 16.94 |
+| **plus the measured upload, pure yaw** | **219,303** | **16.32** |
+| plus the upload, worst case observed | 234,895 | 15.24 |
+
+Against the project gates: **20 Hz needs 178,977 T. We are 23% over the solid
+target and 84% over the 30 Hz aspiration**, before any game logic at all.
 
 ### The unbuilt architecture
 

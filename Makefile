@@ -237,6 +237,11 @@ target-solve-census: build
 	$(CC) $(CFLAGS) -Isrc -Ibuild/generated/polar_depthplane -Ibuild/gbdk tools/target_solve_census.c src/tilesector_polar_motion.c -o build/target_solve_census
 	./build/target_solve_census 16
 
+vram-upload-census: build
+	$(CC) $(CFLAGS) -Isrc tools/vram_upload_census.c src/tilesector_polar_motion.c -o build/vram_upload_census
+	./build/vram_upload_census 0
+	./build/vram_upload_census 1
+
 state-census: build
 	python3 tools/state_census.py
 
