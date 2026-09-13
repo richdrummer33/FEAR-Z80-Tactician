@@ -226,6 +226,13 @@ edge-hoist: edge-lut
 edge-walk: edge-lut
 	python3 tools/z80_edge_walk_bench.py 60
 
+state-census: build
+	python3 tools/state_census.py
+
+colsolve-census: $(COLUMN_SOLVE_PROBE_BIN)
+	./$(COLUMN_SOLVE_PROBE_BIN) 16 build/column_solve_oracle.txt 1
+	python3 tools/colsolve_census.py 1500
+
 border-hoist: edge-lut
 	python3 tools/z80_border_hoist_bench.py 300
 

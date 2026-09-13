@@ -630,6 +630,152 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A48. STATECENSUS and COLSOLVE_CENSUS_A. Two stop rules fired; the
+### column-solve split is measured and the multiply is ALREADY the fast one.
+
+`make state-census`, `make colsolve-census`. Tagged
+`a46-borderhoist-baseline-pre-colsolve` at `108333a` on a clean tree first.
+
+### TWO STOP RULES FIRED — read these before quoting any A43-A47 number
+
+**1. A46 is not in the build, so its ROM usage is 0 bytes, not ~2.91 MB.**
+A43-A46 are host-side census in `tools/` plus throwaway Z80 probes. Nothing is
+composed into `src/`, no dispatch table has ever been generated or linked, and
+the cartridge is configured `-Wm-yo4` — **64 KiB**, with the committed ROMs at
+65,536 bytes. The 2.58 MB dispatch / 2.91 MB total are projections. So is the
+62,076 T materializer: it is a composition of measured piece costs, not a build
+measurement. BORDERHOIST and HOIST_A are likewise bench variants, exact and
+measured, but not shipped into `src/`.
+
+**A 4 MB cartridge is an assumption this repository does not currently make.**
+Against the configured 64 KiB, every fusion table discussed below is
+unaffordable by one to two orders of magnitude. That is a decision to take
+explicitly, not to inherit.
+
+**2. The edge / "chemtrail" anomaly cannot be reproduced, because no such
+report exists here.** Searched `docs/`, `CHANGELOG.md`, the full git log and
+this session: there is no streak/trail/smear artefact recorded anywhere, and
+nothing in A38-A47 changed shipped renderer output — every rung was a bench
+variant verified against the pose oracle. The two genuinely open correctness
+debts are **C1** (Polar vs TileSector oracle divergence, traced upstream) and
+**C4** (seven corners have no accurate baked leaf); neither is described as a
+motion streak. **No fix was invented and no regression test was fabricated for
+a defect that has not been demonstrated.** A reproduction — pose, motion
+sequence, or capture — would change that immediately.
+
+### STATECENSUS, from the sources
+
+The GG toolchain is absent here, so no linker map exists and anything needing a
+link is UNKNOWN rather than estimated.
+
+| mutable WRAM | bytes |
+| --- | ---: |
+| `g_runs[20]` (PolarRun, 17 B each) | 340 |
+| `g_run_order[20]` | 20 |
+| `g_depth_nf_q7[7]`, `g_depth_stepfac_q4[7]` | 14 |
+| four small caches (`g_proj_cached_gi`, `g_proj_fallback_mask`, `g_corner_bearing_valid`, `g_depth_yaw_cache`) | 7 |
+| **GAME GEAR persistent WRAM** | **381** |
+| `g_touched_list[360]`, `g_touched_bits[45]`, `g_touched_count`, `g_map_ready` | 768 — **`#ifndef __SDCC`, host oracle only** |
+| `g_proj_cell[TSPF_PROJ_MAX_CELL_BYTES]` | generated per build, UNKNOWN |
+
+**The 768 bytes of touched-cell tracking must not be charged to the
+cartridge.** Neither must the A29/A31 retained column records: **they are not
+present in this build**, so the 120-byte figure is not chargeable. The 720-byte
+name-table mirror exists only in host builds; on GG the map lives in VRAM.
+
+| ROM | bytes |
+| --- | ---: |
+| generated tables, 24 arrays (largest: 2,490 B recipe stream) | **8,884** |
+| A46 tables | **0** |
+| cartridge image | 65,536 |
+
+### COLSOLVE_CENSUS_A — the split, measured
+
+The existing A14 kernel is run **unmodified** and every executed T attributed
+to its nearest preceding label, so the number being split is the one A14
+verified and there is no instrumentation overhead to subtract. 1,500 rows
+stratified from 1,071,800 C-verified spans, population-weighted, **0
+mismatches**.
+
+**Column-solve still measures 26,891 T/update** against A14's 26,845 — a 0.2%
+sample difference. That stop rule does not fire.
+
+| component | calls/span | T/span | T/update | % colsolve | % update |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **multiply primitive** | 6.75 | **1,676.0** | **7,207** | **26.8%** | 3.23% |
+| `inv_at_invd` | 2.00 | 1,116.2 | 4,800 | 17.8% | 2.15% |
+| **shift primitives** | 19.56 | **1,053.7** | **4,531** | **16.8%** | 2.03% |
+| `angle_x` / clip | 2.00 | 556.0 | 2,391 | 8.9% | 1.07% |
+| iq / step ramp | 1.00 | 510.9 | 2,197 | 8.2% | 0.98% |
+| other / control | — | 508.2 | 2,185 | 8.1% | 0.98% |
+| `wall_d_q4` | 1.00 | 451.1 | 1,940 | 7.2% | 0.87% |
+| `inv_for_dq4` | 1.00 | 377.6 | 1,624 | 6.0% | 0.73% |
+| **TOTAL** | | **6,253.7** | **26,891** | 100% | 12.04% |
+
+**A classification trap, recorded.** The first pass put `um_dok` — the
+multiply's own inner branch — and every shift helper into "other / control",
+which then read as **58.3%** and hid what the stage does. Helpers must be
+attributed to the primitive that owns them.
+
+**Multiply plus shifts is 43.6% of column-solve — 11,738 T/update.** The stage
+is dominated by generic arithmetic, not by geometry.
+
+**And the multiply is ALREADY the fast one.** `umul` is A13's quarter-square
+byte-plane primitive, not a shift-add loop, at ~248 T per call including call
+overhead against A13's 193 T measured in isolation. There is no cheap
+primitive swap available here.
+
+### How much solve precision survives into A46
+
+Over all 1,071,800 spans:
+
+| output | distinct | role |
+| --- | ---: | --- |
+| `invd` | 226 | intermediate |
+| `inv0` / `inv1` | 255 / 256 | intermediate |
+| `x0` / `x1` | 47 / 38 | intermediate |
+| `c0` / `c1` | 20 / 20 | **consumed** (column range) |
+| `iq` | 255 | **consumed**, via phase and cursor |
+| `step` | 1,337 | **consumed** (class key) |
+
+| A46 keys actually reached | |
+| --- | ---: |
+| distinct `(step, phase mod 1024)` | **5,576** |
+| distinct `(q, r)` step classes | 1,337 |
+| distinct phase values | **16** |
+
+**The answer to the question is yes, emphatically.** 26,891 T/update produces
+outputs that collapse into **5,576** distinct A46 keys, and `iq`'s 255 distinct
+values collapse to **16** phases — a 15.9x collapse — because in this path
+`iq = inv0 << 6`, so `(iq+32) mod 1024` can only take 16 values.
+
+**One caveat that must travel with that number.** This oracle is the host build,
+which takes the `inv_at_invd` fallback path. The GG build enables
+`TSPF_SCREEN_DEPTH_PLANE`, where `iq = invd*nf >> 1` and the phase distribution
+is different and wider. **The 16 is real for the path measured and must be
+re-measured for the shipped path** before any fusion is designed on it.
+
+### Recommendation: ONE rung, and it is not a rewrite
+
+**Replace `inv_at_invd`'s two multiplies with A34's dense table.**
+
+- It owns **4 of the 6.75 multiplies per span** and 4,800 T of its own, so the
+  addressable cost is roughly **8,800 T/update**.
+- A34 measured the dense form at **47,105 bytes**, about 27 KB compacted.
+- Expected saving is in the region of **5,000-6,000 T/update**, which alone
+  exceeds the entire remaining materializer 3x gap.
+- It is exact: a table of a pure function, generated by calling the shipped
+  code, exactly as EDGELUT was.
+
+**But its ROM cost is 42-72% of the configured 64 KiB cartridge.** That is the
+stop-rule condition, and it is a decision rather than a measurement: this rung
+is trivially affordable on a 4 MB cart and unaffordable on the one currently
+configured. **Settle the cartridge size before building it.**
+
+Do NOT start a speculative column-solve rewrite. The census says the stage is
+arithmetic-bound on an already-optimal primitive, so the only real lever is
+removing multiplies by tabulation, and that lever is gated on ROM budget.
+
 ### A47. BORDERHOIST — built, exact, −2.1%, and it SETTLES Priority 2.
 ### The border path is now 0.62%. Do not unify it.
 
