@@ -630,6 +630,114 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A45. CORRECTION to A44, and the interior identity is VERIFIED.
+### ROM is 3.00 MB at L=4, not 1.07 MB, and dispatch is the new binding cost.
+
+`make edge-program`. Two things in A44 were wrong and one open assumption is
+now settled. The correction comes first because A44's headline numbers are
+quoted elsewhere.
+
+### A44's exactness check was invalid
+
+A44 reported the phase model "100.0000% exact" over 871,398 columns. **That
+check computed the expected tile with the same formula the model used**, so it
+verified self-consistency and very little else. Reading `draw_run` properly
+shows exactly what it missed: line 479 is
+`if(profile==TSP_PROFILE_FULL){tl--;tr--;}`, so **FULL's top edge is `71-h`,
+not `72-h`**, and the model never saw it.
+
+`tools/edge_family_verify.c` recomputes the expected value with the RENDERER's
+own per-column code, profile branches included. The real family set is **five,
+not two**, with three distinct phase periods:
+
+| endpoint family | used by | period | columns | exact |
+| --- | --- | ---: | ---: | :-: |
+| `71 - h` | FULL top | 1024 | 351,901 | **yes** |
+| `72 - h` | LINTEL/RAISED top | 1024 | 449,372 | **yes** |
+| `72 + h` | FULL bottom, RISER bottom | 1024 | 422,026 | **yes** |
+| `72 - (h>>1)` | LINTEL bottom | 2048 | 138,061 | **yes** |
+| `72 + h - (h>>2)` | RAISED bottom, RISER top | 4096 | 381,436 | **yes** |
+
+**All five are exact against the renderer** over 1,742,796 endpoint checks.
+The model is right; A44's *verification* of it was not, and its family count
+was not.
+
+FULL's top is **not** simply LINTEL/RAISED's ring rotated by one pixel — tested
+and it fails, so the two need separate rings.
+
+### The interior identity holds — stages 4 and 5 really do disappear
+
+This was A44's open assumption and it is now measured. `draw_full` takes
+`row_floor(max(tl,tr))+1` and `row_floor(min(bl,br))-1`, and those are exactly
+the top-edge cursor's last row and the bottom-edge cursor's first row:
+
+| identity | result |
+| --- | ---: |
+| interior FIRST row == top-edge last row + 1 | **871,398 / 871,398 exact** |
+| interior LAST row == bottom-edge first row − 1 | **871,398 / 871,398 exact** |
+
+So a pair of edge programs supplies the interior bounds for free, and stage 4
+(endpoint geometry, 28,163 T) and stage 5 (row extents, 25,357 T) are genuinely
+removable. **That part of A44's optimism was justified.**
+
+### Corrected ROM — A44 was 5x low
+
+A44 used two families and per-COLUMN programs. About 14% of columns emit more
+than one row, so a program is a sequence of **cells**, not columns. With five
+families, correct periods and cell-space programs:
+
+| L (cells) | programs | intervals | body 1 B/e | dispatch | **total** |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| **4** | 5,343 | 781,642 | 20.9K | 3,053.3K | **3.00 MB** |
+| 8 | 33,092 | 1,357,749 | 258.5K | 5,303.7K | 5.43 MB |
+| 12 | 100,721 | 1,920,127 | 1,180.3K | 7,500.5K | 8.48 MB |
+| 20 | 423,278 | 3,031,245 | 8,267.1K | 11,840.8K | 19.64 MB |
+
+**A44's "1.07 MB at L=8" is withdrawn. The correct figure is 5.43 MB, and only
+L=4 at 3.00 MB fits a 4 MB cart.**
+
+**Dispatch is 97% of it.** The bodies are 21 KB at L=4; the phase-interval
+dispatch is 3.0 MB. The interval count is the information content of "which
+program does this starting phase select", and it does not compress by
+re-parameterising: 38 intervals per (family, q, r) is about 8 pixel-bases times
+5 threshold ranks either way.
+
+### And dispatch is now the binding CPU cost too
+
+An 80-byte Z80 binary search over 38 intervals measures **1,593 T per
+dispatch** — six iterations of 16-bit compare and address arithmetic. At L=4 a
+pose needs 64.8 edge cells / 4 = **16.2 dispatches**.
+
+| | L=4 (3.00 MB) | L=8 (5.43 MB) |
+| --- | ---: | ---: |
+| removed: edge path + geometry + extents | −119,772 | −119,772 |
+| added: playback at 71.7 T/cell | +4,646 | +4,646 |
+| added: dispatch at 1,593 T | +25,807 | +12,903 |
+| **materializer 175,827 ->** | **86,508 (−50.8%)** | **73,604 (−58.1%)** |
+| 3x sequence line | 58,600 | 58,600 |
+
+So the honest position is **−51% at 3.00 MB**, not the 3x A44 implied. The
+playback kernel was never the problem; the dispatch is.
+
+### Verdict and the one named next step
+
+Still the best result in this branch: exact, fits a 4 MB cart, and halves the
+materializer. Not 3x.
+
+**The specific fix is a rank-based dispatch.** The interval breakpoints are not
+arbitrary: they sit where `phase + k*adv` crosses a pixel quantum, i.e. at
+`phase = -k*adv (mod 128)`, so the interval index decomposes as
+`(phase >> 7) * (L+1) + rank`, where the rank is found by at most L compares
+against a per-(family, q, r) threshold list. At L=4 that is **4 compares
+instead of a 6-step binary search**, and the table becomes 4 thresholds plus 40
+program ids per combo — about **1.7 MB instead of 3.0 MB, and roughly 200 T
+instead of 1,593 T**.
+
+Both numbers are predictions. If they hold, the materializer lands near
+**63,000 T** at 1.7 MB, which is 7% short of the 3x line. **The decomposition
+has not been verified exact and that is the next experiment**, not more kernel
+work.
+
 ### A44. EDGE_PROGRAM — finite horizons, exact, and it FITS. 1.07 MB and
 ### 71.7 T per edge row. Verdict: GREEN on ROM, 3.6% short on CPU.
 

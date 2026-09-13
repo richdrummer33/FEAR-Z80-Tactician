@@ -229,8 +229,8 @@ edge-walk: edge-lut
 edge-program: build
 	$(CC) $(CFLAGS) -Isrc tools/edge_program_bake.c src/tilesector_polar_motion.c -o build/edge_program_bake
 	./build/edge_program_bake
-	$(CC) $(CFLAGS) -Isrc tools/edge_program_verify.c src/tilesector_polar_motion.c -o build/edge_program_verify
-	./build/edge_program_verify 16
+	$(CC) $(CFLAGS) -Isrc tools/edge_family_verify.c src/tilesector_polar_motion.c -o build/edge_family_verify
+	./build/edge_family_verify 16
 	python3 tools/z80_edge_prog_bench.py 60
 
 edge-cycle: build

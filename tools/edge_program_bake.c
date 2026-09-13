@@ -62,6 +62,42 @@ static void set_free(Set *s) { free(s->k); s->k = 0; }
 /* tile code (7 bits: 16 offsets x 8 slopes) + local row advance (4 bits).
  * Position-independent and q-independent: the runtime adds q to the advance
  * and the destination cursor holds the absolute row. */
+#define NFAM 5
+static const int k_famperiod[NFAM] = { 1024, 1024, 1024, 2048, 4096 };
+static const char *k_famname[NFAM] = {
+    "71-h   FULL top", "72-h   LINTEL/RAISED top", "72+h   FULL/RISER bot",
+    "72-h>>1 LINTEL bot", "72+h-h>>2 RAISED bot/RISER top" };
+static int endpoint(int fam, int h) {
+    switch (fam) {
+    case 0: return TSPF_HORIZON - 1 - h;
+    case 1: return TSPF_HORIZON - h;
+    case 2: return TSPF_HORIZON + h;
+    case 3: return TSPF_HORIZON - (h >> 1);
+    default: return TSPF_HORIZON + h - (h >> 2);
+    }
+}
+
+/* One CELL of a program.  A column can emit more than one row - about 14% do -
+ * so `row` selects which row within the column, and the program advances its
+ * phase only at a column boundary.  Verified against the renderer in
+ * edge_family_verify. */
+static uint16_t cell_for(int fam, int phase, int r, int q, int row, int *nrows) {
+    int a = 8 * 1024 + phase, step = q * 1024 + r;
+    uint8_t invl = (uint8_t)clamp_u8i((int16_t)((int32_t)a >> 6), 255u);
+    uint8_t invr = (uint8_t)clamp_u8i((int16_t)((int32_t)(a + step) >> 6), 255u);
+    int hl = invl >> 1, hr = invr >> 1;
+    int16_t tl = (int16_t)endpoint(fam, hl), tr = (int16_t)endpoint(fam, hr);
+    int8_t slope = clamp_s8((int16_t)(tr - tl), -7, 7);
+    int8_t q0 = row_floor(tl < tr ? tl : tr);
+    int8_t q1 = row_floor(tl > tr ? tl : tr);
+    uint16_t tile;
+    *nrows = q1 - q0 + 1;
+    if (row > q1 - q0) row = q1 - q0;
+    tile = edge_entry(0u, (int16_t)(tl - (((int16_t)(q0 + row)) << 3)), slope, 0u);
+    return (uint16_t)(((tile - TSP_TILE_EDGE_BASE) & 0x7f)
+         | ((uint16_t)((((hl >> 3) - (hr >> 3)) + 8) & 15) << 7));
+}
+
 static uint16_t entry_for(int phase, int r, int q, int riser) {
     /* The high part of the accumulator must be chosen so the 255 inverse-depth
      * clamp does NOT fire: a>>6 must stay under 256, i.e. a < 16384.  The first
@@ -89,12 +125,16 @@ static uint16_t entry_for(int phase, int r, int q, int riser) {
          | ((uint16_t)(((hl >> 3) - (hr >> 3) + 8) & 15) << 7));
 }
 
-static void program(uint16_t *out, int L, int phase, int r, int q, int riser,
-                    int period) {
-    int k, p = phase;
-    for (k = 0; k < L; ++k) {
-        out[k] = entry_for(p, r, q, riser);
-        p = (p + ((q * 1024 + r) % period) + period * 4) % period;
+static void program(uint16_t *out, int L, int phase, int r, int q, int fam) {
+    int period = k_famperiod[fam];
+    int k = 0, p = phase, adv = ((q * 1024 + r) % period + period * 4) % period;
+    while (k < L) {
+        int nr = 1, row;
+        for (row = 0; row < 8 && k < L; ++row) {
+            out[k++] = cell_for(fam, p, r, q, row, &nr);
+            if (row + 1 >= nr) break;
+        }
+        p = (p + adv) % period;
     }
 }
 
@@ -109,97 +149,40 @@ int main(void) {
     const int NH = (int)(sizeof horizons / sizeof horizons[0]);
     int hi;
 
-    printf("=== EDGE_PROGRAM: exact finite programs for a 20-column screen ===\n\n");
-    printf("phase domains: non-RISER 1024, RISER 4096 (measured, its top formula\n");
-    printf("               72+h-(h>>2) makes tl mod 8 depend on h mod 32)\n");
-    printf("q-classes needing real rings: 2 (q=0 and q=-1); every other q\n");
-    printf("               saturates the slope at -/+7, verified exhaustively\n\n");
+    printf("=== EDGE_PROGRAM: exact finite CELL programs, all five families ===\n\n");
+    printf("A44 used two families and per-COLUMN programs.  Both were wrong:\n");
+    printf("draw_run decrements FULL's top endpoint, so there are FIVE endpoint\n");
+    printf("families with three distinct phase periods, and about 14%% of columns\n");
+    printf("emit more than one row, so a program is a sequence of CELLS.\n");
+    printf("All five verify EXACT against the renderer (edge_family_verify).\n\n");
+    for (int f = 0; f < NFAM; ++f)
+        printf("  family %d  %-34s period %d\n", f, k_famname[f], k_famperiod[f]);
 
-    printf("%-4s %12s %12s %12s %12s %12s\n",
+    printf("\n%-4s %12s %12s %12s %12s %12s\n",
            "L", "programs", "intervals", "body 1B/e", "body 2B/e", "dispatch");
     for (hi = 0; hi < NH; ++hi) {
         int L = horizons[hi];
-        Set uniq;
-        unsigned long intervals = 0;
-        int riser, qi, r;
+        Set uniq; unsigned long intervals = 0;
+        int fam, qi, r;
         uint16_t prev[MAXL], cur[MAXL];
-        set_init(&uniq, 22);
-
-        for (riser = 0; riser < 2; ++riser) {
-            int period = riser ? 4096 : 1024;
+        set_init(&uniq, 23);
+        for (fam = 0; fam < NFAM; ++fam)
             for (qi = 0; qi < NQ; ++qi)
                 for (r = 0; r < 1024; ++r) {
                     int p, first = 1;
-                    for (p = 0; p < period; ++p) {
-                        program(cur, L, p, r, k_q[qi], riser, period);
+                    for (p = 0; p < k_famperiod[fam]; ++p) {
+                        program(cur, L, p, r, k_q[qi], fam);
                         if (first || memcmp(cur, prev, sizeof(uint16_t) * L)) {
-                            ++intervals;
-                            set_add(&uniq, hashprog(cur, L));
-                            memcpy(prev, cur, sizeof(uint16_t) * L);
-                            first = 0;
-                        }
-                    }
-                }
-        }
-        printf("%-4d %12u %12lu %11.1fK %11.1fK %11.1fK\n", L, uniq.n, intervals,
-               uniq.n * (double)L / 1024.0, uniq.n * 2.0 * L / 1024.0,
-               intervals * 4.0 / 1024.0);
-        set_free(&uniq);
-        /* non-RISER alone: RISER's 4096-phase domain is 4x the scan, so it is
-         * worth knowing what demoting it to a slow path would buy.  It is 6.0%
-         * of emitted cells and the demotion is exact. */
-        {
-            Set u2; unsigned long iv2 = 0;
-            set_init(&u2, 22);
-            for (qi = 0; qi < NQ; ++qi)
-                for (r = 0; r < 1024; ++r) {
-                    int p, first = 1;
-                    for (p = 0; p < 1024; ++p) {
-                        program(cur, L, p, r, k_q[qi], 0, 1024);
-                        if (first || memcmp(cur, prev, sizeof(uint16_t) * L)) {
-                            ++iv2; set_add(&u2, hashprog(cur, L));
+                            ++intervals; set_add(&uniq, hashprog(cur, L));
                             memcpy(prev, cur, sizeof(uint16_t) * L); first = 0;
                         }
                     }
                 }
-            printf("     non-RISER only: %u programs, %lu intervals, "
-                   "body %.1fK + dispatch %.1fK = %.2f MB\n",
-                   u2.n, iv2, u2.n * (double)L / 1024.0, iv2 * 4.0 / 1024.0,
-                   (u2.n * (double)L + iv2 * 4.0) / 1048576.0);
-            set_free(&u2);
-        }
-    }
-
-    /* ---- split representation: prefix + shared tail, at L = 20 ---- */
-    {
-        int L = 20, cut = 8;
-        Set tails, progs;
-        int riser, qi, r;
-        uint16_t prev[MAXL], cur[MAXL];
-        set_init(&tails, 22); set_init(&progs, 22);
-        for (riser = 0; riser < 2; ++riser) {
-            int period = riser ? 4096 : 1024;
-            for (qi = 0; qi < NQ; ++qi)
-                for (r = 0; r < 1024; ++r) {
-                    int p, first = 1;
-                    for (p = 0; p < period; ++p) {
-                        program(cur, L, p, r, k_q[qi], riser, period);
-                        if (first || memcmp(cur, prev, sizeof(uint16_t) * L)) {
-                            set_add(&progs, hashprog(cur, L));
-                            set_add(&tails, hashprog(cur + cut, L - cut));
-                            memcpy(prev, cur, sizeof(uint16_t) * L);
-                            first = 0;
-                        }
-                    }
-                }
-        }
-        printf("\nSPLIT at column %d (prefix stored per program, tail shared)\n", cut);
-        printf("  distinct 20-column programs      %u\n", progs.n);
-        printf("  distinct %d-column tails          %u\n", L - cut, tails.n);
-        printf("  ROM 1 B/entry: %.1fK prefixes + %.1fK tails = %.2f MB\n",
-               progs.n * (cut + 2.0) / 1024.0, tails.n * (double)(L - cut) / 1024.0,
-               (progs.n * (cut + 2.0) + tails.n * (double)(L - cut)) / 1048576.0);
-        set_free(&tails); set_free(&progs);
+        printf("%-4d %12u %12lu %11.1fK %11.1fK %11.1fK   total 1B/e %.2f MB\n",
+               L, uniq.n, intervals, uniq.n * (double)L / 1024.0,
+               uniq.n * 2.0 * L / 1024.0, intervals * 4.0 / 1024.0,
+               (uniq.n * (double)L + intervals * 4.0) / 1048576.0);
+        set_free(&uniq);
     }
     return 0;
 }
