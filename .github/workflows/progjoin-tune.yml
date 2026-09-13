@@ -1,0 +1,33 @@
+name: PROGJOIN tuned A-B
+
+on:
+  push:
+    branches:
+      - claude/renderer-forensic-reconstruction-azzocg
+    paths:
+      - tools/z80_progjoin_tune_bench.py
+      - tools/z80_progjoin_bench.py
+      - tools/edge_progjoin_bake.c
+      - tools/z80core.py
+      - tests/test_z80_ld_sp_hl.py
+      - src/tilesector_polar_renderer.c
+      - src/tilesector_polar_motion.c
+      - .github/workflows/progjoin-tune.yml
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build corpus oracle
+        run: make coverage-potential
+      - name: Build PROGJOIN baker
+        run: |
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+          mkdir -p build/progjoin build/progjoin_tuned
+      - name: Check Z80 interpreter join opcode
+        run: python3 tests/test_z80_ld_sp_hl.py
+      - name: Run baseline vs tuned over full corpus
+        run: python3 tools/z80_progjoin_tune_bench.py 63 40
