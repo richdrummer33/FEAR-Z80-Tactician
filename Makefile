@@ -226,6 +226,9 @@ edge-hoist: edge-lut
 edge-walk: edge-lut
 	python3 tools/z80_edge_walk_bench.py 60
 
+border-hoist: edge-lut
+	python3 tools/z80_border_hoist_bench.py 300
+
 edge-dispatch: build
 	$(CC) $(CFLAGS) -Isrc tools/edge_dispatch_verify.c src/tilesector_polar_motion.c -o build/edge_dispatch_verify
 	./build/edge_dispatch_verify 6 0

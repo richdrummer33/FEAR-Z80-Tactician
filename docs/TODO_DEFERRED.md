@@ -630,6 +630,79 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A47. BORDERHOIST — built, exact, −2.1%, and it SETTLES Priority 2.
+### The border path is now 0.62%. Do not unify it.
+
+`make border-hoist`. A46 profiled the border path at 6,230 T/pose (3.5%) and
+predicted that hoisting it out of the column loop was worth about 4,670 T. Built
+and measured rather than left as a prediction.
+
+**The change.** Only `c0` can carry a left border and only `c1` a right one, so
+the FULL tile pointer is computed once before the loop for `c0` (handling the
+one-column run that carries both), and refreshed in the carry only when the NEXT
+column is `c1`. Every middle column does one compare and one store instead of
+two compares, two loads, a mask and an add. Nothing else reads the border byte,
+so it is exact by construction — and verified.
+
+| | T/pose | bytes | exact |
+| --- | ---: | ---: | :-: |
+| EDGELUT3 | 175,924.4 | 1,225 | yes |
+| HOIST_A (A41) | 173,257.1 | 1,225 | yes |
+| **BORDERHOIST** | **169,548.4** | **1,216** | **yes** |
+
+**−2.1% against HOIST_A, −3.6% against EDGELUT3, and 9 bytes SMALLER.** Whole
+update 223,266 -> 216,890 T. Both rungs are exact on 300/300 poses and neither
+needs any program machinery.
+
+### Re-profiled, per the standing rule
+
+| | before | after |
+| --- | ---: | ---: |
+| border path (`M_border` + `bd_*` / `bh_*`) | 6,230 T, 3.5% | **1,054 T, 0.62%** |
+
+An 83% cut in that path. The prediction was 4,670 T; the measurement is 5,176 T.
+
+### Priority 2 verdict — leave vertical borders specialized
+
+The question was whether the top and bottom edge cursors could supply the corner
+cells and the vertical border for free, using the same program machinery.
+
+**The answer is that it no longer matters.** The whole border path is now
+**1,054 T, 0.62% of the materializer**. That is the ceiling on anything
+cursor-continuation could win, and it is below the noise of the decisions
+already on the table. Unifying it would trade a measured-cheap special case for
+a general one in exchange for at most six tenths of one percent.
+
+So: **do not generalize the vertical borders.** This matches the stated
+architectural goal — use the finite-program machinery where it deletes real
+computation, and leave the already-cheap special case alone.
+
+### How the two rungs compose with the program architecture
+
+This needs care, because one of them composes and the other does not.
+
+- **HOIST_A (−2,667 T) does NOT compose.** Its saving is inside `draw_edge`,
+  which is stage 6 — exactly what the program architecture replaces outright.
+- **BORDERHOIST (−3,709 T) DOES compose.** Its saving is in stage 3, the column
+  walk, which the program architecture leaves untouched.
+
+| | materializer | vs the 3x line |
+| --- | ---: | ---: |
+| A46, program architecture at C=6 | 65,785 | 12.3% short |
+| **+ BORDERHOIST** | **62,076** | **5.9% short** |
+
+Whole update **109,418 T**.
+
+### What is now in the way
+
+The materializer is no longer the problem. **The 47,342 T outside it is 79% of
+the 59,736 T frame budget on its own**, and nothing in this branch has touched
+it: bearing lookup 5,833, decode-clip 11,036, GATE 2,339, column-solve 26,820,
+depth sort 1,314. Column-solve alone is 26,820 T, larger than the entire
+remaining gap to the 3x line.
+
+**That is where the next work belongs**, not in further materializer rungs.
+
 ### A46. The dispatch decomposition — PROVEN EXACT, 4.2x faster, and it takes
 ### the materializer to −62.6%. Plus the border profile.
 
