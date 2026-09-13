@@ -226,8 +226,8 @@ def main():
                        ("LDIR from a patch stream    42 T/word", 42.0)):
         print(f"  {label:38} {w*tpw:9,.0f} {100.0*w*tpw/per:17.1f}%")
 
-    print(f"\nper-label detail (top 18)")
-    for nm, t in sorted(cost.items(), key=lambda kv: -kv[1])[:18]:
+    print(f"\nper-label detail (top 40)")
+    for nm, t in sorted(cost.items(), key=lambda kv: -kv[1])[:40]:
         print(f"  {nm:18s} {t/n:9,.0f} T/pose {100.0*t/total:6.1f}%"
               f"   [{STAGE_OF.get(nm,'?')}]")
 

@@ -630,6 +630,121 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A46. The dispatch decomposition — PROVEN EXACT, 4.2x faster, and it takes
+### the materializer to −62.6%. Plus the border profile.
+
+`make edge-dispatch`. A45 left dispatch as both the dominant ROM cost (3.00 MB
+of 3.02) and the dominant remaining CPU cost (1,593 T x 16.2 per pose). The
+prediction was that the interval breakpoints are generated, not arbitrary.
+**They are.**
+
+### The exact dispatch state
+
+Let `a` be the accumulator and `step` the per-column advance. Since
+`h = (a>>6)>>1 = a>>7`, writing `a = 128*H + u` with `u` in `[0,128)` gives
+
+```
+    h_k = H + ((u + k*step) >> 7)
+```
+
+so the height sequence depends on `u` only through which of the thresholds
+
+```
+    t_k = (-k * step) mod 128,      k = 1 .. C
+```
+
+it has passed. Sorted, those give a **rank** in `0..C`. The tile additionally
+needs `H` modulo the family's base count `M = period/128`. Hence
+
+```
+    program = T[family][step][H mod M][rank(u)]
+              M = 8, 8, 8, 16, 32  for the five families
+```
+
+**Verified with ZERO conflicts over 34,538,688 observations**, all five
+families, `step` swept over its entire `[-2048, 2047]` range:
+
+| family | M | observations | conflicts |
+| --- | ---: | ---: | ---: |
+| `71-h` FULL top | 8 | 4,063,744 | **0** |
+| `72-h` LINTEL/RAISED top | 8 | 4,063,744 | **0** |
+| `72+h` FULL/RISER bottom | 8 | 4,063,744 | **0** |
+| `72-(h>>1)` LINTEL bottom | 16 | 7,865,344 | **0** |
+| `72+h-(h>>2)` RAISED bot/RISER top | 32 | 14,682,112 | **0** |
+
+**Two traps, both mine.** The first attempt used `C-1` thresholds and failed on
+about 12% of samples — **a C-column program reads C+1 heights**, because column
+`c` uses `h_c` and `h_{c+1}`, so it needs `C` thresholds. And I first blamed the
+255 inverse-depth clamp, tested it by skipping every clamped sample, and the
+conflict count did not move at all. Recorded because the wrong diagnosis was
+the plausible one.
+
+### ROM, and why it saturates
+
+| C (columns) | table entries | dispatch | thresholds | bodies | **total** |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 877,824 | 1.67 MB | 40 KB | 5 KB | **1.72 MB** |
+| 4 | 1,337,756 | 2.55 MB | 80 KB | 64 KB | **2.69 MB** |
+| **6** | **1,350,306** | **2.58 MB** | 120 KB | 227 KB | **2.91 MB** |
+
+**The table stops growing after C=4** (1,337,756 -> 1,350,306) because the
+thresholds increasingly coincide mod 128, so the reachable rank count
+saturates. A longer horizon is therefore nearly free in dispatch ROM and only
+costs program bodies.
+
+### Measured: the Z80 rank dispatch
+
+An 82-byte kernel: mask `u`, extract the base from bits 7-9, index the
+threshold list at `(step+2048)*C`, four `cp (hl)` compares, then
+`base*(C+1) + rank` into the table.
+
+| | T per dispatch | bytes |
+| --- | ---: | ---: |
+| A45 binary search over 38 intervals | 1,593 | 80 |
+| **RANK dispatch** | **381** (min 373, max 389) | 82 |
+| | **4.2x faster** | |
+
+### The budget
+
+| C | dispatches/pose | playback T/cell | dispatch T | **materializer** | whole update |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 31.01 | 83.4 | 11,816 | 73,274 (−58.3%) | 120,616 |
+| 4 | 17.64 | 74.2 | 6,723 | 67,585 (−61.6%) | 114,927 |
+| **6** | **13.44** | **71.1** | **5,121** | **65,785 (−62.6%)** | **113,127** |
+| 8 | 11.25 | 69.6 | 4,285 | 64,849 (−63.1%) | 112,191 |
+
+**C=6 at 2.91 MB: materializer 175,827 -> 65,785 T, −62.6%.** Against the
+58,600 T that a 3x sequence baseline implies, that is **12.3% short** — and
+against A45's 86,508 T it is a 24% improvement bought entirely by the
+decomposition.
+
+**A45's −51% is superseded by −62.6%.** The remaining gap is no longer
+dispatch: at C=6 dispatch is 5,121 T of a 65,785 T materializer, 7.8%.
+
+### Priority 2, first pass: the border path costs 3.5% and should NOT be unified
+
+Profiled separately from playback, interior fill and addressing:
+
+| label | T/pose | share |
+| --- | ---: | ---: |
+| `M_border` | 2,253 | 1.3% |
+| `bd_done` | 2,241 | 1.3% |
+| `bd_not_first` | 1,736 | 1.0% |
+| **border path total** | **6,230** | **3.5%** |
+| (`M_colptr`, separate) | 2,408 | 1.4% |
+
+**It is already cheap, and the obvious win is conventional, not architectural.**
+The border test runs on all **33.4 columns per pose** but can only matter on the
+first and last column of a run — **8.4 columns per pose**. Hoisting it out of
+the column loop should recover roughly **4,670 T (2.7%)** with no program
+machinery involved.
+
+So: **leave vertical borders specialized.** They are 3.5%, the same order as the
+entire new dispatch, and unifying them into the program machinery would trade a
+cheap special case for a general one. The cursor-continuation question — whether
+the terminal top/bottom cursors can name the corner cells for free — was **not
+tested this pass** and remains open, but it can only be worth the 3.5% above.
+
 ### A45. CORRECTION to A44, and the interior identity is VERIFIED.
 ### ROM is 3.00 MB at L=4, not 1.07 MB, and dispatch is the new binding cost.
 
