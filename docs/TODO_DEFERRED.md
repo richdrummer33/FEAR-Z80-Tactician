@@ -630,6 +630,120 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A44. EDGE_PROGRAM — finite horizons, exact, and it FITS. 1.07 MB and
+### 71.7 T per edge row. Verdict: GREEN on ROM, 3.6% short on CPU.
+
+`make edge-program`. A43 costed INFINITE 1024-phase rings at 6.76-20 MB and
+called it RED. That over-represented the problem three ways, and all three are
+now measured rather than assumed.
+
+### The three corrections, each verified
+
+**1. RISER does not need its own vocabulary — it needs a longer phase domain.**
+Its top formula `72 + h - (h>>2)` makes `tl mod 8` depend on `h mod 32`, so its
+period is **4096 accumulator units, not 1024** (measured by scanning periods,
+not assumed). It feeds the same edge masks. Demoting it to a slow path is
+**exact** and costs 6.0% of emitted cells.
+
+**2. The whole-tile part of step does NOT need five ring families — but it does
+not collapse to one either.** With `step = 1024q + r`, the row advance
+separates exactly as `q + local`, and the slope saturates at -/+7 for every `q`
+outside `{0,-1}` (verified exhaustively). **But the phase advance still depends
+on q** — and for RISER on `q mod 4` — so a saturated `q` is not one tiny table.
+The observed range is `q` in `[-2, 1]`, with **0 columns outside it** over
+873,084 columns. Four classes, not five, and not one.
+
+**3. The horizon is 20 columns, not infinity.** Two sequences that diverge
+after the visible screen are the same program.
+
+### The representation is EXACT
+
+Verified against the shipped renderer over **871,398 columns** (0.193%
+excluded where the inverse-depth clamp fires, which is a separate path):
+
+| field | exact |
+| --- | ---: |
+| tile code | **871,398 / 871,398 — 100.0000%** |
+| row advance | **871,398 / 871,398 — 100.0000%** |
+
+**A bug worth recording, because the first numbers looked plausible.** The
+representative accumulator was `16*1024 + phase`, which is exactly AT the 255
+inverse-depth clamp ceiling, so every height pinned to 127 and only **2.37%**
+of tiles matched. The comment above it claimed the opposite of what the code
+did. `8*1024` fixes it. The ROM figures computed before the fix were void and
+were discarded, not reconciled.
+
+### ROM, non-RISER family, by horizon
+
+Body at 1 byte/entry, dispatch at 4 bytes/interval:
+
+| L | programs | intervals | body | dispatch | **total** | dispatches/run |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 2,363 | 134,922 | 9.2K | 527.0K | **0.52 MB** | 2.09 |
+| **8** | **14,815** | **250,558** | **115.7K** | **978.7K** | **1.07 MB** | **1.34** |
+| 12 | 45,923 | 363,085 | 538.2K | 1,418.3K | **1.91 MB** | 1.13 |
+| 16 | 104,560 | 474,521 | 1,633.8K | 1,853.6K | 3.41 MB | 1.06 |
+| 20 | 199,608 | 579,778 | 3,898.6K | 2,264.8K | 6.02 MB | 1.00 |
+
+With RISER included the same rows are 2.5 MB at L=4 and 5.1 MB at L=8, so the
+exact demotion is what makes this fit.
+
+**Dispatch dominates, not the program bodies.** At L=8 the bodies are 116 KB and
+the phase-interval dispatch is 979 KB. Interval compression is already in these
+numbers: the intervals ARE the breakpoint encoding.
+
+**Suffix sharing helps the bodies and not the total.** Splitting 20-column
+programs into an 8-column prefix plus a shared 12-column tail takes the
+all-family body from 16.9 MB to 10.7 MB, a 1.6x win, but leaves the 10.8 MB
+dispatch untouched. Since all programs are the same length no program is a
+proper suffix of another, so tail sharing only pays through the explicit split.
+
+### The Z80 rung: WALK_PROG, 20 bytes, exact
+
+| kernel | T/edge row | exact | entry | what it is |
+| --- | ---: | :-: | ---: | --- |
+| **WALK_PROG** | **71.7** | **yes** | 4 B | ROM program: word + destination delta |
+| WALK_FLATROW | 55.5 | yes | 2 B | same tile row throughout, 60.7% of rows |
+| EMIT_B (A40) | 49.2 | — | 4 B | stream something must GENERATE each frame |
+| WALK_FLAT (A41) | 66.2 | — | — | |
+| shipped (A39) | 1,023 | — | — | stages 6+7+8 |
+
+Loop body is **65.0 T/row** with **43 T** of per-chain setup; the corpus blend
+is 71.7 because a run-edge averages about 6 rows.
+
+**Two harness faults, both caught by the kernel failing rather than by
+inspection.** `pop bc` destroys `B`, so `djnz` never terminated — the counter
+moved to `A`. And the first harness ran one program per `draw_edge` CALL, which
+averages 0.97 rows and charges the 43 T setup to nearly every row: that
+measures the old shape, not the new one. One program per RUN-EDGE took the
+blend from 101.7 to 71.7.
+
+### What it costs and what it buys
+
+**Practical ROM at L=8 with a 4-byte entry:** dispatch is shade-independent and
+shared (979 KB); the body triples for three shades (3 x 463 KB). **Total
+2.37 MB**, inside the 4 MB envelope, with 1.34 dispatches per run.
+
+**CPU, measured:** the edge path 66,252 -> **4,641 T/pose**, taking the
+materializer to **114,216 T (−35%)**.
+
+**CPU, modelled:** a ROM program also supplies what stages 4 and 5 compute
+(endpoint geometry 28,163 T and row extents 25,357 T), giving **60,696 T**
+against the 58,600 T that a 3x sequence baseline implies — **3.6% short**.
+**This second figure is an assumption, not a measurement.** The interior fill
+still needs row extents, and whether they fall out of the top and bottom
+cursors is exactly the thing that has not been verified.
+
+### Verdict — GREEN on ROM, and the CPU is within reach
+
+A43's RED is overturned. The architecture is exact, it fits in 2.37 MB of a
+4 MB cart, and it lands 3.6% short of the 3x line under one stated assumption.
+
+**The next step is to settle that assumption**, not to build more kernel: verify
+that the FULL interior's first and last rows fall out of the top-edge and
+bottom-edge cursors, so stages 4 and 5 really do disappear. If they do not, the
+honest number is 114,216 T and −35%, which is real but not 3x.
+
 ### A43. EDGE_CYCLE — the dense phase ring. The architecture WORKS and misses
 ### the ROM budget by 1.7x. Verdict: RED on ROM, not on mechanism.
 
