@@ -630,6 +630,116 @@ longer obviously implementation slack. Further large wins probably need the
 architectural move — stop materializing unchanged cells at all — rather than
 more instruction-level work.
 
+### A49. TARGET_SOLVE_CENSUS — the depth plane succeeds 99.10% of the time,
+### so `inv_at_invd` is ALREADY DEAD on target. A48's recommendation is
+### WITHDRAWN, and so is the 26,891 T column-solve line.
+
+`make target-solve-census`. A48 recommended tabulating `inv_at_invd`'s two
+multiplies as the next rung, and flagged that its 255 -> 16 `iq` collapse came
+from the host fallback path and needed re-measuring on target. Re-measured. The
+answer invalidates the recommendation.
+
+**Equivalence first.** `screen_depth_plane` is guarded by
+`#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE`, so it does not compile on the
+host. The census reproduces it verbatim and
+`tools/target_solve_equiv.py` compares the two bodies with whitespace removed
+and fails if they drift — reported EQUIVALENT. The coefficient tables are the
+generated ones the GG build links (7 unique normals, 1,792 coefficient pairs,
+3,601 bytes).
+
+### The finding
+
+Over 29,824 poses and 127,958 visible runs:
+
+| | runs | share |
+| --- | ---: | ---: |
+| `screen_depth_plane` **succeeded** | 126,809 | **99.10%** |
+| fell back to `inv_at_invd` x2 | 1,149 | **0.90%** |
+
+**`project_key` returns before `inv_at_invd` is ever reached on 99.10% of
+runs.** Multiplies per run on target:
+
+| | per run |
+| --- | ---: |
+| depth plane (`invd*nf`, `invd*sf`) | **1.982** |
+| fallback, the two `inv_at_invd` calls | **0.036** |
+
+**So the four `inv_at_invd` multiplies that A48 called "the highest-value
+concrete hypothesis" fire on 0.9% of runs.** A 47,105-byte dense table for them
+would save on the order of **40 T/update**, not 8,800. The hypothesis is dead
+and the ROM question it raised is moot.
+
+### The bigger correction: the 26,891 T column-solve line is the WRONG PATH
+
+A14's kernel — and therefore A48's census that split it — implements
+`wall_d_q4 -> inv_for_dq4 -> inv_at_invd x2`. **That is the fallback.** The
+shipped GG build takes the depth plane on 99.10% of runs, which never calls
+`inv_at_invd` and never runs the `iq`/`step` ramp the fallback needs.
+
+**The whole-update budget's 26,820 T column-solve line therefore describes a
+path the target almost never takes.** Every downstream figure carrying it —
+including the 223,266 T whole update used throughout A39-A47 — inherits that
+error.
+
+**Modelled target cost**, composing A48's measured per-component numbers with
+the measured depth-plane work (2 multiplies at the census's 248 T, and 12.95
+16-bit add iterations per run for the column walk and endpoint):
+
+| component | T/span | survives on target? |
+| --- | ---: | --- |
+| `wall_d_q4` | 451 | yes, always |
+| `inv_for_dq4` | 378 | yes, always |
+| `angle_x` / clip | 556 | yes, x0/x1 precede the depth plane |
+| depth-plane solve (2 mul + 12.95 adds + fixups) | ~1,046 | new, target only |
+| `inv_at_invd` + its multiplies | ~19 | 0.9% only |
+| `iq`/`step` ramp | ~5 | 0.9% only |
+| share of the shift primitive | ~630 | partial |
+| **modelled target total** | **~3,085** | |
+| x4.30 spans | **~13,300 T/update** | vs 26,891 measured on the fallback |
+
+**This is MODELLED, not measured.** No Z80 kernel for the depth-plane path
+exists. But the direction is not in doubt: the target path does roughly half
+the arithmetic the measured kernel does.
+
+### Distinct values on the TARGET path — the A48 collapse does not survive
+
+| | host fallback (A48) | **target depth plane** |
+| --- | ---: | ---: |
+| `phase = (iq+32) mod 1024` | **16** | **1,024 — all of them** |
+| distinct `(step, phase)` A46 keys | 5,576 | **13,530** |
+| `iq` | 255 | 6,402 |
+| `step` | 1,337 | 1,919 |
+| `invd` | 226 | 221 |
+| `inv_mid` | — | 244 of 256 |
+| `(c0,c1)` pairs | — | 210 of 400 |
+
+**A48's headline 15.9x phase collapse was entirely an artefact of the host
+path**, where `iq = inv0 << 6` forces `(iq+32) mod 1024` into 16 values. On
+target `iq = invd*nf >> 1` and the phase is fully populated. Any fusion designed
+on the 16 would have been wrong.
+
+### One real opportunity, noted not built
+
+`dp_solve` spends **12.95 16-bit additions per run** walking `iq` from column 10
+to `c0` and then accumulating `endq` over `n` columns. That walk computes
+`iq + (c0-10)*step` and `+ n*step` by repeated addition — and **it is the same
+phase advance A46's dispatch already performs**. Folding it into the A46
+dispatch index would delete it rather than speed it up. Cost: the dispatch key
+gains `c0` (20 values), so the table multiplies by 20. Not costed here.
+
+### Verdict — no Pareto table, because the premise is void
+
+The requested candidate sweep (dense / factored / quantized / threshold tables
+for `inv_at_invd`) was not built. **Pricing seven representations of a function
+that executes on 0.9% of runs would be measurement theatre.** The stop rule
+covering "solve-to-A46 fusion would require a disproportionate ROM explosion"
+is superseded by a simpler one: there is nothing there to fuse.
+
+**The next rung is a measurement, not an optimization: build a Z80 kernel for
+the DEPTH-PLANE path and measure it**, replacing A14's fallback kernel as the
+column-solve budget line. Until that exists, the column-solve figure in every
+budget on this branch is wrong by roughly a factor of two, in our favour.
+
 ### A48. STATECENSUS and COLSOLVE_CENSUS_A. Two stop rules fired; the
 ### column-solve split is measured and the multiply is ALREADY the fast one.
 
