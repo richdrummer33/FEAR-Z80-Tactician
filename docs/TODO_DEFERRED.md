@@ -1067,8 +1067,17 @@ needs `H` modulo the family's base count `M = period/128`. Hence
               M = 8, 8, 8, 16, 32  for the five families
 ```
 
-**Verified with ZERO conflicts over 34,538,688 observations**, all five
+**Verified with ZERO conflicts over 34,738,688 observations**, all five
 families, `step` swept over its entire `[-2048, 2047]` range:
+
+> *Corrected 2026-09-13 (commit `8991f14` forensic pass): this total was
+> originally recorded as 34,538,688. The per-family counts below are unchanged
+> and sum to 34,738,688; re-running `./build/edge_dispatch_verify 4 0`
+> reproduces them exactly, conflicts 0. The error was in the total only.
+> Note also that this table is the **C=4** sweep, while the C=6 budget table
+> further down uses the C=6 sweep (2,796,202 / 5,592,406 / 11,184,810
+> observations, 1,350,306 entries, conflicts 0). See
+> `docs/PERFORMANCE_GROUND_TRUTH.md` §8.*
 
 | family | M | observations | conflicts |
 | --- | ---: | ---: | ---: |
