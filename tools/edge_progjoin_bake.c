@@ -74,6 +74,11 @@ static const char *k_famname[NFAM] = {
     "71-h    FULL top", "72-h    LINTEL/RAISED top", "72+h    FULL/RISER bot",
     "72-h>>1 LINTEL bot", "72+h-h>>2 RAISED bot/RISER top" };
 static int fam_M(int fam) { return k_famperiod[fam] / 128; }
+
+static long g_clipok, g_cliptot, g_clipdrop, g_clipall;
+static int g_off_h;                     /* height at the last offscreen hit */
+static long g_off_fam[NFAM][3];         /* [fam][1=top,2=bottom] exclusions */
+static long g_off_hsum[NFAM], g_off_hn[NFAM];
 static int fam_is_bottom(int fam) { return (fam == 2 || fam == 3 || fam == 4); }
 
 static int16_t endpoint_of(int fam, int h) {
@@ -107,10 +112,19 @@ static int column_cells(int fam, int16_t iq_col, int16_t step, uint8_t shade,
     r0 = row_floor(tl < tr ? tl : tr);
     r1 = row_floor(tl > tr ? tl : tr);
     if (r0 < 0 || r1 >= (int8_t)TSP_ROWS) {
-        *hit_offscreen = 1;
+        /* 1 = runs off the TOP of the 144-line viewport, 2 = off the BOTTOM.
+         * Both mean the wall is near enough that this edge leaves the screen,
+         * which draw_edge handles by clamping the row range. A
+         * position-independent program cannot carry that clamp. */
+        *hit_offscreen |= (r0 < 0) ? 1 : 0;
+        *hit_offscreen |= (r1 >= (int8_t)TSP_ROWS) ? 2 : 0;
+        g_off_h = hl;
         if (!clip) return -1;
-        if (r0 < 0) r0 = 0;
-        if (r1 >= (int8_t)TSP_ROWS) r1 = (int8_t)(TSP_ROWS - 1u);
+        if (clip == 1) {
+            if (r0 < 0) r0 = 0;
+            if (r1 >= (int8_t)TSP_ROWS) r1 = (int8_t)(TSP_ROWS - 1u);
+        }
+        /* clip == 2: leave the range unclamped, rows may fall outside */
     }
     for (r = r0; r <= r1 && n < MAXCELLS; ++r) {
         words[n] = edge_entry(shade, (int16_t)(tl - ((int16_t)r << 3)), slope, bottom);
@@ -379,7 +393,50 @@ int main(int argc, char **argv) {
                     ++ncs;
                     if (ncs >= 32) { edge_ok = 0; break; }
                 }
-                if (!edge_ok) { if (hit_off) ++ex_off; else ++ex_clamp; continue; }
+                if (!edge_ok && hit_off) {
+                    /* For each drawn column, compare the RENDERER's clamped
+                     * cells against the unclamped model cells filtered to the
+                     * viewport. If they match everywhere, clipping is a pure
+                     * row-range filter over an unchanged program body. */
+                    int c;
+                    uint8_t bt = (uint8_t)(fam_is_bottom(fam) ? 1u : 0u);
+                    for (c = 0; c < ncol; ++c) {
+                        uint16_t wa[MAXCELLS], wb[MAXCELLS];
+                        int ra[MAXCELLS], rb[MAXCELLS];
+                        int hc = 0, ho = 0, ma, mb, k, j, ok = 1, kept = 0;
+                        int16_t iqc = (int16_t)(iq0 + (int16_t)(c * step));
+                        ma = column_cells(fam, iqc, (int16_t)step, (uint8_t)sh,
+                                          bt, 1, wa, ra, &hc, &ho);
+                        hc = ho = 0;
+                        mb = column_cells(fam, iqc, (int16_t)step, (uint8_t)sh,
+                                          bt, 2, wb, rb, &hc, &ho);
+                        if (ma < 0 || mb < 0) continue;
+                        for (j = 0; j < mb; ++j)
+                            if (rb[j] >= 0 && rb[j] < (int)TSP_ROWS) ++kept;
+                        if (kept != ma) ok = 0;
+                        else {
+                            k = 0;
+                            for (j = 0; j < mb && ok; ++j) {
+                                if (rb[j] < 0 || rb[j] >= (int)TSP_ROWS) continue;
+                                if (rb[j] != ra[k] || wb[j] != wa[k]) ok = 0;
+                                ++k;
+                            }
+                        }
+                        ++g_cliptot;
+                        g_clipall += mb;
+                        g_clipdrop += mb - kept;
+                        if (ok) ++g_clipok;
+                    }
+                }
+                if (!edge_ok) {
+                    if (hit_off) {
+                        ++ex_off;
+                        if (hit_off & 1) ++g_off_fam[fam][1];
+                        if (hit_off & 2) ++g_off_fam[fam][2];
+                        g_off_hsum[fam] += g_off_h; ++g_off_hn[fam];
+                    } else ++ex_clamp;
+                    continue;
+                }
                 ++ok_edges;
                 if (!emit) continue;
                 /* commit bodies and dispatch entries */
@@ -463,6 +520,28 @@ int main(int argc, char **argv) {
            ex_off, 100.0 * ex_off / (edges ? edges : 1));
     printf("  excluded, invdepth clamp  %ld  (%.2f%%)\n",
            ex_clamp, 100.0 * ex_clamp / (edges ? edges : 1));
+    printf("\nIS CLIPPING JUST \"DROP THE OUT-OF-RANGE CELLS\"?\n");
+    printf("  clipped-equals-filtered columns   %ld of %ld", g_clipok, g_cliptot);
+    printf("%s\n", g_clipok == g_cliptot ? "   YES, EXACTLY" : "   NO");
+    printf("  cells dropped per clipped column  %.2f of %.2f\n",
+           g_cliptot ? (double)g_clipdrop / (double)g_cliptot : 0.0,
+           g_cliptot ? (double)g_clipall / (double)g_cliptot : 0.0);
+    printf("  If YES, the fallback is not a separate renderer: the SAME baked\n"
+           "  program plays, with leading/trailing cells skipped.\n");
+
+    printf("\nWHY THE EXCLUDED ONES ARE EXCLUDED (offscreen breakdown)\n");
+    printf("  %-34s %8s %8s %8s\n", "family", "off TOP", "off BOT", "mean h");
+    for (int fm = 0; fm < NFAM; ++fm) {
+        if (!g_off_hn[fm]) continue;
+        printf("  %-34s %8ld %8ld %8.1f\n", k_famname[fm],
+               g_off_fam[fm][1], g_off_fam[fm][2],
+               (double)g_off_hsum[fm] / (double)g_off_hn[fm]);
+    }
+    printf("  (h is the wall half-height in scanlines; the viewport is 144\n"
+           "   lines centred on y=71.5, so h > ~72 puts an edge off-screen.\n"
+           "   Large h = the wall is CLOSE. This is near-wall view-frustum\n"
+           "   clipping, NOT occlusion - occlusion is handled separately by\n"
+           "   the depth sort plus near-to-far ownership.)\n\n");
     printf("dispatch chunks             %ld  (%.2f per pose)\n",
            chunks, (double)chunks / (poses ? poses : 1));
     printf("edge cells                  %ld  (%.2f per pose)\n",

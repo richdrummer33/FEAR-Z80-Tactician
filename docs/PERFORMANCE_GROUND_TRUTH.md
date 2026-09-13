@@ -28,8 +28,16 @@ display frame is **59,736 T**, of which VBlank alone is 15,960 T.
 | **30 Hz** | **~119.3k T** (119,318) |
 | **20 Hz** | **~179k T** (178,977) |
 
-Project gates (`docs/PROJECT_MEMORY.md`): **20 Hz / ~179k T per update is the
-solid target; 30 Hz / ~119k T is aspirational.**
+Project gates (`docs/PROJECT_MEMORY.md`), and how to read them:
+
+| rate | cycles/update | standing |
+| --- | ---: | --- |
+| 60 Hz | ~59.7k | **lofty dream goal.** Not a plan. |
+| 30 Hz | ~119.3k | **aspiration / fallback target.** Nice to reach, not required. |
+| **20 Hz** | **~179.0k** | **the solid target. Clearing this is SUCCESS.** |
+
+**Anything at or above ~20 updates/s is a success.** Do not describe missing
+30 Hz as a failure: 30 Hz was never the spec.
 
 ---
 
@@ -362,14 +370,24 @@ cartridge problem below is solved. None of those is established.
 
 *(RE-RUN 2026-09-13: reproduced exactly.)*
 
-**The cartridge is configured `-Wm-yo4` = 64 KiB.** The committed ROMs are
-65,536 bytes. **2.91 MB is 45x the configured cartridge.** A 4 MB cartridge is
-an assumption this repository does not currently make, and taking it is an
-explicit decision, not an inheritance.
+**The cartridge is currently configured `-Wm-yo4` = 64 KiB**, and the committed
+ROMs are 65,536 bytes — but that setting is an artefact of the 2D GOAP demo, not
+a platform limit or a project constraint.
 
-**Bank-switching cost is not in the 65,785 T figure at all.** A 2.91 MB table on
-a machine with a 64 KiB address space means dispatches will frequently cross
-banks. That cost is **unmodelled and unbounded** in every A46 number here.
+Real Game Gear cartridges are routinely **512 KiB and 1 MiB**, and the mapper
+reaches **4 MiB**. The project's own position: **up to 4 MiB is available,
+<= 1 MiB is preferable, and ROM size should not be bought at the cost of
+fidelity, ability to scale, or update rate.**
+
+So **2.91 MB is affordable** — it is inside the 4 MiB ceiling. It is above the
+1 MiB comfort point, which makes shrinking it *desirable*, not a blocker. What
+it does still require is a **banking scheme, whose cycle cost is unmodelled**
+(caveat C6).
+
+**Bank-switching cost is not in any A46 figure.** A multi-megabyte table on a
+machine with a 64 KiB address space means dispatches will cross banks. That cost
+is **unmodelled** in every A46 number here, and it is the real open question
+about table size — not the byte count itself.
 
 ---
 
@@ -589,10 +607,45 @@ partial-chunk case, and multi-row columns truncated at four rows**
    3008 and 2974 agreeing on every drawn cell and disagreeing only on the final
    chaining delta. Fixing this costs one more rank row.
 3. **Programs carry no screen clipping, and 19.2% of run-edges need it.**
-   `draw_edge` clamps rows to the 18-row viewport; a position-independent
-   program cannot. A further 0.65% hit the 255 inverse-depth clamp. **Only
-   80.13% of run-edges are bakeable at all**; the rest need a fallback that
-   exists in no A46 budget.
+   `draw_edge` clamps the drawn row range to the 18-row viewport; a
+   position-independent program cannot carry that clamp. A further 0.65% hit the
+   255 inverse-depth clamp. **Only 80.13% of run-edges are bakeable as things
+   stand**; the rest need a fallback that exists in no A46 budget.
+
+### What that clipping actually is, and why it is cheap to fix
+
+It is **near-wall view-frustum clipping**, top and bottom — *not* occlusion.
+Occlusion is a separate mechanism entirely: the depth sort plus near-to-far
+ownership, where the first writer of a cell wins.
+
+The viewport is 144 scanlines centred on y = 71.5, so a wall whose half-height
+`h` exceeds about 72 has its top edge above the screen or its bottom edge below
+it. Measured over the corpus, the split is perfectly clean:
+
+| family | excluded off TOP | off BOTTOM | mean h |
+| --- | ---: | ---: | ---: |
+| `71-h` FULL top | 958 | 0 | 95.7 |
+| `72-h` LINTEL/RAISED top | 1,190 | 0 | 96.9 |
+| `72+h` FULL/RISER bottom | 0 | 1,190 | 96.6 |
+| `72+h-(h>>2)` RAISED bot/RISER top | 0 | 666 | 111.2 |
+| `72-(h>>1)` LINTEL bottom | 0 | 0 | — |
+
+Top edges only ever leave the top, bottom edges only ever the bottom, at wall
+half-heights of 95-111 against a ~72 threshold. These are **close walls**. The
+LINTEL bottom family never clips, because its `h>>1` halves the excursion.
+
+**And the fix is cheap, which was not previously known.** Tested over the whole
+corpus: the renderer's clipped output is *exactly* the unclipped program's cells
+with out-of-range rows dropped — **39,570 of 39,570 columns, no exceptions**.
+The cell CONTENT is unchanged; only which cells get written changes. Each
+column's tile is a pure function of its row, so clamping the row range simply
+drops leading or trailing cells (1.01 dropped of 1.50 per clipped column).
+
+**So the "clipping fallback" is not a second renderer.** It is the same baked
+program, played with leading/trailing cells skipped — a skip count and a
+shortened play count, computable at dispatch from the absolute row the cursor
+already holds. That makes the 19.87% recoverable rather than an architectural
+dead end.
 
 ### What this does to the 65,785 T figure
 
@@ -619,9 +672,15 @@ Whole update, adding the five corrected front-end stages (41,760 T), BORDERHOIST
 
 > **IMPLIED FROM COMPOSED COST — NOT MEASURED FPS.**
 
-**The 30 Hz gate is 119,318 T. The measured compiled-edge-program architecture
-does not reach it** — not even in the clipping-free bound. It clears the 20 Hz
-gate (178,977 T) comfortably, which the current implemented pipeline does not.
+**Against the actual gates, this is a success.** The solid target is 20 Hz /
+178,977 T, and the measured architecture clears it with **25% margin even in the
+pessimistic measured+fallback case** — while the current implemented pipeline
+(219,300 T, 16.3 /s) does not clear it at all. The 30 Hz aspiration is missed at
+123,315-142,894 T; that is a stretch goal, not the spec.
+
+*(Correction: an earlier write-up of this result called 30 Hz "the target it was
+pursued for" and treated missing it as a failure. That was wrong — 30 Hz is
+aspirational, 20 Hz is the solid target, and this clears it.)*
 
 ### What PROGJOIN still does not close
 
@@ -685,8 +744,9 @@ unhandled at runtime. Open.
 
 **C5 — Polar vs TileSector oracle divergence**, traced upstream. Open.
 
-**C6 — A46 bank switching is entirely unmodelled**, on a table 45x the configured
-cartridge.
+**C6 — A46 bank switching is entirely unmodelled.** The 2.91 MB table is inside
+the 4 MiB cartridge ceiling, so size is affordable; the open cost is how often a
+dispatch crosses a bank and what that costs.
 
 **C7 — VDP wait states are not modelled** in the upload figure.
 

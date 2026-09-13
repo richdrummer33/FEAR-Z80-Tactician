@@ -61,9 +61,9 @@ Whole update, with BORDERHOIST and a representative upload: **142,894 T
 
 > IMPLIED FROM COMPOSED COST — NOT MEASURED FPS.
 
-**This does not reach the 30 Hz gate (119,318 T)** — not even in the
-clipping-free bound. It clears 20 Hz comfortably, which the current implemented
-pipeline does not.
+**This CLEARS the 20 Hz solid target (178,977 T) with 25% margin**, in the
+pessimistic case, while the current implemented pipeline does not clear it at
+all. The 30 Hz aspiration is missed — that is a stretch goal, not the spec.
 
 ### How much of A46 is actually built — after PROGJOIN
 
@@ -118,10 +118,17 @@ row walk 13,279, edge tile select 11,550.
 - **C4 — seven corners have no accurate baked leaf**; the `0xff` escape marker is
   unhandled at runtime.
 - **C5 — Polar vs TileSector oracle divergence**, traced upstream.
-- **A46 has no clipping story.** Compiled programs are position-independent and
-  carry no screen clipping, while `draw_edge` clamps rows to the 18-row
-  viewport. **19.21% of run-edges need it** and cannot be baked; a further 0.65%
-  hit the 255 inverse-depth clamp. No A46 budget contains a fallback.
+- **A46 has no clipping story yet — but it is cheap.** Compiled programs are
+  position-independent and carry no screen clipping, while `draw_edge` clamps
+  the drawn row range to the 18-row viewport. **19.21% of run-edges need it**;
+  a further 0.65% hit the inverse-depth clamp. This is **near-wall frustum
+  clipping, not occlusion** (occlusion is the depth sort plus near-to-far
+  ownership): close walls whose top leaves the top of the screen or bottom the
+  bottom, at half-heights 95-111 against a ~72 threshold.
+  **Measured: the clipped output is exactly the unclipped program's cells with
+  out-of-range rows dropped — 39,570 of 39,570 columns.** So the fallback is a
+  skip count plus a shortened play count over the SAME program, not a second
+  renderer.
 - **The published dispatch key was wrong twice**, both found only by executing
   it: it does not distinguish a full chunk from a short final one, and it needs
   C+1 thresholds rather than C, because the self-chaining destination delta
@@ -146,17 +153,19 @@ row walk 13,279, edge tile select 11,550.
 
 | | value |
 | --- | --- |
-| cartridge configured | `-Wm-yo4` = **64 KiB** |
+| cartridge configured | `-Wm-yo4` = **64 KiB** — an artefact of the 2D demo, NOT a constraint |
+| platform ceiling | **4 MiB**; 512 KiB and 1 MiB are ordinary GG sizes |
+| project position | up to 4 MiB available, **<= 1 MiB preferable**, but not at the cost of fidelity, scale or update rate |
 | committed ROMs | 2 x 65,536 B — **GOAP tactical-AI demo only, not the renderer** |
 | generated ROM tables in `src/generated` | 8,884 B across 24 arrays |
 | Game Gear persistent WRAM | 381 B |
 | host-oracle-only state (not in cartridge) | 768 B |
 | A46 ROM in `src/` | **0 bytes, 0 files** |
-| A46 ROM if built, at C=6 | **~2.91 MB — 45x the configured cartridge** |
+| A46 ROM if built, at C=6 | **~2.91 MB — affordable inside 4 MiB; above the 1 MiB comfort point, so worth shrinking** |
 | A46 bank-switching cost | **UNMODELLED** |
 
-A 4 MB cartridge is an assumption this repository **does not currently make**.
-Taking it is an explicit decision.
+The 64 KiB setting carries over from the 2D GOAP demo. Raising it is a build
+change, not a platform problem.
 
 ---
 
@@ -164,10 +173,12 @@ Taking it is an explicit decision.
 
 | | cycle gate | status |
 | --- | ---: | --- |
-| **20 Hz — solid target** | ~179k T/update | **missed: 219k, 23% over** |
-| **30 Hz — aspiration** | ~119k T/update | missed: 84% over |
-| A46 future pipeline vs 30 Hz | ~119k T | **misses: 143k measured+fallback, 123k clipping-free bound** |
-| A46 future pipeline vs 20 Hz | ~179k T | **clears, with margin** |
+| **60 Hz — lofty dream** | ~59.7k T | not a plan |
+| **30 Hz — aspiration / fallback** | ~119.3k T | nice to reach, not required |
+| **20 Hz — SOLID TARGET, clearing it is success** | ~179.0k T | — |
+| current implemented pipeline | 219,300 T | **misses 20 Hz by 23%** |
+| **A46, measured + clipping fallback** | **142,894 T** | **CLEARS 20 Hz, 25% margin** |
+| A46, clipping-free bound | 123,315 T | clears 20 Hz; just misses 30 Hz |
 
 Neither gate includes game logic, input, audio, VBlank service, inter-stage
 glue, VDP wait states, or banking.
@@ -207,24 +218,26 @@ cells, **0 wrong cells, 0 stray writes**.
 
 ## Next experiment — ONE rung only
 
-**Decide whether the compiled edge-program architecture survives its own
-measurement, before building any more of it.**
+**Implement clipping in the compiled-program path, and recover the 19.87%.**
 
-As measured it lands at ~25 updates/s with the fallback and ~29 clipping-free —
-short of the 30 Hz gate it was pursued for — and it needs ~2.91 MB against a
-64 KiB cartridge. Two questions decide whether to continue, in order:
+This is now the highest-value rung and it is well understood. Clipping is a pure
+row-range filter over an unchanged program body (39,570/39,570 columns verified),
+so the work is: compute a leading skip count and a shortened play count at
+dispatch — from the absolute row the destination cursor already holds — then play
+the same baked program. Verify against the renderer's `draw_edge` on the
+currently-excluded run-edges, and cycle-count the addition.
 
-1. **Tune the rank dispatcher and re-measure.** The kernel is untuned: the
-   descriptor lookup repeats per chunk although family is constant per
-   run-edge, and the chunk advance uses a `djnz` add loop. If dispatch does not
-   fall substantially from 1,038.8 T, the architecture does not reach 30 Hz and
-   the ROM cost cannot be justified.
-2. **Price the clipping fallback** for the 19.87% of run-edges that cannot be
-   baked. No budget contains it.
+Success would take the architecture from 80.13% coverage to full coverage, and
+from ~25 updates/s toward the ~29 /s clipping-free bound.
 
-Only if both land well does integrating a complete materializer — column walk,
-interior fill, borders, and a whole 20x18 name-table comparison — become the
-right next build.
+Two follow-ons, in order, neither a gate on the above:
+
+1. **Tune the rank dispatcher.** It measured 1,038.8 T untuned: the descriptor
+   lookup repeats per chunk although family is constant per run-edge, and the
+   chunk advance uses a `djnz` add loop. This is upside on an already-successful
+   result, not a condition for continuing.
+2. **Integrate a complete materializer** — column walk, interior fill, borders —
+   and compare a whole 20x18 name table, which PROGJOIN did not do.
 
 ## Invalidated / superseded — must not return
 
@@ -240,7 +253,7 @@ right next build.
 | **1.07 MB** A46 ROM | corrected to 3.00 MB at L=4 / 2.91 MB at C=6 |
 | **65,785 T** A46 materializer | superseded by PROGJOIN: **96,848 T** measured+fallback, **77,269 T** clipping-free bound |
 | **381 T** rank dispatch | measured at **1,038.8 T** for a dispatch that returns a playable program |
-| **~32 updates/s** for A46 | superseded: **25.1 /s** measured+fallback, **29.0 /s** bound — does NOT reach 30 Hz |
+| **~32 updates/s** for A46 | superseded: **25.1 /s** measured+fallback, **29.0 /s** bound. Clears the 20 Hz solid target; misses the 30 Hz aspiration. |
 | **"37.9"** | video frames per logical **AI** tick, GOAP demo. Real rate 1.58 ticks/s |
 | **"60 fps"** | ffmpeg capture rate / NTSC display cadence |
 
