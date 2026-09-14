@@ -27,8 +27,8 @@ _ts_candidate_span_fast::
         ; Materialize the tiny projected span into fixed scratch once.
         ld      hl, (#_g_candidate_ctx + 3)
         ld      a, (hl)
-        ld      (#cand_col$), a
-        inc     hl
+        ld      (#cand_col$), a ; ld means load the value of a into the memory location pointed by cand_col$
+        inc     hl              ; hl is the pointer to the next byte of the tiny projected span
         ld      a, (hl)
         ld      (#cand_end$), a
         inc     hl
