@@ -1,0 +1,157 @@
+name: Latest playable Game Gear validation
+
+on:
+  push:
+    branches:
+      - validation/playable-latest-20260913
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-build-capture:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/playable-validation
+          git rev-parse HEAD | tee build/playable-validation/source-commit.txt
+          git log -1 --oneline | tee build/playable-validation/source-log.txt
+
+      - name: Host verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          make polar-test | tee build/playable-validation/polar-test.txt
+          make target-solve-census | tee build/playable-validation/target-solve-census.txt
+          make border-hoist | tee build/playable-validation/border-hoist.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build playable ROM from current renderer head
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+            build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" \
+            gg-tilesector-polar 2>&1 | tee build/playable-validation/build.txt
+          cp build/gg-tilesector-polar.gg build/playable-validation/FEAR-Z80-latest-playable.gg
+          cp build/gg-tilesector-polar.sym build/playable-validation/FEAR-Z80-latest-playable.sym
+          sha256sum build/playable-validation/FEAR-Z80-latest-playable.gg | tee build/playable-validation/SHA256SUMS.txt
+          stat -c 'rom_bytes=%s' build/playable-validation/FEAR-Z80-latest-playable.gg | tee build/playable-validation/rom-size.txt
+
+      - name: Build Gearsystem verification tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Capture playable movement proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          python3 -m pip install --user --disable-pip-version-check pillow
+          ROOT=build/playable-validation/capture
+          mkdir -p "$ROOT"
+          ROM=build/playable-validation/FEAR-Z80-latest-playable.gg
+          SYM=build/playable-validation/FEAR-Z80-latest-playable.sym
+          for scenario in roomA-forward roomA-turn roomA-button1; do
+            D="$ROOT/$scenario"; mkdir -p "$D/frames"
+            ./build/tilesector_state_capture "$ROM" "$SYM" \
+              --vblank-sequence "$scenario" 180 30 "$D/frames/frame" "$D/state.csv" \
+              | tee "$D/capture.txt"
+            ffmpeg -y -loglevel error -framerate 60 -i "$D/frames/frame-%04d.ppm" \
+              -c:v libx264 -pix_fmt yuv420p -preset medium -crf 18 "$D/video.mp4"
+          done
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import csv
+          from PIL import Image, ImageDraw
+          root=Path('build/playable-validation/capture')
+          checks={
+              'roomA-forward': lambda a,b: (a['x_q4'],a['y_q4']) != (b['x_q4'],b['y_q4']),
+              'roomA-turn': lambda a,b: a['yaw'] != b['yaw'],
+          }
+          lines=[]
+          for scenario, pred in checks.items():
+              rows=list(csv.DictReader((root/scenario/'state.csv').open()))
+              if not rows or not pred(rows[0],rows[-1]):
+                  raise SystemExit(f'FAIL: {scenario} produced no expected player-state change')
+              lines.append(f'{scenario}: PASS start=({rows[0]["x_q4"]},{rows[0]["y_q4"]},yaw={rows[0]["yaw"]}) end=({rows[-1]["x_q4"]},{rows[-1]["y_q4"]},yaw={rows[-1]["yaw"]})')
+
+          picks=(0,59,119,179)
+          scenarios=('roomA-forward','roomA-turn','roomA-button1')
+          canvas=Image.new('RGB',(160*4,144*len(scenarios)),(0,0,0))
+          draw=ImageDraw.Draw(canvas)
+          for r,scenario in enumerate(scenarios):
+              for c,n in enumerate(picks):
+                  im=Image.open(root/scenario/'frames'/f'frame-{n:04d}.ppm').convert('RGB')
+                  canvas.paste(im,(c*160,r*144))
+              draw.text((2,r*144+2),scenario,fill=(255,255,255))
+          canvas.save(root/'sample-contact-sheet.png')
+          for scenario in scenarios:
+              for n,label in ((0,'start'),(89,'mid'),(179,'end')):
+                  Image.open(root/scenario/'frames'/f'frame-{n:04d}.ppm').convert('RGB').save(root/f'{scenario}-{label}.png')
+          (root/'sanity.txt').write_text('\n'.join(lines)+'\nPLAYABLE_INPUT_SANITY=PASS\n')
+          print('\n'.join(lines))
+          print('PLAYABLE_INPUT_SANITY=PASS')
+          PY
+
+      - name: Package validation bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/playable-validation
+          zip -9 -r FEAR-Z80-latest-playable-validation.zip \
+            FEAR-Z80-latest-playable.gg FEAR-Z80-latest-playable.sym \
+            SHA256SUMS.txt rom-size.txt source-commit.txt source-log.txt \
+            polar-test.txt target-solve-census.txt border-hoist.txt build.txt capture
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: FEAR-Z80-latest-playable-validation
+          path: |
+            build/playable-validation/FEAR-Z80-latest-playable.gg
+            build/playable-validation/FEAR-Z80-latest-playable.sym
+            build/playable-validation/FEAR-Z80-latest-playable-validation.zip
+            build/playable-validation/SHA256SUMS.txt
+            build/playable-validation/rom-size.txt
+            build/playable-validation/source-commit.txt
+            build/playable-validation/source-log.txt
+            build/playable-validation/polar-test.txt
+            build/playable-validation/target-solve-census.txt
+            build/playable-validation/border-hoist.txt
+            build/playable-validation/build.txt
+            build/playable-validation/capture/*.png
+            build/playable-validation/capture/*/video.mp4
+            build/playable-validation/capture/*/state.csv
+            build/playable-validation/capture/*/capture.txt
+            build/playable-validation/capture/sanity.txt
+          retention-days: 30
