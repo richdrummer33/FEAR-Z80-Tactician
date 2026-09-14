@@ -1,0 +1,184 @@
+name: Integrated materializer ROM A-B
+
+on:
+  push:
+    branches:
+      - validation/integrated-materializer-ab-20260914
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain build/materializer-ab
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbk-linux64.tar.gz -C .toolchain 2>/dev/null || tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build exact baseline ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+            build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" \
+            gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/materializer-ab/baseline.gg
+          cp build/gg-tilesector-polar.sym build/materializer-ab/baseline.sym
+          BASE_SHA="$(sha256sum build/materializer-ab/baseline.gg | cut -d' ' -f1)"
+          echo "baseline sha256=$BASE_SHA" | tee build/materializer-ab/hashes.txt
+          test "$BASE_SHA" = "6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c"
+          echo EXACT_PREVIOUS_PLAYABLE_ROM_HASH=PASS
+
+      - name: Apply run-carry and border-hoist to actual GG source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/apply_integrated_materializer_rung.py
+          git diff -- src/tilesector_polar_materialize_gg.s | tee build/materializer-ab/integration.patch
+
+      - name: Build integrated ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/tilesector_polar_materialize_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" \
+            gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/materializer-ab/optimized.gg
+          cp build/gg-tilesector-polar.sym build/materializer-ab/optimized.sym
+          OPT_SHA="$(sha256sum build/materializer-ab/optimized.gg | cut -d' ' -f1)"
+          echo "optimized sha256=$OPT_SHA" | tee -a build/materializer-ab/hashes.txt
+          test "$OPT_SHA" != "6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c"
+
+      - name: Build Gearsystem cycle tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
+          SRCS=(
+            Audio.cpp Cartridge.cpp CodemastersMemoryRule.cpp GameGearIOPorts.cpp GearsystemCore.cpp Input.cpp
+            KoreanMemoryRule.cpp KoreanMSXSMS8000MemoryRule.cpp KoreanSMS32KB2000MemoryRule.cpp KoreanMSX32KB2000MemoryRule.cpp
+            Korean2000XOR1FMemoryRule.cpp KoreanMSX8KB0300MemoryRule.cpp Korean0000XORFFMemoryRule.cpp KoreanFFFFHiComMemoryRule.cpp
+            KoreanFFFEMemoryRule.cpp KoreanBFFCMemoryRule.cpp KoreanFFF3FFFCMemoryRule.cpp KoreanMDFFF5MemoryRule.cpp KoreanMDFFF0MemoryRule.cpp
+            Multi4PAKAllActionMemoryRule.cpp IratahackMemoryRule.cpp JumboDahjeeMemoryRule.cpp Eeprom93C46MemoryRule.cpp
+            Memory.cpp MemoryRule.cpp MSXMemoryRule.cpp opcodes.cpp opcodes_cb.cpp opcodes_ed.cpp Processor.cpp RomOnlyMemoryRule.cpp
+            SegaMemoryRule.cpp SG1000MemoryRule.cpp SmsIOPorts.cpp Video.cpp BootromMemoryRule.cpp JanggunMemoryRule.cpp YM2413.cpp
+            VgmRecorder.cpp TraceLogger.cpp audio/Blip_Buffer.cpp audio/Sms_Apu.cpp audio/Stereo_Buffer.cpp
+          )
+          ARGS=()
+          for s in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$s"); done
+          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" \
+            tools/polar_ab_profile.cpp "${ARGS[@]}" build/coredbg/emu2413.o build/coredbg/miniz.o -lm \
+            -o build/polar_ab_profile
+
+      - name: Verify logical-update output is exact and collect direct cycles
+        shell: bash
+        run: |
+          set -euo pipefail
+          R=build/materializer-ab
+          for scenario in roomA-turn roomA-forward; do
+            loops=48
+            if [[ "$scenario" == roomA-forward ]]; then loops=96; fi
+            ./build/polar_ab_profile "$R/baseline.gg" "$R/baseline.sym" 0 "$scenario" "$loops" 6 "$R/baseline-${scenario}.csv"
+            ./build/polar_ab_profile "$R/optimized.gg" "$R/optimized.sym" 0 "$scenario" "$loops" 6 "$R/optimized-${scenario}.csv"
+          done
+          python3 - <<'PY' | tee "$R/exactness.txt"
+          import csv, statistics
+          from pathlib import Path
+          R=Path('build/materializer-ab')
+          for sc in ('roomA-turn','roomA-forward'):
+              a=list(csv.DictReader(open(R/f'baseline-{sc}.csv')))
+              b=list(csv.DictReader(open(R/f'optimized-{sc}.csv')))
+              assert len(a)==len(b) and a
+              bad=[]
+              for i,(x,y) in enumerate(zip(a,b)):
+                  for k in ('x_q4','y_q4','yaw','map_fnv64'):
+                      if x[k]!=y[k]: bad.append((i,k,x[k],y[k]))
+              if bad:
+                  print(f'EXACTNESS_FAIL {sc} mismatches={len(bad)} first={bad[0]}')
+                  raise SystemExit(1)
+              bt=[int(x['loop_T']) for x in a]; ot=[int(x['loop_T']) for x in b]
+              bm=statistics.mean(bt); om=statistics.mean(ot)
+              print(f'EXACTNESS_PASS {sc} logical_updates={len(a)} map/state identical')
+              print(f'DIRECT_LOOP_AB {sc} baseline={bm:.1f}T optimized={om:.1f}T saving={bm-om:.1f}T pct={(1-om/bm)*100:.2f}% hz={3579545/bm:.2f}->{3579545/om:.2f}')
+          PY
+
+      - name: Reconcile full phases for baseline and optimized mode 0
+        shell: bash
+        run: |
+          set -euo pipefail
+          R=build/materializer-ab
+          for variant in baseline optimized; do
+            ./build/polar_mode_cycle_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 48 6 roomA-turn "$R/${variant}-turn-phases.csv" \
+              | tee "$R/${variant}-turn-phases.txt"
+            ./build/polar_mode_cycle_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 96 6 roomA-forward "$R/${variant}-forward-phases.csv" \
+              | tee "$R/${variant}-forward-phases.txt"
+          done
+
+      - name: Summarize measured transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/materializer-ab/summary.txt
+          import csv, statistics
+          from pathlib import Path
+          R=Path('build/materializer-ab')
+          print('=== INTEGRATED MATERIALIZER: EXACT ROM A/B ===')
+          print(open(R/'hashes.txt').read().strip())
+          print('rung: CARRY_EDGE_A + BORDERHOIST, integrated into src/tilesector_polar_materialize_gg.s before assembly')
+          print()
+          for sc,short in [('roomA-turn','turn'),('roomA-forward','forward')]:
+              print(f'[{sc}]')
+              vals={}
+              for v in ('baseline','optimized'):
+                  rows=list(csv.DictReader(open(R/f'{v}-{short}-phases.csv')))
+                  mean=lambda k:statistics.mean(int(r[k]) for r in rows)
+                  vals[v]={k:mean(k) for k in ('loop_T','p1_input_T','p2_render_T','p3_vsync_T','p4_upload_T','p5_tail_T')}
+                  print(f"  {v:9} loop={vals[v]['loop_T']:.1f}T render={vals[v]['p2_render_T']:.1f}T -> {3579545/vals[v]['loop_T']:.2f} updates/s")
+              b,o=vals['baseline'],vals['optimized']
+              print(f"  direct saving: loop {b['loop_T']-o['loop_T']:.1f}T ({(1-o['loop_T']/b['loop_T'])*100:.2f}%), render {b['p2_render_T']-o['p2_render_T']:.1f}T ({(1-o['p2_render_T']/b['p2_render_T'])*100:.2f}%)")
+              print()
+          print(open(R/'exactness.txt').read().strip())
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integrated-materializer-rom-ab
+          path: |
+            build/materializer-ab/baseline.gg
+            build/materializer-ab/baseline.sym
+            build/materializer-ab/optimized.gg
+            build/materializer-ab/optimized.sym
+            build/materializer-ab/hashes.txt
+            build/materializer-ab/integration.patch
+            build/materializer-ab/*csv
+            build/materializer-ab/*txt
+          if-no-files-found: warn
+          retention-days: 30
