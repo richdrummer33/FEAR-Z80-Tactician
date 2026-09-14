@@ -1,21 +1,18 @@
-name: Integrated materializer edge-rowbase A-B
+name: Integrated materializer target census
 
 on:
   push:
     branches:
       - validation/integrated-materializer-ab-20260914
-  pull_request:
-    branches:
-      - validation/playable-latest-20260913
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  edge-rowbase-ab:
+  target-census:
     runs-on: ubuntu-22.04
-    timeout-minutes: 50
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -23,13 +20,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .toolchain build/edge-rowbase-ab
+          mkdir -p .toolchain build/target-census
           curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
           echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
           tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
-      - name: Build exact baseline ROM
+      - name: Build exact baseline then proven carry-border ROM
         shell: bash
         run: |
           set -euo pipefail
@@ -40,228 +37,140 @@ jobs:
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
             POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
             POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
-          cp build/gg-tilesector-polar.gg build/edge-rowbase-ab/baseline.gg
-          cp build/gg-tilesector-polar.sym build/edge-rowbase-ab/baseline.sym
-          BASE_SHA="$(sha256sum build/edge-rowbase-ab/baseline.gg | cut -d' ' -f1)"
-          echo "baseline sha256=$BASE_SHA" | tee build/edge-rowbase-ab/hashes.txt
+          BASE_SHA="$(sha256sum build/gg-tilesector-polar.gg | cut -d' ' -f1)"
+          echo "baseline sha256=$BASE_SHA"
           test "$BASE_SHA" = "6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c"
 
-      - name: Build carry-border ROM
-        shell: bash
-        run: |
-          set -euo pipefail
           python3 tools/apply_integrated_materializer_rung.py
           rm -f build/tilesector_polar_materialize_gg.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
             POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
             POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
-          cp build/gg-tilesector-polar.gg build/edge-rowbase-ab/carry.gg
-          cp build/gg-tilesector-polar.sym build/edge-rowbase-ab/carry.sym
-          echo "carry sha256=$(sha256sum build/edge-rowbase-ab/carry.gg | cut -d' ' -f1)" | tee -a build/edge-rowbase-ab/hashes.txt
+          cp build/gg-tilesector-polar.gg build/target-census/carry.gg
+          cp build/gg-tilesector-polar.sym build/target-census/carry.sym
+          cp build/gg-tilesector-polar.noi build/target-census/carry.noi
+          sha256sum build/target-census/carry.gg | tee build/target-census/carry.sha256
 
-      - name: Build carry-border plus edge row-base hoist ROM
+      - name: Make bottom-up profiler mode/scenario aware
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('src/tilesector_polar_materialize_gg.s')
+          p=Path('tools/polar_function_profile_runner.cpp')
           s=p.read_text()
+          anchor='int main(int argc,char**argv) {'
+          helper=r'''static bool press_scenario(GearsystemCore& core,const std::string& s) {
+              if(s=="roomA-turn") core.KeyPressed(Joypad_1,Key_Right);
+              else if(s=="roomA-forward") core.KeyPressed(Joypad_1,Key_Up);
+              else if(s=="static") return true;
+              else return false;
+              return true;
+          }
 
-          data_old="""r_edge_left$:
-                  .ds     2
-          r_edge_slope$:
-                  .ds     1
-          """
-          data_new="""r_edge_left$:
-                  .ds     2
-          r_edge_rowbase$:
-                  .ds     2
-          r_edge_slope$:
-                  .ds     1
-          """
-          assert s.count(data_old)==1
-          s=s.replace(data_old,data_new,1)
-
-          sym_old="""sym_slope_store$:
-                  ld      (#r_edge_slope$), a
-                  ld      a, (#r_top_min$)
-          sym_edge_rows_loop$:
-          """
-          sym_new="""sym_slope_store$:
-                  ld      (#r_edge_slope$), a
-                  ; EDGEROWBASE: FULL symmetry always uses the top-edge LUT group.
-                  ; Hoist edge_lut + 2*(slope+7)*31 once for the complete edge.
-                  add     a, #7
-                  ld      e, a
-                  ld      l, e
-                  ld      h, #0
-                  ld      d, #0
-                  push    de
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  pop     de
-                  or      a
-                  sbc     hl, de
-                  add     hl, hl
-                  ld      de, #edge_lut$
-                  add     hl, de
-                  ld      (#r_edge_rowbase$), hl
-                  ld      a, (#r_top_min$)
-          sym_edge_rows_loop$:
-          """
-          assert s.count(sym_old)==1
-          s=s.replace(sym_old,sym_new,1)
-
-          sym_lookup_old="""        ld      a, (#r_edge_slope$)
-                  add     a, #7
-                  ld      e, a
-                  ld      l, e
-                  ld      h, #0
-                  ld      d, #0
-                  push    de
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl                  ; *32
-                  pop     de
-                  or      a
-                  sbc     hl, de                  ; *31
-                  ld      a, (#r_local_index$)
-                  ld      e, a
-                  ld      d, #0
-                  add     hl, de
-                  add     hl, hl
-                  ld      de, #edge_lut$
-                  add     hl, de
-                  ld      e, (hl)
-                  inc     hl
-                  ld      d, (hl)
-          """
-          sym_lookup_new="""        ; EDGEROWBASE: row base is invariant for this complete edge.
-                  ld      a, (#r_local_index$)
-                  add     a, a
-                  ld      e, a
-                  ld      d, #0
-                  ld      hl, (#r_edge_rowbase$)
-                  add     hl, de
-                  ld      e, (hl)
-                  inc     hl
-                  ld      d, (hl)
-          """
-          assert s.count(sym_lookup_old)==1
-          s=s.replace(sym_lookup_old,sym_lookup_new,1)
-
-          generic_old="""slope_store$:
-                  ld      (#r_edge_slope$), a
-                  ; Polar path may cross more than two tile rows at steep/near
-          """
-          generic_new="""slope_store$:
-                  ld      (#r_edge_slope$), a
-                  ; EDGEROWBASE: bottom and slope are constant for the whole edge.
-                  ; Compute edge_lut + 2*(bottom*15 + slope+7)*31 once here.
-                  add     a, #7
-                  ld      e, a
-                  ld      a, (#r_edge_bottom$)
-                  or      a
-                  jr      z, edge_rb_group_ready$
-                  ld      a, e
-                  add     a, #15
-                  ld      e, a
-          edge_rb_group_ready$:
-                  ld      l, e
-                  ld      h, #0
-                  ld      d, #0
-                  push    de
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  add     hl, hl
-                  pop     de
-                  or      a
-                  sbc     hl, de
-                  add     hl, hl
-                  ld      de, #edge_lut$
-                  add     hl, de
-                  ld      (#r_edge_rowbase$), hl
-                  ; Polar path may cross more than two tile rows at steep/near
-          """
-          assert s.count(generic_old)==1
-          s=s.replace(generic_old,generic_new,1)
-
-          generic_lookup_old="""        ; group = slope+7 + (bottom?15:0); index = group*31 + local_index.
-                  ld      a, (#r_edge_slope$)
-                  add     a, #7
-                  ld      e, a
-                  ld      a, (#r_edge_bottom$)
-                  or      a
-                  jr      z, group_ready$
-                  ld      a, e
-                  add     a, #15
-                  ld      e, a
-          group_ready$:
-                  ld      l, e
-                  ld      h, #0
-                  ld      d, #0
-                  push    de                    ; group
-                  add     hl, hl                ; 2
-                  add     hl, hl                ; 4
-                  add     hl, hl                ; 8
-                  add     hl, hl                ; 16
-                  add     hl, hl                ; 32
-                  pop     de
-                  or      a
-                  sbc     hl, de                ; 31*group
-                  ld      a, (#r_local_index$)
-                  ld      e, a
-                  ld      d, #0
-                  add     hl, de
-                  add     hl, hl
-                  ld      de, #edge_lut$
-                  add     hl, de
-                  ld      e, (hl)
-                  inc     hl
-                  ld      d, (hl)
-          """
-          generic_lookup_new="""        ; EDGEROWBASE: only the local coordinate varies from row to row.
-                  ld      a, (#r_local_index$)
-                  add     a, a
-                  ld      e, a
-                  ld      d, #0
-                  ld      hl, (#r_edge_rowbase$)
-                  add     hl, de
-                  ld      e, (hl)
-                  inc     hl
-                  ld      d, (hl)
-          """
-          assert s.count(generic_lookup_old)==1
-          s=s.replace(generic_lookup_old,generic_lookup_new,1)
+          int main(int argc,char**argv) {'''
+          assert s.count(anchor)==1
+          s=s.replace(anchor,helper,1)
+          old=r'''    if(argc<4) {
+                  std::fprintf(stderr,"usage: %s rom.gg rom.sym rom.noi [updates=60] [warmup=8]\n",argv[0]);
+                  return 2;
+              }
+              const char* rom=argv[1];
+              const char* sym=argv[2];
+              const char* noi=argv[3];
+              unsigned target=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):60u;
+              unsigned warmup=(argc>5)?(unsigned)std::strtoul(argv[5],nullptr,0):8u;
+          '''
+          new=r'''    if(argc<6) {
+                  std::fprintf(stderr,"usage: %s rom.gg rom.sym rom.noi mode scenario [updates=60] [warmup=8]\n",argv[0]);
+                  return 2;
+              }
+              const char* rom=argv[1];
+              const char* sym=argv[2];
+              const char* noi=argv[3];
+              unsigned wanted_mode=(unsigned)std::strtoul(argv[4],nullptr,0);
+              const std::string scenario=argv[5];
+              unsigned target=(argc>6)?(unsigned)std::strtoul(argv[6],nullptr,0):60u;
+              unsigned warmup=(argc>7)?(unsigned)std::strtoul(argv[7],nullptr,0):8u;
+              if(wanted_mode>2u) return 2;
+          '''
+          assert s.count(old)==1
+          s=s.replace(old,new,1)
+          old=r'''    u16 phase_addr=0;
+              if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
+                  std::fprintf(stderr,"phase symbol missing\n"); return 3;
+              }
+          '''
+          new=r'''    u16 phase_addr=0,mode_addr=0;
+              if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
+                  std::fprintf(stderr,"phase symbol missing\n"); return 3;
+              }
+              if(!find_symbol(sym,"_g_tspf_appearance_mode",mode_addr)&&!find_symbol(sym,"g_tspf_appearance_mode",mode_addr)) {
+                  std::fprintf(stderr,"mode symbol missing\n"); return 3;
+              }
+          '''
+          assert s.count(old)==1
+          s=s.replace(old,new,1)
+          old='''    unsigned loops=0,measured=0;
+              uint8_t last_phase=mem->DebugRetrieve(phase_addr);
+          '''
+          new='''    unsigned loops=0,measured=0;
+              bool armed=false;
+              uint8_t last_phase=mem->DebugRetrieve(phase_addr);
+          '''
+          assert s.count(old)==1
+          s=s.replace(old,new,1)
+          old=r'''        if(p!=last_phase) {
+                  if(p==1u) {
+                      if(loops>=warmup) ++measured;
+                      ++loops;
+                  }
+                  last_phase=p;
+              }
+          '''
+          new=r'''        if(p!=last_phase) {
+                  if(p==1u) {
+                      if(!armed) {
+                          mem->Write(mode_addr,(uint8_t)wanted_mode);
+                          if(mem->DebugRetrieve(mode_addr)!=(uint8_t)wanted_mode) {
+                              std::fprintf(stderr,"mode write failed\n"); return 6;
+                          }
+                          if(!press_scenario(core,scenario)) {
+                              std::fprintf(stderr,"bad scenario\n"); return 2;
+                          }
+                          armed=true; loops=0; measured=0;
+                      } else {
+                          if(loops>=warmup) ++measured;
+                          ++loops;
+                      }
+                  }
+                  last_phase=p;
+              }
+          '''
+          assert s.count(old)==1
+          s=s.replace(old,new,1)
+          old='''    std::printf("Polar render PC profile: measured_updates=%u render_cycles=%llu render_instructions=%llu\\n",
+                          measured,(unsigned long long)total_render_cycles,(unsigned long long)total_render_ins);
+          '''
+          new='''    std::printf("Polar render PC profile: mode=%u scenario=%s measured_updates=%u render_cycles=%llu render_instructions=%llu\\n",
+                          wanted_mode,scenario.c_str(),measured,(unsigned long long)total_render_cycles,(unsigned long long)total_render_ins);
+          '''
+          assert s.count(old)==1
+          s=s.replace(old,new,1)
           p.write_text(s)
-          print('INTEGRATED_MATERIALIZER_RUNG=EDGE_LUT_ROWBASE_HOIST')
+          print('patched target-aware bottom-up profiler')
           PY
-          git diff -- src/tilesector_polar_materialize_gg.s > build/edge-rowbase-ab/integration.patch
-          rm -f build/tilesector_polar_materialize_gg.o build/gg-tilesector-polar.*
-          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
-            POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
-            POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
-          cp build/gg-tilesector-polar.gg build/edge-rowbase-ab/rowbase.gg
-          cp build/gg-tilesector-polar.sym build/edge-rowbase-ab/rowbase.sym
-          echo "rowbase sha256=$(sha256sum build/edge-rowbase-ab/rowbase.gg | cut -d' ' -f1)" | tee -a build/edge-rowbase-ab/hashes.txt
 
-      - name: Build Gearsystem tools
+      - name: Build only the target-aware Gearsystem profiler
         shell: bash
         run: |
           set -euo pipefail
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
           ROOT="$PWD/.toolchain/Gearsystem"
           INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
+          mkdir -p build/coredbg
+          gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/src/audio/emu2413/emu2413.c" -o build/coredbg/emu2413.o
+          gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/platforms/shared/dependencies/miniz/miniz.c" -o build/coredbg/miniz.o
           SRCS=(Audio.cpp Cartridge.cpp CodemastersMemoryRule.cpp GameGearIOPorts.cpp GearsystemCore.cpp Input.cpp
             KoreanMemoryRule.cpp KoreanMSXSMS8000MemoryRule.cpp KoreanSMS32KB2000MemoryRule.cpp KoreanMSX32KB2000MemoryRule.cpp
             Korean2000XOR1FMemoryRule.cpp KoreanMSX8KB0300MemoryRule.cpp Korean0000XORFFMemoryRule.cpp KoreanFFFFHiComMemoryRule.cpp
@@ -270,71 +179,25 @@ jobs:
             Memory.cpp MemoryRule.cpp MSXMemoryRule.cpp opcodes.cpp opcodes_cb.cpp opcodes_ed.cpp Processor.cpp RomOnlyMemoryRule.cpp
             SegaMemoryRule.cpp SG1000MemoryRule.cpp SmsIOPorts.cpp Video.cpp BootromMemoryRule.cpp JanggunMemoryRule.cpp YM2413.cpp
             VgmRecorder.cpp TraceLogger.cpp audio/Blip_Buffer.cpp audio/Sms_Apu.cpp audio/Stereo_Buffer.cpp)
-          ARGS=(); for s in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$s"); done
-          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_ab_profile.cpp "${ARGS[@]}" \
-            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_ab_profile
+          ARGS=(); for x in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$x"); done
+          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_function_profile_runner.cpp "${ARGS[@]}" \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_target_census
 
-      - name: Exact update traces
+      - name: Census exact mode-0 turn and forward workloads
         shell: bash
         run: |
           set -euo pipefail
-          R=build/edge-rowbase-ab
-          for scenario in roomA-turn roomA-forward; do
-            loops=48; [[ "$scenario" == roomA-forward ]] && loops=96
-            for variant in baseline carry rowbase; do
-              ./build/polar_ab_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 "$scenario" "$loops" 6 "$R/${variant}-${scenario}.csv"
-            done
-          done
-          python3 - <<'PY' | tee "$R/exactness.txt"
-          import csv
-          from pathlib import Path
-          R=Path('build/edge-rowbase-ab')
-          for sc in ('roomA-turn','roomA-forward'):
-              base=list(csv.DictReader(open(R/f'baseline-{sc}.csv')))
-              for v in ('carry','rowbase'):
-                  cur=list(csv.DictReader(open(R/f'{v}-{sc}.csv')))
-                  assert len(base)==len(cur)
-                  bad=[]
-                  for i,(a,b) in enumerate(zip(base,cur)):
-                      for k in ('x_q4','y_q4','yaw','map_fnv64'):
-                          if a[k]!=b[k]: bad.append((i,k,a[k],b[k]))
-                  if bad:
-                      print(f'EXACTNESS_FAIL {v} {sc} mismatches={len(bad)} first={bad[0]}'); raise SystemExit(1)
-                  print(f'EXACTNESS_PASS {v} {sc} logical_updates={len(base)} map/state identical')
-          PY
-
-      - name: Full phase reconciliation and transfer report
-        shell: bash
-        run: |
-          set -euo pipefail
-          R=build/edge-rowbase-ab
-          for variant in baseline carry rowbase; do
-            ./build/polar_mode_cycle_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 48 6 roomA-turn "$R/${variant}-turn-phases.csv" | tee "$R/${variant}-turn-phases.txt"
-            ./build/polar_mode_cycle_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 96 6 roomA-forward "$R/${variant}-forward-phases.csv" | tee "$R/${variant}-forward-phases.txt"
-          done
-          python3 - <<'PY' | tee "$R/summary.txt"
-          import csv,statistics
-          from pathlib import Path
-          R=Path('build/edge-rowbase-ab')
-          print('=== EXACT-ROM EDGE LUT ROWBASE TRANSFER ===')
-          print(open(R/'hashes.txt').read().strip())
-          for sc,short in [('roomA-turn','turn'),('roomA-forward','forward')]:
-              vals={}
-              for v in ('baseline','carry','rowbase'):
-                  rows=list(csv.DictReader(open(R/f'{v}-{short}-phases.csv')))
-                  m=lambda k:statistics.mean(int(r[k]) for r in rows)
-                  vals[v]={'loop':m('loop_T'),'render':m('p2_render_T')}
-                  print(f'{sc} {v:8}: loop={vals[v]["loop"]:.1f}T render={vals[v]["render"]:.1f}T hz={3579545/vals[v]["loop"]:.2f}')
-              b,c,r=vals['baseline'],vals['carry'],vals['rowbase']
-              print(f'  baseline->rowbase loop saving {b["loop"]-r["loop"]:.1f}T ({(1-r["loop"]/b["loop"])*100:.2f}%), render saving {b["render"]-r["render"]:.1f}T ({(1-r["render"]/b["render"])*100:.2f}%)')
-              print(f'  rowbase incremental over carry: loop {c["loop"]-r["loop"]:.1f}T, render {c["render"]-r["render"]:.1f}T')
-          print(open(R/'exactness.txt').read().strip())
-          PY
+          R=build/target-census
+          ./build/polar_target_census "$R/carry.gg" "$R/carry.sym" "$R/carry.noi" 0 roomA-turn 48 6 | tee "$R/turn.txt"
+          ./build/polar_target_census "$R/carry.gg" "$R/carry.sym" "$R/carry.noi" 0 roomA-forward 96 6 | tee "$R/forward.txt"
+          echo '=== KEY ROW CENSUS ===' | tee "$R/summary.txt"
+          grep -E 'Polar render PC profile|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/turn.txt" | tee -a "$R/summary.txt"
+          grep -E 'Polar render PC profile|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/forward.txt" | tee -a "$R/summary.txt"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: integrated-materializer-edge-rowbase-ab
-          path: build/edge-rowbase-ab/
+          name: integrated-materializer-target-census
+          path: build/target-census/
           if-no-files-found: warn
           retention-days: 30
