@@ -1,0 +1,111 @@
+name: Full ROM mode cycle reconciliation
+
+on:
+  pull_request:
+    branches:
+      - claude/renderer-forensic-reconstruction-azzocg
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile-exact-rom:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain build/full-rom-profile
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build the exact playable ROM configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+            build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" \
+            gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/full-rom-profile/FEAR-Z80-latest-playable.gg
+          cp build/gg-tilesector-polar.sym build/full-rom-profile/FEAR-Z80-latest-playable.sym
+          sha256sum build/full-rom-profile/FEAR-Z80-latest-playable.gg | tee build/full-rom-profile/SHA256SUMS.txt
+          test "$(sha256sum build/full-rom-profile/FEAR-Z80-latest-playable.gg | cut -d' ' -f1)" = \
+            "6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c"
+          echo EXACT_PREVIOUS_PLAYABLE_ROM_HASH=PASS
+
+      - name: Build Gearsystem cycle tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Profile same ROM in modes 0 1 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/full-rom-profile
+          ROM="$ROOT/FEAR-Z80-latest-playable.gg"
+          SYM="$ROOT/FEAR-Z80-latest-playable.sym"
+          for mode in 0 1 2; do
+            ./build/polar_mode_cycle_profile "$ROM" "$SYM" "$mode" 48 6 roomA-turn "$ROOT/mode${mode}-turn.csv" \
+              | tee "$ROOT/mode${mode}-turn.txt"
+            ./build/polar_mode_cycle_profile "$ROM" "$SYM" "$mode" 96 6 roomA-forward "$ROOT/mode${mode}-forward.csv" \
+              | tee "$ROOT/mode${mode}-forward.txt"
+          done
+
+      - name: Summarize cadence and slow-frame locations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/full-rom-profile/summary.txt
+          import csv, glob, math, statistics
+          print('=== EXACT FULL-ROM MODE RECONCILIATION ===')
+          print('ROM sha256: 6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c')
+          print()
+          for path in sorted(glob.glob('build/full-rom-profile/mode*-*.csv')):
+              rows=list(csv.DictReader(open(path)))
+              if not rows: continue
+              ints=lambda k:[int(r[k]) for r in rows]
+              loops=ints('loop_T'); render=ints('p2_render_T'); upload=ints('p4_upload_T'); vsync=ints('p3_vsync_T')
+              def pct(v,p):
+                  s=sorted(v); x=p*(len(s)-1); i=int(x); j=min(i+1,len(s)-1)
+                  return s[i]+(x-i)*(s[j]-s[i])
+              hz=3579545.0/statistics.mean(loops)
+              print(f'{path}: updates/s={hz:.2f} loop_avg={statistics.mean(loops):.1f}T p95={pct(loops,.95):.1f}T render_avg={statistics.mean(render):.1f}T upload_avg={statistics.mean(upload):.1f}T vsync_avg={statistics.mean(vsync):.1f}T')
+              worst=sorted(rows,key=lambda r:int(r['loop_T']),reverse=True)[:8]
+              print('  worst frames:')
+              for r in worst:
+                  print(f"    f{r['frame']:>3} {int(r['loop_T']):>8}T  pos=({int(r['x_q4'])/16:.2f},{int(r['y_q4'])/16:.2f}) yaw={r['yaw']} runs={r['active_runs']} touched={r['touched_cells']} selectors={r['selector_tests']} dirty={r['dirty_words']}")
+              print()
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-rom-mode-cycle-profile
+          path: |
+            build/full-rom-profile/FEAR-Z80-latest-playable.gg
+            build/full-rom-profile/FEAR-Z80-latest-playable.sym
+            build/full-rom-profile/SHA256SUMS.txt
+            build/full-rom-profile/mode*.txt
+            build/full-rom-profile/mode*.csv
+            build/full-rom-profile/summary.txt
+          if-no-files-found: warn
+          retention-days: 30
