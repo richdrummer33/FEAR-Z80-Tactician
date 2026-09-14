@@ -19,6 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fix: Proactively configure known_hosts to prevent any SSH verification failures
+      - name: Configure SSH Known Hosts
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
       - name: Record source identity
         shell: bash
         run: |
@@ -65,10 +73,12 @@ jobs:
           sha256sum build/playable-validation/FEAR-Z80-latest-playable.gg | tee build/playable-validation/SHA256SUMS.txt
           stat -c 'rom_bytes=%s' build/playable-validation/FEAR-Z80-latest-playable.gg | tee build/playable-validation/rom-size.txt
 
+      # Fix: Ensured clean tracking with HTTP fallback logic
       - name: Build Gearsystem verification tools
         shell: bash
         run: |
           set -euo pipefail
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
 
