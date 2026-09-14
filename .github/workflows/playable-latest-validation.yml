@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - validation/playable-latest-20260913
+  pull_request:
+    branches:
+      - claude/renderer-forensic-reconstruction-azzocg
   workflow_dispatch:
 
 permissions:
