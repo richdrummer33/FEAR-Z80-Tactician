@@ -1,10 +1,9 @@
 #include <stdint.h>
 #include <gbdk/platform.h>
-#include "pj_assets.h"
 #include "pj_vectors.h"
+#include "tilesector_polar_progjoin_runtime.h"
 
 #define PJ_C 6u
-#define PJ_BANK_BYTES 16384u
 #define PJ_GUARD_ROWS 7u
 #define PJ_COLS 20u
 #define PJ_BUF_BYTES (32u * PJ_COLS * 2u)
@@ -19,100 +18,6 @@ volatile uint32_t g_pj_probe_last_hash;
 volatile uint32_t g_pj_probe_expect_hash;
 
 static uint8_t g_pj_buf[PJ_BUF_BYTES];
-
-static uint16_t rd16p(const uint8_t *p) {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-}
-
-static uint8_t record_byte(uint16_t off) {
-    if (off < PJ_BANK_BYTES) {
-        SWITCH_ROM2(10u);
-        return gg_pj_records0[off];
-    }
-    SWITCH_ROM2(11u);
-    return gg_pj_records1[(uint16_t)(off - PJ_BANK_BYTES)];
-}
-
-static const uint8_t *body_base(uint8_t logical_bank) {
-    switch (logical_bank) {
-        case 0u: SWITCH_ROM2(12u); return gg_pj_body0;
-        case 1u: SWITCH_ROM2(13u); return gg_pj_body1;
-        case 2u: SWITCH_ROM2(14u); return gg_pj_body2;
-        case 3u: SWITCH_ROM2(15u); return gg_pj_body3;
-        case 4u: SWITCH_ROM2(16u); return gg_pj_body4;
-        default: return (const uint8_t *)0;
-    }
-}
-
-static uint8_t dispatch_body(int16_t step, uint8_t fam, uint8_t want,
-                             int16_t iq, uint8_t *out_bank, uint16_t *out_off) {
-    uint16_t step_index;
-    uint8_t page, local_rank, rank, u, base, fi, key;
-    uint16_t slot, desc_i, rec;
-    int16_t acc;
-    const uint8_t *p;
-
-    if ((fam != 0u && fam != 2u) || want == 0u || want > PJ_C) return 0u;
-    if (step < -2048 || step > 2047) return 0u;
-    step_index = (uint16_t)((int16_t)(step + 2048));
-    page = (uint8_t)(step_index >> 8);
-
-    SWITCH_ROM2(8u);
-    local_rank = gg_pj_step_local[step_index];
-    if (local_rank == 0xFFu) return 0u;
-    slot = (uint16_t)(rd16p(gg_pj_step_page_base + ((uint16_t)page << 1)) + local_rank);
-
-    acc = (int16_t)(iq + 32);
-    u = (uint8_t)acc & 127u;
-    rank = 0u;
-    p = gg_pj_thresholds + ((uint16_t)slot << 3);
-    while (rank < (PJ_C + 1u) && u >= p[rank]) ++rank;
-    base = (uint8_t)(((int16_t)acc >> 7) & 7);
-
-    fi = (fam == 0u) ? 0u : 1u;
-    desc_i = (uint16_t)((slot * 12u + (uint16_t)fi * PJ_C + (uint16_t)(want - 1u)) << 1);
-    SWITCH_ROM2(9u);
-    rec = rd16p(gg_pj_descriptor + desc_i);
-    if (rec == 0xFFFFu) return 0u;
-
-    key = (uint8_t)((base << 3) | rank);
-    for (;;) {
-        uint8_t got = record_byte(rec);
-        if (got == 0xFFu) return 0u;
-        if (got == key) {
-            *out_bank = record_byte((uint16_t)(rec + 1u));
-            *out_off = (uint16_t)record_byte((uint16_t)(rec + 2u)) |
-                       ((uint16_t)record_byte((uint16_t)(rec + 3u)) << 8);
-            return 1u;
-        }
-        rec = (uint16_t)(rec + 4u);
-    }
-}
-
-static uint8_t play_body(uint8_t bank, uint16_t off, int16_t *cursor) {
-    const uint8_t *basep = body_base(bank);
-    const uint8_t *p;
-    uint8_t n, i;
-    if (!basep || off >= PJ_BANK_BYTES) return 0u;
-    p = basep + off;
-    n = *p++;
-    for (i = 0u; i != n; ++i) {
-        uint16_t word;
-        int16_t delta;
-        int16_t c = *cursor;
-        if (c < 0 || c >= (int16_t)(PJ_BUF_BYTES - 1u)) {
-            ++g_pj_probe_bounds_fail;
-            return 0u;
-        }
-        word = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-        delta = (int16_t)((uint16_t)p[2] | ((uint16_t)p[3] << 8));
-        p += 4;
-        g_pj_buf[(uint16_t)c] = (uint8_t)word;
-        g_pj_buf[(uint16_t)c + 1u] = (uint8_t)(word >> 8);
-        *cursor = (int16_t)(c + 1 + delta);
-    }
-    return 1u;
-}
 
 static uint32_t fnv1a32(void) {
     uint16_t i;
@@ -141,13 +46,15 @@ static uint8_t run_case(const GGPJProbeCase *tc) {
 
     while (left != 0u) {
         uint8_t want = (left > PJ_C) ? PJ_C : left;
-        uint8_t bank;
-        uint16_t off;
-        if (!dispatch_body(step, fam, want, iq, &bank, &off)) {
+        TSPProgjoinBodyRef body;
+        if (!tsp_progjoin_dispatch_body(step, fam, want, iq, &body)) {
             ++g_pj_probe_lookup_miss;
             return 0u;
         }
-        if (!play_body(bank, off, &cursor)) return 0u;
+        if (!tsp_progjoin_play_body(body, g_pj_buf, PJ_BUF_BYTES, &cursor)) {
+            ++g_pj_probe_bounds_fail;
+            return 0u;
+        }
         iq = (int16_t)(iq + (int16_t)((int16_t)want * step));
         left = (uint8_t)(left - want);
     }
