@@ -8,7 +8,10 @@ swap.  Exact by construction: neither block reads the other's output.
 
 A/B against EDGELUT3 over the pose oracle, one change, nothing else touched.
 """
-import sys, statistics as stt, pathlib
+import pathlib
+import re
+import statistics as stt
+import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 from z80core import assemble
@@ -22,11 +25,18 @@ def build_hoist(src):
     order pays the full signed slope clamp (two 16-bit biased compares) before
     discovering that. The early-out needs only the row pair, so the two blocks
     swap. Exact by construction - neither block reads the other's output."""
-    i = src.index("draw_edge:\n")
-    j = src.index("de_rows2:\n", i)
-    k = src.index("de_r1ok:\n", j)
-    e = src.index("        ret c                        ; r1 < r0 -> nothing\n", k)
-    e += len("        ret c                        ; r1 < r0 -> nothing\n")
+    i = re.search(r"(?m)^draw_edge:\s*$", src)
+    j = re.search(r"(?m)^de_rows2:\s*$", src)
+    k = re.search(r"(?m)^de_r1ok:\s*$", src)
+    if i is None or j is None or k is None:
+        raise ValueError("draw_edge row/slope labels not found")
+    e = re.search(r"(?m)^\s*ret c\b.*$", src[k.end():])
+    if e is None:
+        raise ValueError("draw_edge early-out not found")
+    i = i.start()
+    j = j.start()
+    k = k.start()
+    e = k + (e.end())
     slope_blk = src[i + len("draw_edge:\n"):j]      # the slope clamp
     rows_blk  = src[j:e]                            # row select + early out
     return src[:i] + "draw_edge:\n" + rows_blk + slope_blk + src[e:]

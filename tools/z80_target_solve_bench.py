@@ -13,6 +13,7 @@ tools/target_solve_equiv.py.
 """
 from __future__ import annotations
 import pathlib
+import re
 import statistics as stt
 import sys
 
@@ -213,13 +214,31 @@ dpm_pos:
 """
 
 
+def _search(text, pattern, what, start=0):
+        m = re.search(pattern, text[start:], re.M)
+        if m is None:
+                raise ValueError(f"{what} not found")
+        return start + m.start(), start + m.end()
+
+
 def build_target(src):
-    i = src.index(CUT_START)
-    j = src.index(CUT_END, i)
-    src = src[:i] + src[j:]                 # drop the two inv_at calls
-    k = src.index(RAMP_START)
-    src = src[:k] + DP + src[src.index("\n; ------", k):]
-    return src
+        i, _ = _search(src,
+                                   rf"^\s*ld hl,\({cs.LO:#06x}\)\s*$\n"
+                                   rf"\s*ld \({cs.REL:#06x}\),hl\s*$",
+                                   "target-solve cut start")
+        j, _ = _search(src,
+                                   r"^; ---- angle_x on both endpoints, then the Q6 ramp .*----$",
+                                   "target-solve cut end", i)
+        src = src[:i] + src[j:]                 # drop the two inv_at calls
+        k, _ = _search(src,
+                                   rf"^\s*ld a,\({cs.INV0:#06x}\)\s*$\n"
+                                   r"\s*ld l,a\s*$\n"
+                                   r"\s*ld h,0\s*$\n"
+                                   r"\s*add hl,hl\s*$",
+                                   "target-solve ramp start")
+        tail, _ = _search(src, r"^; ------.*$", "target-solve ramp end", k)
+        src = src[:k] + DP + src[tail:]
+        return src
 
 
 def load_tables():
