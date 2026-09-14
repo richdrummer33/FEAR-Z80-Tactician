@@ -8,15 +8,18 @@ The probe uses fixed Frame-2 LIT banks 8..16:
   banks12-16: compiled selected-count program bodies
 
 It also emits a stratified set of run-edge test vectors with an expected hash of
-the complete 20x32 guarded scratch buffer. The ROM therefore tests actual GG
-bank selection, sparse dispatch and compiled-body playback, not merely host-side
-packing.
+the complete 20x32 guarded scratch buffer. The expected buffer is produced by
+executing the exact packed programs on the host, including legitimate writes to
+the seven guard rows above/below the visible viewport. The visible 20x18 slice
+is independently checked against the renderer cells emitted by the baker.
+Thus the ROM tests actual GG bank selection, sparse dispatch and compiled-body
+playback without falsely rejecting the target's deliberate guard-band writes.
 """
 from __future__ import annotations
-import argparse, json, struct
+import argparse, json
 from pathlib import Path
 
-BANK=16384; GUARD=7; COLS=20; BUF_ROWS=32; BUF_BYTES=BUF_ROWS*COLS*2; C=6
+BANK=16384; GUARD=7; COLS=20; ROW_BYTES=COLS*2; BUF_ROWS=32; BUF_BYTES=BUF_ROWS*ROW_BYTES; C=6
 FAMS={0,2}
 
 def u16(b,o): return b[o] | (b[o+1]<<8)
@@ -33,7 +36,7 @@ def parse_cases(path):
         wants=f[i:i+ncs]; i+=ncs; nc=f[i]; i+=1
         expect=[]
         for k in range(nc): expect.append((f[i+2*k],f[i+2*k+1]))
-        yield dict(fam=fam,step=step,iq0=iq0,ncol=ncol,first=first,wants=wants,expect=expect)
+        yield dict(fam=fam,step=step,iq0=iq0,c0=c0,ncol=ncol,first=first,wants=wants,expect=expect)
 
 def fnv1a32(buf):
     h=2166136261
@@ -50,6 +53,67 @@ def bank_file(path,bank,arrays):
     s=['#include <stdint.h>',f'#pragma codeseg LIT_{bank}','']
     for name,data in arrays: s.append(cbytes(name,data))
     path.write_text('\n'.join(s))
+
+def packed_dispatch(stepv, fam, want, iq, stepmap, pagebase, thresh, desc, records, bodies):
+    """Return absolute offset of the exact sparse-direct selected body."""
+    si=stepv+2048
+    if not 0 <= si < 4096: raise SystemExit(f'probe step OOB {stepv}')
+    lr=stepmap[si]
+    if lr==0xff: raise SystemExit(f'probe step absent {stepv}')
+    page=si>>8
+    slot=u16(pagebase,page*2)+lr
+    acc=s16(iq+32)
+    u=acc&127
+    rank=sum(1 for t in thresh[slot*8:slot*8+C+1] if u>=t)
+    base=(acc>>7)&7
+    fi=0 if fam==0 else 1
+    di=(slot*12+fi*C+(want-1))*2
+    ro=u16(desc,di)
+    if ro==0xffff: raise SystemExit(f'probe descriptor miss {(stepv,fam,want)}')
+    key=(base<<3)|rank
+    p=ro
+    while records[p]!=0xff:
+        if records[p]==key:
+            bank=records[p+1]; off=u16(records,p+2)
+            absolute=bank*BANK+off
+            if absolute>=len(bodies): raise SystemExit(f'probe body OOB {(bank,off)}')
+            return absolute
+        p+=4
+    raise SystemExit(f'probe sparse key miss {(stepv,fam,want,base,rank)}')
+
+def simulate_case(c, stepmap, pagebase, thresh, desc, records, bodies):
+    """Execute the packed target body stream into the 20x32 guard buffer."""
+    buf=bytearray([0x5A]*BUF_BYTES)
+    cursor=GUARD*ROW_BYTES+c['first']
+    iq=c['iq0']; left=c['ncol']
+    while left:
+        want=min(C,left)
+        body=packed_dispatch(c['step'],c['fam'],want,iq,stepmap,pagebase,thresh,desc,records,bodies)
+        count=bodies[body]; p=body+1
+        for _ in range(count):
+            if not 0 <= cursor < BUF_BYTES-1:
+                raise SystemExit(f'packed program escaped 20x32 guard buffer: cursor={cursor} case={c}')
+            word=u16(bodies,p); delta=s16(u16(bodies,p+2)); p+=4
+            buf[cursor]=word&255; buf[cursor+1]=(word>>8)&255
+            # Z80 playback writes low at HL, INC HL to high, then ADD HL,delta.
+            cursor += 1+delta
+        iq=s16(iq+s16(want*c['step']))
+        left-=want
+    return buf
+
+def assert_visible_matches_renderer(c, buf):
+    """Baker expected cells are clipped renderer output; compare entire viewport."""
+    expected=bytearray([0x5A]*(18*ROW_BYTES))
+    for d,w in c['expect']:
+        if not 0 <= d < len(expected)-1:
+            raise SystemExit(f'renderer expected cell outside 20x18 viewport d={d}')
+        expected[d]=w&255; expected[d+1]=(w>>8)&255
+    visible=buf[GUARD*ROW_BYTES:(GUARD+18)*ROW_BYTES]
+    if visible!=expected:
+        for i,(a,b) in enumerate(zip(visible,expected)):
+            if a!=b:
+                raise SystemExit(f'packed program visible mismatch at byte {i}: got={a:02x} expected={b:02x} case={c}')
+        raise SystemExit('packed program visible mismatch')
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('packed',type=Path); ap.add_argument('windows',type=Path); ap.add_argument('out',type=Path); ap.add_argument('--cases',type=int,default=192)
@@ -90,13 +154,12 @@ def main():
         if k in needs-have:
             picks.append(c); have.add(k)
 
-    vec=[]
+    vec=[]; guard_written=0
     for c in picks:
-        buf=bytearray([0x5A]*BUF_BYTES)
-        for d,w in c['expect']:
-            pos=GUARD*COLS*2+d
-            if not 0<=pos<BUF_BYTES-1: raise SystemExit(f'expected cell outside guard buffer pos={pos}')
-            buf[pos]=w&255; buf[pos+1]=(w>>8)&255
+        buf=simulate_case(c,step,page,th,desc,rec,bodies)
+        assert_visible_matches_renderer(c,buf)
+        guard=buf[:GUARD*ROW_BYTES]+buf[(GUARD+18)*ROW_BYTES:]
+        guard_written += sum(1 for x in guard if x!=0x5A)
         vec.append((c['fam'],c['step'],c['iq0'],c['ncol'],c['first'],fnv1a32(buf)))
 
     vh=['#pragma once','#include <stdint.h>','typedef struct { uint8_t fam; int16_t step; int16_t iq0; uint8_t ncol; int16_t first_dest; uint32_t expect_hash; } GGPJProbeCase;',f'#define GG_PJ_PROBE_CASE_COUNT {len(vec)}u','extern const GGPJProbeCase gg_pj_probe_cases[];']
@@ -105,8 +168,8 @@ def main():
     for fam,st,iq,nc,fd,h in vec: vc.append(f'  {{{fam}u,{st},{iq},{nc}u,{fd},0x{h:08X}UL}},')
     vc.append('};\n'); (a.out/'pj_vectors.c').write_text('\n'.join(vc))
 
-    rep={'cases':len(vec),'full_cases_available':len(allcases),'banks':{'meta':8,'descriptor':9,'records':[10,11],'bodies':[12,13,14,15,16]},'guard_rows':GUARD,'buffer_bytes':BUF_BYTES}
+    rep={'cases':len(vec),'full_cases_available':len(allcases),'banks':{'meta':8,'descriptor':9,'records':[10,11],'bodies':[12,13,14,15,16]},'guard_rows':GUARD,'buffer_bytes':BUF_BYTES,'visible_oracle':'exact renderer clipped cells','guard_oracle':'exact packed-program simulation','guard_bytes_written_across_cases':guard_written}
     (a.out/'probe_manifest.json').write_text(json.dumps(rep,indent=2)+'\n')
-    print(f"PROBE_EMIT_PASS cases={len(vec)} full_available={len(allcases)} banks=8..16")
+    print(f"PROBE_EMIT_PASS cases={len(vec)} full_available={len(allcases)} guard_bytes_written={guard_written} banks=8..16")
     return 0
 if __name__=='__main__': raise SystemExit(main())
