@@ -1,4 +1,4 @@
-name: Integrated materializer DDA A-B
+name: Integrated materializer edge-rowbase A-B
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  dda-ab:
+  edge-rowbase-ab:
     runs-on: ubuntu-22.04
     timeout-minutes: 50
     steps:
@@ -23,7 +23,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .toolchain build/dda-ab
+          mkdir -p .toolchain build/edge-rowbase-ab
           curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
           echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
@@ -40,10 +40,10 @@ jobs:
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
             POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
             POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
-          cp build/gg-tilesector-polar.gg build/dda-ab/baseline.gg
-          cp build/gg-tilesector-polar.sym build/dda-ab/baseline.sym
-          BASE_SHA="$(sha256sum build/dda-ab/baseline.gg | cut -d' ' -f1)"
-          echo "baseline sha256=$BASE_SHA" | tee build/dda-ab/hashes.txt
+          cp build/gg-tilesector-polar.gg build/edge-rowbase-ab/baseline.gg
+          cp build/gg-tilesector-polar.sym build/edge-rowbase-ab/baseline.sym
+          BASE_SHA="$(sha256sum build/edge-rowbase-ab/baseline.gg | cut -d' ' -f1)"
+          echo "baseline sha256=$BASE_SHA" | tee build/edge-rowbase-ab/hashes.txt
           test "$BASE_SHA" = "6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c"
 
       - name: Build carry-border ROM
@@ -55,23 +55,203 @@ jobs:
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
             POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
             POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
-          cp build/gg-tilesector-polar.gg build/dda-ab/carry.gg
-          cp build/gg-tilesector-polar.sym build/dda-ab/carry.sym
-          echo "carry sha256=$(sha256sum build/dda-ab/carry.gg | cut -d' ' -f1)" | tee -a build/dda-ab/hashes.txt
+          cp build/gg-tilesector-polar.gg build/edge-rowbase-ab/carry.gg
+          cp build/gg-tilesector-polar.sym build/edge-rowbase-ab/carry.sym
+          echo "carry sha256=$(sha256sum build/edge-rowbase-ab/carry.gg | cut -d' ' -f1)" | tee -a build/edge-rowbase-ab/hashes.txt
 
-      - name: Build carry-border plus DDA-local ROM
+      - name: Build carry-border plus edge row-base hoist ROM
         shell: bash
         run: |
           set -euo pipefail
-          python3 tools/apply_edge_local_dda_rung.py
-          git diff -- src/tilesector_polar_materialize_gg.s > build/dda-ab/integration.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/tilesector_polar_materialize_gg.s')
+          s=p.read_text()
+
+          data_old="""r_edge_left$:
+                  .ds     2
+          r_edge_slope$:
+                  .ds     1
+          """
+          data_new="""r_edge_left$:
+                  .ds     2
+          r_edge_rowbase$:
+                  .ds     2
+          r_edge_slope$:
+                  .ds     1
+          """
+          assert s.count(data_old)==1
+          s=s.replace(data_old,data_new,1)
+
+          sym_old="""sym_slope_store$:
+                  ld      (#r_edge_slope$), a
+                  ld      a, (#r_top_min$)
+          sym_edge_rows_loop$:
+          """
+          sym_new="""sym_slope_store$:
+                  ld      (#r_edge_slope$), a
+                  ; EDGEROWBASE: FULL symmetry always uses the top-edge LUT group.
+                  ; Hoist edge_lut + 2*(slope+7)*31 once for the complete edge.
+                  add     a, #7
+                  ld      e, a
+                  ld      l, e
+                  ld      h, #0
+                  ld      d, #0
+                  push    de
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  pop     de
+                  or      a
+                  sbc     hl, de
+                  add     hl, hl
+                  ld      de, #edge_lut$
+                  add     hl, de
+                  ld      (#r_edge_rowbase$), hl
+                  ld      a, (#r_top_min$)
+          sym_edge_rows_loop$:
+          """
+          assert s.count(sym_old)==1
+          s=s.replace(sym_old,sym_new,1)
+
+          sym_lookup_old="""        ld      a, (#r_edge_slope$)
+                  add     a, #7
+                  ld      e, a
+                  ld      l, e
+                  ld      h, #0
+                  ld      d, #0
+                  push    de
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl                  ; *32
+                  pop     de
+                  or      a
+                  sbc     hl, de                  ; *31
+                  ld      a, (#r_local_index$)
+                  ld      e, a
+                  ld      d, #0
+                  add     hl, de
+                  add     hl, hl
+                  ld      de, #edge_lut$
+                  add     hl, de
+                  ld      e, (hl)
+                  inc     hl
+                  ld      d, (hl)
+          """
+          sym_lookup_new="""        ; EDGEROWBASE: row base is invariant for this complete edge.
+                  ld      a, (#r_local_index$)
+                  add     a, a
+                  ld      e, a
+                  ld      d, #0
+                  ld      hl, (#r_edge_rowbase$)
+                  add     hl, de
+                  ld      e, (hl)
+                  inc     hl
+                  ld      d, (hl)
+          """
+          assert s.count(sym_lookup_old)==1
+          s=s.replace(sym_lookup_old,sym_lookup_new,1)
+
+          generic_old="""slope_store$:
+                  ld      (#r_edge_slope$), a
+                  ; Polar path may cross more than two tile rows at steep/near
+          """
+          generic_new="""slope_store$:
+                  ld      (#r_edge_slope$), a
+                  ; EDGEROWBASE: bottom and slope are constant for the whole edge.
+                  ; Compute edge_lut + 2*(bottom*15 + slope+7)*31 once here.
+                  add     a, #7
+                  ld      e, a
+                  ld      a, (#r_edge_bottom$)
+                  or      a
+                  jr      z, edge_rb_group_ready$
+                  ld      a, e
+                  add     a, #15
+                  ld      e, a
+          edge_rb_group_ready$:
+                  ld      l, e
+                  ld      h, #0
+                  ld      d, #0
+                  push    de
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  add     hl, hl
+                  pop     de
+                  or      a
+                  sbc     hl, de
+                  add     hl, hl
+                  ld      de, #edge_lut$
+                  add     hl, de
+                  ld      (#r_edge_rowbase$), hl
+                  ; Polar path may cross more than two tile rows at steep/near
+          """
+          assert s.count(generic_old)==1
+          s=s.replace(generic_old,generic_new,1)
+
+          generic_lookup_old="""        ; group = slope+7 + (bottom?15:0); index = group*31 + local_index.
+                  ld      a, (#r_edge_slope$)
+                  add     a, #7
+                  ld      e, a
+                  ld      a, (#r_edge_bottom$)
+                  or      a
+                  jr      z, group_ready$
+                  ld      a, e
+                  add     a, #15
+                  ld      e, a
+          group_ready$:
+                  ld      l, e
+                  ld      h, #0
+                  ld      d, #0
+                  push    de                    ; group
+                  add     hl, hl                ; 2
+                  add     hl, hl                ; 4
+                  add     hl, hl                ; 8
+                  add     hl, hl                ; 16
+                  add     hl, hl                ; 32
+                  pop     de
+                  or      a
+                  sbc     hl, de                ; 31*group
+                  ld      a, (#r_local_index$)
+                  ld      e, a
+                  ld      d, #0
+                  add     hl, de
+                  add     hl, hl
+                  ld      de, #edge_lut$
+                  add     hl, de
+                  ld      e, (hl)
+                  inc     hl
+                  ld      d, (hl)
+          """
+          generic_lookup_new="""        ; EDGEROWBASE: only the local coordinate varies from row to row.
+                  ld      a, (#r_local_index$)
+                  add     a, a
+                  ld      e, a
+                  ld      d, #0
+                  ld      hl, (#r_edge_rowbase$)
+                  add     hl, de
+                  ld      e, (hl)
+                  inc     hl
+                  ld      d, (hl)
+          """
+          assert s.count(generic_lookup_old)==1
+          s=s.replace(generic_lookup_old,generic_lookup_new,1)
+          p.write_text(s)
+          print('INTEGRATED_MATERIALIZER_RUNG=EDGE_LUT_ROWBASE_HOIST')
+          PY
+          git diff -- src/tilesector_polar_materialize_gg.s > build/edge-rowbase-ab/integration.patch
           rm -f build/tilesector_polar_materialize_gg.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
             POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
             POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
-          cp build/gg-tilesector-polar.gg build/dda-ab/dda.gg
-          cp build/gg-tilesector-polar.sym build/dda-ab/dda.sym
-          echo "dda sha256=$(sha256sum build/dda-ab/dda.gg | cut -d' ' -f1)" | tee -a build/dda-ab/hashes.txt
+          cp build/gg-tilesector-polar.gg build/edge-rowbase-ab/rowbase.gg
+          cp build/gg-tilesector-polar.sym build/edge-rowbase-ab/rowbase.sym
+          echo "rowbase sha256=$(sha256sum build/edge-rowbase-ab/rowbase.gg | cut -d' ' -f1)" | tee -a build/edge-rowbase-ab/hashes.txt
 
       - name: Build Gearsystem tools
         shell: bash
@@ -94,24 +274,24 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_ab_profile.cpp "${ARGS[@]}" \
             build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_ab_profile
 
-      - name: Exact update traces for all three ROMs
+      - name: Exact update traces
         shell: bash
         run: |
           set -euo pipefail
-          R=build/dda-ab
+          R=build/edge-rowbase-ab
           for scenario in roomA-turn roomA-forward; do
             loops=48; [[ "$scenario" == roomA-forward ]] && loops=96
-            for variant in baseline carry dda; do
+            for variant in baseline carry rowbase; do
               ./build/polar_ab_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 "$scenario" "$loops" 6 "$R/${variant}-${scenario}.csv"
             done
           done
           python3 - <<'PY' | tee "$R/exactness.txt"
           import csv
           from pathlib import Path
-          R=Path('build/dda-ab')
+          R=Path('build/edge-rowbase-ab')
           for sc in ('roomA-turn','roomA-forward'):
               base=list(csv.DictReader(open(R/f'baseline-{sc}.csv')))
-              for v in ('carry','dda'):
+              for v in ('carry','rowbase'):
                   cur=list(csv.DictReader(open(R/f'{v}-{sc}.csv')))
                   assert len(base)==len(cur)
                   bad=[]
@@ -127,34 +307,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          R=build/dda-ab
-          for variant in baseline carry dda; do
+          R=build/edge-rowbase-ab
+          for variant in baseline carry rowbase; do
             ./build/polar_mode_cycle_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 48 6 roomA-turn "$R/${variant}-turn-phases.csv" | tee "$R/${variant}-turn-phases.txt"
             ./build/polar_mode_cycle_profile "$R/${variant}.gg" "$R/${variant}.sym" 0 96 6 roomA-forward "$R/${variant}-forward-phases.csv" | tee "$R/${variant}-forward-phases.txt"
           done
           python3 - <<'PY' | tee "$R/summary.txt"
           import csv,statistics
           from pathlib import Path
-          R=Path('build/dda-ab')
-          print('=== EXACT-ROM MATERIALIZER DDA TRANSFER ===')
+          R=Path('build/edge-rowbase-ab')
+          print('=== EXACT-ROM EDGE LUT ROWBASE TRANSFER ===')
           print(open(R/'hashes.txt').read().strip())
           for sc,short in [('roomA-turn','turn'),('roomA-forward','forward')]:
               vals={}
-              for v in ('baseline','carry','dda'):
+              for v in ('baseline','carry','rowbase'):
                   rows=list(csv.DictReader(open(R/f'{v}-{short}-phases.csv')))
                   m=lambda k:statistics.mean(int(r[k]) for r in rows)
                   vals[v]={'loop':m('loop_T'),'render':m('p2_render_T')}
                   print(f'{sc} {v:8}: loop={vals[v]["loop"]:.1f}T render={vals[v]["render"]:.1f}T hz={3579545/vals[v]["loop"]:.2f}')
-              b,c,d=vals['baseline'],vals['carry'],vals['dda']
-              print(f'  baseline->DDA loop saving {b["loop"]-d["loop"]:.1f}T ({(1-d["loop"]/b["loop"])*100:.2f}%), render saving {b["render"]-d["render"]:.1f}T ({(1-d["render"]/b["render"])*100:.2f}%)')
-              print(f'  DDA incremental over carry: loop {c["loop"]-d["loop"]:.1f}T, render {c["render"]-d["render"]:.1f}T')
+              b,c,r=vals['baseline'],vals['carry'],vals['rowbase']
+              print(f'  baseline->rowbase loop saving {b["loop"]-r["loop"]:.1f}T ({(1-r["loop"]/b["loop"])*100:.2f}%), render saving {b["render"]-r["render"]:.1f}T ({(1-r["render"]/b["render"])*100:.2f}%)')
+              print(f'  rowbase incremental over carry: loop {c["loop"]-r["loop"]:.1f}T, render {c["render"]-r["render"]:.1f}T')
           print(open(R/'exactness.txt').read().strip())
           PY
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: integrated-materializer-dda-ab
-          path: build/dda-ab/
+          name: integrated-materializer-edge-rowbase-ab
+          path: build/edge-rowbase-ab/
           if-no-files-found: warn
           retention-days: 30
