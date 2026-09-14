@@ -3,7 +3,6 @@
 #include "pj_vectors.h"
 #include "tilesector_polar_progjoin_runtime.h"
 
-#define PJ_C 6u
 #define PJ_GUARD_ROWS 7u
 #define PJ_COLS 20u
 #define PJ_BUF_BYTES (32u * PJ_COLS * 2u)
@@ -37,26 +36,22 @@ static uint8_t run_case(const GGPJProbeCase *tc) {
     const int16_t step = tc->step;
     const uint8_t fam = tc->fam;
     const uint8_t ncol = tc->ncol;
-    int16_t iq = tc->iq0;
+    const int16_t iq0 = tc->iq0;
     int16_t cursor = (int16_t)(PJ_GUARD_ROWS * PJ_COLS * 2u + tc->first_dest);
     const uint32_t expect_hash = tc->expect_hash;
-    uint8_t left = ncol;
+    TSPProgjoinRunPlan plan;
 
     for (i = 0u; i != PJ_BUF_BYTES; ++i) g_pj_buf[i] = 0x5Au;
 
-    while (left != 0u) {
-        uint8_t want = (left > PJ_C) ? PJ_C : left;
-        TSPProgjoinBodyRef body;
-        if (!tsp_progjoin_dispatch_body(step, fam, want, iq, &body)) {
-            ++g_pj_probe_lookup_miss;
-            return 0u;
-        }
-        if (!tsp_progjoin_play_body(body, g_pj_buf, PJ_BUF_BYTES, &cursor)) {
-            ++g_pj_probe_bounds_fail;
-            return 0u;
-        }
-        iq = (int16_t)(iq + (int16_t)((int16_t)want * step));
-        left = (uint8_t)(left - want);
+    /* Same atomic contract the playable renderer will use: resolve the whole
+     * run-edge before the first destination byte is modified. */
+    if (!tsp_progjoin_preflight_run(step, fam, ncol, iq0, &plan)) {
+        ++g_pj_probe_lookup_miss;
+        return 0u;
+    }
+    if (!tsp_progjoin_play_plan(&plan, g_pj_buf, PJ_BUF_BYTES, &cursor)) {
+        ++g_pj_probe_bounds_fail;
+        return 0u;
     }
 
     g_pj_probe_last_hash = fnv1a32();
