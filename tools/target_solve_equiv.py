@@ -15,9 +15,15 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
-def body(text, start, end):
-    i = text.index(start)
-    j = text.index(end, i)
+def body(text, start_pat, end_pat):
+    start = re.search(start_pat, text)
+    if start is None:
+        raise ValueError(f"start pattern not found: {start_pat}")
+    end = re.search(end_pat, text[start.start():])
+    if end is None:
+        raise ValueError(f"end pattern not found: {end_pat}")
+    i = start.start()
+    j = i + end.start()
     return text[i:j]
 
 
@@ -36,10 +42,12 @@ def norm(s):
 def main():
     src = (ROOT / "src" / "tilesector_polar_renderer.c").read_text()
     cen = (ROOT / "tools" / "target_solve_census.c").read_text()
-    a = norm(body(src, "uint8_t cls=k_tspf_depth_normal_class[sid];",
-                  "return 1u;"))
-    b = norm(body(cen, "uint8_t cls = k_tspf_depth_normal_class[sid];",
-                  "return 1u;"))
+    a = norm(body(src,
+                  r"uint8_t\s+cls\s*=\s*k_tspf_depth_normal_class\[sid\];",
+                  r"return\s+1u;"))
+    b = norm(body(cen,
+                  r"uint8_t\s+cls\s*=\s*k_tspf_depth_normal_class\[sid\];",
+                  r"return\s+1u;"))
     if a == b:
         print("EQUIVALENT: census dp_solve matches shipped screen_depth_plane")
         return 0
