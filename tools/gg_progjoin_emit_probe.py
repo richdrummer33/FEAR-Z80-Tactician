@@ -95,14 +95,12 @@ def simulate_case(c, stepmap, pagebase, thresh, desc, records, bodies):
                 raise SystemExit(f'packed program escaped 20x32 guard buffer: cursor={cursor} case={c}')
             word=u16(bodies,p); delta=s16(u16(bodies,p+2)); p+=4
             buf[cursor]=word&255; buf[cursor+1]=(word>>8)&255
-            # Z80 playback writes low at HL, INC HL to high, then ADD HL,delta.
             cursor += 1+delta
         iq=s16(iq+s16(want*c['step']))
         left-=want
     return buf
 
 def assert_visible_matches_renderer(c, buf):
-    """Baker expected cells are clipped renderer output; compare entire viewport."""
     expected=bytearray([0x5A]*(18*ROW_BYTES))
     for d,w in c['expect']:
         if not 0 <= d < len(expected)-1:
@@ -110,9 +108,9 @@ def assert_visible_matches_renderer(c, buf):
         expected[d]=w&255; expected[d+1]=(w>>8)&255
     visible=buf[GUARD*ROW_BYTES:(GUARD+18)*ROW_BYTES]
     if visible!=expected:
-        for i,(a,b) in enumerate(zip(visible,expected)):
-            if a!=b:
-                raise SystemExit(f'packed program visible mismatch at byte {i}: got={a:02x} expected={b:02x} case={c}')
+        for i,(got,want) in enumerate(zip(visible,expected)):
+            if got!=want:
+                raise SystemExit(f'packed program visible mismatch at byte {i}: got={got:02x} expected={want:02x} case={c}')
         raise SystemExit('packed program visible mismatch')
 
 def main():
@@ -141,12 +139,10 @@ def main():
     for wd in sorted(x for x in a.windows.iterdir() if x.is_dir() and x.name.startswith('w')):
         allcases += [c for c in parse_cases(wd/'progjoin_cases.txt') if c['fam'] in FAMS]
     if not allcases: raise SystemExit('no FULL cases')
-    # Deterministic spread across the entire corpus, plus endpoints.
     n=min(a.cases,len(allcases)); picks=[]; seen=set()
     for j in range(n):
         ix=(j*(len(allcases)-1))//max(n-1,1)
         if ix not in seen: seen.add(ix); picks.append(allcases[ix])
-    # Ensure both FULL families and all final want lengths observed are represented.
     needs={(fam,w) for fam in FAMS for w in range(1,7)}
     have={(c['fam'],c['wants'][-1]) for c in picks}
     for c in allcases:
@@ -164,12 +160,16 @@ def main():
 
     vh=['#pragma once','#include <stdint.h>','typedef struct { uint8_t fam; int16_t step; int16_t iq0; uint8_t ncol; int16_t first_dest; uint32_t expect_hash; } GGPJProbeCase;',f'#define GG_PJ_PROBE_CASE_COUNT {len(vec)}u','extern const GGPJProbeCase gg_pj_probe_cases[];']
     (a.out/'pj_vectors.h').write_text('\n'.join(vh)+'\n')
-    vc=['#include "pj_vectors.h"','const GGPJProbeCase gg_pj_probe_cases[GG_PJ_PROBE_CASE_COUNT] = {']
+    # Probe cases must live in fixed HOME ROM: main retains a pointer to the
+    # current case while dispatch/playback repeatedly remap Frame 2. The first
+    # ROM probe proved case 0 exactly, then stalled on case 1 because this array
+    # had been linked into the switchable frame.
+    vc=['#include "pj_vectors.h"','#pragma codeseg HOME','const GGPJProbeCase gg_pj_probe_cases[GG_PJ_PROBE_CASE_COUNT] = {']
     for fam,st,iq,nc,fd,h in vec: vc.append(f'  {{{fam}u,{st},{iq},{nc}u,{fd},0x{h:08X}UL}},')
     vc.append('};\n'); (a.out/'pj_vectors.c').write_text('\n'.join(vc))
 
-    rep={'cases':len(vec),'full_cases_available':len(allcases),'banks':{'meta':8,'descriptor':9,'records':[10,11],'bodies':[12,13,14,15,16]},'guard_rows':GUARD,'buffer_bytes':BUF_BYTES,'visible_oracle':'exact renderer clipped cells','guard_oracle':'exact packed-program simulation','guard_bytes_written_across_cases':guard_written}
+    rep={'cases':len(vec),'full_cases_available':len(allcases),'banks':{'meta':8,'descriptor':9,'records':[10,11],'bodies':[12,13,14,15,16]},'guard_rows':GUARD,'buffer_bytes':BUF_BYTES,'visible_oracle':'exact renderer clipped cells','guard_oracle':'exact packed-program simulation','guard_bytes_written_across_cases':guard_written,'vectors':'fixed HOME ROM'}
     (a.out/'probe_manifest.json').write_text(json.dumps(rep,indent=2)+'\n')
-    print(f"PROBE_EMIT_PASS cases={len(vec)} full_available={len(allcases)} guard_bytes_written={guard_written} banks=8..16")
+    print(f"PROBE_EMIT_PASS cases={len(vec)} full_available={len(allcases)} guard_bytes_written={guard_written} banks=8..16 vectors=HOME")
     return 0
 if __name__=='__main__': raise SystemExit(main())
