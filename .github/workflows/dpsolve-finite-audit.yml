@@ -1,0 +1,31 @@
+name: DPSOLVE finite audit
+
+on:
+  push:
+    branches:
+      - claude/renderer-forensic-reconstruction-azzocg
+    paths:
+      - tools/z80_dpsolve_finite_audit.py
+      - tools/z80_target_solve_bench.py
+      - tools/z80_column_solve_bench.py
+      - tools/z80core.py
+      - tools/target_solve_census.c
+      - tools/target_solve_equiv.py
+      - experiments/adaptive_polar_field/screen_depth_plane_lut.py
+      - src/tilesector_polar_renderer.c
+      - src/tilesector_polar_motion.c
+      - .github/workflows/dpsolve-finite-audit.yml
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build DPSOLVE corpus and generated tables
+        run: make target-solve-census
+      - name: Emit full target-solve oracle
+        run: ./build/target_solve_census 16 build/target_solve_oracle.txt 1 > /dev/null
+      - name: Run finite small-multiplier A-B
+        run: python3 tools/z80_dpsolve_finite_audit.py
