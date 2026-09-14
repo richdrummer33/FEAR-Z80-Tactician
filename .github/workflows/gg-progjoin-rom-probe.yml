@@ -5,6 +5,8 @@ on:
     branches:
       - validation/parity-enforcement-20260914
     paths:
+      - 'src/tilesector_polar_progjoin_runtime.c'
+      - 'src/tilesector_polar_progjoin_runtime.h'
       - 'tools/gg_progjoin_corpus_census.py'
       - 'tools/gg_progjoin_sparse_direct.py'
       - 'tools/gg_progjoin_emit_probe.py'
@@ -14,6 +16,8 @@ on:
       - '.github/workflows/gg-progjoin-rom-probe.yml'
   pull_request:
     paths:
+      - 'src/tilesector_polar_progjoin_runtime.c'
+      - 'src/tilesector_polar_progjoin_runtime.h'
       - 'tools/gg_progjoin_corpus_census.py'
       - 'tools/gg_progjoin_sparse_direct.py'
       - 'tools/gg_progjoin_emit_probe.py'
@@ -69,10 +73,11 @@ jobs:
           for f in pj_meta pj_desc pj_records0 pj_records1 pj_body0 pj_body1 pj_body2 pj_body3 pj_body4 pj_vectors; do
             "$LCC" -mz80:gg -debug -Wb-ext=.rel -I"$G" -c -o "$O/$f.o" "$G/$f.c"
           done
-          "$LCC" -mz80:gg -debug -Wb-ext=.rel -I"$G" -c -o "$O/main.o" tools/gg_progjoin_probe_main.c
+          "$LCC" -mz80:gg -debug -Wb-ext=.rel -Isrc -I"$G" -c -o "$O/progjoin_runtime.o" src/tilesector_polar_progjoin_runtime.c
+          "$LCC" -mz80:gg -debug -Wb-ext=.rel -Isrc -I"$G" -c -o "$O/main.o" tools/gg_progjoin_probe_main.c
           "$LCC" -mz80:gg -debug -Wb-ext=.rel -Wl-j -Wm-yo32 -Wm-yS \
             -o build/progjoin_rom/probe.gg \
-            "$O/main.o" "$O/pj_vectors.o" "$O/pj_meta.o" "$O/pj_desc.o" \
+            "$O/main.o" "$O/progjoin_runtime.o" "$O/pj_vectors.o" "$O/pj_meta.o" "$O/pj_desc.o" \
             "$O/pj_records0.o" "$O/pj_records1.o" \
             "$O/pj_body0.o" "$O/pj_body1.o" "$O/pj_body2.o" "$O/pj_body3.o" "$O/pj_body4.o"
           python3 - <<'PY'
