@@ -1,0 +1,46 @@
+name: Z80 parity target snapshot
+
+on:
+  push:
+    branches:
+      - validation/parity-enforcement-20260914
+  pull_request:
+    paths:
+      - 'tools/z80_progjoin_*.py'
+      - 'tools/edge_progjoin_bake.c'
+      - 'tools/parity_target_snapshot.py'
+      - '.github/workflows/z80-parity-target.yml'
+      - 'docs/PARITY_STATUS.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  target:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build corpus oracle
+        run: make coverage-potential
+
+      - name: Build compiled-program baker
+        run: |
+          mkdir -p build/progjoin build/progjoin_tuned
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+
+      - name: Verify Z80 interpreter join opcode
+        run: python3 tests/test_z80_ld_sp_hl.py
+
+      - name: Execute accepted target contract
+        run: python3 tools/parity_target_snapshot.py | tee build/z80-parity-target.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: z80-parity-target
+          path: build/z80-parity-target.txt
+          if-no-files-found: warn
+          retention-days: 30
