@@ -6,6 +6,7 @@ on:
       - claude/renderer-forensic-reconstruction-azzocg
     paths:
       - tools/z80_dpsolve_finite_audit.py
+      - tools/z80_dpsolve_finite_audit_v2.py
       - tools/z80_target_solve_bench.py
       - tools/z80_column_solve_bench.py
       - tools/z80core.py
@@ -27,5 +28,5 @@ jobs:
         run: make target-solve-census
       - name: Emit full target-solve oracle
         run: ./build/target_solve_census 16 build/target_solve_oracle.txt 1 > /dev/null
-      - name: Run finite small-multiplier A-B
-        run: python3 tools/z80_dpsolve_finite_audit.py
+      - name: Run corrected finite small-multiplier A-B
+        run: python3 tools/z80_dpsolve_finite_audit_v2.py
