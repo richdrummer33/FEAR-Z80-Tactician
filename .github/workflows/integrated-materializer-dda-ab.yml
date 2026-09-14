@@ -26,7 +26,7 @@ jobs:
           echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
           tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
-      - name: Build exact baseline then proven carry-border ROM
+      - name: Build exact baseline, carry, and claim-walker ROMs
         shell: bash
         run: |
           set -euo pipefail
@@ -51,6 +51,16 @@ jobs:
           cp build/gg-tilesector-polar.noi build/target-census/carry.noi
           sha256sum build/target-census/carry.gg | tee build/target-census/carry.sha256
 
+          python3 tools/apply_interior_claimwalker_rung.py
+          rm -f build/tilesector_polar_materialize_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
+            POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/target-census/walker.gg
+          cp build/gg-tilesector-polar.sym build/target-census/walker.sym
+          cp build/gg-tilesector-polar.noi build/target-census/walker.noi
+          sha256sum build/target-census/walker.gg | tee build/target-census/walker.sha256
+
       - name: Build target-aware Gearsystem profiler
         shell: bash
         run: |
@@ -73,16 +83,22 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_target_census.cpp "${ARGS[@]}" \
             build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_target_census
 
-      - name: Census exact mode-0 turn and forward workloads
+      - name: Census carry versus claim-walker
         shell: bash
         run: |
           set -euo pipefail
           R=build/target-census
-          ./build/polar_target_census "$R/carry.gg" "$R/carry.sym" "$R/carry.noi" 0 roomA-turn 48 6 | tee "$R/turn.txt"
-          ./build/polar_target_census "$R/carry.gg" "$R/carry.sym" "$R/carry.noi" 0 roomA-forward 96 6 | tee "$R/forward.txt"
-          echo '=== KEY TARGET CENSUS ===' | tee "$R/summary.txt"
-          grep -E 'Polar render PC profile|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/turn.txt" | tee -a "$R/summary.txt"
-          grep -E 'Polar render PC profile|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/forward.txt" | tee -a "$R/summary.txt"
+          for variant in carry walker; do
+            ./build/polar_target_census "$R/${variant}.gg" "$R/${variant}.sym" "$R/${variant}.noi" 0 roomA-turn 48 6 | tee "$R/${variant}-turn.txt"
+            ./build/polar_target_census "$R/${variant}.gg" "$R/${variant}.sym" "$R/${variant}.noi" 0 roomA-forward 96 6 | tee "$R/${variant}-forward.txt"
+          done
+          echo '=== KEY TARGET CENSUS: CARRY -> CLAIM-WALKER ===' | tee "$R/summary.txt"
+          for scenario in turn forward; do
+            for variant in carry walker; do
+              echo "--- $variant $scenario ---" | tee -a "$R/summary.txt"
+              grep -E 'Polar render PC profile|tsp_polar_p_fill|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/${variant}-${scenario}.txt" | tee -a "$R/summary.txt"
+            done
+          done
 
       - uses: actions/upload-artifact@v4
         if: always()
