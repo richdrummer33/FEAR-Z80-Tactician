@@ -49,7 +49,14 @@ int main(int argc,char**argv) {
     std::vector<u8> fb(GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN*GS_RESOLUTION_MAX_HEIGHT_WITH_OVERSCAN*4);
     std::vector<s16> audio(16384); int samples=0;
     GearsystemCore::GS_Debug_Run dbg{};
-    dbg.step_debugger=true; dbg.stop_on_breakpoint=false; dbg.stop_on_run_to_breakpoint=false; dbg.stop_on_irq=false;
+    /* This is deliberately NOT single-step mode. The first version set
+     * step_debugger=true and therefore executed only ~2k master cycles over 120
+     * RunToVBlank calls, never reaching main(). We only use debugger memory
+     * access to observe the exported result symbols after normal CPU execution. */
+    dbg.step_debugger=false;
+    dbg.stop_on_breakpoint=false;
+    dbg.stop_on_run_to_breakpoint=false;
+    dbg.stop_on_irq=false;
     Memory* mem=core.GetMemory();
     const uint64_t t0=core.GetMasterClockCycles();
     unsigned frames=0;
