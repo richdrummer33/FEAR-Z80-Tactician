@@ -88,10 +88,11 @@ jobs:
           LCC="$GBDK_HOME/bin/lcc"
           G="$PWD/build/progjoin_live/gen"
           FLAGS="-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo64 -Isrc -I$G -Ibuild/generated/polar_projection -Ibuild/generated/polar_depthplane"
-          CFLAGS="-Wf--opt-code-speed -DTSPF_PROFILE_HOOKS=1 -DTSPF_LOCAL_PROJECTION=1 -DTSPF_SCREEN_DEPTH_PLANE=1 -DTSPF_PROGJOIN_FULL=1 -DTSP_PROGJOIN_BANK_BASE=48"
+          # This rung intentionally starts in appearance mode 0: the compiled
+          # corpus bakes absolute shade-1 words. Keep the normal build's mode
+          # selection contract explicit instead of depending on caller flags.
+          CFLAGS="-Wf--opt-code-speed -DTSPF_PROFILE_HOOKS=1 -DTSPF_LOCAL_PROJECTION=1 -DTSPF_SCREEN_DEPTH_PLANE=1 -DTSPF_DEFAULT_APPEARANCE=0 -DTSPF_PROGJOIN_FULL=1 -DTSP_PROGJOIN_BANK_BASE=48"
 
-          # Let the normal Makefile generate/compile the mature renderer support
-          # pieces first, now against the explicitly patched live source.
           make GBDK_HOME="$GBDK_HOME" POLAR_ROM_BANKS=64 \
             POLAR_GGFLAGS="$FLAGS" POLAR_CFLAGS="$CFLAGS" \
             build/main_tilesector_polar_gg.o \
