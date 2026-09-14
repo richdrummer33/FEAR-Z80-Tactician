@@ -51,117 +51,7 @@ jobs:
           cp build/gg-tilesector-polar.noi build/target-census/carry.noi
           sha256sum build/target-census/carry.gg | tee build/target-census/carry.sha256
 
-      - name: Make bottom-up profiler mode/scenario aware
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('tools/polar_function_profile_runner.cpp')
-          s=p.read_text()
-          anchor='int main(int argc,char**argv) {'
-          helper=r'''static bool press_scenario(GearsystemCore& core,const std::string& s) {
-              if(s=="roomA-turn") core.KeyPressed(Joypad_1,Key_Right);
-              else if(s=="roomA-forward") core.KeyPressed(Joypad_1,Key_Up);
-              else if(s=="static") return true;
-              else return false;
-              return true;
-          }
-
-          int main(int argc,char**argv) {'''
-          assert s.count(anchor)==1
-          s=s.replace(anchor,helper,1)
-          old=r'''    if(argc<4) {
-                  std::fprintf(stderr,"usage: %s rom.gg rom.sym rom.noi [updates=60] [warmup=8]\n",argv[0]);
-                  return 2;
-              }
-              const char* rom=argv[1];
-              const char* sym=argv[2];
-              const char* noi=argv[3];
-              unsigned target=(argc>4)?(unsigned)std::strtoul(argv[4],nullptr,0):60u;
-              unsigned warmup=(argc>5)?(unsigned)std::strtoul(argv[5],nullptr,0):8u;
-          '''
-          new=r'''    if(argc<6) {
-                  std::fprintf(stderr,"usage: %s rom.gg rom.sym rom.noi mode scenario [updates=60] [warmup=8]\n",argv[0]);
-                  return 2;
-              }
-              const char* rom=argv[1];
-              const char* sym=argv[2];
-              const char* noi=argv[3];
-              unsigned wanted_mode=(unsigned)std::strtoul(argv[4],nullptr,0);
-              const std::string scenario=argv[5];
-              unsigned target=(argc>6)?(unsigned)std::strtoul(argv[6],nullptr,0):60u;
-              unsigned warmup=(argc>7)?(unsigned)std::strtoul(argv[7],nullptr,0):8u;
-              if(wanted_mode>2u) return 2;
-          '''
-          assert s.count(old)==1
-          s=s.replace(old,new,1)
-          old=r'''    u16 phase_addr=0;
-              if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
-                  std::fprintf(stderr,"phase symbol missing\n"); return 3;
-              }
-          '''
-          new=r'''    u16 phase_addr=0,mode_addr=0;
-              if(!find_symbol(sym,"_g_ts_prof_phase",phase_addr)&&!find_symbol(sym,"g_ts_prof_phase",phase_addr)) {
-                  std::fprintf(stderr,"phase symbol missing\n"); return 3;
-              }
-              if(!find_symbol(sym,"_g_tspf_appearance_mode",mode_addr)&&!find_symbol(sym,"g_tspf_appearance_mode",mode_addr)) {
-                  std::fprintf(stderr,"mode symbol missing\n"); return 3;
-              }
-          '''
-          assert s.count(old)==1
-          s=s.replace(old,new,1)
-          old='''    unsigned loops=0,measured=0;
-              uint8_t last_phase=mem->DebugRetrieve(phase_addr);
-          '''
-          new='''    unsigned loops=0,measured=0;
-              bool armed=false;
-              uint8_t last_phase=mem->DebugRetrieve(phase_addr);
-          '''
-          assert s.count(old)==1
-          s=s.replace(old,new,1)
-          old=r'''        if(p!=last_phase) {
-                  if(p==1u) {
-                      if(loops>=warmup) ++measured;
-                      ++loops;
-                  }
-                  last_phase=p;
-              }
-          '''
-          new=r'''        if(p!=last_phase) {
-                  if(p==1u) {
-                      if(!armed) {
-                          mem->Write(mode_addr,(uint8_t)wanted_mode);
-                          if(mem->DebugRetrieve(mode_addr)!=(uint8_t)wanted_mode) {
-                              std::fprintf(stderr,"mode write failed\n"); return 6;
-                          }
-                          if(!press_scenario(core,scenario)) {
-                              std::fprintf(stderr,"bad scenario\n"); return 2;
-                          }
-                          armed=true; loops=0; measured=0;
-                      } else {
-                          if(loops>=warmup) ++measured;
-                          ++loops;
-                      }
-                  }
-                  last_phase=p;
-              }
-          '''
-          assert s.count(old)==1
-          s=s.replace(old,new,1)
-          old='''    std::printf("Polar render PC profile: measured_updates=%u render_cycles=%llu render_instructions=%llu\\n",
-                          measured,(unsigned long long)total_render_cycles,(unsigned long long)total_render_ins);
-          '''
-          new='''    std::printf("Polar render PC profile: mode=%u scenario=%s measured_updates=%u render_cycles=%llu render_instructions=%llu\\n",
-                          wanted_mode,scenario.c_str(),measured,(unsigned long long)total_render_cycles,(unsigned long long)total_render_ins);
-          '''
-          assert s.count(old)==1
-          s=s.replace(old,new,1)
-          p.write_text(s)
-          print('patched target-aware bottom-up profiler')
-          PY
-
-      - name: Build only the target-aware Gearsystem profiler
+      - name: Build target-aware Gearsystem profiler
         shell: bash
         run: |
           set -euo pipefail
@@ -180,7 +70,7 @@ jobs:
             SegaMemoryRule.cpp SG1000MemoryRule.cpp SmsIOPorts.cpp Video.cpp BootromMemoryRule.cpp JanggunMemoryRule.cpp YM2413.cpp
             VgmRecorder.cpp TraceLogger.cpp audio/Blip_Buffer.cpp audio/Sms_Apu.cpp audio/Stereo_Buffer.cpp)
           ARGS=(); for x in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$x"); done
-          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_function_profile_runner.cpp "${ARGS[@]}" \
+          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_target_census.cpp "${ARGS[@]}" \
             build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_target_census
 
       - name: Census exact mode-0 turn and forward workloads
@@ -190,7 +80,7 @@ jobs:
           R=build/target-census
           ./build/polar_target_census "$R/carry.gg" "$R/carry.sym" "$R/carry.noi" 0 roomA-turn 48 6 | tee "$R/turn.txt"
           ./build/polar_target_census "$R/carry.gg" "$R/carry.sym" "$R/carry.noi" 0 roomA-forward 96 6 | tee "$R/forward.txt"
-          echo '=== KEY ROW CENSUS ===' | tee "$R/summary.txt"
+          echo '=== KEY TARGET CENSUS ===' | tee "$R/summary.txt"
           grep -E 'Polar render PC profile|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/turn.txt" | tee -a "$R/summary.txt"
           grep -E 'Polar render PC profile|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/forward.txt" | tee -a "$R/summary.txt"
 
