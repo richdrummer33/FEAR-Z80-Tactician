@@ -1,9 +1,6 @@
 name: Integrated materializer claim-walker A-B
 
 on:
-  push:
-    branches:
-      - validation/integrated-materializer-ab-20260914
   workflow_dispatch:
 
 permissions:
@@ -139,11 +136,11 @@ jobs:
               for v in ('baseline','carry','walker'):
                   rows=list(csv.DictReader(open(R/f'{v}-{short}-phases.csv')))
                   m=lambda k:statistics.mean(int(r[k]) for r in rows)
-                  vals[v]={'loop':m('loop_T'),'render':m('p2_render_T'),'s4':m('render_s4_T')}
-                  print(f'{sc} {v:8}: loop={vals[v]["loop"]:.1f}T render={vals[v]["render"]:.1f}T stage4={vals[v]["s4"]:.1f}T hz={3579545/vals[v]["loop"]:.2f}')
+                  vals[v]={'loop':m('loop_T'),'render':m('p2_render_T')}
+                  print(f'{sc} {v:8}: loop={vals[v]["loop"]:.1f}T render={vals[v]["render"]:.1f}T hz={3579545/vals[v]["loop"]:.2f}')
               b,c,w=vals['baseline'],vals['carry'],vals['walker']
               print(f'  baseline->walker: loop saving {b["loop"]-w["loop"]:.1f}T ({(1-w["loop"]/b["loop"])*100:.2f}%), render saving {b["render"]-w["render"]:.1f}T ({(1-w["render"]/b["render"])*100:.2f}%)')
-              print(f'  walker incremental over carry: loop {c["loop"]-w["loop"]:.1f}T, render {c["render"]-w["render"]:.1f}T, stage4 {c["s4"]-w["s4"]:.1f}T')
+              print(f'  walker incremental over carry: loop {c["loop"]-w["loop"]:.1f}T, render {c["render"]-w["render"]:.1f}T')
           print(open(R/'exactness.txt').read().strip())
           PY
 
