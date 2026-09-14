@@ -1,6 +1,17 @@
 {
-  "schema": 1,
+  "schema": 2,
   "target": "optimized Z80 research renderer",
+  "target_contract": {
+    "executor": "tools/parity_target_snapshot.py",
+    "corpus_poses": 2520,
+    "run_edges": 19912,
+    "chunks": 31806,
+    "cells_played": 160717,
+    "progjoin_selected_count_total_T": 52266733,
+    "progjoin_edge_hoisted_total_T": 50479935,
+    "posthoist_dispatch_T_per_chunk": 697.7,
+    "oracle": "exact"
+  },
   "rom": "Game Gear mode-0 materializer",
   "states": ["ROM-EXACT", "ROM-EQUIV", "ROM-EXPERIMENT", "PARTIAL", "Z80-ONLY", "N/A"],
   "features": [
@@ -12,8 +23,8 @@
     {"id":"persistent-ownership","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
     {"id":"interior-claim-walk","status":"ROM-EXPERIMENT","integration":"tools/apply_interior_claimwalker_rung.py","requires_exact_rom":true},
     {"id":"dda-g-complete-shape","status":"PARTIAL","integration":"multiple","requires_exact_rom":true},
-    {"id":"finite-edge-programs","status":"Z80-ONLY","integration":null,"requires_exact_rom":true},
-    {"id":"progjoin","status":"Z80-ONLY","integration":null,"requires_exact_rom":true},
-    {"id":"run-edge-descriptor-hoist","status":"Z80-ONLY","integration":null,"requires_exact_rom":true}
+    {"id":"finite-edge-programs","status":"Z80-ONLY","integration":null,"requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_bench.py"},
+    {"id":"progjoin","status":"Z80-ONLY","integration":null,"requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_tune_bench.py"},
+    {"id":"run-edge-descriptor-hoist","status":"Z80-ONLY","integration":null,"requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_edge_hoist_audit.py"}
   ]
 }
