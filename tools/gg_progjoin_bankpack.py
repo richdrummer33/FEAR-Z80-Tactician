@@ -30,6 +30,12 @@ def p16(v: int) -> bytes:
     return struct.pack('<H', v)
 
 
+def s16(v: int) -> int:
+    """Exactly the two's-complement int16 wrap used by the C baker."""
+    v &= 0xFFFF
+    return v - 0x10000 if v & 0x8000 else v
+
+
 def load_manifest(path: Path) -> dict:
     out: dict[str, object] = {"M": {}}
     for ln in path.read_text().splitlines():
@@ -189,27 +195,29 @@ def main() -> int:
         new_desc[di:di+2] = p16(new_bo)
 
     # Structural re-validation of every FULL case against the packed selector.
+    # Recompute each chunk's iq from the original run input exactly as the C
+    # baker does: int16(iq0 + int16(cs*step)).  Do not let Python's unbounded
+    # integer arithmetic accidentally define a different selector at wrap.
     checked_chunks = 0
     for c in cases:
         fam = c["fam"]
         if fam not in FULL_FAMS:
             continue
         slot = stepmap[c["step"] + 2048]
-        iq = c["iq0"]
         m = int(M[fam])
+        cs = 0
         for want in c["wants"]:
             wl = want - 1
             di = ((slot * 32) + fam * C + wl) * 2
             bo = u16(new_desc, di)
             if bo == 0xFFFF:
                 raise SystemExit(f"packed descriptor missing {(slot,fam,wl)}")
-            a = (iq + 32) & 0xFFFF
-            # Match signed int16 arithmetic used by the baker.
-            if a & 0x8000:
-                a -= 0x10000
+            iq = s16(c["iq0"] + s16(cs * c["step"]))
+            a = iq + 32
             H = a >> 7
             u = a & 127
             ts = thresh[slot*8:slot*8 + C + 1]
+            # Exact rank_of(): count sorted thresholds already crossed.
             rank = sum(1 for t in ts if u >= t)
             base = H & (m - 1)
             pi = bo + (base * 8 + rank) * 2
@@ -224,7 +232,7 @@ def main() -> int:
             need = C + 1 + 4*cells
             if (body // BANK) != ((body + need - 1) // BANK):
                 raise SystemExit(f"body crosses bank at {body} len={need}")
-            iq += C * c["step"]
+            cs += C
             checked_chunks += 1
 
     (out / "progjoin_stepmap.bin").write_bytes(stepmap)
@@ -261,6 +269,7 @@ def main() -> int:
             "unused descriptors are 0xFFFF",
             "no packed program body crosses a 16 KiB bank",
             "16-bit body offsets remain sufficient; runtime bank = offset >> 14",
+            "selector int16 wrapping matches edge_progjoin_bake.c exactly"
         ],
     }
     (out / "manifest.json").write_text(json.dumps(report, indent=2) + "\n")
