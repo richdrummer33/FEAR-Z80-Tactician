@@ -35,8 +35,8 @@ def build_hoist(src):
         raise ValueError("draw_edge early-out not found")
     i = i.start()
     j = j.start()
+    e = k.end() + e.end()
     k = k.start()
-    e = k + (e.end())
     slope_blk = src[i + len("draw_edge:\n"):j]      # the slope clamp
     rows_blk  = src[j:e]                            # row select + early out
     return src[:i] + "draw_edge:\n" + rows_blk + slope_blk + src[e:]
