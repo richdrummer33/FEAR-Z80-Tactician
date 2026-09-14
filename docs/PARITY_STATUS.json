@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "target": "optimized Z80 research renderer",
+  "rom": "Game Gear mode-0 materializer",
+  "states": ["ROM-EXACT", "ROM-EQUIV", "ROM-EXPERIMENT", "PARTIAL", "Z80-ONLY", "N/A"],
+  "features": [
+    {"id":"run-endpoint-carry","status":"ROM-EXPERIMENT","integration":"tools/apply_integrated_materializer_rung.py","requires_exact_rom":true},
+    {"id":"border-hoist","status":"ROM-EXPERIMENT","integration":"tools/apply_integrated_materializer_rung.py","requires_exact_rom":true},
+    {"id":"edge-local-dda","status":"ROM-EXPERIMENT","integration":"tools/apply_edge_local_dda_rung.py","requires_exact_rom":true},
+    {"id":"edge-lut","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
+    {"id":"full-vertical-symmetry","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
+    {"id":"persistent-ownership","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
+    {"id":"interior-claim-walk","status":"ROM-EXPERIMENT","integration":"tools/apply_interior_claimwalker_rung.py","requires_exact_rom":true},
+    {"id":"dda-g-complete-shape","status":"PARTIAL","integration":"multiple","requires_exact_rom":true},
+    {"id":"finite-edge-programs","status":"Z80-ONLY","integration":null,"requires_exact_rom":true},
+    {"id":"progjoin","status":"Z80-ONLY","integration":null,"requires_exact_rom":true},
+    {"id":"run-edge-descriptor-hoist","status":"Z80-ONLY","integration":null,"requires_exact_rom":true}
+  ]
+}
