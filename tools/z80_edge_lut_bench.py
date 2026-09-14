@@ -32,6 +32,7 @@ against the final 20x18 name table.
 """
 from __future__ import annotations
 import pathlib
+import re
 import statistics as stt
 import sys
 
@@ -181,19 +182,27 @@ de_lb_top:
 
 
 def build_lut_variant(src, mode=1):
-    assert src.count(ANCHOR) == 1
+    anchor_pat = (r"(?m)^\s*ld a,l\s*$\n"
+                  r"\s*ld \(0xc01d\),a\s*$\n"
+                  r"de_rows2:")
+    late_anchor_pat = (r"(?m)^\s*cp b\s*$\n"
+                       r"\s*ret c\b.*$\n")
     if mode == 1:
-        src = src.replace(ANCHOR, HOIST, 1)
+        src, n = re.subn(anchor_pat, HOIST, src, count=1)
+        assert n == 1
     else:
-        assert src.count(LATE_ANCHOR) == 1
-        src = src.replace(LATE_ANCHOR,
-                          LATE_ANCHOR + (HOIST_LATE if mode == 2 else HOIST_TAB),
-                          1)
+        src, n = re.subn(late_anchor_pat,
+                         lambda m: m.group(0) + (HOIST_LATE if mode == 2 else HOIST_TAB),
+                         src, count=1)
+        assert n == 1
     # Search for the LABEL, not the name: the routine is preceded by a
     # comment line containing "edge_entry:" and slicing there left the new
     # label inside that comment, so nothing defined it.
-    i = src.index("\nedge_entry:") + 1
-    j = src.index("; ---- draw_full")
+    i = re.search(r"(?m)^edge_entry:\s*$", src)
+    j = re.search(r"(?m)^; ---- draw_full:.*$", src)
+    assert i is not None and j is not None
+    i = i.start()
+    j = j.start()
     return src[:i] + LUT_ENTRY + src[j:]
 
 

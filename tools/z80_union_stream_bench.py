@@ -19,6 +19,7 @@ wrong image.
 """
 from __future__ import annotations
 import pathlib
+import re
 import statistics as stt
 import sys
 
@@ -36,7 +37,10 @@ COLBIT, COLBYTE, ROWBASE, RECIP = 0xE000, 0xE014, 0xE028, 0xE100
 # The marking routines live in the column kernel; take them verbatim so the two
 # benches cannot drift apart on how a row range becomes mask bits.
 _COL = (ROOT / "tools" / "temporal_union.asm").read_text()
-SHARED = _COL[_COL.index("; ---- UNION_A's marking"):]
+_shared = re.search(r"(?m)^; ---- UNION_A's marking:.*$", _COL)
+if _shared is None:
+    raise ValueError("UNION_A marking block not found")
+SHARED = _COL[_shared.start():]
 SRC = (ROOT / "tools" / "temporal_union_stream.asm").read_text() + "\n" + SHARED
 SRC = SRC.replace("UB_MARK_HOOK", "mark_span_a")
 
@@ -48,11 +52,12 @@ VARIANTS = (
 
 # k_col_recip_q8, read out of the generated data so the walk matches draw_run.
 def recip_table():
-    import re
     txt = (ROOT / "src" / "tilesector_polar_renderer.c").read_text()
-    i = txt.index("k_col_recip_q8[21]")
-    j = txt.index("}", i)
-    return [int(v) for v in re.findall(r"-?\d+", txt[txt.index("{", i) + 1:j])]
+    m = re.search(r"k_col_recip_q8\s*\[\s*21\s*\]\s*=\s*\{(.*?)\n\};",
+                  txt, re.S)
+    if m is None:
+        raise ValueError("k_col_recip_q8 table not found")
+    return [int(v) for v in re.findall(r"-?\d+", m.group(1))]
 
 
 def parse(path):

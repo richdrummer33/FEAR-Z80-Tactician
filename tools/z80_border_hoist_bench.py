@@ -14,6 +14,7 @@ change, nothing else touched.
 """
 from __future__ import annotations
 import pathlib
+import re
 import statistics as stt
 import sys
 
@@ -74,13 +75,25 @@ bh_setn:
 
 
 def build_borderhoist(src):
-    i = src.index(BORDER_BLOCK_START)
-    j = src.index(BORDER_BLOCK_END, i)
-    src = src[:i] + src[j:]                      # drop the per-column block
-    assert "run_loop:" in src
-    src = src.replace("run_loop:", PRELOOP, 1)
-    assert CARRY_OLD in src, "carry tail moved"
-    return src.replace(CARRY_OLD, CARRY_NEW, 1)
+        border_start = re.search(
+                r"(?m)^; ---- border: only the first and last column can carry one ----\s*$",
+                src)
+        border_end = re.search(r"(?m)^; ---- column pointer.*$", src)
+        if border_start is None or border_end is None:
+                raise ValueError("border block anchors moved")
+        i = border_start.start()
+        j = border_end.start()
+        src = src[:i] + src[j:]                      # drop the per-column block
+        assert "run_loop:" in src
+        src = src.replace("run_loop:", PRELOOP, 1)
+        carry_tail = re.search(r"(?m)^\s*ld a,b\s*$\n"
+                                                   r"\s*inc a\s*$\n"
+                                                   r"\s*ld \(0xc030\),a\s*$\n"
+                                                   r"\s*jp run_loop\s*$",
+                                                   src)
+        if carry_tail is None:
+                raise ValueError("carry tail moved")
+        return src[:carry_tail.start()] + CARRY_NEW + src[carry_tail.end():]
 
 
 def main():

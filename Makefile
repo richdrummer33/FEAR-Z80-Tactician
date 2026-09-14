@@ -1,5 +1,6 @@
 CC ?= gcc
-CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Wpedantic
+
+CFLAGS ?= -std=c99 -O2 -Wall -Wextra -Wpedantic -Wno-unused-function
 GBDK_HOME ?= /opt/gbdk
 LCC ?= $(GBDK_HOME)/bin/lcc
 GEARSYSTEM_DIR ?=
@@ -215,7 +216,7 @@ span-stream: build
 union-stream: span-stream
 	python3 tools/z80_union_stream_bench.py 300
 
-edge-lut: build
+edge-lut: build coverage-potential
 	$(CC) $(CFLAGS) -Isrc tools/edge_lut_gen.c src/tilesector_polar_motion.c -o build/edge_lut_gen
 	./build/edge_lut_gen > build/edge_lut.txt
 	python3 tools/z80_edge_lut_bench.py 300
