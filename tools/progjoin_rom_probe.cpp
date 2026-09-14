@@ -60,7 +60,13 @@ int main(int argc,char**argv) {
     Memory* mem=core.GetMemory();
     const uint64_t t0=core.GetMasterClockCycles();
     unsigned frames=0;
-    while(!mem->DebugRetrieve(done) && frames<120u){
+    /* One semantic case intentionally hashes the complete 1280-byte guarded
+     * buffer on the real Z80. That 32-bit FNV pass is much more expensive than
+     * the run-edge playback itself: the original 120-frame watchdog was only
+     * enough to finish case 0. Keep a watchdog, but size it for the full 192-case
+     * correctness corpus so "cases=1, fail=0" is not misdiagnosed as a ROM hang. */
+    const unsigned max_frames=30000u;
+    while(!mem->DebugRetrieve(done) && frames<max_frames){
         samples=0; core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false); ++frames;
     }
     const uint64_t dt=core.GetMasterClockCycles()-t0;
