@@ -5,12 +5,14 @@ on:
     branches: [validation/parity-enforcement-20260914]
     paths:
       - 'tools/gg_progjoin_gate_census.py'
+      - 'tools/gg_progjoin_gate_invariance.py'
       - 'tools/gg_progjoin_corpus_census.py'
       - 'tools/edge_progjoin_bake.c'
       - '.github/workflows/gg-progjoin-gate-census.yml'
   pull_request:
     paths:
       - 'tools/gg_progjoin_gate_census.py'
+      - 'tools/gg_progjoin_gate_invariance.py'
       - 'tools/gg_progjoin_corpus_census.py'
       - 'tools/edge_progjoin_bake.c'
       - '.github/workflows/gg-progjoin-gate-census.yml'
@@ -35,6 +37,10 @@ jobs:
         run: |
           python3 tools/gg_progjoin_gate_census.py build/gate_census/windows build/gate_census/gate.json | tee build/gate_census/gate.txt
           cat build/gate_census/gate.json
+      - name: Prove ownership tags survive sparse-body deduplication
+        run: |
+          python3 tools/gg_progjoin_gate_invariance.py build/gate_census/windows build/gate_census/gate_invariance.json | tee build/gate_census/gate_invariance.txt
+          cat build/gate_census/gate_invariance.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
