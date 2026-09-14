@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - validation/integrated-materializer-ab-20260914
+  pull_request:
+    branches:
+      - validation/playable-latest-20260913
   workflow_dispatch:
 
 permissions:
@@ -24,7 +27,7 @@ jobs:
           curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
           echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
-          tar -xzf .toolchain/gbk-linux64.tar.gz -C .toolchain 2>/dev/null || tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
       - name: Build exact baseline ROM
         shell: bash
