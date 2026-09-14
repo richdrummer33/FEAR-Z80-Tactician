@@ -6,6 +6,7 @@ on:
       - claude/renderer-forensic-reconstruction-azzocg
     paths:
       - tools/z80_progjoin_tune_bench.py
+      - tools/z80_progjoin_dispatch_audit.py
       - tools/z80_progjoin_bench.py
       - tools/edge_progjoin_bake.c
       - tools/z80core.py
@@ -26,8 +27,10 @@ jobs:
       - name: Build PROGJOIN baker
         run: |
           cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
-          mkdir -p build/progjoin build/progjoin_tuned
+          mkdir -p build/progjoin build/progjoin_tuned build/progjoin_fixedadv
       - name: Check Z80 interpreter join opcode
         run: python3 tests/test_z80_ld_sp_hl.py
       - name: Run baseline vs tuned over full corpus
         run: python3 tools/z80_progjoin_tune_bench.py 63 40
+      - name: Profile dispatch and A-B finite chunk advance
+        run: python3 tools/z80_progjoin_dispatch_audit.py 63 40
