@@ -21,9 +21,12 @@ r_cov_first$:
 assert s.count(data_old) == 1
 s = s.replace(data_old, data_new, 1)
 
-# Initialize the current bit mask + corresponding unclaimed byte once per
-# contiguous interior span. r_fill_first is already clipped to 0..17.
-init_old = '''        call    map_ptr_row_col$
+# Initialize ownership-walker state BEFORE map_ptr_row_col$ so HL is scratch
+# during setup. Only after setup do we establish HL as the persistent RAM
+# name-table pointer. Reload A=first row immediately before map_ptr_row_col$.
+init_old = '''        ld      a, (#r_fill_first$)
+        ld      (#r_row$), a
+        call    map_ptr_row_col$
         call    full_tile_low$
         ld      (#r_full_tile$), a
 interior_loop$:
@@ -34,14 +37,12 @@ _tsp_polar_p_fill::
         pop     hl
         jr      z, polar_interior_done$
 '''
-init_new = '''        call    map_ptr_row_col$
-        call    full_tile_low$
-        ld      (#r_full_tile$), a
+init_new = '''        ld      a, (#r_fill_first$)
+        ld      (#r_row$), a
 
         ; CLAIMWALK_A: the interior visits monotonically increasing rows.
         ; Resolve the starting bit and one of r_unclaimed0/1/2 once, then
         ; carry both through the loop instead of rebuilding them per row.
-        ld      a, (#r_fill_first$)
         and     #7
         ld      l, a
         ld      h, #0
@@ -64,6 +65,11 @@ interior_claim_init_g0$:
 interior_claim_init_store$:
         ld      (#r_fill_claim_byte$), a
 
+        ; Establish the persistent name-table pointer only after walker setup.
+        ld      a, (#r_fill_first$)
+        call    map_ptr_row_col$
+        call    full_tile_low$
+        ld      (#r_full_tile$), a
 interior_loop$:
         ld      a, (#r_fill_claim_mask$)
         ld      e, a
