@@ -23,8 +23,8 @@
     {"id":"persistent-ownership","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
     {"id":"interior-claim-walk","status":"ROM-EXPERIMENT","integration":"tools/apply_interior_claimwalker_rung.py","requires_exact_rom":true},
     {"id":"dda-g-complete-shape","status":"PARTIAL","integration":"multiple","requires_exact_rom":true},
-    {"id":"finite-edge-programs","status":"Z80-ONLY","integration":null,"requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_bench.py"},
-    {"id":"progjoin","status":"Z80-ONLY","integration":null,"requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_tune_bench.py"},
+    {"id":"finite-edge-programs","status":"ROM-EXPERIMENT","integration":"src/tilesector_polar_progjoin_runtime.c","requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_bench.py","rom_evidence":"GG PROGJOIN banked ROM probe run 34909839010: 192/192 exact, zero lookup/bounds failures","playable_renderer_integrated":false},
+    {"id":"progjoin","status":"ROM-EXPERIMENT","integration":"src/tilesector_polar_progjoin_runtime.c","requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_tune_bench.py","rom_evidence":"real 512 KiB GG ROM sparse dispatch + Frame-2 bank switching + body playback exact on 192 stratified cases","playable_renderer_integrated":false},
     {"id":"run-edge-descriptor-hoist","status":"Z80-ONLY","integration":null,"requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_edge_hoist_audit.py"}
   ]
 }
