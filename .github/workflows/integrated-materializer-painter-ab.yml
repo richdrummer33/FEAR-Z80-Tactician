@@ -1,6 +1,9 @@
 name: Integrated materializer painter A-B
 
 on:
+  push:
+    branches:
+      - validation/integrated-materializer-ab-20260914
   pull_request:
     branches:
       - validation/playable-latest-20260913
