@@ -1,0 +1,51 @@
+name: GG PROGJOIN full-corpus census
+
+on:
+  push:
+    branches:
+      - validation/parity-enforcement-20260914
+    paths:
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-corpus-census.yml'
+  pull_request:
+    paths:
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-corpus-census.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build corpus oracle
+        run: make coverage-potential
+
+      - name: Build exact target baker
+        run: |
+          mkdir -p build/progjoin_corpus
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+
+      - name: Union the whole windowed target vocabulary
+        run: |
+          python3 tools/gg_progjoin_corpus_census.py \
+            build/coverage_pose_oracle.txt build/edge_progjoin_bake build/progjoin_corpus/windows \
+            --window 40 | tee build/progjoin_corpus/census.txt
+          cat build/progjoin_corpus/windows/corpus_census.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gg-progjoin-full-corpus-census
+          path: |
+            build/progjoin_corpus/census.txt
+            build/progjoin_corpus/windows/corpus_census.json
+          if-no-files-found: warn
+          retention-days: 30
