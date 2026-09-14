@@ -1,0 +1,151 @@
+name: GG PROGJOIN playable FULL live rung
+
+on:
+  push:
+    branches: [validation/parity-enforcement-20260914]
+    paths:
+      - 'src/tilesector_polar_progjoin_runtime.c'
+      - 'src/tilesector_polar_progjoin_runtime.h'
+      - 'src/tilesector_polar_renderer.c'
+      - 'src/tilesector_polar_materialize_gg.s'
+      - 'tools/build_parity_materializer.py'
+      - 'tools/apply_progjoin_full_live_rung.py'
+      - 'tools/gg_progjoin_emit_assets.py'
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/gg_progjoin_sparse_direct.py'
+      - 'tools/edge_progjoin_bake.c'
+      - 'Makefile'
+      - '.github/workflows/gg-progjoin-live-rung.yml'
+  pull_request:
+    paths:
+      - 'src/tilesector_polar_progjoin_runtime.c'
+      - 'src/tilesector_polar_progjoin_runtime.h'
+      - 'src/tilesector_polar_renderer.c'
+      - 'src/tilesector_polar_materialize_gg.s'
+      - 'tools/build_parity_materializer.py'
+      - 'tools/apply_progjoin_full_live_rung.py'
+      - 'tools/gg_progjoin_emit_assets.py'
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/gg_progjoin_sparse_direct.py'
+      - 'tools/edge_progjoin_bake.c'
+      - 'Makefile'
+      - '.github/workflows/gg-progjoin-live-rung.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-live-rung:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build exact FULL corpus and sparse assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          make coverage-potential
+          mkdir -p build/progjoin_live/windows build/progjoin_live/packed build/progjoin_live/gen
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+          python3 tools/gg_progjoin_corpus_census.py \
+            build/coverage_pose_oracle.txt build/edge_progjoin_bake build/progjoin_live/windows --window 40 \
+            | tee build/progjoin_live/census.txt
+          python3 tools/gg_progjoin_sparse_direct.py build/progjoin_live/windows build/progjoin_live/packed \
+            | tee build/progjoin_live/pack.txt
+          python3 tools/gg_progjoin_emit_assets.py build/progjoin_live/packed build/progjoin_live/gen --base-bank 48 \
+            | tee build/progjoin_live/assets.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Generate parity materializer and live splice
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/build_parity_materializer.py
+          cp src/tilesector_polar_renderer.c build/progjoin_live/renderer.baseline.c
+          cp src/tilesector_polar_materialize_gg.s build/progjoin_live/materializer.canonical.s
+          cp build/parity/tilesector_polar_materialize_gg.generated.s src/tilesector_polar_materialize_gg.s
+          cp src/tilesector_polar_materialize_gg.s build/progjoin_live/materializer.parity.s
+          python3 tools/apply_progjoin_full_live_rung.py
+          cp src/tilesector_polar_renderer.c build/progjoin_live/renderer.live.c
+          cp src/tilesector_polar_materialize_gg.s build/progjoin_live/materializer.live.s
+
+      - name: Build experimental 1 MiB playable ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GBDK_HOME="$PWD/.toolchain/gbdk"
+          LCC="$GBDK_HOME/bin/lcc"
+          G="$PWD/build/progjoin_live/gen"
+          FLAGS="-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo64 -Isrc -I$G -Ibuild/generated/polar_projection -Ibuild/generated/polar_depthplane"
+          CFLAGS="-Wf--opt-code-speed -DTSPF_PROFILE_HOOKS=1 -DTSPF_LOCAL_PROJECTION=1 -DTSPF_SCREEN_DEPTH_PLANE=1 -DTSPF_PROGJOIN_FULL=1 -DTSP_PROGJOIN_BANK_BASE=48"
+
+          # Let the normal Makefile generate/compile the mature renderer support
+          # pieces first, now against the explicitly patched live source.
+          make GBDK_HOME="$GBDK_HOME" POLAR_ROM_BANKS=64 \
+            POLAR_GGFLAGS="$FLAGS" POLAR_CFLAGS="$CFLAGS" \
+            build/main_tilesector_polar_gg.o \
+            build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o \
+            build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o \
+            build/tilesector_polar_ntupload_profiled_gg.o \
+            build/tilesector_polar_projection_gg.o \
+            build/tilesector_polar_depthplane_gg.o \
+            $(printf 'build/tilesector_polar_proj_bank%s.o ' 0 1 2 3 4 5)
+
+          mkdir -p build/progjoin_live/obj
+          "$LCC" $FLAGS $CFLAGS -c -o build/progjoin_live/obj/progjoin_runtime.o src/tilesector_polar_progjoin_runtime.c
+          for f in pj_meta pj_desc pj_records0 pj_records1 pj_body0 pj_body1 pj_body2 pj_body3 pj_body4; do
+            "$LCC" $FLAGS $CFLAGS -c -o "build/progjoin_live/obj/$f.o" "$G/$f.c"
+          done
+
+          OBJS=(
+            build/main_tilesector_polar_gg.o
+            build/tilesector_polar_motion_gg.o
+            build/tilesector_polar_renderer_gg.o
+            build/tilesector_polar_ntstate_gg.o
+            build/tilesector_polar_materialize_gg.o
+            build/tilesector_polar_ntupload_profiled_gg.o
+            build/tilesector_polar_projection_gg.o
+            build/tilesector_polar_depthplane_gg.o
+            build/tilesector_polar_proj_bank0.o build/tilesector_polar_proj_bank1.o
+            build/tilesector_polar_proj_bank2.o build/tilesector_polar_proj_bank3.o
+            build/tilesector_polar_proj_bank4.o build/tilesector_polar_proj_bank5.o
+            build/progjoin_live/obj/progjoin_runtime.o
+            build/progjoin_live/obj/pj_meta.o build/progjoin_live/obj/pj_desc.o
+            build/progjoin_live/obj/pj_records0.o build/progjoin_live/obj/pj_records1.o
+            build/progjoin_live/obj/pj_body0.o build/progjoin_live/obj/pj_body1.o
+            build/progjoin_live/obj/pj_body2.o build/progjoin_live/obj/pj_body3.o
+            build/progjoin_live/obj/pj_body4.o
+          )
+          "$LCC" $FLAGS -Wm-yS -o build/progjoin_live/gg-polar-progjoin-live.gg "${OBJS[@]}"
+          test "$(stat -c%s build/progjoin_live/gg-polar-progjoin-live.gg)" -eq 1048576
+          cp build/progjoin_live/gg-polar-progjoin-live.noi build/progjoin_live/live.noi
+          cp build/progjoin_live/gg-polar-progjoin-live.map build/progjoin_live/live.map || true
+          sha256sum build/progjoin_live/gg-polar-progjoin-live.gg | tee build/progjoin_live/live.sha256
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gg-progjoin-playable-live-rung
+          path: |
+            build/progjoin_live/gg-polar-progjoin-live.gg
+            build/progjoin_live/*.noi
+            build/progjoin_live/*.map
+            build/progjoin_live/*.txt
+            build/progjoin_live/*.json
+            build/progjoin_live/*.sha256
+            build/progjoin_live/renderer.*.c
+            build/progjoin_live/materializer.*.s
+          retention-days: 30
