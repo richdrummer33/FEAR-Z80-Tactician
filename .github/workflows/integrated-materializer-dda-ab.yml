@@ -1,0 +1,109 @@
+name: Integrated materializer target census
+
+on:
+  push:
+    branches:
+      - validation/integrated-materializer-ab-20260914
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  target-census:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain build/target-census
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build exact baseline, carry, and claim-walker ROMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o \
+            build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o build/tilesector_polar_depthplane_gg.o \
+            build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
+            POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
+          BASE_SHA="$(sha256sum build/gg-tilesector-polar.gg | cut -d' ' -f1)"
+          echo "baseline sha256=$BASE_SHA"
+          test "$BASE_SHA" = "6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c"
+
+          python3 tools/apply_integrated_materializer_rung.py
+          rm -f build/tilesector_polar_materialize_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
+            POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/target-census/carry.gg
+          cp build/gg-tilesector-polar.sym build/target-census/carry.sym
+          cp build/gg-tilesector-polar.noi build/target-census/carry.noi
+          sha256sum build/target-census/carry.gg | tee build/target-census/carry.sha256
+
+          python3 tools/apply_interior_claimwalker_rung.py
+          rm -f build/tilesector_polar_materialize_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=1 \
+            POLAR_SCREEN_DEPTH_PLANE=1 POLAR_PROJ_THRESHOLD=4 POLAR_PROJ_ROWS_PER_BANK=4 POLAR_PROJ_BANK_COUNT=6 \
+            POLAR_ROM_BANKS=8 TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=2u" gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/target-census/walker.gg
+          cp build/gg-tilesector-polar.sym build/target-census/walker.sym
+          cp build/gg-tilesector-polar.noi build/target-census/walker.noi
+          sha256sum build/target-census/walker.gg | tee build/target-census/walker.sha256
+
+      - name: Build target-aware Gearsystem profiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          ROOT="$PWD/.toolchain/Gearsystem"
+          INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
+          mkdir -p build/coredbg
+          gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/src/audio/emu2413/emu2413.c" -o build/coredbg/emu2413.o
+          gcc -std=gnu99 -O2 "${INC[@]}" -c "$ROOT/platforms/shared/dependencies/miniz/miniz.c" -o build/coredbg/miniz.o
+          SRCS=(Audio.cpp Cartridge.cpp CodemastersMemoryRule.cpp GameGearIOPorts.cpp GearsystemCore.cpp Input.cpp
+            KoreanMemoryRule.cpp KoreanMSXSMS8000MemoryRule.cpp KoreanSMS32KB2000MemoryRule.cpp KoreanMSX32KB2000MemoryRule.cpp
+            Korean2000XOR1FMemoryRule.cpp KoreanMSX8KB0300MemoryRule.cpp Korean0000XORFFMemoryRule.cpp KoreanFFFFHiComMemoryRule.cpp
+            KoreanFFFEMemoryRule.cpp KoreanBFFCMemoryRule.cpp KoreanFFF3FFFCMemoryRule.cpp KoreanMDFFF5MemoryRule.cpp KoreanMDFFF0MemoryRule.cpp
+            Multi4PAKAllActionMemoryRule.cpp IratahackMemoryRule.cpp JumboDahjeeMemoryRule.cpp Eeprom93C46MemoryRule.cpp
+            Memory.cpp MemoryRule.cpp MSXMemoryRule.cpp opcodes.cpp opcodes_cb.cpp opcodes_ed.cpp Processor.cpp RomOnlyMemoryRule.cpp
+            SegaMemoryRule.cpp SG1000MemoryRule.cpp SmsIOPorts.cpp Video.cpp BootromMemoryRule.cpp JanggunMemoryRule.cpp YM2413.cpp
+            VgmRecorder.cpp TraceLogger.cpp audio/Blip_Buffer.cpp audio/Sms_Apu.cpp audio/Stereo_Buffer.cpp)
+          ARGS=(); for x in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$x"); done
+          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_target_census.cpp "${ARGS[@]}" \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_target_census
+
+      - name: Census carry versus claim-walker
+        shell: bash
+        run: |
+          set -euo pipefail
+          R=build/target-census
+          for variant in carry walker; do
+            ./build/polar_target_census "$R/${variant}.gg" "$R/${variant}.sym" "$R/${variant}.noi" 0 roomA-turn 48 6 | tee "$R/${variant}-turn.txt"
+            ./build/polar_target_census "$R/${variant}.gg" "$R/${variant}.sym" "$R/${variant}.noi" 0 roomA-forward 96 6 | tee "$R/${variant}-forward.txt"
+          done
+          echo '=== KEY TARGET CENSUS: CARRY -> CLAIM-WALKER ===' | tee "$R/summary.txt"
+          for scenario in turn forward; do
+            for variant in carry walker; do
+              echo "--- $variant $scenario ---" | tee -a "$R/summary.txt"
+              grep -E 'Polar render PC profile|tsp_polar_p_fill|surface_column|run_geometry|whole-span|generic-edge-row|generic-cap-row|interior-row|sym-top-row|sym-bottom-row|unassigned' "$R/${variant}-${scenario}.txt" | tee -a "$R/summary.txt"
+            done
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integrated-materializer-target-census
+          path: build/target-census/
+          if-no-files-found: warn
+          retention-days: 30
