@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Exact-ROM integration rung: preserve near-to-far ownership, cheapen sequential interior tests.
 from pathlib import Path
 
 p = Path('src/tilesector_polar_materialize_gg.s')
