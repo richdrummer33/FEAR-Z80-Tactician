@@ -14,6 +14,8 @@ on:
       - 'tools/gg_progjoin_corpus_census.py'
       - 'tools/gg_progjoin_sparse_direct.py'
       - 'tools/edge_progjoin_bake.c'
+      - 'tools/polar_ab_profile.cpp'
+      - 'tools/build_gearsystem_tools.sh'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   pull_request:
@@ -28,6 +30,8 @@ on:
       - 'tools/gg_progjoin_corpus_census.py'
       - 'tools/gg_progjoin_sparse_direct.py'
       - 'tools/edge_progjoin_bake.c'
+      - 'tools/polar_ab_profile.cpp'
+      - 'tools/build_gearsystem_tools.sh'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   workflow_dispatch:
@@ -38,7 +42,7 @@ permissions:
 jobs:
   build-live-rung:
     runs-on: ubuntu-22.04
-    timeout-minutes: 40
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -88,9 +92,6 @@ jobs:
           LCC="$GBDK_HOME/bin/lcc"
           G="$PWD/build/progjoin_live/gen"
           FLAGS="-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo64 -Isrc -I$G -Ibuild/generated/polar_projection -Ibuild/generated/polar_depthplane"
-          # This rung intentionally starts in appearance mode 0: the compiled
-          # corpus bakes absolute shade-1 words. Keep the normal build's mode
-          # selection contract explicit instead of depending on caller flags.
           CFLAGS="-Wf--opt-code-speed -DTSPF_PROFILE_HOOKS=1 -DTSPF_LOCAL_PROJECTION=1 -DTSPF_SCREEN_DEPTH_PLANE=1 -DTSPF_DEFAULT_APPEARANCE=0 -DTSPF_PROGJOIN_FULL=1 -DTSP_PROGJOIN_BANK_BASE=48"
 
           make GBDK_HOME="$GBDK_HOME" POLAR_ROM_BANKS=64 \
@@ -136,6 +137,48 @@ jobs:
           cp build/progjoin_live/gg-polar-progjoin-live.map build/progjoin_live/live.map || true
           sha256sum build/progjoin_live/gg-polar-progjoin-live.gg | tee build/progjoin_live/live.sha256
 
+      - name: Build Gearsystem exactness profiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
+          SRCS=(
+            Audio.cpp Cartridge.cpp CodemastersMemoryRule.cpp GameGearIOPorts.cpp GearsystemCore.cpp Input.cpp
+            KoreanMemoryRule.cpp KoreanMSXSMS8000MemoryRule.cpp KoreanSMS32KB2000MemoryRule.cpp KoreanMSX32KB2000MemoryRule.cpp
+            Korean2000XOR1FMemoryRule.cpp KoreanMSX8KB0300MemoryRule.cpp Korean0000XORFFMemoryRule.cpp KoreanFFFFHiComMemoryRule.cpp
+            KoreanFFFEMemoryRule.cpp KoreanBFFCMemoryRule.cpp KoreanFFF3FFFCMemoryRule.cpp KoreanMDFFF5MemoryRule.cpp KoreanMDFFF0MemoryRule.cpp
+            Multi4PAKAllActionMemoryRule.cpp IratahackMemoryRule.cpp JumboDahjeeMemoryRule.cpp Eeprom93C46MemoryRule.cpp
+            Memory.cpp MemoryRule.cpp MSXMemoryRule.cpp opcodes.cpp opcodes_cb.cpp opcodes_ed.cpp Processor.cpp RomOnlyMemoryRule.cpp
+            SegaMemoryRule.cpp SG1000MemoryRule.cpp SmsIOPorts.cpp Video.cpp BootromMemoryRule.cpp JanggunMemoryRule.cpp YM2413.cpp
+            VgmRecorder.cpp TraceLogger.cpp audio/Blip_Buffer.cpp audio/Sms_Apu.cpp audio/Stereo_Buffer.cpp
+          )
+          ARGS=()
+          for s in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$s"); done
+          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_ab_profile.cpp "${ARGS[@]}" \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_ab_profile
+
+      - name: Run playable live ROM smoke and cycle trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          R=build/progjoin_live
+          ./build/polar_ab_profile "$R/gg-polar-progjoin-live.gg" "$R/live.noi" 0 roomA-turn 48 6 "$R/live-roomA-turn.csv"
+          ./build/polar_ab_profile "$R/gg-polar-progjoin-live.gg" "$R/live.noi" 0 roomA-forward 96 6 "$R/live-roomA-forward.csv"
+          python3 - <<'PY' | tee "$R/live-smoke.txt"
+          import csv, statistics
+          from pathlib import Path
+          R=Path('build/progjoin_live')
+          for sc in ('roomA-turn','roomA-forward'):
+              rows=list(csv.DictReader(open(R/f'live-{sc}.csv')))
+              assert rows
+              vals=[int(r['loop_T']) for r in rows]
+              print(f'LIVE_ROM_PASS {sc} updates={len(rows)} mean={statistics.mean(vals):.1f}T hz={3579545/statistics.mean(vals):.2f} first_hash={rows[0]["map_fnv64"]} last_hash={rows[-1]["map_fnv64"]}')
+          PY
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -147,6 +190,7 @@ jobs:
             build/progjoin_live/*.txt
             build/progjoin_live/*.json
             build/progjoin_live/*.sha256
+            build/progjoin_live/*.csv
             build/progjoin_live/renderer.*.c
             build/progjoin_live/materializer.*.s
           retention-days: 30
