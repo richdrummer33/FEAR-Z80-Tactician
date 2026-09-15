@@ -13,6 +13,32 @@
 #define PJ_BANK_REC1   (TSP_PROGJOIN_BANK_BASE + 3u)
 #define PJ_BANK_BODY0  (TSP_PROGJOIN_BANK_BASE + 4u)
 
+#if defined(TSPF_PROGJOIN_STATS) && TSPF_PROGJOIN_STATS
+/* Compiled-path accounting for the playable A/B rung. Without these an exact
+ * name-table match cannot be distinguished from "every run-edge fell back to
+ * the legacy edge solver", which would read as parity while proving nothing.
+ * Defined whenever stats are on, including in the PROGJOIN-off baseline, where
+ * they stay zero and act as the control. */
+uint16_t g_pj_stat_attempt;
+uint16_t g_pj_stat_ok;
+uint16_t g_pj_stat_fb_depth;
+uint16_t g_pj_stat_fb_sel_top;
+uint16_t g_pj_stat_fb_sel_bot;
+uint16_t g_pj_stat_fb_play_top;
+uint16_t g_pj_stat_fb_play_bot;
+/* Why dispatch refused, counted at the point of refusal. The fb_sel_* counters
+ * above cannot attribute this on their own: the top family is preflighted
+ * first and short-circuits, so it absorbs every "corpus does not cover this
+ * run-edge" case regardless of which family is actually uncovered. */
+uint16_t g_pj_stat_miss_step;
+uint16_t g_pj_stat_miss_desc;
+uint16_t g_pj_stat_miss_rank;
+uint16_t g_pj_stat_miss_shape;
+#define PJ_STAT(c) (++(c))
+#else
+#define PJ_STAT(c) ((void)0)
+#endif
+
 static uint16_t rd16p(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 static uint8_t record_byte(uint16_t off) {
     if (off < PJ_BANK_BYTES) { SWITCH_ROM2(PJ_BANK_REC0); return gg_pj_records0[off]; }
@@ -31,23 +57,23 @@ static const uint8_t *body_base(uint8_t logical_bank) {
 
 uint8_t tsp_progjoin_dispatch_body(int16_t step, uint8_t fam, uint8_t want, int16_t iq, TSPProgjoinBodyRef *out) {
     uint16_t step_index; uint8_t page, local_rank, rank, u, base, fi, key; uint16_t slot, desc_i, rec; int16_t acc; const uint8_t *p;
-    if (!out || (fam != 0u && fam != 2u) || want == 0u || want > TSP_PROGJOIN_CHUNK_COLS) return 0u;
-    if (step < -2048 || step > 2047) return 0u;
+    if (!out || (fam != 0u && fam != 2u) || want == 0u || want > TSP_PROGJOIN_CHUNK_COLS) {PJ_STAT(g_pj_stat_miss_shape);return 0u;}
+    if (step < -2048 || step > 2047) {PJ_STAT(g_pj_stat_miss_step);return 0u;}
     step_index=(uint16_t)((int16_t)(step+2048)); page=(uint8_t)(step_index>>8);
-    SWITCH_ROM2(PJ_BANK_META); local_rank=gg_pj_step_local[step_index]; if(local_rank==0xFFu)return 0u;
+    SWITCH_ROM2(PJ_BANK_META); local_rank=gg_pj_step_local[step_index]; if(local_rank==0xFFu){PJ_STAT(g_pj_stat_miss_step);return 0u;}
     slot=(uint16_t)(rd16p(gg_pj_step_page_base+((uint16_t)page<<1))+local_rank);
     acc=(int16_t)(iq+32); u=(uint8_t)acc&127u; rank=0u; p=gg_pj_thresholds+((uint16_t)slot<<3);
     while(rank<(TSP_PROGJOIN_CHUNK_COLS+1u)&&u>=p[rank])++rank;
     base=(uint8_t)(((int16_t)acc>>7)&7); fi=(fam==0u)?0u:1u;
     desc_i=(uint16_t)((slot*12u+(uint16_t)fi*TSP_PROGJOIN_CHUNK_COLS+(uint16_t)(want-1u))<<1);
-    SWITCH_ROM2(PJ_BANK_DESC); rec=rd16p(gg_pj_descriptor+desc_i); if(rec==0xFFFFu)return 0u;
+    SWITCH_ROM2(PJ_BANK_DESC); rec=rd16p(gg_pj_descriptor+desc_i); if(rec==0xFFFFu){PJ_STAT(g_pj_stat_miss_desc);return 0u;}
     key=(uint8_t)((base<<3)|rank);
-    for(;;){uint8_t got=record_byte(rec); if(got==0xFFu)return 0u; if(got==key){out->bank=record_byte((uint16_t)(rec+1u)); out->off=(uint16_t)record_byte((uint16_t)(rec+2u))|((uint16_t)record_byte((uint16_t)(rec+3u))<<8); return 1u;} rec=(uint16_t)(rec+4u);}
+    for(;;){uint8_t got=record_byte(rec); if(got==0xFFu){PJ_STAT(g_pj_stat_miss_rank);return 0u;} if(got==key){out->bank=record_byte((uint16_t)(rec+1u)); out->off=(uint16_t)record_byte((uint16_t)(rec+2u))|((uint16_t)record_byte((uint16_t)(rec+3u))<<8); return 1u;} rec=(uint16_t)(rec+4u);}
 }
 
 uint8_t tsp_progjoin_preflight_run(int16_t step,uint8_t fam,uint8_t ncol,int16_t iq0,TSPProgjoinRunPlan *out){
-    uint8_t left,i; int16_t iq; if(!out||ncol==0u||ncol>TSP_PROGJOIN_MAX_RUN_COLS)return 0u; out->count=0u;left=ncol;iq=iq0;i=0u;
-    while(left){uint8_t want=(left>TSP_PROGJOIN_CHUNK_COLS)?TSP_PROGJOIN_CHUNK_COLS:left; if(i>=TSP_PROGJOIN_MAX_CHUNKS)return 0u; if(!tsp_progjoin_dispatch_body(step,fam,want,iq,&out->bodies[i])){out->count=0u;return 0u;} out->wants[i]=want;iq=(int16_t)(iq+(int16_t)((int16_t)want*step));left=(uint8_t)(left-want);++i;} out->count=i;return 1u;
+    uint8_t left,i; int16_t iq; if(!out||ncol==0u||ncol>TSP_PROGJOIN_MAX_RUN_COLS){PJ_STAT(g_pj_stat_miss_shape);return 0u;} out->count=0u;left=ncol;iq=iq0;i=0u;
+    while(left){uint8_t want=(left>TSP_PROGJOIN_CHUNK_COLS)?TSP_PROGJOIN_CHUNK_COLS:left; if(i>=TSP_PROGJOIN_MAX_CHUNKS){PJ_STAT(g_pj_stat_miss_shape);return 0u;} if(!tsp_progjoin_dispatch_body(step,fam,want,iq,&out->bodies[i])){out->count=0u;return 0u;} out->wants[i]=want;iq=(int16_t)(iq+(int16_t)((int16_t)want*step));left=(uint8_t)(left-want);++i;} out->count=i;return 1u;
 }
 uint8_t tsp_progjoin_play_body(TSPProgjoinBodyRef body,uint8_t *dst,uint16_t dst_bytes,int16_t *cursor){
     const uint8_t *basep=body_base(body.bank),*p;uint8_t n,i;if(!basep||!dst||!cursor||body.off>=PJ_BANK_BYTES||dst_bytes<2u)return 0u;p=basep+body.off;n=*p++;
@@ -76,11 +102,16 @@ extern uint8_t g_polar_nt_row_max[18];
 static int8_t pj_row_floor(int16_t y){return (y>=0)?(int8_t)(y>>3):(int8_t)-(((-y)+7)>>3);}
 uint8_t tsp_progjoin_try_full_edges(uint16_t *out,uint8_t c0,uint8_t n,int16_t iq,int16_t step){
     TSPProgjoinRunPlan top,bot;int16_t a0,an,q0,qn,tl,tr,bl,br;uint8_t invl,invr,hl,hr;int8_t top_row,bot_row;
-    a0=(int16_t)(iq+32);an=(int16_t)(iq+(int16_t)((int16_t)n*step)+32);q0=(int16_t)(a0>>6);qn=(int16_t)(an>>6);if(q0<0||q0>255||qn<0||qn>255)return 0u;
-    if(!tsp_progjoin_preflight_run(step,0u,n,iq,&top))return 0u;if(!tsp_progjoin_preflight_run(step,2u,n,iq,&bot))return 0u;
+    PJ_STAT(g_pj_stat_attempt);
+    a0=(int16_t)(iq+32);an=(int16_t)(iq+(int16_t)((int16_t)n*step)+32);q0=(int16_t)(a0>>6);qn=(int16_t)(an>>6);if(q0<0||q0>255||qn<0||qn>255){PJ_STAT(g_pj_stat_fb_depth);return 0u;}
+    if(!tsp_progjoin_preflight_run(step,0u,n,iq,&top)){PJ_STAT(g_pj_stat_fb_sel_top);return 0u;}if(!tsp_progjoin_preflight_run(step,2u,n,iq,&bot)){PJ_STAT(g_pj_stat_fb_sel_bot);return 0u;}
     invl=(uint8_t)((iq+32)>>6);invr=(uint8_t)((iq+step+32)>>6);hl=(uint8_t)(invl>>1);hr=(uint8_t)(invr>>1);tl=(int16_t)(71-hl);tr=(int16_t)(71-hr);bl=(int16_t)(72+hl);br=(int16_t)(72+hr);
     top_row=pj_row_floor(tl<tr?tl:tr);bot_row=pj_row_floor(bl<br?bl:br);
-    if(!tsp_progjoin_play_plan_gated(&top,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,top_row,c0))return 0u;
-    if(!tsp_progjoin_play_plan_gated(&bot,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,bot_row,c0))return 0u;return 1u;
+    /* NOTE: gated playback validates each destination motion *after* storing the
+     * cell, so a refusal here has already written part of the edge. These two
+     * counters must stay at zero for the atomic-replacement model to hold. */
+    if(!tsp_progjoin_play_plan_gated(&top,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,top_row,c0)){PJ_STAT(g_pj_stat_fb_play_top);return 0u;}
+    if(!tsp_progjoin_play_plan_gated(&bot,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,bot_row,c0)){PJ_STAT(g_pj_stat_fb_play_bot);return 0u;}
+    PJ_STAT(g_pj_stat_ok);return 1u;
 }
 #endif

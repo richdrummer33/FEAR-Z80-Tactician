@@ -16,6 +16,8 @@ on:
       - 'tools/edge_progjoin_bake.c'
       - 'tools/polar_ab_profile.cpp'
       - 'tools/build_gearsystem_tools.sh'
+      - 'tools/build_progjoin_live_rom.sh'
+      - 'tools/progjoin_live_ab.py'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   pull_request:
@@ -32,6 +34,8 @@ on:
       - 'tools/edge_progjoin_bake.c'
       - 'tools/polar_ab_profile.cpp'
       - 'tools/build_gearsystem_tools.sh'
+      - 'tools/build_progjoin_live_rom.sh'
+      - 'tools/progjoin_live_ab.py'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   workflow_dispatch:
@@ -84,61 +88,22 @@ jobs:
           cp src/tilesector_polar_renderer.c build/progjoin_live/renderer.live.c
           cp src/tilesector_polar_materialize_gg.s build/progjoin_live/materializer.live.s
 
-      - name: Build experimental 1 MiB playable ROM
+      - name: Build baseline, PROGJOIN and instrumented ROM variants
         shell: bash
         run: |
           set -euo pipefail
           export GBDK_HOME="$PWD/.toolchain/gbdk"
-          LCC="$GBDK_HOME/bin/lcc"
           G="$PWD/build/progjoin_live/gen"
-          FLAGS="-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo64 -Isrc -I$G -Ibuild/generated/polar_projection -Ibuild/generated/polar_depthplane"
-          CFLAGS="-Wf--opt-code-speed -DTSPF_PROFILE_HOOKS=1 -DTSPF_LOCAL_PROJECTION=1 -DTSPF_SCREEN_DEPTH_PLANE=1 -DTSPF_DEFAULT_APPEARANCE=0 -DTSPF_PROGJOIN_FULL=1 -DTSP_PROGJOIN_BANK_BASE=48"
-
-          make GBDK_HOME="$GBDK_HOME" POLAR_ROM_BANKS=64 \
-            POLAR_GGFLAGS="$FLAGS" POLAR_CFLAGS="$CFLAGS" \
-            build/main_tilesector_polar_gg.o \
-            build/tilesector_polar_motion_gg.o \
-            build/tilesector_polar_renderer_gg.o \
-            build/tilesector_polar_ntstate_gg.o \
-            build/tilesector_polar_materialize_gg.o \
-            build/tilesector_polar_ntupload_profiled_gg.o \
-            build/tilesector_polar_projection_gg.o \
-            build/tilesector_polar_depthplane_gg.o \
-            $(printf 'build/tilesector_polar_proj_bank%s.o ' 0 1 2 3 4 5)
-
-          mkdir -p build/progjoin_live/obj
-          "$LCC" $FLAGS $CFLAGS -c -o build/progjoin_live/obj/progjoin_runtime.o src/tilesector_polar_progjoin_runtime.c
-          for f in pj_meta pj_desc pj_records0 pj_records1 pj_body0 pj_body1 pj_body2 pj_body3 pj_body4; do
-            "$LCC" $FLAGS $CFLAGS -c -o "build/progjoin_live/obj/$f.o" "$G/$f.c"
+          : > build/progjoin_live/rom-sha256.txt
+          # Like-for-like: identical parity materializer, live splice, ROM size,
+          # bank count, appearance mode and linked PROGJOIN assets. Only the
+          # compiled finite-program path differs.
+          for variant in baseline progjoin progjoin-stats; do
+            tools/build_progjoin_live_rom.sh "$variant" build/progjoin_live "$G" \
+              | tee -a build/progjoin_live/rom-sha256.txt
           done
-
-          OBJS=(
-            build/main_tilesector_polar_gg.o
-            build/tilesector_polar_motion_gg.o
-            build/tilesector_polar_renderer_gg.o
-            build/tilesector_polar_ntstate_gg.o
-            build/tilesector_polar_materialize_gg.o
-            build/tilesector_polar_ntupload_profiled_gg.o
-            build/tilesector_polar_projection_gg.o
-            build/tilesector_polar_depthplane_gg.o
-            build/tilesector_polar_proj_bank0.o build/tilesector_polar_proj_bank1.o
-            build/tilesector_polar_proj_bank2.o build/tilesector_polar_proj_bank3.o
-            build/tilesector_polar_proj_bank4.o build/tilesector_polar_proj_bank5.o
-            build/progjoin_live/obj/progjoin_runtime.o
-            build/progjoin_live/obj/pj_meta.o build/progjoin_live/obj/pj_desc.o
-            build/progjoin_live/obj/pj_records0.o build/progjoin_live/obj/pj_records1.o
-            build/progjoin_live/obj/pj_body0.o build/progjoin_live/obj/pj_body1.o
-            build/progjoin_live/obj/pj_body2.o build/progjoin_live/obj/pj_body3.o
-            build/progjoin_live/obj/pj_body4.o
-          )
-          "$LCC" $FLAGS -Wm-yS -o build/progjoin_live/gg-polar-progjoin-live.gg "${OBJS[@]}"
-          test "$(stat -c%s build/progjoin_live/gg-polar-progjoin-live.gg)" -eq 1048576
-          # makebin emits both: ".noi" is NoICE "DEF <sym> <value>", ".sym" is
-          # "<bank>:<addr> <sym>". The profilers read the ".sym" form.
-          cp build/progjoin_live/gg-polar-progjoin-live.sym build/progjoin_live/live.sym
-          cp build/progjoin_live/gg-polar-progjoin-live.noi build/progjoin_live/live.noi
-          cp build/progjoin_live/gg-polar-progjoin-live.map build/progjoin_live/live.map || true
-          sha256sum build/progjoin_live/gg-polar-progjoin-live.gg | tee build/progjoin_live/live.sha256
+          # The three ROMs must be genuinely different builds.
+          test "$(cut -d' ' -f1 build/progjoin_live/rom-sha256.txt | sort -u | wc -l)" -eq 3
 
       - name: Build Gearsystem exactness profiler
         shell: bash
@@ -164,39 +129,28 @@ jobs:
           g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_ab_profile.cpp "${ARGS[@]}" \
             build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_ab_profile
 
-      - name: Run playable live ROM smoke and cycle trace
+      - name: Run playable A/B exactness, coverage and cycle gate
         shell: bash
         run: |
           set -euo pipefail
           R=build/progjoin_live
-          ./build/polar_ab_profile "$R/gg-polar-progjoin-live.gg" "$R/live.sym" 0 roomA-turn 48 6 "$R/live-roomA-turn.csv"
-          ./build/polar_ab_profile "$R/gg-polar-progjoin-live.gg" "$R/live.sym" 0 roomA-forward 96 6 "$R/live-roomA-forward.csv"
-          python3 - <<'PY' | tee "$R/live-smoke.txt"
-          import csv, statistics
-          from pathlib import Path
-          R=Path('build/progjoin_live')
-          # A trace that produced rows but never moved, or never changed the
-          # name table, is not evidence the renderer ran. Require both.
-          expect={'roomA-turn':      (48, lambda a,b: a['yaw']!=b['yaw']),
-                  'roomA-forward':   (96, lambda a,b: (a['x_q4'],a['y_q4'])!=(b['x_q4'],b['y_q4']))}
-          for sc,(want,moved) in expect.items():
-              rows=list(csv.DictReader(open(R/f'live-{sc}.csv')))
-              if len(rows)!=want:
-                  raise SystemExit(f'LIVE_ROM_FAIL {sc}: {len(rows)} measured updates, expected {want}')
-              if not moved(rows[0],rows[-1]):
-                  raise SystemExit(f'LIVE_ROM_FAIL {sc}: player state never changed across the trace')
-              if len({r['map_fnv64'] for r in rows})<2:
-                  raise SystemExit(f'LIVE_ROM_FAIL {sc}: name table never changed across the trace')
-              vals=[int(r['loop_T']) for r in rows]
-              print(f'LIVE_ROM_PASS {sc} updates={len(rows)} mean={statistics.mean(vals):.1f}T hz={3579545/statistics.mean(vals):.2f} first_hash={rows[0]["map_fnv64"]} last_hash={rows[-1]["map_fnv64"]}')
-          PY
+          for variant in baseline progjoin progjoin-stats; do
+            ./build/polar_ab_profile "$R/$variant.gg" "$R/$variant.sym" 0 roomA-turn    48 6 "$R/$variant-roomA-turn.csv"
+            ./build/polar_ab_profile "$R/$variant.gg" "$R/$variant.sym" 0 roomA-forward 96 6 "$R/$variant-roomA-forward.csv"
+          done
+          # Exactness and the no-perturbation control are hard gates. Coverage
+          # and cycles are reported: they are results about the executor, and
+          # the thresholds that will graduate it are not yet met.
+          python3 tools/progjoin_live_ab.py "$R" | tee "$R/live-ab.txt"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gg-progjoin-playable-live-rung
           path: |
-            build/progjoin_live/gg-polar-progjoin-live.gg
+            build/progjoin_live/baseline.gg
+            build/progjoin_live/progjoin.gg
+            build/progjoin_live/progjoin-stats.gg
             build/progjoin_live/*.noi
             build/progjoin_live/*.sym
             build/progjoin_live/*.map

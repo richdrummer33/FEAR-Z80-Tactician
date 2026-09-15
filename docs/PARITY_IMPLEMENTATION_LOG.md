@@ -92,3 +92,88 @@ matching trace could still mean every run-edge fell back to the old edge path.
 The finite-program/PROGJOIN status therefore stays `ROM-EXPERIMENT`, and
 `playable_renderer_integrated` in `docs/PARITY_STATUS.json` is deliberately left
 unchanged. Items 3-6 of the convergence sequence are the next rung.
+
+## Playable A/B rung: exact, but not yet a win
+
+With the harness fixed, convergence items 3-6 were run for the first time. The
+live rung now builds three like-for-like 1 MiB ROMs from one parity
+materializer and one live splice, identical in ROM size, bank count, appearance
+mode and linked PROGJOIN assets, differing only in the compiled path:
+
+| variant | build | purpose |
+| --- | --- | --- |
+| `baseline` | `TSPF_PROGJOIN_FULL=0` + stats | legacy edge solver; counters prove zero compiled playback |
+| `progjoin` | `TSPF_PROGJOIN_FULL=1` | compiled edges, uninstrumented, for the cycle number |
+| `progjoin-stats` | `TSPF_PROGJOIN_FULL=1` + stats | compiled edges with accounting |
+
+`tools/build_progjoin_live_rom.sh` builds a variant, `tools/progjoin_live_ab.py`
+adjudicates the traces. Measured on `roomA-turn` (48 updates) and
+`roomA-forward` (96 updates):
+
+```
+                       baseline      progjoin     delta    compiled run-edges
+roomA-turn            324,804.8T    336,005.3T    +3.45%     3/143   ( 2.1%)
+roomA-forward         513,397.8T    584,334.2T   +13.82%   142/415   (34.2%)
+```
+
+### Exactness: pass
+
+Player state and the complete 20x18 name-table hash agree on **every** measured
+logical update, in both scenarios, for both the plain and the instrumented
+PROGJOIN ROM. `progjoin` and `progjoin-stats` also agree with each other, so the
+counters are proven not to perturb what they measure. `fb_play_top` and
+`fb_play_bot` are both zero, so the partial-write hazard below never fired on
+this corpus and the atomic-replacement model holds in practice.
+
+### Coverage and cycles: the real result
+
+This is exactly the case the parity contract exists to catch. The name-table
+hashes match perfectly — and on their own they would have supported a parity
+claim. The counters say otherwise: the compiled path ran for **2.1%** of
+attempted run-edges while turning and **34.2%** while moving forward. The rest
+fell back to the legacy edge solver, which is why the output agrees.
+
+The compiled path is currently a net **regression**: +3.45% and +13.82% cycles
+per update. Every attempt pays step-map lookup, threshold walk, descriptor read
+and record walk across bank switches; at these hit rates the majority of that
+work buys nothing, and the successes do not recover it.
+
+Attributing the misses at the point of refusal (the `fb_sel_*` counters cannot
+do this themselves — the top family is preflighted first and short-circuits, so
+it absorbs every uncovered run-edge regardless of family):
+
+```
+                  miss_step   miss_desc   miss_rank      total
+roomA-turn              103          29           8        140
+roomA-forward           103         148          22        273
+```
+
+`miss_step` means the run-edge's `step` is absent from the compiled corpus's
+step vocabulary entirely. `miss_desc` means the step is present but no
+descriptor exists for that `(slot, family, want)` — that chunk width is not
+compiled for that step. The totals reconcile exactly with `fb_sel_top`.
+
+So the first-order problem is **corpus coverage, not dispatcher maturity**. The
+corpus is censused from `coverage_pose_oracle.txt` at `--window 40`; the live
+renderer is producing run-edges outside what that bakes.
+
+### Consequence for the convergence order
+
+The handoff sequences the Z80 run-edge invariant hoists (items 24-26) and
+direct-rank dispatch (item 27) after playable measurement. Those measurements
+now exist, and they reorder the work: hoisting dispatch would optimise a path
+taken 2-34% of the time, against a cost dominated by attempts that miss. The
+Z80 audit's 3.42% dispatch saving cannot close a 13.82% whole-update
+regression.
+
+Coverage should come first. Until it does, no hoist result measured on this ROM
+would mean anything, and PROGJOIN stays `ROM-EXPERIMENT`;
+`playable_renderer_integrated` remains unchanged.
+
+### Known hazard, currently latent
+
+`tsp_progjoin_play_plan_gated` validates each destination motion *after*
+storing the cell, so a refusal returns 0 having already written part of the
+edge, and the legacy path then redraws over it. The two `fb_play_*` counters
+watch for this and the A/B fails if either becomes non-zero. It is zero today,
+but the ordering should be fixed rather than left to the corpus to avoid.

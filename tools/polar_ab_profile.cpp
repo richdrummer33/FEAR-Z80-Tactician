@@ -85,6 +85,23 @@ int main(int argc,char**argv) {
         }
     }
 
+    /* Optional PROGJOIN compiled-path counters. Present only in builds made with
+       TSPF_PROGJOIN_STATS=1; every one must resolve or none are reported, so a
+       partial symbol set cannot be mistaken for real accounting. */
+    static const char* kStatNames[]={
+        "g_pj_stat_attempt","g_pj_stat_ok","g_pj_stat_fb_depth","g_pj_stat_fb_sel_top",
+        "g_pj_stat_fb_sel_bot","g_pj_stat_fb_play_top","g_pj_stat_fb_play_bot",
+        "g_pj_stat_miss_step","g_pj_stat_miss_desc","g_pj_stat_miss_rank","g_pj_stat_miss_shape"};
+    const unsigned kStatCount=sizeof(kStatNames)/sizeof(kStatNames[0]);
+    std::vector<u16> stat_addr(kStatCount,0); bool have_stats=true;
+    for(unsigned i=0;i<kStatCount;++i) {
+        std::string u="_"; u+=kStatNames[i];
+        if(!any_symbol(sym,u.c_str(),kStatNames[i],stat_addr[i])) { have_stats=false; break; }
+        if(stat_addr[i]<0xC000u||stat_addr[i]>0xDFFFu) {
+            std::fprintf(stderr,"%s=0x%04X outside GG work RAM\n",kStatNames[i],stat_addr[i]); return 3;
+        }
+    }
+
     GearsystemCore core; core.Init(GS_PIXEL_RGBA8888);
     if(!core.LoadROM(rom)){std::fprintf(stderr,"LoadROM failed\n");return 4;}
     std::vector<u8> fb(GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN*GS_RESOLUTION_MAX_HEIGHT_WITH_OVERSCAN*4);
@@ -95,7 +112,9 @@ int main(int argc,char**argv) {
 
     std::ofstream csv(out,std::ios::trunc);
     if(!csv){std::fprintf(stderr,"cannot open %s\n",out);return 5;}
-    csv << "frame,loop_T,x_q4,y_q4,yaw,map_fnv64\n";
+    csv << "frame,loop_T,x_q4,y_q4,yaw,map_fnv64";
+    if(have_stats) for(unsigned i=0;i<kStatCount;++i) csv << ',' << kStatNames[i];
+    csv << '\n';
 
     uint8_t last_phase=mem->DebugRetrieve(phase);
     bool armed=false,pressed=false,have_start=false;
@@ -122,7 +141,9 @@ int main(int argc,char**argv) {
                         const unsigned yaw=mem->DebugRetrieve((u16)(state+4u));
                         const uint64_t h=map_hash(mem,map);
                         char hs[32]; std::snprintf(hs,sizeof(hs),"%016llX",(unsigned long long)h);
-                        csv << measured << ',' << loop_t << ',' << x << ',' << y << ',' << yaw << ',' << hs << '\n';
+                        csv << measured << ',' << loop_t << ',' << x << ',' << y << ',' << yaw << ',' << hs;
+                        if(have_stats) for(unsigned i=0;i<kStatCount;++i) csv << ',' << rd16(mem,stat_addr[i]);
+                        csv << '\n';
                         ++measured;
                     }
                     ++seen; start=now;
