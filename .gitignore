@@ -91,3 +91,9 @@ build/emit_poses.txt
 # (An oracle dump reached 57 MB before this rule existed.)
 build/*
 !build/.gitkeep
+
+# Third-party toolchains fetched by the CI workflows and by local repro runs:
+# the GBDK 4.5.0 release tarball and the pinned Gearsystem checkout. Both are
+# re-downloaded and rebuilt from scratch by every workflow that needs them
+# (52 MB / 1109 files if committed).
+.toolchain/
