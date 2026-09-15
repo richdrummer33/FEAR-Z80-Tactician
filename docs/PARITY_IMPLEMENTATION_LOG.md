@@ -726,3 +726,59 @@ far above what hand-written playback should cost, so the cell loop has more to
 give even after inlining — the remaining C-level overhead (banked ROM reads
 through a pointer, per-cell bounds checks that the guard band would remove) has
 not been separately attributed yet.
+
+## Dispatch: one small win, one measured-and-rejected hypothesis
+
+With playback halved, dispatch became the dominant term at 60.3% and 8,688 T per
+attempt — and unlike playback it is paid on *every* attempt (367) rather than only
+the successes (126), so reducing it helps regardless of coverage.
+
+Two changes were tried against it.
+
+**Inlining the 2-byte reads worked, slightly.** `rd16p` was an out-of-line call
+for what is four instructions, used for the step-page base and the descriptor
+entry. Inlined at both sites: 8,688 -> 8,625 T per attempt, -0.7%. Small, free,
+kept.
+
+**Hoisting the bank switch out of the record walk did not work, and the
+measurement is worth keeping.** `record_byte` switches the ROM bank on every byte
+it reads, up to four per matched record, so replacing the walk with a single
+switch plus pointer indexing looked like an obvious win. It measured **3.6%
+slower**: 8,688 -> 9,005 T per attempt.
+
+The reason is that the walks are short. Most lookups match within the first few
+records, so the per-iteration bank check and pointer setup the new form needs
+costs more than the switches it removes. The change was reverted and the result
+recorded in a comment at the site, so it is not re-attempted on the same
+reasoning.
+
+That is the second hypothesis in this area that measurement has rejected: per-chunk
+setup looked like the playback cost and was 2.9%, and the bank switch looked like
+the dispatch cost and is not. The one that did land — `gate_advance` being 250
+instructions — was found by reading generated assembly rather than by reasoning
+about the C.
+
+Current state of the compiled path, `roomA-forward`:
+
+```
+dispatch    8,625 T per attempt   (paid by all 367 attempts)
+cells       1,640 T per cell
+total      41,807 T per successful run-edge
+whole update  +8.73% vs baseline (was +13.82% before this round's work)
+turn          +3.45% vs baseline (unchanged; zero successes, pure wasted dispatch)
+```
+
+Exactness holds throughout: `LIVE_AB_EXACT` on player state and the full 20x18
+name-table hash, both scenarios, with `progjoin-stats` still agreeing with
+`progjoin`.
+
+### A process note worth recording
+
+An intermediate build in this round reported the compiled path as never
+attempted, with counters at zero and cycles differing from baseline. The cause
+was mine: the ROMs were rebuilt after `git checkout` had restored the canonical
+sources, without re-running `build_parity_materializer.py` and
+`apply_progjoin_full_live_rung.py`, so the splice was absent and the materializer
+was the canonical one. The A/B gate's "the compiled path was never attempted"
+check caught it immediately. That check was added to stop a fallback-only run
+reading as parity, and it also catches a build that silently lost its splice.
