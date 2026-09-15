@@ -542,3 +542,58 @@ is enumerated from parameters instead of collected from poses.
    destination model has to absorb visibility, exactly as the amendment argued.
 3. Items 24-27 remain premature, and the dispatcher they optimise is the one the
    closed form deletes.
+
+## Correction: the non-geometry dimension is texture addressing, not shade
+
+Two entries above this one attributed the body-vocabulary explosion to
+appearance, stating that "shade varies continuously with depth" and that "every
+new depth mints a new body for a raster shape already in ROM", and recommending
+that "appearance" be given its own compact representation. That reading was
+wrong and the measurement that disproves it is simple.
+
+The corpus case line carries its own `shade` field. Across all 53,747 chunks of
+the `yaw-parity` bake it is **constant at 1** — appearance mode 0 bakes exactly
+one shade, which is what the live-rung build comment always said. Shade cannot be
+the explosion because shade never varies.
+
+Decomposing the name-table words properly (tile index in bits 0..8, then hflip,
+vflip, palette, priority):
+
+```
+distinct tile indices                            93
+distinct flag combos (hflip,vflip,pal,pri)        4   (0,0,0,0) (0,1,1,0) (1,0,0,0) (1,1,1,0)
+case 'shade' field                          {1: 53747}
+bodies where the TILE INDEX varies within the body   47,385  (88.2%)
+bodies where the FLAGS vary within the body           4,980  ( 9.3%)
+```
+
+So the varying dimension is **wall texture addressing**: which slice of the wall
+graphic lands in each cell, plus a horizontal flip and a coupled
+`(vflip, palette)` pair. It is not fog, not shadow, and not per-wall material
+shade. The correct description of a compiled body is therefore *geometry welded
+to texture addressing*, both of which are geometric quantities, rather than
+geometry welded to appearance.
+
+This matters for what comes next, because it makes the remaining dimension the
+same kind of problem the shape turned out to be rather than an artistic one.
+
+It is not, however, derivable from the cursor position the way the destination
+delta was. Testing the tile index against every positional key available to the
+player leaves it heavily ambiguous:
+
+```
+tile ~ (fam, relative row)              37 buckets,  33 ambiguous
+tile ~ (fam, relative column)           12 buckets,  12 ambiguous
+tile ~ (fam, relative row, column)     129 buckets, 116 ambiguous
+tile ~ (fam, absolute screen row)       34 buckets,  34 ambiguous
+```
+
+That is the expected result: texture addressing depends on where the column
+samples the wall *surface*, which is a wall-space coordinate, not a screen-space
+one. The shape was derivable from screen-space terms the renderer already
+computes; the tile index will need the run's wall-space `u` (and the texture
+row for `v`), which the renderer computes elsewhere. The lead is real and is the
+same shape of problem, one coordinate system further in.
+
+Deferred deliberately, not abandoned. Nothing above depends on it: geometry is
+solved and costs no ROM, and the texture dimension is what still does.
