@@ -953,3 +953,93 @@ already present in the renderer. What is missing is not the derivation but its
 **consistency** (the oracle does not use the ROM's path) and its **persistence**
 (`g_corner_bearing_valid` is cleared every update, so nothing is retained across
 frames).
+
+## Rung 1: arbitrary pose -> ROM projection -> iq/step -> canonical raster state
+
+The candidate architecture is the one the ROM already has, not a new one. No
+sampled dictionary is consulted anywhere in this experiment.
+
+```
+baked local corner field          -> corner bearing          project_key
+- yaw, global angle_x LUT         -> screen endpoints x0,x1  project_key
+wall normal distance              -> inverse depth           wall_d_q4 / inv_for_dq4
+(invd, normal class, yaw)         -> iq, step                screen_depth_plane
+iq, step, family, length          -> canonical raster shape  closed form
+```
+
+`tools/rung1/pose_to_raster_check.c`, over every walkable cell x 6 sub-cell
+offsets x all 256 headings: 1,206,906 FULL runs, 3,875,340 chunk-family
+instances. The depth-plane path applies to 98.7% of FULL runs.
+
+### Disagreement by layer
+
+Exact equality of `(iq, step)` is the right criterion for explaining dictionary
+misses and the wrong one for geometric correctness, because two parameterizations
+can quantize to the same columns. So each layer is reported separately, and each
+is evaluated independently of the others.
+
+```
+L1 endpoint   c0,c1              shared by construction (both from angle_x)
+L2 depth      per-column h(c)    3,561,290  (91.896%)
+L3 trajectory cursor moves       1,905,008  (49.157%)
+L4 ownership  covered cells        780,298  (20.135%)
+moves outside the expressible family:  host path 63,109 (1.6%), ROM path 146,198 (3.8%)
+```
+
+An earlier version of this harness evaluated L4 only where L3 agreed, which
+defeats the point of layering — two different trajectories covering the same
+cells is exactly what L4 exists to detect. Fixed; the 20.135% above is measured
+independently.
+
+**Quantization absorbs most of the parameter difference but not all of it.**
+91.9% -> 49.2% -> 20.1% down the layers. So `screen_depth_plane` is **not** merely
+a different parameterization of the same geometry: it produces a different
+covered-cell set in roughly a fifth of chunk-family instances.
+
+### What that divergence is, and what it is not
+
+This is a real disagreement between the shipped mode-0 ROM and the host reference
+renderer, and it has not been adjudicated. Two readings, and the record cannot
+currently distinguish them:
+
+- The host path interpolates inverse depth between the two *actual endpoint*
+  inverse depths (`inv0`, `inv1`). The depth plane fits a plane from
+  `(invd, normal class, yaw)`. A priori the former is the more faithful and the
+  latter is a deliberate cheaper approximation, which its name suggests.
+- Or the divergence is unintended and nobody has compared the two, because the
+  A/B gate compares ROM against ROM (both use the depth plane) and the
+  image-equivalence check compares host against host.
+
+Settling it needs a ground-truth render, not more inference, and it should be
+settled before either path is treated as the oracle for exactness claims.
+Recorded as open.
+
+### Vocabulary collapse, measured after canonicalization
+
+The figure that tests the finite-program hypothesis is not how many distinct
+`step` values exist, but how much canonicalization compresses:
+
+```
+chunk-family instances            3,875,340
+distinct (iq, step, family, len)    726,652
+distinct raster trajectories          1,140
+collapse                            3,399 : 1
+```
+
+**1,140 canonical raster trajectories cover the entire arbitrary-pose domain.**
+That is the finite-program hypothesis holding at the geometry layer, derived
+without a dictionary and without sampling poses into a vocabulary.
+
+(An earlier run reported 200,000 distinct states; that was a linear-scan table
+saturating at its cap and reporting the cap as a count. Replaced with an
+open-addressed set. The trajectory figure was always well under the cap and is
+unaffected.)
+
+### Where this leaves the architecture
+
+The two pose-independent halves join, and the join produces a small finite
+vocabulary. What sits between them in the shipped ROM — the sample-trained
+dictionary — is unnecessary for geometry: 1,140 trajectories are generated, not
+looked up. The remaining open items are the depth-plane divergence above, the
+3.8% of ROM-path chunks whose moves fall outside the expressible family, and
+persistence across updates.
