@@ -432,3 +432,113 @@ guard it, and the A/B fails hard if either becomes non-zero.
 5. Only then the run-edge invariant hoists (items 24-26) and direct-rank dispatch
    (item 27), which remain premature while the compiled path succeeds 2-34% of
    the time.
+
+## The section-12 harness, retargeted: the raster shape is computed, not sampled
+
+`tools/progjoin_shape_canon.py` implements the amendment's falsification
+experiment against the 350-shape geometry vocabulary rather than the body
+vocabulary. The result is stronger than the amendment supposed, and changes what
+the architecture should be.
+
+**The raster shape does not need a dictionary at all.** It is computable in
+closed form from the run-edge's own parameters, using the renderer's existing
+projection arithmetic and nothing else:
+
+```
+h(c)    = bits 7..13 of (iq + c*step + 32)
+y(c)    = 71 - h(c)   (family 0, top edge)
+        = 72 + h(c)   (family 2, bottom edge)
+span(c) = tile rows between y(c) and y(c+1)
+shape   = per column: one "down" move per extra tile row, then one "advance"
+          move carrying the row jump into column c+1
+```
+
+Every cell carries its outgoing move, including the last, which is what lets a
+chunk's cursor continue into the next; the model evaluates one column past the
+chunk to emit that exit move. That detail was found by measurement, not
+assumed — the first model was short by exactly one trailing delta.
+
+### Falsification result
+
+The model was developed against the `yaw-parity` **train** split and then run
+against two splits it had never seen, each resolved through the authoritative
+baker:
+
+| held-out split | chunks | exact | corpus defect | geometry-model failures |
+| --- | --- | --- | --- | --- |
+| `yaw-shipped` test | 100,795 | 100,794 | 1 | **0** |
+| `yaw-parity` test | 53,729 | 53,728 | 1 | **0** |
+| total | **154,524** | **154,522** | 2 | **0** |
+
+Vocabulary construction never consumed the validation poses — it never consumed
+poses at all — which satisfies the amendment's acceptance criterion directly
+rather than by sampling argument.
+
+The two disagreements are both the same corpus defect, and the harness isolates
+them rather than absorbing them. Each is a chunk whose body spans **one** column
+although its descriptor was fetched for `want=6`:
+
+```
+step=-500 fam=2 want=6 iq=13320 -> body spans 1 column, truth=(39, 1)
+step= 324 fam=2 want=6 iq= 3840 -> body spans 1 column, truth=(39, -39)
+```
+
+There is exactly one advance move per column, so a body whose advance count
+differs from its `want` is internally inconsistent: the descriptor and the body
+it points at disagree. 53,728 of 53,729 bodies in the parity split match their
+own `want`. This is worth a look at `edge_progjoin_bake.c` and is **not** a
+failure of the closed form; it is recorded here rather than diagnosed, because
+it was found in a denser bake than the one that ships and its reachability in
+the shipped corpus has not been established.
+
+### What this removes
+
+`progjoin_shape_canon.py cost`. The FULL-geometry dispatch tables exist only to
+answer a question the closed form answers arithmetically:
+
+```
+step_page_base.bin              32 B
+stepmap (gg_pj_step_local)   4,096 B
+thresholds.bin               4,392 B
+descriptor.bin              13,176 B
+records.bin                 18,976 B
+TOTAL                       40,672 B
+```
+
+All of it goes, and with it the uint16 record-offset cap that bounds the corpus
+at ~15,240 semantic entries — there is no record blob left to index. That cap
+was the hard wall identified two entries ago; it does not need to be widened,
+it needs to stop existing.
+
+The cycle case is **not** yet an argument and is not claimed as one. A per-chunk
+instruction-count model puts closed-form derivation at roughly 700-800 T against
+the Z80 audit's measured 697-947 T/chunk for dispatch — comparable, not clearly
+better, and it must be measured on real hardware before anyone quotes it. The
+structural case stands on its own: geometry stops depending on which poses were
+sampled, which is the entire point.
+
+### Bound found by enumerating the parameter box
+
+`enumerate` scans the `(step, fam, want, iq)` box directly — 3,145,728 points at
+step stride 1, iq stride 256 — with no poses involved. It yields 1,510 distinct
+shapes (more than any single bake sees, because the box includes parameters this
+map never produces) and every move in that vocabulary is executable by the
+now-extended `gate_advance`.
+
+It also finds a real bound: some parameter points require a column advance of
+**14 or 15 tile rows**, which no compiled-body move can express at all. Those
+are outside the `2 - 40k` family for any small k. They must either be proven
+unreachable in gameplay or handled by a fallback; the architecture cannot
+represent them. This is the kind of limit that only appears when the vocabulary
+is enumerated from parameters instead of collected from poses.
+
+### Consequences for the plan
+
+1. Geometry is solved and needs no ROM. The remaining ROM question is entirely
+   **appearance** — 354 tile-word values and 74 word deltas, not derivable from
+   the movement class, still the open problem.
+2. The guard-band work (amendment section 9) is now on the critical path rather
+   than adjacent to it: the closed form describes unclipped geometry, so the
+   destination model has to absorb visibility, exactly as the amendment argued.
+3. Items 24-27 remain premature, and the dispatcher they optimise is the one the
+   closed form deletes.
