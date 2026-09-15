@@ -1,0 +1,56 @@
+name: GG PROGJOIN ownership-tag census
+
+on:
+  push:
+    branches: [validation/parity-enforcement-20260914]
+    paths:
+      - 'tools/gg_progjoin_gate_census.py'
+      - 'tools/gg_progjoin_gate_invariance.py'
+      - 'tools/gg_progjoin_gate_component_audit.py'
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-gate-census.yml'
+  pull_request:
+    paths:
+      - 'tools/gg_progjoin_gate_census.py'
+      - 'tools/gg_progjoin_gate_invariance.py'
+      - 'tools/gg_progjoin_gate_component_audit.py'
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-gate-census.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Emit whole target corpus
+        run: |
+          make coverage-potential
+          mkdir -p build/gate_census
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+          python3 tools/gg_progjoin_corpus_census.py build/coverage_pose_oracle.txt build/edge_progjoin_bake build/gate_census/windows --window 40 > build/gate_census/corpus.txt
+      - name: Measure ownership-tag vocabulary
+        run: |
+          python3 tools/gg_progjoin_gate_census.py build/gate_census/windows build/gate_census/gate.json | tee build/gate_census/gate.txt
+          cat build/gate_census/gate.json
+      - name: Audit full ownership tag against sparse-body deduplication
+        run: |
+          python3 tools/gg_progjoin_gate_invariance.py build/gate_census/windows build/gate_census/gate_invariance.json | tee build/gate_census/gate_invariance.txt || true
+          cat build/gate_census/gate_invariance.json
+      - name: Audit cursor-derived ownership gate components
+        run: |
+          set -o pipefail
+          python3 tools/gg_progjoin_gate_component_audit.py build/gate_census/windows build/gate_census/gate_components.json | tee build/gate_census/gate_components.txt
+          cat build/gate_census/gate_components.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gg-progjoin-gate-census
+          path: build/gate_census/
+          retention-days: 30

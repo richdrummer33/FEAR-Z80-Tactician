@@ -1,0 +1,60 @@
+name: Renderer parity contract v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - validation/parity-enforcement-20260914
+  pull_request:
+    paths:
+      - 'src/tilesector_polar_materialize_gg.s'
+      - 'tools/apply_integrated_materializer_rung.py'
+      - 'tools/apply_edge_local_dda_rung.py'
+      - 'tools/apply_interior_claimwalker_rung.py'
+      - 'tools/build_parity_materializer.py'
+      - 'tools/check_renderer_parity.py'
+      - 'docs/RENDERER_PARITY_MANIFEST.md'
+      - 'docs/PARITY_NEXT_STEPS.md'
+      - '.github/workflows/renderer-parity-contract-v2.yml'
+
+jobs:
+  parity-source-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preserve baseline materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/parity
+          cp src/tilesector_polar_materialize_gg.s build/parity/materializer-baseline.s
+
+      - name: Build deterministic post-transform materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/build_parity_materializer.py | tee build/parity/parity-build.txt
+          cp build/parity/tilesector_polar_materialize_gg.generated.s build/parity/materializer-generated.s
+          git diff --no-index -- build/parity/materializer-baseline.s build/parity/materializer-generated.s \
+            > build/parity/materializer-generated.diff || test $? -eq 1
+          python3 tools/check_renderer_parity.py build/parity/materializer-generated.s \
+            | tee build/parity/parity-check.txt
+
+      - name: Verify generator leaves canonical source untouched
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- src/tilesector_polar_materialize_gg.s
+
+      - name: Preserve generated source contract
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renderer-parity-generated-source-v2
+          path: |
+            build/parity/materializer-baseline.s
+            build/parity/materializer-generated.s
+            build/parity/materializer-generated.diff
+            build/parity/parity-build.txt
+            build/parity/parity-check.txt

@@ -1,0 +1,57 @@
+name: GG PROGJOIN FULL bank-pack audit
+
+on:
+  push:
+    branches:
+      - validation/parity-enforcement-20260914
+    paths:
+      - 'tools/gg_progjoin_bankpack.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-bankpack.yml'
+      - 'docs/PARITY_EXECUTOR_SCOPE.md'
+  pull_request:
+    paths:
+      - 'tools/gg_progjoin_bankpack.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-bankpack.yml'
+      - 'docs/PARITY_EXECUTOR_SCOPE.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bankpack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build corpus oracle
+        run: make coverage-potential
+
+      - name: Build target baker
+        run: |
+          mkdir -p build/progjoin_gg_src build/progjoin_gg_full
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+
+      - name: Emit one parity window from the accepted target format
+        run: |
+          ./build/edge_progjoin_bake build/coverage_pose_oracle.txt 6 40 build/progjoin_gg_src 0 | tee build/progjoin_gg_src/bake.txt
+
+      - name: Repack observed FULL run-edge vocabulary for 16 KiB GG banking
+        run: |
+          python3 tools/gg_progjoin_bankpack.py build/progjoin_gg_src build/progjoin_gg_full | tee build/progjoin_gg_full/audit.txt
+          cat build/progjoin_gg_full/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gg-progjoin-full-bankpack
+          path: |
+            build/progjoin_gg_src/bake.txt
+            build/progjoin_gg_src/progjoin_manifest.txt
+            build/progjoin_gg_src/progjoin_cases.txt
+            build/progjoin_gg_full/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,30 @@
+{
+  "schema": 2,
+  "target": "optimized Z80 research renderer",
+  "target_contract": {
+    "executor": "tools/parity_target_snapshot.py",
+    "corpus_poses": 2520,
+    "run_edges": 19912,
+    "chunks": 31806,
+    "cells_played": 160717,
+    "progjoin_selected_count_total_T": 52266733,
+    "progjoin_edge_hoisted_total_T": 50479935,
+    "posthoist_dispatch_T_per_chunk": 697.7,
+    "oracle": "exact"
+  },
+  "rom": "Game Gear mode-0 materializer",
+  "states": ["ROM-EXACT", "ROM-EQUIV", "ROM-EXPERIMENT", "PARTIAL", "Z80-ONLY", "N/A"],
+  "features": [
+    {"id":"run-endpoint-carry","status":"ROM-EXPERIMENT","integration":"tools/apply_integrated_materializer_rung.py","requires_exact_rom":true},
+    {"id":"border-hoist","status":"ROM-EXPERIMENT","integration":"tools/apply_integrated_materializer_rung.py","requires_exact_rom":true},
+    {"id":"edge-local-dda","status":"ROM-EXPERIMENT","integration":"tools/apply_edge_local_dda_rung.py","requires_exact_rom":true},
+    {"id":"edge-lut","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
+    {"id":"full-vertical-symmetry","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
+    {"id":"persistent-ownership","status":"ROM-EQUIV","integration":"src/tilesector_polar_materialize_gg.s","requires_exact_rom":true},
+    {"id":"interior-claim-walk","status":"ROM-EXPERIMENT","integration":"tools/apply_interior_claimwalker_rung.py","requires_exact_rom":true},
+    {"id":"dda-g-complete-shape","status":"PARTIAL","integration":"multiple","requires_exact_rom":true},
+    {"id":"finite-edge-programs","status":"ROM-EXPERIMENT","integration":"src/tilesector_polar_progjoin_runtime.c","requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_bench.py","rom_evidence":"GG PROGJOIN banked ROM probe run 34909839010: 192/192 exact, zero lookup/bounds failures","playable_renderer_integrated":false},
+    {"id":"progjoin","status":"ROM-EXPERIMENT","integration":"src/tilesector_polar_progjoin_runtime.c","requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_tune_bench.py","rom_evidence":"real 512 KiB GG ROM sparse dispatch + Frame-2 bank switching + body playback exact on 192 stratified cases","playable_renderer_integrated":false},
+    {"id":"run-edge-descriptor-hoist","status":"Z80-ONLY","integration":null,"requires_exact_rom":true,"target_evidence":"tools/z80_progjoin_edge_hoist_audit.py"}
+  ]
+}

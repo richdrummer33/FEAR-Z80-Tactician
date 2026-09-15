@@ -1,0 +1,138 @@
+name: GG PROGJOIN banked ROM probe
+
+on:
+  push:
+    branches:
+      - validation/parity-enforcement-20260914
+    paths:
+      - 'src/tilesector_polar_progjoin_runtime.c'
+      - 'src/tilesector_polar_progjoin_runtime.h'
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/gg_progjoin_sparse_direct.py'
+      - 'tools/gg_progjoin_emit_probe.py'
+      - 'tools/gg_progjoin_probe_main.c'
+      - 'tools/progjoin_rom_probe.cpp'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-rom-probe.yml'
+  pull_request:
+    paths:
+      - 'src/tilesector_polar_progjoin_runtime.c'
+      - 'src/tilesector_polar_progjoin_runtime.h'
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/gg_progjoin_sparse_direct.py'
+      - 'tools/gg_progjoin_emit_probe.py'
+      - 'tools/gg_progjoin_probe_main.c'
+      - 'tools/progjoin_rom_probe.cpp'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-rom-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build exact target corpus and sparse direct pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          make coverage-potential
+          mkdir -p build/progjoin_rom
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+          python3 tools/gg_progjoin_corpus_census.py \
+            build/coverage_pose_oracle.txt build/edge_progjoin_bake build/progjoin_rom/windows --window 40 \
+            | tee build/progjoin_rom/census.txt
+          python3 tools/gg_progjoin_sparse_direct.py build/progjoin_rom/windows build/progjoin_rom/packed \
+            | tee build/progjoin_rom/pack.txt
+          python3 tools/gg_progjoin_emit_probe.py build/progjoin_rom/packed build/progjoin_rom/windows build/progjoin_rom/gen --cases 192 \
+            | tee build/progjoin_rom/emit.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build 512 KiB semantic probe ROM with fixed Frame-2 asset banks
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          G=build/progjoin_rom/gen
+          O=build/progjoin_rom/obj
+          mkdir -p "$O"
+          for f in pj_meta pj_desc pj_records0 pj_records1 pj_body0 pj_body1 pj_body2 pj_body3 pj_body4 pj_vectors; do
+            "$LCC" -mz80:gg -debug -Wb-ext=.rel -I"$G" -c -o "$O/$f.o" "$G/$f.c"
+          done
+          "$LCC" -mz80:gg -debug -Wb-ext=.rel -Isrc -I"$G" -c -o "$O/progjoin_runtime.o" src/tilesector_polar_progjoin_runtime.c
+          "$LCC" -mz80:gg -debug -Wb-ext=.rel -Isrc -I"$G" -c -o "$O/main.o" tools/gg_progjoin_probe_main.c
+          "$LCC" -mz80:gg -debug -Wb-ext=.rel -Wl-j -Wm-yo32 -Wm-yS \
+            -o build/progjoin_rom/probe.gg \
+            "$O/main.o" "$O/progjoin_runtime.o" "$O/pj_vectors.o" "$O/pj_meta.o" "$O/pj_desc.o" \
+            "$O/pj_records0.o" "$O/pj_records1.o" \
+            "$O/pj_body0.o" "$O/pj_body1.o" "$O/pj_body2.o" "$O/pj_body3.o" "$O/pj_body4.o"
+          python3 - <<'PY'
+          from pathlib import Path
+          noi=Path('build/progjoin_rom/probe.noi')
+          sym=Path('build/progjoin_rom/probe.sym')
+          rows=[]
+          for ln in noi.read_text(errors='ignore').splitlines():
+              p=ln.split()
+              if len(p)>=3 and p[0]=='DEF':
+                  rows.append(f'{int(p[2],16):04X} {p[1]}')
+          sym.write_text('\n'.join(rows)+'\n')
+          print('probe bytes',Path('build/progjoin_rom/probe.gg').stat().st_size)
+          PY
+
+      - name: Build Gearsystem probe runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
+          SRCS=(Audio.cpp Cartridge.cpp CodemastersMemoryRule.cpp GameGearIOPorts.cpp GearsystemCore.cpp Input.cpp
+            KoreanMemoryRule.cpp KoreanMSXSMS8000MemoryRule.cpp KoreanSMS32KB2000MemoryRule.cpp KoreanMSX32KB2000MemoryRule.cpp
+            Korean2000XOR1FMemoryRule.cpp KoreanMSX8KB0300MemoryRule.cpp Korean0000XORFFMemoryRule.cpp KoreanFFFFHiComMemoryRule.cpp
+            KoreanFFFEMemoryRule.cpp KoreanBFFCMemoryRule.cpp KoreanFFF3FFFCMemoryRule.cpp KoreanMDFFF5MemoryRule.cpp KoreanMDFFF0MemoryRule.cpp
+            Multi4PAKAllActionMemoryRule.cpp IratahackMemoryRule.cpp JumboDahjeeMemoryRule.cpp Eeprom93C46MemoryRule.cpp
+            Memory.cpp MemoryRule.cpp MSXMemoryRule.cpp opcodes.cpp opcodes_cb.cpp opcodes_ed.cpp Processor.cpp RomOnlyMemoryRule.cpp
+            SegaMemoryRule.cpp SG1000MemoryRule.cpp SmsIOPorts.cpp Video.cpp BootromMemoryRule.cpp JanggunMemoryRule.cpp YM2413.cpp
+            VgmRecorder.cpp TraceLogger.cpp audio/Blip_Buffer.cpp audio/Sms_Apu.cpp audio/Stereo_Buffer.cpp)
+          ARGS=(); for x in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$x"); done
+          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/progjoin_rom_probe.cpp "${ARGS[@]}" \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/progjoin_rom/probe_runner
+
+      - name: Execute real ROM banking + dispatch + playback
+        shell: bash
+        run: |
+          set -euo pipefail
+          build/progjoin_rom/probe_runner build/progjoin_rom/probe.gg build/progjoin_rom/probe.sym \
+            | tee build/progjoin_rom/result.txt
+          grep -q 'GG_PROGJOIN_ROM_PROBE_PASS' build/progjoin_rom/result.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gg-progjoin-banked-rom-probe
+          path: |
+            build/progjoin_rom/probe.gg
+            build/progjoin_rom/probe.sym
+            build/progjoin_rom/result.txt
+            build/progjoin_rom/census.txt
+            build/progjoin_rom/pack.txt
+            build/progjoin_rom/emit.txt
+            build/progjoin_rom/gen/probe_manifest.json
+            build/progjoin_rom/packed/manifest.json
+          if-no-files-found: warn
+          retention-days: 30

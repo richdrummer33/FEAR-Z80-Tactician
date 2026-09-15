@@ -1,0 +1,59 @@
+name: GG PROGJOIN sparse direct pack
+
+on:
+  push:
+    branches:
+      - validation/parity-enforcement-20260914
+    paths:
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/gg_progjoin_sparse_direct.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-sparse-direct.yml'
+  pull_request:
+    paths:
+      - 'tools/gg_progjoin_corpus_census.py'
+      - 'tools/gg_progjoin_sparse_direct.py'
+      - 'tools/edge_progjoin_bake.c'
+      - '.github/workflows/gg-progjoin-sparse-direct.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build corpus oracle and exact target baker
+        run: |
+          make coverage-potential
+          mkdir -p build/progjoin_sparse
+          cc -O2 -Wall -Wextra -Isrc tools/edge_progjoin_bake.c src/tilesector_polar_motion.c -o build/edge_progjoin_bake
+
+      - name: Emit whole target corpus in bounded windows
+        run: |
+          python3 tools/gg_progjoin_corpus_census.py \
+            build/coverage_pose_oracle.txt build/edge_progjoin_bake build/progjoin_sparse/windows \
+            --window 40 | tee build/progjoin_sparse/census.txt
+
+      - name: Pack exact sparse direct-bank selector
+        run: |
+          python3 tools/gg_progjoin_sparse_direct.py \
+            build/progjoin_sparse/windows build/progjoin_sparse/packed \
+            | tee build/progjoin_sparse/pack.txt
+          cat build/progjoin_sparse/packed/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gg-progjoin-sparse-direct
+          path: |
+            build/progjoin_sparse/census.txt
+            build/progjoin_sparse/pack.txt
+            build/progjoin_sparse/windows/corpus_census.json
+            build/progjoin_sparse/packed/
+          if-no-files-found: warn
+          retention-days: 30

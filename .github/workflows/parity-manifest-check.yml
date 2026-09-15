@@ -1,0 +1,21 @@
+name: Renderer parity manifest
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - validation/parity-enforcement-20260914
+  pull_request:
+    paths:
+      - 'docs/PARITY_STATUS.json'
+      - 'docs/RENDERER_PARITY_MANIFEST.md'
+      - 'tools/validate_parity_manifest.py'
+      - '.github/workflows/parity-manifest-check.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate machine-readable parity claims
+        run: python3 tools/validate_parity_manifest.py
