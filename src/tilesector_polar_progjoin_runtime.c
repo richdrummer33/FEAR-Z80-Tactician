@@ -34,10 +34,26 @@ uint16_t g_pj_stat_miss_step;
 uint16_t g_pj_stat_miss_desc;
 uint16_t g_pj_stat_miss_rank;
 uint16_t g_pj_stat_miss_shape;
+/* Cells processed by the gated player, so playback cost resolves to T/cell
+ * rather than T/run-edge, which is the figure that compares against the Z80
+ * target's hand-written playback. */
+uint16_t g_pj_stat_cells;
 #define PJ_STAT(c) (++(c))
+/* Cycle attribution for the compiled path. The Z80 cannot read its own clock,
+ * so the profile-phase byte is used as a marker the emulator samples per
+ * instruction: phase 6 covers selector/preflight, phase 7 covers playback, and
+ * every exit restores phase 2 (render). This decomposes the compiled path the
+ * same way the Z80 audit does, so dispatch T/chunk is directly comparable. */
+extern volatile uint8_t g_ts_prof_phase;
+#define PJ_PHASE(v) (g_ts_prof_phase = (uint8_t)(v))
 #else
 #define PJ_STAT(c) ((void)0)
+#define PJ_PHASE(v) ((void)0)
 #endif
+#define PJ_PH_RENDER   2u
+#define PJ_PH_DISPATCH 6u
+#define PJ_PH_PLAY     7u
+#define PJ_PH_CHUNK    8u
 
 static uint16_t rd16p(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 static uint8_t record_byte(uint16_t off) {
@@ -81,22 +97,46 @@ uint8_t tsp_progjoin_play_body(TSPProgjoinBodyRef body,uint8_t *dst,uint16_t dst
 }
 uint8_t tsp_progjoin_play_plan(const TSPProgjoinRunPlan *plan,uint8_t *dst,uint16_t dst_bytes,int16_t *cursor){uint8_t i;if(!plan||plan->count==0u||plan->count>TSP_PROGJOIN_MAX_CHUNKS)return 0u;for(i=0u;i!=plan->count;++i)if(!tsp_progjoin_play_body(plan->bodies[i],dst,dst_bytes,cursor))return 0u;return 1u;}
 
-static uint8_t gate_advance(int16_t step_bytes,int8_t *row,uint8_t *col,uint8_t *rowbit,int8_t *cov,int16_t *cursor){
-    uint8_t rb=*rowbit;*cursor=(int16_t)(*cursor+step_bytes);if(step_bytes==40){*row=(int8_t)(*row+1);if(rb==7u){*rowbit=0u;*cov=(int8_t)(*cov+1);}else *rowbit=(uint8_t)(rb+1u);return 1u;}*col=(uint8_t)(*col+1u);
-    if(step_bytes==2){*cov=(int8_t)(*cov+3);return 1u;}if(step_bytes==-38){*row=(int8_t)(*row-1);*cov=(int8_t)(*cov+((rb==0u)?2:3));*rowbit=(uint8_t)((rb+7u)&7u);return 1u;}if(step_bytes==-78){*row=(int8_t)(*row-2);*cov=(int8_t)(*cov+((rb<2u)?2:3));*rowbit=(uint8_t)((rb+6u)&7u);return 1u;}if(step_bytes==-118){*row=(int8_t)(*row-3);*cov=(int8_t)(*cov+((rb<3u)?2:3));*rowbit=(uint8_t)((rb+5u)&7u);return 1u;}
-    /* The column-advancing motions are the family 2-40k: next column, up k rows.
-     * k=4 is absent from the shipped corpus but present in the wider pose space,
-     * and refusing it here returns failure *after* cells were written. Kept in
-     * the arithmetic order above so a future k extends the same pattern. */
-    if(step_bytes==-158){*row=(int8_t)(*row-4);*cov=(int8_t)(*cov+((rb<4u)?2:3));*rowbit=(uint8_t)((rb+4u)&7u);return 1u;}return 0u;
-}
+/* 1u<<rowbit compiles to a shift loop; the destination word index needs no
+ * multiply because the cursor already carries it. */
+static const uint8_t k_pj_bit[8] = {1u,2u,4u,8u,16u,32u,64u,128u};
+
 uint8_t tsp_progjoin_play_plan_gated(const TSPProgjoinRunPlan *plan,uint16_t *dst_words,const uint8_t *coverage60,uint8_t *row_min18,uint8_t *row_max18,int8_t first_row,uint8_t first_col){
     uint8_t pi;int8_t row,cov;uint8_t col,rowbit;int16_t cursor;if(!plan||!dst_words||!coverage60||!row_min18||!row_max18||plan->count==0u||plan->count>TSP_PROGJOIN_MAX_CHUNKS||first_col>=20u)return 0u;
     row=first_row;col=first_col;rowbit=(uint8_t)first_row&7u;cov=(int8_t)((int8_t)(first_col+first_col+first_col)+((first_row>=0)?(first_row>>3):-1));cursor=(int16_t)((int16_t)first_row*40+(int16_t)first_col*2);
-    for(pi=0u;pi!=plan->count;++pi){const TSPProgjoinBodyRef body=plan->bodies[pi];const uint8_t *basep=body_base(body.bank),*p;uint8_t n,i;if(!basep||body.off>=PJ_BANK_BYTES)return 0u;p=basep+body.off;n=*p++;
+    for(pi=0u;pi!=plan->count;++pi){const TSPProgjoinBodyRef body=plan->bodies[pi];const uint8_t *basep;const uint8_t *p;uint8_t n,i;
+        PJ_PHASE(PJ_PH_CHUNK); basep=body_base(body.bank);
+        if(!basep||body.off>=PJ_BANK_BYTES){PJ_PHASE(PJ_PH_PLAY);return 0u;}
+        p=basep+body.off;n=*p++; PJ_PHASE(PJ_PH_PLAY);
         for(i=0u;i!=n;++i){uint16_t word=(uint16_t)p[0]|((uint16_t)p[1]<<8);int16_t delta=(int16_t)((uint16_t)p[2]|((uint16_t)p[3]<<8));int16_t step_bytes=(int16_t)(1+delta);p+=4;
-            if(row>=0&&row<18&&col<20u){uint8_t mask=(uint8_t)(1u<<rowbit),ci=(uint8_t)cov;if((coverage60[ci]&mask)==0u){uint16_t wi=(uint16_t)((uint16_t)row*20u+col);if(dst_words[wi]!=word){dst_words[wi]=word;if(row_min18[(uint8_t)row]==0xFFu||col<row_min18[(uint8_t)row])row_min18[(uint8_t)row]=col;if(col>row_max18[(uint8_t)row])row_max18[(uint8_t)row]=col;}}}
-            if(!gate_advance(step_bytes,&row,&col,&rowbit,&cov,&cursor))return 0u;}}
+            if(row>=0&&row<18&&col<20u){uint8_t mask=k_pj_bit[rowbit],ci=(uint8_t)cov;if((coverage60[ci]&mask)==0u){
+                /* cursor is the invariant row*40+col*2 that gate_advance keeps,
+                 * so the word index is cursor>>1 and the 16-bit multiply SDCC
+                 * would emit for row*20+col is unnecessary. */
+                uint16_t wi=(uint16_t)((uint16_t)cursor>>1);if(dst_words[wi]!=word){dst_words[wi]=word;if(row_min18[(uint8_t)row]==0xFFu||col<row_min18[(uint8_t)row])row_min18[(uint8_t)row]=col;if(col>row_max18[(uint8_t)row])row_max18[(uint8_t)row]=col;}}}
+            PJ_STAT(g_pj_stat_cells);
+            /* Advance, inlined. As an out-of-line helper this took six
+             * stack-passed arguments, five of them pointers, and SDCC reloaded
+             * each pointer from the frame on every dereference: 250
+             * instructions, which measured as essentially the whole per-cell
+             * cost. Inlined, the cursor state stays in the caller's locals.
+             * cov is computed from the old rowbit before rowbit is updated,
+             * exactly as the helper did. */
+            cursor=(int16_t)(cursor+step_bytes);
+            if(step_bytes==40){
+                row=(int8_t)(row+1);
+                if(rowbit==7u){rowbit=0u;cov=(int8_t)(cov+1);}else rowbit=(uint8_t)(rowbit+1u);
+            }else{
+                col=(uint8_t)(col+1u);
+                if(step_bytes==2){cov=(int8_t)(cov+3);}
+                else if(step_bytes==-38){row=(int8_t)(row-1);cov=(int8_t)(cov+((rowbit==0u)?2:3));rowbit=(uint8_t)((rowbit+7u)&7u);}
+                else if(step_bytes==-78){row=(int8_t)(row-2);cov=(int8_t)(cov+((rowbit<2u)?2:3));rowbit=(uint8_t)((rowbit+6u)&7u);}
+                else if(step_bytes==-118){row=(int8_t)(row-3);cov=(int8_t)(cov+((rowbit<3u)?2:3));rowbit=(uint8_t)((rowbit+5u)&7u);}
+                /* k=4: absent from the shipped corpus, present in the wider
+                 * pose space. Same 2-40k family, extended in arithmetic order. */
+                else if(step_bytes==-158){row=(int8_t)(row-4);cov=(int8_t)(cov+((rowbit<4u)?2:3));rowbit=(uint8_t)((rowbit+4u)&7u);}
+                else return 0u;
+            }}}
     return 1u;
 }
 
@@ -107,16 +147,17 @@ extern uint8_t g_polar_nt_row_max[18];
 static int8_t pj_row_floor(int16_t y){return (y>=0)?(int8_t)(y>>3):(int8_t)-(((-y)+7)>>3);}
 uint8_t tsp_progjoin_try_full_edges(uint16_t *out,uint8_t c0,uint8_t n,int16_t iq,int16_t step){
     TSPProgjoinRunPlan top,bot;int16_t a0,an,q0,qn,tl,tr,bl,br;uint8_t invl,invr,hl,hr;int8_t top_row,bot_row;
-    PJ_STAT(g_pj_stat_attempt);
-    a0=(int16_t)(iq+32);an=(int16_t)(iq+(int16_t)((int16_t)n*step)+32);q0=(int16_t)(a0>>6);qn=(int16_t)(an>>6);if(q0<0||q0>255||qn<0||qn>255){PJ_STAT(g_pj_stat_fb_depth);return 0u;}
-    if(!tsp_progjoin_preflight_run(step,0u,n,iq,&top)){PJ_STAT(g_pj_stat_fb_sel_top);return 0u;}if(!tsp_progjoin_preflight_run(step,2u,n,iq,&bot)){PJ_STAT(g_pj_stat_fb_sel_bot);return 0u;}
+    PJ_STAT(g_pj_stat_attempt); PJ_PHASE(PJ_PH_DISPATCH);
+    a0=(int16_t)(iq+32);an=(int16_t)(iq+(int16_t)((int16_t)n*step)+32);q0=(int16_t)(a0>>6);qn=(int16_t)(an>>6);if(q0<0||q0>255||qn<0||qn>255){PJ_STAT(g_pj_stat_fb_depth);PJ_PHASE(PJ_PH_RENDER);return 0u;}
+    if(!tsp_progjoin_preflight_run(step,0u,n,iq,&top)){PJ_STAT(g_pj_stat_fb_sel_top);PJ_PHASE(PJ_PH_RENDER);return 0u;}if(!tsp_progjoin_preflight_run(step,2u,n,iq,&bot)){PJ_STAT(g_pj_stat_fb_sel_bot);PJ_PHASE(PJ_PH_RENDER);return 0u;}
     invl=(uint8_t)((iq+32)>>6);invr=(uint8_t)((iq+step+32)>>6);hl=(uint8_t)(invl>>1);hr=(uint8_t)(invr>>1);tl=(int16_t)(71-hl);tr=(int16_t)(71-hr);bl=(int16_t)(72+hl);br=(int16_t)(72+hr);
     top_row=pj_row_floor(tl<tr?tl:tr);bot_row=pj_row_floor(bl<br?bl:br);
     /* NOTE: gated playback validates each destination motion *after* storing the
      * cell, so a refusal here has already written part of the edge. These two
      * counters must stay at zero for the atomic-replacement model to hold. */
-    if(!tsp_progjoin_play_plan_gated(&top,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,top_row,c0)){PJ_STAT(g_pj_stat_fb_play_top);return 0u;}
-    if(!tsp_progjoin_play_plan_gated(&bot,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,bot_row,c0)){PJ_STAT(g_pj_stat_fb_play_bot);return 0u;}
-    PJ_STAT(g_pj_stat_ok);return 1u;
+    PJ_PHASE(PJ_PH_PLAY);
+    if(!tsp_progjoin_play_plan_gated(&top,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,top_row,c0)){PJ_STAT(g_pj_stat_fb_play_top);PJ_PHASE(PJ_PH_RENDER);return 0u;}
+    if(!tsp_progjoin_play_plan_gated(&bot,out,g_polar_nt_cov_cur,g_polar_nt_row_min,g_polar_nt_row_max,bot_row,c0)){PJ_STAT(g_pj_stat_fb_play_bot);PJ_PHASE(PJ_PH_RENDER);return 0u;}
+    PJ_STAT(g_pj_stat_ok);PJ_PHASE(PJ_PH_RENDER);return 1u;
 }
 #endif

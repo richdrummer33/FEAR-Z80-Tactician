@@ -91,7 +91,8 @@ int main(int argc,char**argv) {
     static const char* kStatNames[]={
         "g_pj_stat_attempt","g_pj_stat_ok","g_pj_stat_fb_depth","g_pj_stat_fb_sel_top",
         "g_pj_stat_fb_sel_bot","g_pj_stat_fb_play_top","g_pj_stat_fb_play_bot",
-        "g_pj_stat_miss_step","g_pj_stat_miss_desc","g_pj_stat_miss_rank","g_pj_stat_miss_shape"};
+        "g_pj_stat_miss_step","g_pj_stat_miss_desc","g_pj_stat_miss_rank","g_pj_stat_miss_shape",
+        "g_pj_stat_cells"};
     const unsigned kStatCount=sizeof(kStatNames)/sizeof(kStatNames[0]);
     std::vector<u16> stat_addr(kStatCount,0); bool have_stats=true;
     for(unsigned i=0;i<kStatCount;++i) {
@@ -114,6 +115,10 @@ int main(int argc,char**argv) {
     if(!csv){std::fprintf(stderr,"cannot open %s\n",out);return 5;}
     csv << "frame,loop_T,x_q4,y_q4,yaw,map_fnv64";
     if(have_stats) for(unsigned i=0;i<kStatCount;++i) csv << ',' << kStatNames[i];
+    // Cycles attributed to the compiled path, sampled per instruction from the
+    // profile-phase marker the PROGJOIN runtime sets. Only a stats build marks
+    // them; elsewhere these stay zero.
+    csv << ",pj_dispatch_T,pj_play_T,pj_chunk_T";
     csv << '\n';
 
     uint8_t last_phase=mem->DebugRetrieve(phase);
@@ -121,18 +126,24 @@ int main(int argc,char**argv) {
     unsigned seen=0,measured=0;
     uint64_t start=0,instructions=0;
     const uint64_t limit=250000000ull;
+    // Phase 6 = PROGJOIN selector/preflight, phase 7 = compiled playback.
+    uint64_t prev_clock=core.GetMasterClockCycles();
+    uint64_t pj_disp=0,pj_play=0,pj_chunk=0,pj_disp_mark=0,pj_play_mark=0,pj_chunk_mark=0;
 
     while(measured<target && instructions<limit) {
         samples=0; core.RunToVBlank(fb.data(),audio.data(),&samples,&dbg,false); ++instructions;
+        const uint64_t now=core.GetMasterClockCycles();
+        const uint64_t elapsed=now-prev_clock; prev_clock=now;
         const uint8_t p=mem->DebugRetrieve(phase);
+        if(p==6u) pj_disp+=elapsed; else if(p==7u) pj_play+=elapsed; else if(p==8u) pj_chunk+=elapsed;
         if(p!=last_phase) {
-            const uint64_t now=core.GetMasterClockCycles();
             if(p==1u) {
                 if(!armed) {
                     mem->Write(mode,(uint8_t)wanted_mode);
                     if(mem->DebugRetrieve(mode)!=(uint8_t)wanted_mode){std::fprintf(stderr,"mode write failed\n");return 6;}
                     if(!press(core,scenario)){std::fprintf(stderr,"bad scenario\n");return 2;}
                     pressed=true; armed=true; seen=0; measured=0; start=now; have_start=true;
+                    pj_disp_mark=pj_disp; pj_play_mark=pj_play; pj_chunk_mark=pj_chunk;
                 } else if(have_start) {
                     const uint64_t loop_t=now-start;
                     if(seen>=warmup) {
@@ -143,10 +154,11 @@ int main(int argc,char**argv) {
                         char hs[32]; std::snprintf(hs,sizeof(hs),"%016llX",(unsigned long long)h);
                         csv << measured << ',' << loop_t << ',' << x << ',' << y << ',' << yaw << ',' << hs;
                         if(have_stats) for(unsigned i=0;i<kStatCount;++i) csv << ',' << rd16(mem,stat_addr[i]);
+                        csv << ',' << (pj_disp-pj_disp_mark) << ',' << (pj_play-pj_play_mark) << ',' << (pj_chunk-pj_chunk_mark);
                         csv << '\n';
                         ++measured;
                     }
-                    ++seen; start=now;
+                    ++seen; start=now; pj_disp_mark=pj_disp; pj_play_mark=pj_play; pj_chunk_mark=pj_chunk;
                 }
             }
             last_phase=p;

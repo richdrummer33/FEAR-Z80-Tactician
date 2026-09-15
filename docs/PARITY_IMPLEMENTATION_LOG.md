@@ -642,3 +642,87 @@ harness, not a ROM measurement, and it stays a prediction until the closed form
 actually drives playback on hardware. The 14-15 row advance found by enumerating
 the parameter box remains the one known unrepresentable case, and has not been
 shown reachable in gameplay.
+
+## Where the compiled path actually spends its cycles
+
+Performance is the deciding metric, and until now the only performance fact on
+record was that the PROGJOIN ROM is slower than baseline. That figure is
+confounded: at 2-34% coverage most attempts pay dispatch and then pay the legacy
+edge path anyway, so it never said what the compiled path costs *per run-edge*.
+
+The Z80 cannot read its own clock, so the profile-phase byte is used as a marker
+the emulator samples per instruction: phase 6 for selector/preflight, phase 7 for
+playback, phase 8 for per-chunk setup, restoring phase 2 on every exit. This
+decomposes the compiled path the same way the Z80 audit does. `polar_ab_profile`
+accumulates per phase and emits `pj_dispatch_T`, `pj_play_T`, `pj_chunk_T` per
+logical update, alongside a new `g_pj_stat_cells` counter so playback resolves to
+T per cell.
+
+First decomposition, `roomA-forward`, 367 attempts / 126 successes / 1,228 cells:
+
+```
+dispatch/preflight   3,179,325 T  (41.5%)  =  8,663 T per attempt
+per-chunk setup        219,977 T  ( 2.9%)
+cell loop            4,267,103 T  (55.7%)  =  3,475 T per cell
+TOTAL                7,666,405 T           = 60,844 T per successful run-edge
+```
+
+3,475 T to write one 16-bit word is roughly 300 Z80 instructions for work that
+needs about 20. Per-chunk setup, which had been the obvious suspect given short
+runs, is 2.9% — that hypothesis was wrong and the measurement said so.
+
+### The cause, and the fix
+
+Generating the runtime's assembly found it immediately: `gate_advance` compiled
+to **250 instructions**. It took six stack-passed arguments, five of them
+pointers, and SDCC reloads each pointer from the stack frame on every
+dereference. At 10-14 T per instruction that is ~2,500-3,500 T, which is
+essentially the entire measured per-cell cost.
+
+There was exactly one call site, so the advance was inlined into the cell loop,
+keeping the cursor state in the caller's locals. `cov` is still computed from the
+old `rowbit` before `rowbit` updates, exactly as the helper did.
+
+Two smaller wastes were removed first, and are worth recording because they were
+*not* the problem despite looking like it:
+
+- `wi = row*20u + col` emitted a 16-bit multiply per cell, yet `cursor` already
+  carries `row*40 + col*2` as an invariant every advance preserves, so the index
+  is `cursor>>1`.
+- `1u << rowbit` is a variable shift, which SDCC compiles to a loop; replaced
+  with an 8-entry constant table.
+
+Together those two gained 5.6%. The inlining gained the rest.
+
+```
+                        before        after    change
+T/cell                   3,475        1,639    -52.8%
+T/run-edge              60,844       41,975    -31.0%
+T/attempt (dispatch)     8,663        8,688     +0.3%
+
+whole update, roomA-forward:  +13.82%  ->  +8.73%   vs baseline
+whole update, roomA-turn:      +3.45%  ->  +3.45%   (no successes; playback never runs)
+```
+
+All of it exactness-preserving: the full A/B still reports `LIVE_AB_EXACT` on
+player state and the complete 20x18 name-table hash across both scenarios, and
+`progjoin-stats` still agrees with `progjoin`.
+
+### What this says about the architecture
+
+The compiled path is still a net regression, and it is important not to dress
+that up. But the shape of the cost has changed and now points somewhere useful:
+
+**Dispatch is now the dominant term at 60.3%**, 8,688 T per attempt, paid by
+every attempt whether or not it succeeds. That is precisely what the closed-form
+shape derivation deletes — no step map to walk, no thresholds, no descriptor, no
+record list. The structural result and the performance result now point at the
+same work.
+
+Two cautions on the remaining gap. First, `roomA-turn` is unchanged because it
+has zero successes, so its +3.45% is pure wasted dispatch; that scenario is
+entirely a coverage problem, not a playback one. Second, 1,639 T/cell is still
+far above what hand-written playback should cost, so the cell loop has more to
+give even after inlining — the remaining C-level overhead (banked ROM reads
+through a pointer, per-cell bounds checks that the guard band would remove) has
+not been separately attributed yet.
