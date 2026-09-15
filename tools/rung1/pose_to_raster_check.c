@@ -58,6 +58,13 @@ static uint8_t dp_derive(uint8_t sid,uint8_t invd,uint8_t c0,uint8_t c1,uint8_t 
 static int hq(int16_t iq,int16_t step,int c){ return (int)((((iq+c*step+32)>>6)&0xFF)>>1); }
 static int yq(int16_t iq,int16_t step,int c,int fam){ int h=hq(iq,step,c); return fam==0?71-h:72+h; }
 
+static int g_bad_jump,g_bad_want,g_bad_col;
+#define JMIN (-40)
+#define JMAX 8
+static unsigned long jhist[JMAX-JMIN+1];
+static unsigned long jhist_fam[JMAX-JMIN+1][3];
+static unsigned long jwant[JMAX-JMIN+1][8];
+
 /* canonical raster shape; returns cell count, fills moves[] and rows[]/cols[] */
 static int shape_of(int16_t iq,int16_t step,int fam,int want,int *moves,int *rows,int *cols)
 {
@@ -72,8 +79,8 @@ static int shape_of(int16_t iq,int16_t step,int fam,int want,int *moves,int *row
         int r0=span_lo[c],r1=span_hi[c],k,jump;
         for(k=0;k<r1-r0;++k){ rows[n]=row; cols[n]=col; moves[n]=39; ++n; ++row; }
         jump=span_lo[c+1]-r1;
-        if(jump<-4||jump>0) return -1;
-        rows[n]=row; cols[n]=col; moves[n]= jump==0?1:(jump==-1?-39:(jump==-2?-79:(jump==-3?-119:-159)));
+        if((jump<-4&&jump!=-14&&jump!=-15)||jump>0){ g_bad_jump=jump; g_bad_want=want; g_bad_col=c; return -1; }
+        rows[n]=row; cols[n]=col; moves[n]= jump==0?1:(jump==-1?-39:(jump==-2?-79:(jump==-3?-119:(jump==-4?-159:(jump==-14?-559:-599)))));
         ++n; ++col; row+=jump;
     }
     return n;
@@ -104,9 +111,29 @@ static void hs_add(HSet *h,uint64_t key){
 }
 static HSet vstate,vshape;
 
+/* Unique trajectories retained so equivalence and byte cost can be measured. */
+#define TMAX 20000
+#define TLEN 96
+static signed short tmoves[TMAX][TLEN]; static int tlen[TMAX]; static int tfam[TMAX]; static int ntraj=0;
+static void traj_keep(const int *mv,int n,int fam){
+    int i,j;
+    if(n>TLEN) return;
+    for(i=0;i<ntraj;++i){ if(tlen[i]!=n) continue;
+        for(j=0;j<n;++j) if(tmoves[i][j]!=mv[j]) break;
+        if(j==n){ tfam[i]|=(fam==0?1:2); return; } }
+    if(ntraj<TMAX){ for(j=0;j<n;++j) tmoves[ntraj][j]=(signed short)mv[j];
+                    tlen[ntraj]=n; tfam[ntraj]=(fam==0?1:2); ++ntraj; }
+}
+
 int main(int argc,char**argv)
 {
     unsigned yaw_step = argc>1 ? (unsigned)strtoul(argv[1],0,0) : 1u;
+    /* Exhaustive mode: sweep the FULL 64x64 local translational space of every
+     * Nth walkable cell, rather than a handful of sub-cell offsets. Prints the
+     * running trajectory total after each cell, which is the growth curve: if
+     * the vocabulary is finite it must flatten. */
+    unsigned exh = argc>2 ? (unsigned)strtoul(argv[2],0,0) : 0u;
+    unsigned cellno=0;
     TSPState s; unsigned gx,gy,yaw,oi,i,c;
     static const int8_t off[][2]={{0,0},{7,3},{3,7},{11,5},{19,23},{41,37}};
     unsigned long runs=0,dp_ok=0,chunks=0;
@@ -116,8 +143,11 @@ int main(int argc,char**argv)
     for(gy=0;gy<GRID_H;++gy) for(gx=0;gx<GRID_W;++gx){
         int16_t px0=(int16_t)(gx*CELL_Q4+32),py0=(int16_t)(gy*CELL_Q4+32);
         if(!tsp_is_walkable_q4(px0,py0)) continue;
-        for(oi=0;oi<6u;++oi){
-            int16_t px=(int16_t)(px0+off[oi][0]),py=(int16_t)(py0+off[oi][1]);
+        if(exh){ ++cellno; if((cellno-1u)%exh) continue; }
+        for(oi=0;oi<(exh?4096u:6u);++oi){
+            int16_t px,py;
+            if(exh){ px=(int16_t)(gx*CELL_Q4+(int)(oi&63u)); py=(int16_t)(gy*CELL_Q4+(int)(oi>>6)); }
+            else   { px=(int16_t)(px0+off[oi][0]); py=(int16_t)(py0+off[oi][1]); }
             if(!tsp_is_walkable_q4(px,py)) continue;
             for(yaw=0;yaw<256u;yaw+=yaw_step){
                 uint8_t ks[64],nk=0,count=0,j;
@@ -162,7 +192,14 @@ int main(int argc,char**argv)
                             na=shape_of(qa,st_a,fam,want,ma,ra,ca);
                             nb=shape_of(qb,st_b,fam,want,mb,rb,cb);
                             if(na<0) ++unmodelled_a;
-                            if(nb<0) ++unmodelled_b;
+                            if(nb<0){
+                                ++unmodelled_b;
+                                if(g_bad_jump>=JMIN&&g_bad_jump<=JMAX){
+                                    ++jhist[g_bad_jump-JMIN];
+                                    ++jhist_fam[g_bad_jump-JMIN][fam];
+                                    if(g_bad_want<8) ++jwant[g_bad_jump-JMIN][g_bad_want];
+                                }
+                            }
                             if(na>=0&&nb>=0){
                                 int diff=(na!=nb);
                                 int row0a,row0b;
@@ -176,7 +213,7 @@ int main(int argc,char**argv)
                                 if(cover_hash(na,ra,ca,row0a,cc0)!=cover_hash(nb,rb,cb,row0b,cc0)) ++l4;
                                 /* vocabulary AFTER canonicalization, on the ROM path */
                                 { uint64_t sh=1469598103934665603ull; for(k=0;k<nb;++k){ sh^=(uint64_t)(mb[k]+200); sh*=1099511628211ull; }
-                                  hs_add(&vshape,sh);
+                                  hs_add(&vshape,sh); traj_keep(mb,nb,fam);
                                   hs_add(&vstate,((uint64_t)(uint16_t)qb<<32)|((uint64_t)(uint16_t)st_b<<16)|((uint64_t)fam<<8)|(uint64_t)want); }
                             }
                             cs+=CHUNK; left-=want;
@@ -185,8 +222,12 @@ int main(int argc,char**argv)
                 }
             }
         }
+        if(exh && ((cellno-1u)%exh)==0u)
+            printf("  growth: after cell %-5u  trajectories=%-6lu states=%-9lu instances=%lu\n",
+                   cellno,vshape.n,vstate.n,inst);
     }
-    printf("arbitrary poses: every walkable cell x 6 sub-cell offsets x %u headings\n",256u/yaw_step);
+    if(exh) printf("\nEXHAUSTIVE local sweep: full 64x64 translations of every %uth walkable cell\n",exh);
+    else    printf("arbitrary poses: every walkable cell x 6 sub-cell offsets x %u headings\n",256u/yaw_step);
     printf("FULL runs                       %lu\n",runs);
     printf("  depth-plane path applies      %lu (%.1f%%)\n",dp_ok,100.0*dp_ok/(double)runs);
     printf("chunk-family instances compared %lu\n",chunks);
@@ -196,10 +237,48 @@ int main(int argc,char**argv)
     printf("  L3 trajectory cursor moves    %lu (%.3f%%)\n",l3,100.0*l3/(double)chunks);
     printf("  L4 ownership covered cells    %lu (%.3f%%)  [evaluated independently of L3]\n",l4,100.0*l4/(double)chunks);
     printf("  unmodelled (move family) A=%lu B=%lu\n",unmodelled_a,unmodelled_b);
+    printf("\ninexpressible cursor moves on the ROM path, by required row jump\n");
+    printf("  (the compiled-body family is jump 0..-4; anything else cannot be a body)\n");
+    {
+        unsigned long tot=0,cum=0; int j,order[JMAX-JMIN+1],m,n2=0,k2;
+        for(j=JMIN;j<=JMAX;++j) if(jhist[j-JMIN]) { tot+=jhist[j-JMIN]; order[n2++]=j; }
+        for(m=0;m<n2;++m) for(k2=m+1;k2<n2;++k2)
+            if(jhist[order[k2]-JMIN]>jhist[order[m]-JMIN]){int s2=order[m];order[m]=order[k2];order[k2]=s2;}
+        printf("  %-8s %-12s %-9s %-22s %s\n","jump","count","share","family (top/bot)","cumulative if added");
+        for(m=0;m<n2;++m){
+            j=order[m]; cum+=jhist[j-JMIN];
+            printf("  %-8d %-12lu %-8.3f%% top=%-7lu bot=%-7lu  %.4f%% of all chunks remain unexpressible\n",
+                   j,jhist[j-JMIN],100.0*jhist[j-JMIN]/(double)tot,
+                   jhist_fam[j-JMIN][0],jhist_fam[j-JMIN][2],
+                   100.0*(unmodelled_b-cum)/(double)chunks);
+        }
+        printf("  total inexpressible %lu of %lu chunks (%.3f%%)\n",tot,chunks,100.0*tot/(double)chunks);
+    }
     printf("\nvocabulary collapse, measured AFTER canonicalization (ROM path)\n");
     printf("  chunk-family instances        %lu\n",inst);
     printf("  distinct (iq,step,family,len) %lu\n",vstate.n);
     printf("  distinct raster trajectories  %lu\n",vshape.n);
     printf("  collapse instances->trajectories  %.0f : 1\n",(double)inst/(double)vshape.n);
+    {
+        int i,j; long total_moves=0,maxlen=0; int only_top=0,only_bot=0,shared=0;
+        HSet rev=hs_new();
+        for(i=0;i<ntraj;++i){
+            total_moves+=tlen[i]; if(tlen[i]>maxlen) maxlen=tlen[i];
+            if(tfam[i]==1) ++only_top; else if(tfam[i]==2) ++only_bot; else ++shared;
+        }
+        for(i=0;i<ntraj;++i){ uint64_t h=1469598103934665603ull;
+            for(j=tlen[i]-1;j>=0;--j){ h^=(uint64_t)(tmoves[i][j]+700); h*=1099511628211ull; }
+            hs_add(&rev,h); }
+        printf("\ndeduplicated generic trajectory programs\n");
+        printf("  unique trajectories retained  %d\n",ntraj);
+        printf("  top family only               %d\n",only_top);
+        printf("  bottom family only            %d\n",only_bot);
+        printf("  BOTH families                 %d   (already shared, no mirroring needed)\n",shared);
+        printf("  total moves across all        %ld\n",total_moves);
+        printf("  mean / max length             %.1f / %ld moves\n",(double)total_moves/(double)ntraj,maxlen);
+        printf("  bytes at 1 byte per move      %ld\n",total_moves);
+        printf("  bytes at 3 bits per move      %ld   (7 moves fit in 3 bits)\n",(total_moves*3+7)/8);
+        printf("  distinct under reversal       %lu of %d\n",rev.n,ntraj);
+    }
     return 0;
 }

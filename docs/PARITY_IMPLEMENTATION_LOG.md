@@ -1043,3 +1043,102 @@ dictionary — is unnecessary for geometry: 1,140 trajectories are generated, no
 looked up. The remaining open items are the depth-plane divergence above, the
 3.8% of ROM-path chunks whose moves fall outside the expressible family, and
 persistence across updates.
+
+## Rung 1.5: two corrections, then the vocabulary actually saturates
+
+### Correction 1: "the entire arbitrary-pose domain" was wrong
+
+The previous entry swept six sub-cell offsets. A Q4 cell has 64x64 = 4,096 local
+translations, so that was 0.15% of the translational space, not the domain. The
+correct description of that run is a broad corpus spanning all cells and headings.
+
+### Correction 2: two claims in that entry contradicted each other
+
+"1,140 trajectories cover the entire domain" and "3.8% require moves outside the
+expressible family" cannot both be true. The 1,140 figure counted only chunks the
+shape model could express; the 3.8% were silently excluded. 1,140 covered ~96.2%.
+
+### The 3.8% is exactly two moves
+
+Histogrammed by required row jump over 3,875,340 chunk-family instances:
+
+```
+jump   count     share    family split          if added
+-15    103,159   70.6%    top 51,758 bot 51,401  1.111% remain
+-14     43,039   29.4%    top 24,793 bot 18,246  0.000% remain
+```
+
+Two values, nothing in between, balanced across families. The compiled-body move
+family goes from five `{0,-1,-2,-3,-4}` to **seven** `{0,-1,-2,-3,-4,-14,-15}` and
+representability reaches 100%. The gap at -5..-13 is informative: 14-15 rows on an
+18-row table means these are extreme near-field edges crossing nearly the whole
+screen between adjacent columns, a regime with no intermediate cases.
+
+### Exhaustive 64x64 translational sweep, with the growth curve
+
+`tools/rung1/pose_to_raster_check.c <yaw_stride> <cell_stride>` sweeps the full
+64x64 local translation space of every Nth walkable cell, at all 256 headings.
+Every 64th cell, eight cells, all headings:
+
+```
+FULL runs                        14,805,535
+chunk-family instances           47,828,940
+inexpressible                             0  (0.000%)
+distinct raster trajectories          1,643
+collapse                           29,111 : 1
+```
+
+The growth curve, which is the figure that decides whether the vocabulary is
+finite:
+
+```
+after cell   1   trajectories 1,028   instances  9.5M
+after cell  65   trajectories 1,320   instances 19.1M
+after cell 129   trajectories 1,612   instances 28.4M
+after cell 193   trajectories 1,612   instances 37.7M
+after cell 257   trajectories 1,612   instances 39.5M
+after cell 321   trajectories 1,643   instances 44.3M
+after cell 385   trajectories 1,643   instances 46.1M
+after cell 449   trajectories 1,643   instances 47.8M
+```
+
+**It saturates.** The final 3.5M instances added no new trajectories. One cell
+swept exhaustively already yields 1,028 of the eventual 1,643, so most of the
+vocabulary is intrinsic to local geometry rather than to which cell the player
+occupies. The broad six-offset corpus over all cells gave 1,763 on a different
+cell sample; both land at the same ~1,600-1,800 scale.
+
+### Deduplicated program bytes
+
+```
+unique trajectories               1,643
+  used by both families             909   (55%, already identical sequences)
+  top family only                   387
+  bottom family only                347
+total moves                      30,486
+mean / max length              18.6 / 30 moves
+bytes at 1 byte per move         30,486
+bytes at 3 bits per move         11,433   (seven moves fit in three bits)
+distinct under reversal     1,643 of 1,643   (no reversal equivalence)
+```
+
+Top and bottom already share 55% of trajectories as literally identical move
+sequences, so no mirroring transform is needed to capture that. Reversal buys
+nothing, which is expected: the move alphabet is asymmetric, one "down" against
+six "up" jumps.
+
+For scale, the shipped sparse dispatch carries 40,672 B of tables plus 73,094 B of
+bodies, about 114 KB, for 2.1-34.2% compiled coverage. The generic trajectory
+vocabulary is **11,433 B for 100%**, with no dictionary and nothing learned from
+sampled poses.
+
+### Still open
+
+The depth-plane adjudication. L4 ownership divergence is 22.6% on this exhaustive
+sweep (20.1% on the earlier corpus), and it remains unadjudicated. The previous
+entry's speculation that the host path is "a priori more faithful" is **withdrawn**:
+for a planar wall under pinhole perspective, inverse depth is linear in screen X,
+which is exactly the `iq + c*step` form the depth plane uses, whereas the host path
+quantizes `inv0` and `inv1` to uint8 and derives an increment between already
+quantized values. Neither should be assumed correct. Both must be measured against
+a high-precision perspective reference, by error magnitude rather than incidence.
