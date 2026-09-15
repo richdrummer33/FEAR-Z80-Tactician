@@ -83,7 +83,12 @@ uint8_t tsp_progjoin_play_plan(const TSPProgjoinRunPlan *plan,uint8_t *dst,uint1
 
 static uint8_t gate_advance(int16_t step_bytes,int8_t *row,uint8_t *col,uint8_t *rowbit,int8_t *cov,int16_t *cursor){
     uint8_t rb=*rowbit;*cursor=(int16_t)(*cursor+step_bytes);if(step_bytes==40){*row=(int8_t)(*row+1);if(rb==7u){*rowbit=0u;*cov=(int8_t)(*cov+1);}else *rowbit=(uint8_t)(rb+1u);return 1u;}*col=(uint8_t)(*col+1u);
-    if(step_bytes==2){*cov=(int8_t)(*cov+3);return 1u;}if(step_bytes==-38){*row=(int8_t)(*row-1);*cov=(int8_t)(*cov+((rb==0u)?2:3));*rowbit=(uint8_t)((rb+7u)&7u);return 1u;}if(step_bytes==-78){*row=(int8_t)(*row-2);*cov=(int8_t)(*cov+((rb<2u)?2:3));*rowbit=(uint8_t)((rb+6u)&7u);return 1u;}if(step_bytes==-118){*row=(int8_t)(*row-3);*cov=(int8_t)(*cov+((rb<3u)?2:3));*rowbit=(uint8_t)((rb+5u)&7u);return 1u;}return 0u;
+    if(step_bytes==2){*cov=(int8_t)(*cov+3);return 1u;}if(step_bytes==-38){*row=(int8_t)(*row-1);*cov=(int8_t)(*cov+((rb==0u)?2:3));*rowbit=(uint8_t)((rb+7u)&7u);return 1u;}if(step_bytes==-78){*row=(int8_t)(*row-2);*cov=(int8_t)(*cov+((rb<2u)?2:3));*rowbit=(uint8_t)((rb+6u)&7u);return 1u;}if(step_bytes==-118){*row=(int8_t)(*row-3);*cov=(int8_t)(*cov+((rb<3u)?2:3));*rowbit=(uint8_t)((rb+5u)&7u);return 1u;}
+    /* The column-advancing motions are the family 2-40k: next column, up k rows.
+     * k=4 is absent from the shipped corpus but present in the wider pose space,
+     * and refusing it here returns failure *after* cells were written. Kept in
+     * the arithmetic order above so a future k extends the same pattern. */
+    if(step_bytes==-158){*row=(int8_t)(*row-4);*cov=(int8_t)(*cov+((rb<4u)?2:3));*rowbit=(uint8_t)((rb+4u)&7u);return 1u;}return 0u;
 }
 uint8_t tsp_progjoin_play_plan_gated(const TSPProgjoinRunPlan *plan,uint16_t *dst_words,const uint8_t *coverage60,uint8_t *row_min18,uint8_t *row_max18,int8_t first_row,uint8_t first_col){
     uint8_t pi;int8_t row,cov;uint8_t col,rowbit;int16_t cursor;if(!plan||!dst_words||!coverage60||!row_min18||!row_max18||plan->count==0u||plan->count>TSP_PROGJOIN_MAX_CHUNKS||first_col>=20u)return 0u;

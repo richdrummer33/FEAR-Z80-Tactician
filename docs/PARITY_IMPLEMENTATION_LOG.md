@@ -317,3 +317,118 @@ positions appear in the oracle's sampled grid, and projects records against the
 uint16 cap. With the matching `--entries-per-key` it predicts 18,107 B for the
 shipped corpus (actual 18,976) and 258,408 B for the dense one (actual 262,315),
 so the cheap check can be trusted before committing to a census run.
+
+## Response to the stocktake and its amendment: measuring the shared assumption
+
+Both documents propose replacing the pose-derived dispatch key with a canonical,
+pose-independent one. On the two points where they disagree, the amendment is
+right and is followed here: viewport clipping must **not** enter the key (the
+guard-band result already handles it at zero cycles), and arbitrary poses are an
+oracle and adversarial test set, never the program dictionary. The stocktake's
+"bake 80%, test 20%" framing still sources the vocabulary from poses.
+
+But both rest on one assumption that neither measures: that the compiled
+**bodies** already generalize and only the **keying** is pose-trained. That
+decides whether canonical keying is worth building at all, so it was measured
+first, with `tools/progjoin_body_generalization.py`. Poses are split disjointly,
+both halves are baked through the same windowed baker the census uses, and every
+FULL chunk is resolved to its byte-exact serialized body. Two coverages result:
+
+| split | train poses | train bodies | key coverage | body coverage | gap |
+| --- | --- | --- | --- | --- | --- |
+| `yaw-shipped` (1/16 headings, as ships) | 1,248 | 3,343 | 15.8% | 44.8% | **+29.0** |
+| `yaw-parity` (1/2 headings) | 9,984 | 12,102 | 57.2% | 90.0% | **+32.8** |
+
+`key coverage` is what the shipped dispatcher can reach; it lands squarely in the
+2.1-34.2% band the live A/B measured, which cross-validates the harness against
+the ROM. `body coverage` is the ceiling a perfect pose-independent key could
+reach **without adding one byte of ROM**.
+
+**The assumption holds.** Bodies generalize roughly three times further than
+their keys, and the gap is a stable +29 to +33 points across sampling densities.
+That is the size of the prize, and it is now a measured quantity rather than a
+hope. Canonical keying is the right investment.
+
+It is also, on its own, not enough. 44.8% at shipped density is far from the
+>=95% acceptance criterion, and the body vocabulary keeps growing with sampling
+(`bodies ~ poses^0.62` across the splits, `^0.77` across the two censuses),
+projecting to 132,000-158,000 bodies over the full pose space — roughly 5 MB at
+the observed 36.6 B/body, against a 1 MiB cartridge.
+
+### Where the vocabulary explosion actually lives
+
+Decomposing the 12,102 bodies of the `yaw-parity` bake:
+
+```
+unique full blobs      12,102     <- what the census counts
+unique payloads        12,102     <- tuned format, 7-byte prefix removed: no change
+unique DELTA sequences    350     <- the raster geometry alone
+unique WORD  sequences 11,892     <- the tile appearance alone
+```
+
+The raster-geometry vocabulary is **350**. The explosion is entirely in the tile
+words. (Stripping the per-`want` prefix header changes nothing, so the tuned
+body format is not the lever here — that was tested, not assumed.)
+
+This sharpens the amendment's anchor considerably. Its "generic rasterized edge
+program" exists and is small — 350 shapes — but the current body welds geometry
+to appearance in one immutable blob, and appearance is what scales with pose
+sampling, because shade varies continuously with depth. Every new depth mints a
+"new body" for a raster shape already in ROM.
+
+The appearance dimension is not arbitrary either: 354 distinct tile-word values
+and 74 distinct intra-body word deltas, dominated by +-64, 0, +-8, +-16, +-1.
+It is not, however, derivable from the movement class alone — conditioned on the
+commonest motion the word delta still takes 54 values with the mode covering only
+11.4% — so the item-23 trick that eliminated destination metadata does not
+transfer directly to words. Appearance needs its own compact representation.
+
+**Recommended revision to the amendment's section 12.** The one-cell
+falsification experiment is the right next step, but it should canonicalize onto
+the **350-shape geometry vocabulary**, and carry shade as a separate parameter
+resolved at playback, rather than onto the body vocabulary. Targeting bodies
+inherits the appearance explosion and will reproduce the ROM wall at a different
+scale.
+
+### A latent correctness bug the wider pose space exposed
+
+The column-advancing motions form the arithmetic family `2 - 40k`: next column,
+up *k* rows. The shipped corpus contains k=0..3 exactly:
+
+```
+step_bytes present in SHIPPED corpus: {-118: 1344, -78: 2321, -38: 4069, 2: 53997, 40: 12452}
+```
+
+and `gate_advance` in `src/tilesector_polar_progjoin_runtime.c` handled exactly
+those five. The wider pose space also produces **k=4 (`step_bytes = -158`)**, 21
+times in 248,131 transitions sampled. On that value `gate_advance` returned 0,
+which propagates out of `tsp_progjoin_play_plan_gated` as a refusal **after cells
+have already been written** — the partial-write hazard recorded in the previous
+entry, fired for real.
+
+It is zero today only because the shipped corpus is too narrow to contain the
+motion. Every recommendation in both documents widens that corpus, so this would
+have fired precisely when coverage started working, and presented as a rendering
+corruption rather than a fallback.
+
+`gate_advance` now handles k=4, written to extend the same arithmetic pattern.
+The three ROMs were rebuilt and the full A/B re-run: every hash, cycle count and
+counter is **bit-identical** to before the change, confirming it cannot affect
+the shipped corpus while removing the cliff. The `fb_play_*` counters continue to
+guard it, and the A/B fails hard if either becomes non-zero.
+
+### Revised order of work
+
+1. **Fix `gate_advance`.** Done above; prerequisite for any corpus widening.
+2. **Run the amendment's one-cell falsification experiment**, canonicalized onto
+   the 350-shape geometry vocabulary with shade as a separate playback parameter.
+   Reject any representation whose dictionary grows with sampled poses.
+3. **Give appearance its own compact representation.** 354 word values and 74
+   word deltas is a small alphabet; the question is whether shade can be carried
+   as a per-run parameter rather than per-cell payload. This is where the ROM
+   scaling is actually decided.
+4. **Restore the guard-band destination model** (amendment section 9) in place of
+   the gated player's per-write bounds checks, keeping ownership semantics intact.
+5. Only then the run-edge invariant hoists (items 24-26) and direct-rank dispatch
+   (item 27), which remain premature while the compiled path succeeds 2-34% of
+   the time.
