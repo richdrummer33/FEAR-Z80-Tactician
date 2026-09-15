@@ -177,3 +177,143 @@ storing the cell, so a refusal returns 0 having already written part of the
 edge, and the legacy path then redraws over it. The two `fb_play_*` counters
 watch for this and the A/B fails if either becomes non-zero. It is zero today,
 but the ordering should be fixed rather than left to the corpus to avoid.
+
+## Why the corpus misses: the decimation is load-bearing
+
+Root-causing the 2.1% / 34.2% coverage. Two things had to be established: what
+the corpus is built from, and whether building it from more would help.
+
+### The oracle samples 0.52% of poses, and none of the ones gameplay visits
+
+`build/coverage_pose_oracle.txt` comes from `coverage_potential_probe`, invoked
+as `16 <out> 12`. It decimates on three independent axes:
+
+| axis | sampled | of |
+| --- | --- | --- |
+| heading | 16 (`yaw_step=16`) | 256 |
+| sub-cell offset | 4 fixed `{0,0},{7,3},{3,7},{11,5}` | 64x64 |
+| pose dump stride | 1 in 12 | enumerated poses |
+
+29,824 poses are enumerated and **2,486 are dumped** — 0.52% of the 477,184
+enumerable poses, where "enumerable" has already thrown away 4,092 of 4,096
+sub-cell positions.
+
+The decisive check is not the ratio, it is membership. Oracle positions are
+`gx*64 + 32 + {0,7,3,11}`. Live positions from the measured traces:
+
+```
+roomA-turn      1 distinct position visited,  0 on the oracle grid
+roomA-forward  96 distinct positions visited, 0 on the oracle grid
+```
+
+**Zero of 97.** The player walks straight through the gaps between sampled
+positions, and turning sweeps headings that are sampled 1-in-16.
+
+So the compiled path was never covering the start area. `step` is quantized
+(`(inv1-inv0) * recip[n] >> 2`), so unrelated poses can collide on the same
+step value, and every compiled hit observed is an incidental collision rather
+than designed coverage. That explains the shape of the results exactly:
+collisions are common near the spawn geometry (34.2%), rarer further along it
+(6.5% measured from update 60), and absent while turning (0/99), where the
+geometry has no counterpart in the sample at all.
+
+### Sampling more is not available in this format
+
+The obvious fix is to bake denser. Measured, not assumed — a full census and
+pack run over an oracle sampled across all 256 headings (`yaw_step=1`,
+`stride=17`, 28,070 poses, chosen to decorrelate stride from the yaw period):
+
+| oracle | poses | steps | semantic entries | unique bodies | census min payload |
+| --- | --- | --- | --- | --- | --- |
+| shipped `y=16 s=12` | 2,486 | 549 | 4,311 | 2,816 | 355,220 B (22 banks) |
+| dense `y=1 s=17` | 28,070 | 2,119 | 62,741 | 18,061 | 2,270,587 B (139 banks) |
+
+At equal pose budget the axis that matters is heading: 29,824 poses at 16 yaws
+yields 4,604 distinct `(step, want)` keys, while 28,070 poses spread over all
+256 yaws yields 6,182 — 34% more from sampling alone.
+
+The vocabulary does saturate. Over the entire 477,184-pose space there are
+812,346 FULL runs but only **2,496 distinct steps** and **7,330 distinct
+`(step, want)`**, so the dense sample above already holds ~85% of it. The target
+is finite. It is just far larger than what ships.
+
+Running the real sparse pack on the dense corpus does not produce a size. It
+fails:
+
+```
+record offset overflow
+```
+
+`tools/gg_progjoin_sparse_direct.py` refuses at `len(records) > 0xfffe`, because
+the descriptor stores each record-list offset as a **uint16** (`0xFFFF` is the
+absent sentinel) and `tsp_progjoin_dispatch_body` reads it with `rd16p`. Records
+are 4 bytes per semantic entry plus a terminator per descriptor, so:
+
+```
+shipped   4,311 entries x 4 + 1,732 terminators =  18,976 B   (29% of cap)
+dense    62,741 entries x 4 + 11,351 terminators = 262,315 B   (4.0x over cap)
+format cap                                          65,534 B  (~15,240 entries)
+```
+
+So the shipped corpus already consumes 28% of every semantic entry the dispatch
+format can address, and full pose coverage needs roughly 5x more than the format
+can express — before considering that the packed assets would also want ~45 of
+the cartridge's 64 banks, alongside the renderer, the game and the projection
+tables.
+
+### What this means
+
+The decimation is not an oversight to be turned up. It is what makes the corpus
+fit. The Z80 research harness never met this constraint: as
+`gg_progjoin_corpus_census.py` says in its own docstring, it "deliberately bakes
+small windows because its executable test has a flat 64 KiB address space", and
+it only ever evaluates the window it baked. The locked target census (19,912
+run-edges, 31,806 chunks, 160,717 cells) and the 52,266,733 T PROGJOIN figure are
+measured over that 0.52% sample, so they describe a corpus that covers almost
+none of the poses the game actually renders.
+
+That reorders the remaining work more sharply than the previous entry did.
+Porting the run-edge invariant hoists (items 24-26) and direct-rank dispatch
+(item 27) optimises dispatch on a path that currently succeeds 0-34% of the time
+and cannot be made to succeed much more often without a different format. None
+of those ports should be attempted before one of these is settled:
+
+1. **Reduce key cardinality.** 7,330 `(step, want)` pairs over the whole pose
+   space is the real target. If `step` can be quantized or re-derived so that
+   nearby geometry shares a program, the vocabulary shrinks toward something a
+   cartridge can hold. This is the only direction that makes the architecture
+   work as intended, and it must be proven exact, not approximated.
+2. **Widen the dispatch format.** Larger record offsets and more record banks
+   are necessary for any denser corpus, but on their own they only move the wall
+   from 15,240 entries to a bank budget that still does not fit.
+3. **Scope PROGJOIN to a provably covered subset** and make the miss path nearly
+   free, so the executor stops charging for run-edges it cannot serve. The
+   current miss costs a step-map lookup, a threshold walk, a descriptor read and
+   a record walk across bank switches, which is why coverage this low reads as a
+   13.82% whole-update regression.
+
+Option 3 is the only one that improves the current ROM without new research.
+
+### Two notes recorded from play testing
+
+Neither affects the measurements above, but both were worth confirming:
+
+- **Startup.** A real cartridge can take 5-10 s before it settles. The profiler
+  arms on the first render-phase transition, so it cannot begin measuring before
+  the loop runs, and re-running `roomA-forward` with `warmup=60` instead of 6
+  produced a clean trace. That control is also what showed coverage falling from
+  34.3% to 6.5% once the window starts further from spawn.
+- **Motion is per-update, not wall-clock scaled.** The baseline and PROGJOIN
+  ROMs have different frame times (324,804.8T vs 336,005.3T mean) yet report
+  identical `x_q4`, `y_q4` and `yaw` at every update index. Movement is therefore
+  driven per logical update, which is what makes a name-table A/B between two
+  ROMs of different speeds meaningful at all; had it been time-scaled the slower
+  ROM would drift out of position and the hashes would diverge for reasons
+  unrelated to the renderer.
+
+`tools/progjoin_corpus_coverage.py` makes the above reproducible: it reports an
+oracle's step and `(step, want)` vocabulary, tests whether a live trace's
+positions appear in the oracle's sampled grid, and projects records against the
+uint16 cap. With the matching `--entries-per-key` it predicts 18,107 B for the
+shipped corpus (actual 18,976) and 258,408 B for the dense one (actual 262,315),
+so the cheap check can be trusted before committing to a census run.
