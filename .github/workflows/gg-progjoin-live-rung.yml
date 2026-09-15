@@ -18,6 +18,7 @@ on:
       - 'tools/build_gearsystem_tools.sh'
       - 'tools/build_progjoin_live_rom.sh'
       - 'tools/progjoin_live_ab.py'
+      - 'tools/progjoin_shape_canon.py'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   pull_request:
@@ -36,6 +37,7 @@ on:
       - 'tools/build_gearsystem_tools.sh'
       - 'tools/build_progjoin_live_rom.sh'
       - 'tools/progjoin_live_ab.py'
+      - 'tools/progjoin_shape_canon.py'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   workflow_dispatch:
@@ -64,6 +66,20 @@ jobs:
             | tee build/progjoin_live/pack.txt
           python3 tools/gg_progjoin_emit_assets.py build/progjoin_live/packed build/progjoin_live/gen --base-bank 48 \
             | tee build/progjoin_live/assets.txt
+
+      - name: Closed-form shape gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The closed form is analytic and has no training set, so every pose is
+          # held out from it. Guards the result that FULL-edge raster geometry is
+          # computable from (step, fam, want, iq) with no corpus at all, which is
+          # what makes the 40,672 B of dispatch tables removable.
+          python3 tools/progjoin_shape_canon.py verify \
+            build/coverage_pose_oracle.txt build/edge_progjoin_bake build/progjoin_live/shape_canon \
+            | tee build/progjoin_live/shape-canon.txt
+          grep -q SHAPE_CANON_EXACT build/progjoin_live/shape-canon.txt
+          python3 tools/progjoin_shape_canon.py cost | tee build/progjoin_live/shape-canon-cost.txt
 
       - name: Install GBDK 4.5.0
         shell: bash

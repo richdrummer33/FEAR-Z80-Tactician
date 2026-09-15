@@ -597,3 +597,48 @@ same shape of problem, one coordinate system further in.
 
 Deferred deliberately, not abandoned. Nothing above depends on it: geometry is
 solved and costs no ROM, and the texture dimension is what still does.
+
+## Shape gate in CI, and what it predicts for coverage
+
+The closed form is analytic and has no training set, so every pose set is held
+out from it. That makes the gate cheap enough to run unconditionally: against the
+**shipped** corpus oracle it completes in 0.44 s.
+
+```
+held-out chunks             14,379
+  exact reconstruction      14,379 (100.000%)
+  differs, wholly off-table 0
+  corpus body/want mismatch 0
+  differs, ON the table     0
+  outside the move family   0
+SHAPE_CANON_EXACT
+```
+
+It now runs in `gg-progjoin-live-rung.yml` immediately after the corpus is built,
+before anything expensive, and fails the rung if the closed form ever stops
+reproducing the authoritative baker.
+
+Two things this settles.
+
+**The corpus body/want defect is not reachable in what ships.** The previous
+entry recorded two chunks whose body spanned one column although the descriptor
+was fetched for `want=6`, and deliberately did not claim reachability. The
+shipped corpus has **zero** of them. The defect appears only in the denser bakes
+used for the generalization splits, so it is a latent baker concern rather than a
+live one, and the gate will catch it if a denser corpus is ever adopted.
+
+**Predicted coverage under the closed form.** The live A/B measured the compiled
+path serving 2.1% of run-edges while turning and 34.2% moving forward, with the
+misses attributed as `miss_step`, `miss_desc` and `miss_rank`. All three are
+lookups into tables the closed form does not have, so none of them can occur:
+there is no step map to miss, no descriptor to be absent, and no record list to
+walk off. The only refusal left in the closed form is an advance move outside the
+`2 - 40k` family, and across 168,903 chunks tested (14,379 shipped + 100,795 +
+53,729 held out) that occurred **zero** times.
+
+So the predicted compiled coverage is 100% of FULL run-edges on every pose set
+measured so far, against 2.1-34.2% today. That is a prediction from the host
+harness, not a ROM measurement, and it stays a prediction until the closed form
+actually drives playback on hardware. The 14-15 row advance found by enumerating
+the parameter box remains the one known unrepresentable case, and has not been
+shown reachable in gameplay.
