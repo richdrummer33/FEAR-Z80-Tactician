@@ -782,3 +782,96 @@ sources, without re-running `build_parity_materializer.py` and
 was the canonical one. The A/B gate's "the compiled path was never attempted"
 check caught it immediately. That check was added to stop a fallback-only run
 reading as parity, and it also catches a build that silently lost its splice.
+
+## Correction: the closed form is the back half, not the whole chain
+
+`tools/progjoin_shape_canon.py` was titled "arbitrary pose -> canonical generic
+raster-line state" and the entries above described it that way. It does not do
+that. The chain is:
+
+```
+pose -> [ MISSING: baked vertex baselines + global LUTs ] -> step, iq
+step, iq -> [ what was actually built ] -> canonical raster line -> program
+```
+
+`step` and `iq` are **host-supplied** in that harness: read from the baker's case
+file, and on hardware produced by the existing runtime geometry pipeline, which
+is exactly the stage the amendment says to replace. The 168,903 chunks are held
+out in the *pose* dimension but are not an end-to-end test of arbitrary pose in,
+program out. Any future measurement that takes `step`, `iq`, a projected first
+row or similar from the host must say so at the point of measurement.
+
+What survives, and is still worth having: given the run-edge parameters, the
+raster shape needs no sampled-pose dictionary. It is computed, and exercised
+across the whole `(step, iq)` parameter box rather than over combinations a
+corpus happened to contain.
+
+`step` and `iq` do **not** need to disappear. They may be perfectly good internal
+canonical variables. What had to go, and has gone, is the assumption that their
+valid combinations are learned from sampled poses.
+
+### Vocabulary of retired language
+
+Two phrases from earlier entries are withdrawn because they carry the sampled-
+dictionary model:
+
+- "the turn case is a coverage problem" — it is not. A 0% turn hit rate is
+  evidence that program selection is architecturally wrong, not a deficit to be
+  filled by baking more poses. The target system has no training coverage of
+  camera poses; a turn must produce a valid canonical line state by construction.
+- "dispatch optimisation helps regardless of coverage" — making failed dictionary
+  lookups cheaper helps the broken implementation. Replacing the dictionary with a
+  complete canonicalizer means there is no coverage statistic to speak of. Those
+  are different achievements and were conflated.
+
+`progjoin_live_ab.py` still reports compiled coverage. It is retained as a
+regression detector for the current ROM and is explicitly **not** a target.
+
+## Protocol for the arbitrary-pose rungs
+
+Agreed before building, so results cannot be read as stronger than they are.
+
+**Host-supplied labelling.** Every quantity the Game Gear would have to derive is
+charged to the Z80 side. Anything the host hands the model is labelled at the
+point of measurement, and while any such quantity remains, the experiment is not
+end-to-end.
+
+**Two validations, not one.** A representation certified exhaustively over all
+local sub-positions and headings needs no statistical held-out test — the
+certificate is the stronger guarantee. It still gets an independent held-out
+implementation test afterwards, because the implementation can be wrong even when
+the representation is right. A representation whose parameters are *selected* from
+data needs the held-out split as well.
+
+**Layered oracle.** The comparison is not one pass/fail. In increasing strength:
+
+1. projected endpoint X, and Y with sub-pixel phase
+2. canonical line-state ID
+3. exact sequence of edge masks and cursor moves
+4. covered screen cells
+5. ownership result
+
+A difference in the final name-table word caused by material/texture not being
+integrated yet must not be confused with a geometry failure, and this ordering
+makes that impossible to confuse.
+
+**Vocabulary is measured after canonicalization, not before.** Counting the
+diversity of raw parameters measures the wrong thing; the point of
+canonicalization is that many poses collapse onto few states.
+
+**Texture does not gate geometry.** The generic line program should be a
+geometric primitive — edge mask, cursor move, edge mask — with material, shade,
+texture phase and receiver semantics resolved separately and combined later, as
+the texture work already does. Rung one runs on flat walls or canonical edge-mask
+IDs.
+
+**Rung two is mandatory and immediate.** Cross-cell transitions follow rung one
+directly, before the single-cell representation is polished, so an anchor/state
+choice that makes continuity across boundaries ugly is discovered early rather
+than late.
+
+**No further hand-optimisation of the C player for now.** 3,475 -> 1,640 T/cell
+was salvage. 1,640 remains far above what the eventual primitive should cost,
+which tells us it belongs in tight assembly with state in registers once the
+architecture is proven, not that the remaining C inefficiencies are worth finding
+first.

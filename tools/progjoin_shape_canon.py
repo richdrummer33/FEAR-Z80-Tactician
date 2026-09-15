@@ -1,19 +1,33 @@
 #!/usr/bin/env python3
-"""Arbitrary pose -> canonical generic raster-line state, without a pose dictionary.
+"""Run-edge parameters -> canonical raster-line state, without a program dictionary.
 
-This is the falsification harness from section 12 of the renderer amendment,
-retargeted onto the raster-geometry vocabulary rather than the body vocabulary.
-That retarget follows from measurement: a bake's 12,102 distinct bodies carry
-only 350 distinct delta sequences, so the geometry is a small finite vocabulary
-and the body count is dominated by tile appearance (see the parity log).
+SCOPE, and an earlier over-claim corrected. This file used to be titled
+"arbitrary pose -> canonical generic raster-line state". It does not do that, and
+the distinction matters. It covers the BACK HALF of the chain only:
 
-The claim under test is the amendment's anchor: that program identity can be
-derived from the current pose, exactly, with a vocabulary that was never
-constructed from the poses it is tested on.
+    pose -> [ MISSING: baked vertex baselines + global LUTs ] -> step, iq
+    step, iq -> [ THIS FILE ] -> canonical raster line -> generic program
 
-It holds, and more strongly than the amendment supposed. The raster shape is not
-something to sample at all. It is computable in closed form from the run-edge's
-own parameters using the renderer's existing projection arithmetic:
+`step` and `iq` are **host-supplied** here: they are read from the baker's case
+file, and on real hardware they are produced by the existing runtime geometry
+pipeline -- precisely the stage the renderer amendment says should be replaced.
+So the 168,903 chunks this has been verified against are held out in the POSE
+dimension but are not an end-to-end test of "arbitrary pose in, program out".
+
+What is genuinely established is narrower and still useful: given the run-edge
+parameters, the raster shape needs no sampled-pose dictionary. It is computed,
+and the computation is exercised across the whole (step, iq) parameter box rather
+than over combinations observed in a corpus. `step` and `iq` are therefore
+perfectly acceptable internal canonical variables; what had to go, and has gone,
+is the assumption that their VALID COMBINATIONS must be learned from sampled
+poses.
+
+The missing front half -- coarse cell, local x/y, yaw and baked local vertex data
+to bearing, inverse depth and projected endpoints -- is the arbitrary-pose rung,
+built separately.
+
+The raster shape is computable in closed form from the run-edge's own parameters
+using the renderer's existing projection arithmetic:
 
     h(c)    = bits 7..13 of (iq + c*step + 32)        # the renderer's own term
     y(c)    = 71 - h(c)   for family 0 (top edge)
