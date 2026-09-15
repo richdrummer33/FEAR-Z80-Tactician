@@ -875,3 +875,81 @@ was salvage. 1,640 remains far above what the eventual primitive should cost,
 which tells us it belongs in tight assembly with state in registers once the
 architecture is proven, not that the remaining C inefficiencies are worth finding
 first.
+
+## The corpus is keyed on a derivation the mode-0 ROM does not use
+
+Looking for the missing arbitrary-pose front end turned up something else, and it
+is the real mechanical reason the compiled path hits so rarely. It also corrects
+the root cause recorded earlier.
+
+The renderer has **two** derivations of the dispatch key, chosen by
+`r->depth_plane`:
+
+```c
+if (g_tspf_appearance_mode < 2u && r->depth_plane) {   /* screen_depth_plane */
+    iq = r->iq;  step = r->step;
+} else {                                                /* the other one */
+    iq   = (int16_t)r->inv0 << 6;
+    step = shr_signed(((int16_t)r->inv1 - (int16_t)r->inv0) * k_col_recip_q8[n], 2);
+}
+```
+
+`screen_depth_plane` is guarded `#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE`
+at all eight of its sites, so **it does not exist in a host build**. The pose
+oracle, and therefore the entire compiled corpus, is produced by a host build and
+can only ever take the second branch. The shipped mode-0 ROM takes the first.
+
+`tools/rung1/depth_derivation_check.c` transcribes `screen_depth_plane` onto the
+host, using the generated `(class, yaw)` coefficient tables and the loader's
+exact indexing (`nf[c] = k_depth_nf_q7[c][yaw]`, verified against the generated
+loader), and compares the two derivations over arbitrary poses — every walkable
+cell, six sub-cell offsets, all 256 headings:
+
+```
+FULL runs examined            1,206,906
+  depth-plane path applies    1,191,010 (98.7%)
+  of those, step matches host    19,338 (1.62%)
+  of those, iq   matches host     7,347 (0.62%)
+  of those, BOTH match              660 (0.06%)
+```
+
+So in mode 0 the ROM uses the depth-plane derivation for 98.7% of FULL runs, and
+the key it computes agrees with the key the corpus was baked under in **0.06%**
+of cases.
+
+### What this corrects
+
+An earlier entry attributed the 2.1%/34.2% hit rate primarily to pose
+undersampling — the oracle sampling 0.52% of poses and no live position landing
+on its grid. That finding stands on its own terms and the grid arithmetic is
+unchanged, but it is **not the primary cause**. The primary cause is that the
+baker and the ROM compute the dispatch key by different formulas. The measured
+hit rates are largely the coincidence rate between two unrelated derivations,
+which is consistent with the corpus holding 586 of 4,096 possible step values.
+
+### The trap this creates
+
+There is an obvious "fix": rebake the corpus from the depth-plane derivation. The
+hit rate would jump, possibly dramatically, and **that would be the worst
+available outcome**. It would make a sampled-pose dictionary look like it works,
+which is exactly the failure mode this whole line of work exists to avoid. It is
+recorded here as a thing not to do rather than an opportunity.
+
+### The good news for the architecture
+
+`screen_depth_plane` is itself close to what the target front end should be. It
+derives `iq` and `step` from inverse depth, the wall's normal class, and yaw,
+through global LUTs loaded once per update:
+
+```c
+iq   = (invd * k_depth_nf_q7[class][yaw])     >> 1;   /* then marched to c0 */
+step = (invd * k_depth_stepfac_q4[class][yaw]) >> 4;
+```
+
+No sampled poses anywhere. Combined with the certified local bearing bake
+(46,109 B, 7 fallback corners, <1 px) and the existing global `angle_x` and
+reciprocal LUTs, most of the pose-independent front end the amendment asks for is
+already present in the renderer. What is missing is not the derivation but its
+**consistency** (the oracle does not use the ROM's path) and its **persistence**
+(`g_corner_bearing_valid` is cleared every update, so nothing is retained across
+frames).
