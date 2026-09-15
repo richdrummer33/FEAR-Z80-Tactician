@@ -14,9 +14,20 @@ static bool find_symbol(const char* path,const char* wanted,u16& addr) {
     std::ifstream f(path); std::string line;
     if(!f) return false;
     while(std::getline(f,line)) {
+        const char* p=line.c_str();
+        while(*p==' '||*p=='\t') ++p;
+        if(*p=='\0'||*p==';') continue;
         unsigned bank=0,a=0; char sym[256]={0};
-        if(std::sscanf(line.c_str(),"%x:%x %255s",&bank,&a,sym)==3 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
-        if(std::sscanf(line.c_str(),"%x %255s",&a,sym)==2 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+        if(std::strncmp(p,"DEF ",4)==0) {
+            /* no$gmb/NoICE ".noi": DEF <symbol> <value>. This must be matched
+               before the hex-first forms: "DEF" is itself valid hex, so a plain
+               "%x %255s" parse silently resolves every .noi symbol to 0x0DEF. */
+            if(std::sscanf(p,"DEF %255s %x",sym,&a)==2 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+            continue;
+        }
+        /* makebin ".sym": <bank>:<addr> <symbol> */
+        if(std::sscanf(p,"%x:%x %255s",&bank,&a,sym)==3 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+        if(std::sscanf(p,"%x %255s",&a,sym)==2 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
     }
     return false;
 }
@@ -58,6 +69,20 @@ int main(int argc,char**argv) {
        !any_symbol(sym,"_g_map","g_map",map) ||
        !any_symbol(sym,"_g_state","g_state",state)) {
         std::fprintf(stderr,"required symbols missing\n"); return 3;
+    }
+    /* All four are Game Gear work-RAM globals. Anything outside 0xC000-0xDFFF
+       means the symbol file was parsed as the wrong format, which otherwise
+       shows up only as a silent "0/N loops" after a full instruction budget. */
+    {
+        const u16 addrs[4]={phase,mode,map,state};
+        const char* names[4]={"g_ts_prof_phase","g_tspf_appearance_mode","g_map","g_state"};
+        bool bad=false;
+        for(unsigned i=0;i<4u;++i) if(addrs[i]<0xC000u||addrs[i]>0xDFFFu) bad=true;
+        if(bad) {
+            std::fprintf(stderr,"symbol resolution outside GG work RAM (wrong symbol-file format?):\n");
+            for(unsigned i=0;i<4u;++i) std::fprintf(stderr,"  %s=0x%04X\n",names[i],addrs[i]);
+            return 3;
+        }
     }
 
     GearsystemCore core; core.Init(GS_PIXEL_RGBA8888);

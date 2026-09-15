@@ -14,18 +14,23 @@
 bool g_mcp_stdio_mode = false;
 
 static bool find_symbol(const char* path,const char* wanted,u16& addr) {
-    std::ifstream f(path);
-    std::string line;
+    std::ifstream f(path); std::string line;
     if(!f) return false;
     while(std::getline(f,line)) {
-        unsigned bank=0,a=0;
-        char sym[256]={0};
-        if(std::sscanf(line.c_str(),"%x:%x %255s",&bank,&a,sym)==3) {
-            if(std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+        const char* p=line.c_str();
+        while(*p==' '||*p=='\t') ++p;
+        if(*p=='\0'||*p==';') continue;
+        unsigned bank=0,a=0; char sym[256]={0};
+        if(std::strncmp(p,"DEF ",4)==0) {
+            /* no$gmb/NoICE ".noi": DEF <symbol> <value>. This must be matched
+               before the hex-first forms: "DEF" is itself valid hex, so a plain
+               "%x %255s" parse silently resolves every .noi symbol to 0x0DEF. */
+            if(std::sscanf(p,"DEF %255s %x",sym,&a)==2 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+            continue;
         }
-        if(std::sscanf(line.c_str(),"%x %255s",&a,sym)==2) {
-            if(std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
-        }
+        /* makebin ".sym": <bank>:<addr> <symbol> */
+        if(std::sscanf(p,"%x:%x %255s",&bank,&a,sym)==3 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
+        if(std::sscanf(p,"%x %255s",&a,sym)==2 && std::strcmp(sym,wanted)==0) { addr=(u16)a; return true; }
     }
     return false;
 }
