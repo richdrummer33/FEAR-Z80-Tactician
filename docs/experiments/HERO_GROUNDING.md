@@ -126,6 +126,27 @@ two unrelated smudges instead of one contact.
 
 ![the contact region, before and after](images/doomguy-grounding-contact.png)
 
+### Why not literally slice the model at the floor
+
+The obvious construction -- take the cross-section where the mesh meets the
+floor plane and darken outward from that outline -- is the right instinct and
+it is what the hemisphere probe computes, only less well. Two things the slice
+cannot see:
+
+- **Overhangs.** This asset's skirt flares outward, so a lot of geometry hangs
+  over floor that the cross-section at z=0 never touches. A slice-based falloff
+  leaves that floor fully lit; the probe darkens it, because a hemisphere ray
+  fired from there really does hit the skirt.
+- **What is above, not just what is adjacent.** Occlusion depends on how much
+  of the sky a floor point can still see, which is a solid angle. Distance to
+  an outline is a stand-in for that, and it is the wrong stand-in wherever the
+  object is wide rather than narrow.
+
+The probe also gives the other half for free: the same rays fired from the
+statue's own surfaces, with the floor as the occluder, are what darken its
+lower faces. A slice would have needed a second, unrelated construction for
+that, and the two would not have been guaranteed to agree.
+
 ### An infinite plane would have done nothing
 
 The obvious implementation -- treat the floor as an occluder in the ambient
