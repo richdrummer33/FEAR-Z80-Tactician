@@ -88,12 +88,16 @@ for r in cert:
 a.imshow(np.log10(H+1),origin="lower",cmap="Blues",aspect="auto",
          extent=(0,KS+2,0,KS+2))
 a.plot([0,KS+2],[0,KS+2],color=INK2,lw=1.4,ls="--")
-a.fill_between([0,KS+2],[0,KS+2],[0,0],color=S2,alpha=0.10)
-a.text(KS*0.55,KS*0.18,f"UNSAFE region\ncertificate outlives the change\n{unsafe} points",
+# Sound requires predicted <= observed, so the forbidden region is ABOVE the
+# diagonal. The first version of this panel shaded and labelled the region below
+# it, which is the safe, conservative side.
+a.fill_between([0,KS+2],[0,KS+2],[KS+2,KS+2],color=S2,alpha=0.10)
+a.text(KS*0.28,KS*0.80,f"UNSAFE region\ncertificate outlives the change\n{unsafe} points",
        fontsize=9.5,color=S2 if unsafe else INK2,ha="center",fontweight="bold")
+a.text(KS*0.72,KS*0.22,"conservative\n(wakes early)",fontsize=9,color=INK2,ha="center")
 a.set_xlabel("observed first raster change (motion steps)",color=INK2,fontsize=9.5)
 a.set_ylabel("certificate-predicted first change",color=INK2,fontsize=9.5)
-a.set_title("3  Predicted vs observed — nothing may fall below the diagonal",
+a.set_title("3  Predicted vs observed — nothing may rise above the diagonal",
             fontsize=12.5,color=INK,fontweight="bold",loc="left",pad=10)
 
 # ---- 4  cause breakdown --------------------------------------------------
@@ -115,7 +119,7 @@ for ci,cname in enumerate(CAUSES):
     left+=vals
 a.set_yticks(y); a.set_yticklabels([MODE[m] for m in MODE],fontsize=9.5,color=INK)
 a.invert_yaxis(); a.set_xlim(0,100)
-a.set_xlabel("share of spans whose raster changed (%)",color=INK2,fontsize=9.5)
+a.set_xlabel("share of spans whose raster changed (%)   — denominator: spans that changed,\nnot all spans, so these differ from the run's table",color=INK2,fontsize=9)
 a.set_title("4  Why the raster actually changed",fontsize=12.5,color=INK,
             fontweight="bold",loc="left",pad=10)
 a.legend(fontsize=8.5,frameon=False,ncol=3,loc="lower center",

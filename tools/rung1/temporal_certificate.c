@@ -74,9 +74,31 @@ static int cov_eq(const uint64_t *a,const uint64_t *b)
 typedef struct {
     uint8_t sid,c0,c1,ok,live;
     int16_t iq,step;
-    uint64_t traj;
+    uint64_t traj;      /* the emitted move stream */
+    uint64_t prog;      /* the 6-column BEHAVIOUR of each chunk, rows excluded */
+    uint64_t rows;      /* each chunk's absolute start row */
+    uint64_t band;      /* each chunk's band index */
     uint64_t cover[COVW];
 } Span;
+
+/* The 6-column behaviour of one chunk: the (ndown, jump) pair per column, over
+ * both families, with no absolute row in it. Two states with the same signature
+ * emit the same PROGRAM even if the whole span sits a row higher or lower, and
+ * even if the numeric step differs. This is the invariant the exact-step test
+ * was standing in for, and it is the one rotation needs. */
+static uint64_t chunk_sig6(int16_t iq,int16_t step)
+{
+    uint64_t h=1469598103934665603ull; int fam,c;
+    for(fam=0;fam<2;++fam) for(c=0;c<6;++c){
+        long a0=(long)iq+32+(long)c*step, a1=a0+step, a2=a1+step;
+        long h0=a0>>7,h1=a1>>7,h2=a2>>7;
+        long y0=fam?72+h0:71-h0,y1=fam?72+h1:71-h1,y2=fam?72+h2:71-h2;
+        long lo0=(y0<y1?y0:y1)>>3,hi0=(y0<y1?y1:y0)>>3;
+        long lo1=(y1<y2?y1:y2)>>3;
+        h^=(uint64_t)((hi0-lo0)*8+(hi0-lo1)+64); h*=1099511628211ull;
+    }
+    return h;
+}
 typedef struct { int n; Span s[MAXRUN]; } Frame;
 
 static void chunk_state(int16_t iq,int16_t step,int fam,int want,int is_last,
@@ -100,73 +122,6 @@ static void chunk_state(int16_t iq,int16_t step,int fam,int want,int is_last,
         ++col; row+=jump;
     }
 }
-
-#define PATH_INT 0
-#define PATH_TRUE 1
-static uint16_t true_bearing_q12(unsigned v,int16_t px,int16_t py)
-{
-    double dx=(double)(((int16_t)k_tspf_vx[v]<<4)-px);
-    double dy=(double)(((int16_t)k_tspf_vy[v]<<4)-py);
-    double a;
-    if(dx==0.0&&dy==0.0) return 0u;
-    a=atan2(dy,dx)*4096.0/(2.0*M_PI);
-    while(a<0.0) a+=4096.0;
-    return (uint16_t)(((long)floor(a+0.5))&4095L);
-}
-static void sample(int16_t px,int16_t py,unsigned yaw,int path,Frame *f)
-{
-    TSPState s; uint8_t ks[64],nk=0,count=0,j;
-    uint8_t recipe,base_id,cond_count,lx,ly; uint16_t gi,offs; unsigned i,c,gx,gy;
-    const uint8_t *p,*b;
-    memset(f,0,sizeof *f);
-    gx=(unsigned)(px/CELL_Q4); gy=(unsigned)(py/CELL_Q4);
-    if(gx>=GRID_W||gy>=GRID_H) return;
-    memset(&s,0,sizeof s); s.x_q4=px; s.y_q4=py; s.yaw=(uint8_t)yaw;
-    gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);
-    recipe=k_tspf_recipe_grid[gi]; if(recipe==0xffu) return;
-    lx=(uint8_t)((uint16_t)px&63u); ly=(uint8_t)((uint16_t)py&63u);
-    offs=k_tspf_recipe_off[recipe]; p=&k_tspf_recipe_stream[offs];
-    base_id=*p++; cond_count=*p++;
-    b=&k_tspf_base_stream[k_tspf_base_off[base_id]]; i=*b++;
-    for(;i;--i) ks[nk++]=*b++;
-    for(i=0;i<cond_count;++i){ uint8_t key=*p++,sel=*p++; if(selector_pass(sel,lx,ly)) ks[nk++]=key; }
-    tsp_polar_renderer_reset(); g_corner_bearing_valid=0u;
-    if(path==PATH_TRUE){ unsigned v;
-        for(v=0;v<14u;++v){ g_corner_bearing_q12[v]=true_bearing_q12(v,px,py);
-                            g_corner_bearing_valid|=k_corner_mask[v]; } }
-    for(j=0;j<nk;++j){ if(count>=TSPF_MAX_ACTIVE) break;
-        if(!project_key(ks[j],&s,&g_runs[count])) continue;
-        insert_run(count,&count); }
-    for(c=0;c<count&&f->n<MAXRUN;++c){
-        PolarRun *r=&g_runs[c];
-        uint8_t cc0=(uint8_t)(r->x0>>3),cc1=(uint8_t)(r->x1>>3),n,invd;
-        int16_t iq,step; int fam,left,cs; Span *o;
-        if(cc0>=TSP_COLS) cc0=TSP_COLS-1;
-        if(cc1>=TSP_COLS) cc1=TSP_COLS-1;
-        if(cc1<cc0) continue;
-        if(k_tspf_profile[r->sid]!=TSP_PROFILE_FULL) continue;
-        n=(uint8_t)(cc1-cc0+1u);
-        invd=inv_for_dq4(wall_d_q4(r->sid,k_tspf_seg_anchor[r->sid],&s));
-        o=&f->s[f->n++];
-        memset(o,0,sizeof *o);
-        o->sid=r->sid; o->c0=cc0; o->c1=cc1; o->live=1; o->ok=1;
-        o->traj=1469598103934665603ull;
-        if(!dp_derive(r->sid,invd,cc0,cc1,(uint8_t)yaw,&iq,&step)){ o->ok=0; continue; }
-        o->iq=iq; o->step=step;
-        for(fam=0;fam<=2;fam+=2){
-            int okf=1; left=n; cs=0;
-            while(left>0&&okf){
-                int want=left>CHUNK?CHUNK:left;
-                int16_t q=(int16_t)(iq+(int16_t)(cs*step));
-                chunk_state(q,step,fam,want,left-want==0,cc0+cs,&o->traj,o->cover,&okf);
-                cs+=CHUNK; left-=want;
-            }
-            if(!okf) o->ok=0;
-        }
-    }
-}
-static Span *find(Frame *f,uint8_t sid)
-{ int i; for(i=0;i<f->n;++i) if(f->s[i].sid==sid) return &f->s[i]; return 0; }
 
 /* ---- the certificate ----------------------------------------------------- */
 /* Band edges for this step, as phases. A behaviour change can only happen where
@@ -226,13 +181,126 @@ static int margin_phase(int16_t iq,int16_t step,int nchunks,const int *e)
     return best;
 }
 
+#define PATH_INT 0
+#define PATH_TRUE 1
+static uint16_t true_bearing_q12(unsigned v,int16_t px,int16_t py)
+{
+    double dx=(double)(((int16_t)k_tspf_vx[v]<<4)-px);
+    double dy=(double)(((int16_t)k_tspf_vy[v]<<4)-py);
+    double a;
+    if(dx==0.0&&dy==0.0) return 0u;
+    a=atan2(dy,dx)*4096.0/(2.0*M_PI);
+    while(a<0.0) a+=4096.0;
+    return (uint16_t)(((long)floor(a+0.5))&4095L);
+}
+static void sample(int16_t px,int16_t py,unsigned yaw,int path,Frame *f)
+{
+    TSPState s; uint8_t ks[64],nk=0,count=0,j;
+    uint8_t recipe,base_id,cond_count,lx,ly; uint16_t gi,offs; unsigned i,c,gx,gy;
+    const uint8_t *p,*b;
+    memset(f,0,sizeof *f);
+    gx=(unsigned)(px/CELL_Q4); gy=(unsigned)(py/CELL_Q4);
+    if(gx>=GRID_W||gy>=GRID_H) return;
+    memset(&s,0,sizeof s); s.x_q4=px; s.y_q4=py; s.yaw=(uint8_t)yaw;
+    gi=(uint16_t)(((uint16_t)gy<<5)+((uint16_t)gy<<4)+gx);
+    recipe=k_tspf_recipe_grid[gi]; if(recipe==0xffu) return;
+    lx=(uint8_t)((uint16_t)px&63u); ly=(uint8_t)((uint16_t)py&63u);
+    offs=k_tspf_recipe_off[recipe]; p=&k_tspf_recipe_stream[offs];
+    base_id=*p++; cond_count=*p++;
+    b=&k_tspf_base_stream[k_tspf_base_off[base_id]]; i=*b++;
+    for(;i;--i) ks[nk++]=*b++;
+    for(i=0;i<cond_count;++i){ uint8_t key=*p++,sel=*p++; if(selector_pass(sel,lx,ly)) ks[nk++]=key; }
+    tsp_polar_renderer_reset(); g_corner_bearing_valid=0u;
+    if(path==PATH_TRUE){ unsigned v;
+        for(v=0;v<14u;++v){ g_corner_bearing_q12[v]=true_bearing_q12(v,px,py);
+                            g_corner_bearing_valid|=k_corner_mask[v]; } }
+    for(j=0;j<nk;++j){ if(count>=TSPF_MAX_ACTIVE) break;
+        if(!project_key(ks[j],&s,&g_runs[count])) continue;
+        insert_run(count,&count); }
+    for(c=0;c<count&&f->n<MAXRUN;++c){
+        PolarRun *r=&g_runs[c];
+        uint8_t cc0=(uint8_t)(r->x0>>3),cc1=(uint8_t)(r->x1>>3),n,invd;
+        int16_t iq,step; int fam,left,cs; Span *o;
+        if(cc0>=TSP_COLS) cc0=TSP_COLS-1;
+        if(cc1>=TSP_COLS) cc1=TSP_COLS-1;
+        if(cc1<cc0) continue;
+        if(k_tspf_profile[r->sid]!=TSP_PROFILE_FULL) continue;
+        n=(uint8_t)(cc1-cc0+1u);
+        invd=inv_for_dq4(wall_d_q4(r->sid,k_tspf_seg_anchor[r->sid],&s));
+        o=&f->s[f->n++];
+        memset(o,0,sizeof *o);
+        o->sid=r->sid; o->c0=cc0; o->c1=cc1; o->live=1; o->ok=1;
+        o->traj=1469598103934665603ull;
+        if(!dp_derive(r->sid,invd,cc0,cc1,(uint8_t)yaw,&iq,&step)){ o->ok=0; continue; }
+        o->iq=iq; o->step=step;
+        o->prog=1469598103934665603ull; o->rows=1469598103934665603ull;
+        o->band=1469598103934665603ull;
+        {   int nch=((int)n+CHUNK-1)/CHUNK,j,e2[8];
+            band_edges(step,e2);
+            for(j=0;j<nch;++j){
+                int16_t q=(int16_t)(iq+(int16_t)(j*CHUNK*step));
+                int ph=phase_of(q),bi=0,c2;
+                o->prog^=chunk_sig6(q,step); o->prog*=1099511628211ull;
+                o->rows^=(uint64_t)(((71-(((long)q+32)>>7))>>3)+256); o->rows*=1099511628211ull;
+                /* band index: how many edges lie within half a turn behind this
+                 * phase. Coincident edges (step 0 collapses all eight onto 0)
+                 * simply contribute together, so the degenerate topology is
+                 * represented rather than special-cased. */
+                for(c2=0;c2<8;++c2) if(((ph-e2[c2])&1023)<512) ++bi;
+                o->band^=(uint64_t)(bi+1); o->band*=1099511628211ull;
+            } }
+        for(fam=0;fam<=2;fam+=2){
+            int okf=1; left=n; cs=0;
+            while(left>0&&okf){
+                int want=left>CHUNK?CHUNK:left;
+                int16_t q=(int16_t)(iq+(int16_t)(cs*step));
+                chunk_state(q,step,fam,want,left-want==0,cc0+cs,&o->traj,o->cover,&okf);
+                cs+=CHUNK; left-=want;
+            }
+            if(!okf) o->ok=0;
+        }
+    }
+}
+static Span *find(Frame *f,uint8_t sid)
+{ int i; for(i=0;i<f->n;++i) if(f->s[i].sid==sid) return &f->s[i]; return 0; }
+
 enum { M_X=0, M_Y=1, M_YAW=2, M_N=3 };
 static const char *MN[M_N]={"+X (1/16 cell)","+Y (1/16 cell)","+yaw (1 unit)"};
 enum { C_PHASE=0, C_STEP=1, C_ENDPOINT=2, C_LOST=3, C_NONE=4, C_NOCHANGE=5, C_N=6 };
 static const char *CN[C_N]={"phase band","step","endpoint column","left frame",
                             "UNATTRIBUTED","no change in 32 steps"};
 
-static unsigned long spans[2][M_N],viol[2][M_N];
+/* Three certificates, measured on the same corpus so they are directly
+ * comparable.
+ *
+ *   STRICT   step equal, columns equal, no band edge crossed. Full reuse: the
+ *            span needs no work at all. This is what Rung 3 first measured, and
+ *            it was designed with translation in mind.
+ *   PROGRAM  the 6-column BEHAVIOUR of every chunk is unchanged and the columns
+ *            are unchanged, but the numeric step and the absolute rows may move.
+ *            The compiled move program is reusable; at most its start row needs
+ *            adjusting. This is behavioural-region stability.
+ *   CEILING  the emitted raster is literally unchanged. Not a certificate -- it
+ *            is the answer -- but it bounds what any sound certificate could
+ *            achieve on this state, so the gap to it is the headroom.
+ */
+/*   SHAPE    the 6-column behaviour of every chunk is unchanged, but the
+ *            columns and the absolute rows may both move. The compiled move
+ *            program is reusable as a program; where it is drawn may differ.
+ *            This isolates whether rotation preserves the raster shape and
+ *            merely slides it across the screen.
+ *
+ * Each tier certifies a different thing, so each has its own soundness test:
+ * STRICT and PROGRAM are checked against the quantity they claim, not against
+ * raster equality, which only STRICT implies.
+ */
+#define CERT_N 4
+static const char *CERTN[CERT_N]={"STRICT  (nothing to do)","PROGRAM (program + columns)",
+                                  "SHAPE   (program only)","CEILING (raster unchanged)"};
+static const char *CERTW[CERT_N]={"raster unchanged","program+columns unchanged",
+                                  "program unchanged","-"};
+static unsigned long certhist[2][M_N][CERT_N][KSTEPS+2];
+static unsigned long spans[2][M_N],viol[2][M_N],viol_c[2][M_N][CERT_N];
 static unsigned long cause[2][M_N][C_N];
 static unsigned long predhist[2][M_N][KSTEPS+2],obshist[2][M_N][KSTEPS+2];
 static unsigned long conserv[2][M_N],exactpred[2][M_N];
@@ -272,7 +340,8 @@ int main(int argc,char**argv)
                     nch=((int)(s0->c1-s0->c0+1)+CHUNK-1)/CHUNK;
                     marg=margin_phase(s0->iq,s0->step,nch,e);
                     for(mode=0;mode<M_N;++mode){
-                        int k,pred=-1,obs=-1,why=C_NOCHANGE;
+                        int k,pred=-1,obs=-1,why=C_NOCHANGE,predp=-1,preds=-1;
+                        int firstp=-1,firsts=-1;
                         for(k=1;k<=KSTEPS;++k){
                             Frame fk; Span *sk; int safe=1,j;
                             int16_t qx=px,qy=py; unsigned qyaw=yaw;
@@ -296,6 +365,11 @@ int main(int argc,char**argv)
                                 }
                             }
                             if(!safe&&pred<0) pred=k;
+                            if(predp<0&&(sk->prog!=s0->prog||sk->c0!=s0->c0||sk->c1!=s0->c1))
+                                predp=k;
+                            if(preds<0&&sk->prog!=s0->prog) preds=k;
+                            if(firstp<0&&(sk->prog!=s0->prog||sk->c0!=s0->c0||sk->c1!=s0->c1)) firstp=k;
+                            if(firsts<0&&sk->prog!=s0->prog) firsts=k;
                             if(obs<0&&(sk->traj!=s0->traj||!cov_eq(sk->cover,s0->cover))){
                                 obs=k;
                                 if(sk->step!=s0->step) why=C_STEP;
@@ -310,10 +384,22 @@ int main(int argc,char**argv)
                                     why = cr ? C_PHASE : C_NONE;
                                 }
                             }
-                            if(pred>=0&&obs>=0) break;
+                            if(pred>=0&&obs>=0&&predp>=0&&preds>=0) break;
                         }
                         if(pred<0) pred=KSTEPS+1;
+                        if(predp<0) predp=KSTEPS+1;
+                        if(preds<0) preds=KSTEPS+1;
                         if(obs<0) obs=KSTEPS+1;
+                        if(firstp<0) firstp=KSTEPS+1;
+                        if(firsts<0) firsts=KSTEPS+1;
+                        certhist[path][mode][0][pred>KSTEPS+1?KSTEPS+1:pred]++;
+                        certhist[path][mode][1][predp>KSTEPS+1?KSTEPS+1:predp]++;
+                        certhist[path][mode][2][preds>KSTEPS+1?KSTEPS+1:preds]++;
+                        certhist[path][mode][3][obs>KSTEPS+1?KSTEPS+1:obs]++;
+                        /* each tier against the quantity IT claims */
+                        if(pred>obs)    ++viol_c[path][mode][0];
+                        if(predp>firstp) ++viol_c[path][mode][1];
+                        if(preds>firsts) ++viol_c[path][mode][2];
                         ++spans[path][mode];
                         ++cause[path][mode][why];
                         ++predhist[path][mode][pred>KSTEPS+1?KSTEPS+1:pred];
@@ -370,15 +456,23 @@ int main(int argc,char**argv)
             for(c=0;c<C_N;++c) printf("  %s %.1f%%",CN[c],100.0*cause[path][mode][c]/d);
             printf("\n");
         }
-        printf("\n  predicted safe motion steps (how long the certificate holds)\n");
+        printf("\n  how long each certificate holds, in player-motion steps\n");
+        printf("   %-16s %-28s %7s %5s %9s %-26s %s\n","motion","certificate","median","p90",
+               "safe at 32","certifies that","UNSAFE");
         for(mode=0;mode<M_N;++mode){
-            unsigned long tot=0,acc=0; int k; double p50=0,p90=0;
-            for(k=0;k<=KSTEPS+1;++k) tot+=predhist[path][mode][k];
-            for(k=0;k<=KSTEPS+1;++k){ acc+=predhist[path][mode][k];
-                if(!p50&&acc>=tot/2) p50=k-1;
-                if(!p90&&acc>=(tot*9)/10) p90=k-1; }
-            printf("   %-16s median %.0f, p90 %.0f, still safe at %d steps: %.1f%%\n",MN[mode],
-                   p50,p90,KSTEPS,100.0*predhist[path][mode][KSTEPS+1]/(double)(tot?tot:1));
+            int ci;
+            for(ci=0;ci<CERT_N;++ci){
+                unsigned long tot=0,acc=0; int k; double p50=-1,p90=-1;
+                for(k=0;k<=KSTEPS+1;++k) tot+=certhist[path][mode][ci][k];
+                for(k=0;k<=KSTEPS+1;++k){ acc+=certhist[path][mode][ci][k];
+                    if(p50<0&&acc*2>=tot) p50=k-1;
+                    if(p90<0&&acc*10>=tot*9) p90=k-1; }
+                printf("   %-16s %-28s %7.0f %5.0f %8.1f%% %-26s %s\n",
+                       ci?"":MN[mode],CERTN[ci],p50,p90,
+                       100.0*certhist[path][mode][ci][KSTEPS+1]/(double)(tot?tot:1),
+                       CERTW[ci],
+                       ci==CERT_N-1?"-":(viol_c[path][mode][ci]?"NONZERO":"0"));
+            }
         }
         printf("\n");
     }

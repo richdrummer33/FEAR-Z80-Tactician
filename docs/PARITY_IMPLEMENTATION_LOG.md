@@ -1876,3 +1876,130 @@ other maps, because the tiny raster imposes the same possibilities. The accurate
 objection is narrower: **their claimed completeness is established only for the
 span lengths and geometries this domain exercises, whereas phase + step with an
 external stop condition describes the generic raster process itself.**
+
+## Two plot bugs, fixed
+
+**Panel 3 had the unsafe region on the wrong side.** Axes are x = observed first
+change, y = certificate-predicted first change, and soundness requires
+`predicted <= observed`, so the forbidden region is **above** the diagonal. The
+title said "nothing may fall below the diagonal" and — worse — the shading and the
+"UNSAFE region" label were both drawn *below* it, over the safe conservative side.
+Title and geometry corrected, and the conservative side is now labelled as such.
+
+**Panel 4 and the run's table use different denominators.** The plot conditions on
+spans whose raster changed; the table is a share of all spans, which is why its
++X row totals ~54%. Both are useful; the plot axis now says which it is.
+
+## Rung 3b: behavioural-region stability instead of exact-step equality
+
+Exact step equality was the wrong invariant, as suspected. Four tiers are now
+measured on the same corpus, each checked against the quantity **it** claims
+rather than against raster equality, which only STRICT implies. All four are
+sound: zero violations everywhere.
+
+| motion | certificate | median | p90 | safe at 32 | unsafe |
+| --- | --- | --- | --- | --- | --- |
+| +X | STRICT (nothing to do) | 23 | 32 | 41.0% | 0 |
+| +X | PROGRAM (program + columns) | 28 | 32 | 46.8% | 0 |
+| +X | **SHAPE (program only)** | **32** | 32 | **59.9%** | 0 |
+| +X | CEILING (raster unchanged) | 27 | 32 | 45.5% | — |
+| +Y | STRICT | 5 | 32 | 19.1% | 0 |
+| +Y | PROGRAM | 12 | 32 | 26.5% | 0 |
+| +Y | **SHAPE** | **18** | 32 | **39.5%** | 0 |
+| +Y | CEILING | 14 | 32 | 25.8% | — |
+| +yaw | STRICT | 0 | 0 | 0.0% | 0 |
+| +yaw | PROGRAM | 0 | 1 | 2.8% | 0 |
+| +yaw | **SHAPE** | **0** | **5** | **6.5%** | 0 |
+| +yaw | CEILING | 0 | 1 | 0.0% | — |
+
+Dropping exact-step equality is worth a lot for translation: SHAPE roughly doubles
+the +Y median and takes +X past the 32-step window. SHAPE can legitimately exceed
+CEILING because it certifies less — the program is reusable while the rows or
+columns move, which is a cheap update rather than a rebuild.
+
+**It does not rescue rotation.** +yaw SHAPE still has a median of 0 and a p90 of
+5. Behavioural-region stability was the right idea and it is not enough.
+
+## Rung 4: is there a compact deterministic yaw transition?
+
+`tools/rung1/yaw_determinism.c`. Partition refinement run as a measurement: start
+from the smallest plausible state, check whether every sample carrying it produces
+the same successor under +-1 yaw, and add a field only when the data forces it.
+
+**A — successor = the next full state.** Conflicting states, by state / by instance:
+
+| state | states | conflicting | by state | by instance |
+| --- | --- | --- | --- | --- |
+| prog | 7,230 | 5,558 | 76.87% | 69.98% |
+| + band | 16,582 | 11,888 | 71.69% | 73.66% |
+| + columns | 101,510 | 58,844 | 57.97% | 58.99% |
+| + rows | 145,288 | 74,951 | 51.59% | 47.38% |
+| + step | 221,366 | 92,425 | 41.75% | 28.99% |
+| + yaw | 289,614 | 98,138 | 33.89% | 24.70% |
+| + class + iq | 293,136 | 98,731 | 33.68% | 24.36% |
+| + invd + wall id (everything) | 304,814 | 99,135 | **32.52%** | 23.46% |
+
+Adding `iq`, `invd` and the wall id barely moves it. **No compact yaw-successor
+machine exists over the span's own state** — and nor does a large one. The
+obstruction is identified in section C.
+
+(The first run of this table printed "137% conflicting". States were pooled over
+the two directions as `S/2` while conflicts were summed. That is how the bug
+announced itself; fixed.)
+
+**C — the obstruction, and the factorisation.** The successor depends on the
+projected columns at the *next* yaw, which come from the corner bearings and
+therefore from the pose, which no span-state field carries. Factor the columns out
+and the program is exactly determined:
+
+| state | states | conflicting |
+| --- | --- | --- |
+| invd + class + yaw | 30,896 | 77.023% |
+| invd + class + yaw + c0 | 101,358 | 10.738% |
+| **invd + class + yaw + c0 + c1** | **146,568** | **0.000%** |
+| + wall id | 152,407 | 0.000% |
+
+This is implied by `dp_derive`'s own signature, so on its own it confirms the
+harness rather than discovering something. What it establishes is the negative:
+**nothing else is needed** — not the pose, not `iq`, and not the wall identity
+beyond its normal class. Combined with A, the decomposition is
+
+```
+pose, yaw  ->  corner bearings  ->  c0, c1       an endpoint event stream
+pose       ->  wall distance    ->  invd
+(invd, class, yaw, c0, c1)      ->  raster program, exactly, pose-free
+```
+
+**D — is there a rotational program vocabulary?** Hold `(invd, class, c0, c1)`
+fixed, sweep yaw through a full turn, and count:
+
+```
+distinct (invd, class, c0, c1) configurations   11,432
+distinct 256-yaw program sequences               4,325
+collapse                                           2.6 : 1
+program changes per full turn                    163.5 of 256
+mean yaw units held between changes               1.55
+hold lengths   1:73.2%  2:15.8%  3:5.8%  4:2.4%  5:1.0%  6+:1.4%
+```
+
+**No.** The static trajectories collapsed 6,193,693:1; rotational sequences collapse
+2.6:1. The program changes on 64% of yaw ticks and **73.2% of holds are exactly
+one yaw unit**. The "nothing changes for another six yaw units, then transition to
+program 37" model does not hold for this renderer.
+
+So rotation must **encode transitions cheaply rather than avoid them**. A hold
+counter would idle 73% of the time at zero. Killed with dignity, as instructed.
+
+What survives is the factorisation: the per-tick program is a pure function of a
+five-field pose-free state, so the rotational cost is one program derivation per
+tick, not a projection rebuild — and the endpoint stream is a separate, slower
+event source worth certifying on its own.
+
+## Edge orderings, measured and then left alone
+
+Over all 3,103 reachable steps the eight edges appear in only **20 distinct
+orderings** along the phase line. That bounds the cold-start "which of eight bands
+am I in" problem to a 20-entry permutation table. Per the standing direction this
+is recorded and not optimised: a renderer that already knows its band needs only
+the two neighbouring edges, and the non-monotonic labelling stops mattering the
+moment the band is state rather than a classification.

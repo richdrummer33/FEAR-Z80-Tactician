@@ -344,6 +344,33 @@ int main(int argc,char**argv)
         }
     }
 
+    {
+        /* How many distinct ORDERINGS of the eight edges along the phase line
+         * actually occur? This matters only for the cold-start question "given an
+         * arbitrary phase and step, which band am I in". A renderer that already
+         * knows its band needs only the two neighbouring edges, so this is
+         * measured to size the problem, not to optimise it. */
+        int si2,c2,i2,j2; unsigned long nperm=0;
+        static unsigned char permseen[1<<20];
+        memset(permseen,0,sizeof permseen);
+        for(si2=0;si2<g_nstep;++si2){
+            int ph[8],ord[8],key=0,coincident=0;
+            for(c2=0;c2<8;++c2){ long v=-(long)c2*(long)g_step[si2]; v%=1024L; if(v<0)v+=1024L;
+                                 ph[c2]=(int)v; ord[c2]=c2; }
+            for(i2=0;i2<8;++i2) for(j2=i2+1;j2<8;++j2)
+                if(ph[ord[j2]]<ph[ord[i2]]){ int s2=ord[i2]; ord[i2]=ord[j2]; ord[j2]=s2; }
+            for(i2=1;i2<8;++i2) if(ph[ord[i2]]==ph[ord[i2-1]]) coincident=1;
+            for(i2=0;i2<8;++i2) key=key*8+ord[i2];
+            key&=(1<<20)-1;
+            if(!permseen[key]){ permseen[key]=1; ++nperm; }
+            (void)coincident;
+        }
+        printf("\n   distinct edge orderings along the phase line, over %d steps: %lu\n",
+               g_nstep,nperm);
+        printf("   (relevant only to cold-start band classification; a renderer that knows\n");
+        printf("    its band needs the two neighbouring edges, not a full ranking)\n");
+    }
+
     if(atlas){ printf("\n   atlas dump\n"); dump_atlas(atlas,192); }
 
     printf("\n5  candidates, sized (none chosen here)\n");
