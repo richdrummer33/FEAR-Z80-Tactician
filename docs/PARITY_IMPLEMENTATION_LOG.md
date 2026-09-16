@@ -2103,3 +2103,76 @@ certificate design.
 
 Translation margins themselves are healthy: a mean of about 19 sixteenths, so
 more than a cell of travel before the projected columns move.
+
+## Rung 6: arbitrary-pose destination evaluation, all three axes at once
+
+`tools/rung1/arbitrary_pose.c`. The architectural statement being tested:
+
+> stateless arbitrary-delta **destination evaluation** is the foundation;
+> temporal certificates are optional shortcuts on top of it.
+
+Correctness must never depend on how fast the player moved. Every delta is
+applied in **one shot**, and boundary crossings and combined `(dx,dy,dyaw)` are
+first-class cases rather than an afterthought, so that the pleasant same-leaf
+case is not the only thing proved.
+
+Retained per run: its identity `(sid, v0, v1)` and its angular state `(rel, len)`.
+Destination evaluation then locates the destination cell and leaf, evaluates the
+baked bearings there, subtracts the destination yaw, runs `angle_x`, derives
+`invd` and `(iq, step)`, and emits the raster — with no traversal of anything
+crossed.
+
+| delta | what it crossed | cases | endpoint | iq/step | raster |
+| --- | --- | --- | --- | --- | --- |
+| translation only | same leaf | 28,437 | 0 | 0 | 0 |
+| | crosses a leaf | 1,638 | 0 | 0 | 0 |
+| | crosses a coarse cell | 19,226 | 0 | 0 | 0 |
+| | crosses several cells | 12,463 | 0 | 0 | 0 |
+| rotation only | same leaf | 42,371 | 0 | 0 | 0 |
+| combined dx,dy,dyaw | same leaf | 26,247 | 0 | 0 | 0 |
+| | crosses a leaf | 1,413 | 0 | 0 | 0 |
+| | crosses a coarse cell | 13,784 | 0 | 0 | 0 |
+| | crosses several cells | 16,903 | 0 | 0 | 0 |
+| **TOTAL** | | **162,482** | **0** | **0** | **0** |
+
+**Exact at every layer**, including jumps of up to 144 sixteenths crossing
+several coarse cells, and including combined motion on all three axes at once.
+
+### A harness bug the dump caught
+
+The first run reported 922 endpoint mismatches, concentrated in the
+several-cells rows. Dumping them showed `a1` agreeing *exactly* while `a0` was
+477 Q12 units out — a signature, not noise. The cause: `find()` matched runs by
+`sid`, and one wall can be reached through several keys with **different corner
+pairs**, so a retained run was being compared against a different key's run at
+the destination. Matching on `(sid, v0, v1)` took the mismatches to zero. The
+architecture was never in question; the pairing was.
+
+### The cheap in-leaf shortcut does not work
+
+```
+54,538 same-leaf translations, 36,156 disagreed (66.295%)
+```
+
+Adding `Ax*dx + Ay*dy` to a retained bearing is **not** the same as evaluating
+the leaf's affine record at the destination, because the ROM truncates each
+product toward zero separately. So the incremental form is not a legal
+optimisation even inside one leaf, and destination evaluation is the primitive.
+This is exactly the case that "linear within a leaf" would have invited someone
+to assume.
+
+### Safe regions are half-planes, not boxes
+
+`build/rung6-safe-region.png` plots, for representative spans, `dx` against `dy`
+at fixed yaw and `dx` against `dyaw` at fixed position, coloured by whether the
+projected columns are unchanged, with the rectangle the independent per-axis
+margins would claim overlaid.
+
+The regions are bounded by slanted, staircased lines that cut straight across
+that rectangle. That is what an affine bearing field inside a leaf predicts:
+inside a leaf the relative angle is `base + Ax*x + Ay*y - yaw`, so a column
+boundary is a single constraint on that whole expression — one plane in
+`(x, y, yaw)` space, not three independent margins. It explains the 5.35% and
+11.06% composability failures exactly, and it says the eventual certificate is a
+small polyhedron, or a conservative test on the coupled expression, rather than a
+box.
