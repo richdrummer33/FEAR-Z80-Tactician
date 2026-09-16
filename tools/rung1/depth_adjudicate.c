@@ -8,8 +8,8 @@
  * integer paths against it.
  *
  * The reference is not a second renderer. It is the closed geometry the fixed
- * point code is approximating, derived from the source and stated here so it can
- * be checked line by line:
+ * point code is approximating. It lives in geometry_reference.h, shared with the
+ * regression test that guards it; the derivation in brief:
  *
  *   bearing_q12 returns atan2 with the y term negated, so a world bearing b
  *   names the direction u(b) = (cos B, -sin B), B = 2*pi*b/4096.
@@ -51,7 +51,6 @@
 #define GRID_H 24u
 #define CELL_Q4 64
 #define NT_ROWS 18
-#define PROJ_K 2560.0
 
 static uint8_t dp_derive(uint8_t sid,uint8_t invd,uint8_t c0,uint8_t c1,uint8_t yaw,
                          int16_t *out_iq,int16_t *out_step)
@@ -74,54 +73,27 @@ static int hq(int16_t iq,int16_t step,int c){ return (int)((((iq+c*step+32)>>6)&
 static int yq(int16_t iq,int16_t step,int c,int fam){ int h=hq(iq,step,c); return fam==0?71-h:72+h; }
 
 /* ---- the reference -------------------------------------------------- */
-/* D is the exact signed perpendicular distance. D_eff additionally carries the
- * renderer's own near and far clips: inv_for_dq4 returns a saturated 255 for
- * anything closer than TSPF_NEAR_Z_Q4 (10 cells) and k_tspf_invz[127] for
- * anything beyond TSPF_FAR_Z_Q4 (127 cells). Both derivations inherit that clip
- * identically -- it is a property of the inverse-depth table, not of either
- * (iq,step) derivation -- so the adjudication uses D_eff, and the incidence and
- * size of the clip is reported on its own. */
-typedef struct { double A,B,D,D_eff; int clipped; } Plane;
-#define NEAR_CELLS 10.0
-#define FAR_CELLS 127.0
+/* The reference itself lives in geometry_reference.h, with the full derivation
+ * and the provenance of every constant. It is shared verbatim with
+ * tools/rung1/geometry_reference_test.c, which asserts the conventions against
+ * the shipped tables, checks the closed linear form against explicit ray/plane
+ * intersection, and checks hand-derived cases whose expected values come from
+ * the geometry rather than from either implementation. That test is what stops
+ * this result from becoming the next piece of folklore. */
+#include "geometry_reference.h"
+
+typedef GeomPlane Plane;
+
 static void plane_of(uint8_t sid,uint8_t yaw,const TSPState *s,Plane *p)
 {
-    double nx=(double)k_tspf_nx_q5[sid]/32.0, ny=(double)k_tspf_ny_q5[sid]/32.0;
-    double phi=2.0*M_PI*(double)yaw/256.0;
     uint8_t av=k_tspf_seg_anchor[sid];
-    double vx=(double)k_tspf_vx[av], vy=(double)k_tspf_vy[av];
-    double px=(double)s->x_q4/16.0, py=(double)s->y_q4/16.0;
-    double a;
-    p->D = nx*(vx-px) + ny*(vy-py);
-    a = p->D<0.0 ? -p->D : p->D;
-    p->clipped = 0;
-    if(a<NEAR_CELLS){ a=NEAR_CELLS; p->clipped=1; }
-    else if(a>FAR_CELLS){ a=FAR_CELLS; p->clipped=2; }
-    p->D_eff = p->D<0.0 ? -a : a;
-    p->A = nx*cos(phi) - ny*sin(phi);
-    p->B = -(nx*sin(phi) + ny*cos(phi));
+    geom_plane((double)k_tspf_nx_q5[sid]/32.0,(double)k_tspf_ny_q5[sid]/32.0,
+               (double)k_tspf_vx[av],(double)k_tspf_vy[av],
+               (double)s->x_q4/16.0,(double)s->y_q4/16.0,(double)yaw,p);
 }
-/* true inverse depth at tile column c (screen pixel 8c), under the renderer's
- * own near/far depth clip */
-static double inv_true(const Plane *p,int c)
-{
-    double t=((double)(8*c)-80.0)/80.0;
-    double v=(PROJ_K/p->D_eff)*(p->A + p->B*t);
-    return v<0.0?-v:v;
-}
-/* the same quantity with no clip at all; used only to size the clip itself */
-static double inv_unclipped(const Plane *p,int c)
-{
-    double t=((double)(8*c)-80.0)/80.0;
-    double v=(PROJ_K/p->D)*(p->A + p->B*t);
-    return v<0.0?-v:v;
-}
-static double y_true(const Plane *p,int c,int fam)
-{
-    double h=inv_true(p,c)*0.5;
-    if(h>127.5) h=127.5;
-    return fam==0 ? 71.0-h : 72.0+h;
-}
+static double inv_true(const Plane *p,int c){ return geom_inv_at_column(p,c); }
+static double inv_unclipped(const Plane *p,int c){ return geom_inv_unclipped(p,8.0*(double)c); }
+static double y_true(const Plane *p,int c,int fam){ return geom_y_at_column(p,c,fam); }
 
 /* ---- distributions --------------------------------------------------- */
 #define EBINS 6401                 /* 0.01 px resolution up to 64 px */

@@ -154,7 +154,7 @@ if tm.exists():
         f"{LABEL[keep[i]]}={outdeg[i]}" for i in range(len(keep)))+")",
         color=INK2,fontsize=8.5)
     a.set_ylabel("current move",color=INK2,fontsize=9.5)
-    a.set_title("8  Move transitions, weighted by chunk instances (row %)",
+    a.set_title("8  Move transitions, weighted by instances (row %)",
                 fontsize=12.5,color=INK,fontweight="bold",loc="left",pad=12)
     for sp in a.spines.values(): sp.set_visible(False)
     a.tick_params(length=0)

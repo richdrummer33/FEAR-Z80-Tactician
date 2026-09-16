@@ -1345,3 +1345,97 @@ in the ROM: `screen_depth_plane` is the accurate derivation, accurate enough tha
 the raster's remaining disagreement with exact geometry is 88% tile-boundary coin
 flips and 0.03% visible extent error. `build/rung1-adjudication.png` carries
 visuals 5, 6, 7 and 8.
+
+## The reference is now a permanent regression test
+
+This result is consequential enough that it must not become the next piece of
+project folklore in the way "the host is the reference, therefore the host is
+right" did. The reference has been factored into `tools/rung1/geometry_reference.h`
+and is now **shared verbatim** by the adjudicator and by a test that attacks it
+from four independent directions. The adjudicator's output is byte-identical
+before and after the refactor, so the test guards the thing that produced the
+result rather than a copy of it.
+
+`tools/rung1/geometry_reference_test.c` touches no sampled data of any kind.
+
+| Arm | What it rules out | Result |
+| --- | --- | --- |
+| A conventions | a regenerated table silently invalidating the derivation | `k_tspf_invz == round(2560/z)` for all 117 entries; `k_tspf_angle_x_pos == round(80 + 80 tan)` to **0 LSB** over all 513; `k_tspf_sec_q7 == round(128/cos)` to 1 LSB; horizon 72, clips 10/127 |
+| B algebra | an error reducing the geometry to a line | closed form vs explicit ray/plane intersection, written structurally differently: 184,176 samples, worst relative disagreement **3.1e-13** |
+| C hand cases | the reference and the implementation sharing a mistaken convention | 7 cases whose expected values are literal arithmetic derived on paper from the geometry, each with its derivation in a comment |
+| D shipped code | the projection constant being fitted rather than real | `inv_for_dq4` tracks `2560/D` to within **0.937 LSB** across all 1,871 distances between the clips; both clip endpoints exact |
+
+Arm C is the one that matters most. C3 (yaw +45) and C4 (yaw −45) differ **only in
+the sign of B**, so a flipped bearing convention cannot satisfy both. C5 uses a
++y normal rather than +x, pinning the normal convention independently. C7 asserts
+that the near and far clip are *reported* rather than folded into the error, which
+is what keeps the near-field class quarantined.
+
+The gate runs in CI as **Continuous-geometry reference gate**, before the
+closed-form shape gate, and fails the build unless `GEOMETRY_REFERENCE_OK` is
+printed.
+
+### The hierarchy this establishes
+
+```
+continuous perspective geometry      authoritative mathematical reference
+        |
+        v
+ROM screen_depth_plane               quantized hardware representation of it
+        |
+        v
+raster trajectory / ownership        the actual display representation
+```
+
+The historical host `inv0/inv1` path is a **legacy implementation, not an oracle**.
+It is worth keeping as a comparison and regression case, and host tooling that is
+supposed to predict real renderer output should eventually be made to follow the
+ROM projection convention rather than the other way round.
+
+### Near clip: a separate design decision, deliberately quarantined
+
+The 11.74% near-field class with a mean 17.86 px displacement is `inv_for_dq4`
+saturation policy, not depth-plane error. Whether walls that close should clip,
+saturate, switch representation, or be unreachable through collision is a real
+question and an orthogonal one; it does not bear on choosing the depth
+representation, and its statistics must not be mixed into the projection-accuracy
+numbers.
+
+## Correcting a stale vocabulary figure, and the denser sweep
+
+An earlier every-4th-cell run reported 1,845 trajectories with a mean length of
+19.1 and a 13,233 B payload. That run used a **pre-correction binary**, built
+before the uint8 domain check and the run terminator were added, so its
+vocabulary was inflated by the same wraparound artifacts already retired. It is
+withdrawn.
+
+Re-run with the corrected binary, over every 4th walkable cell (117 cells, 25% of
+the map), the full 64x64 local translation space of each, and all 256 headings:
+
+```
+FULL runs                       206,327,024
+chunk-family instances          663,453,732
+out-of-family jumps                       0
+distinct raster trajectories            432
+  top only 0, bottom only 0, BOTH       432
+mean / max length                 9.8 / 16 moves
+move-stream payload                   1,586 B at 3 bits per move
+collapse instances->trajectories  1,535,773 : 1
+```
+
+**432 — the same 432 the eight-cell sweep found.** The growth curve discovers 365
+in the first cell, reaches 432 by cell 33, and then finds **nothing new across 84
+further cells and 610 million further chunk instances**. All 432 are shared by
+both families, so no mirroring is needed at all (at eight cells, 5 were still
+family-specific).
+
+`build/rung1-adjudication.png` panel 8 gives the move state-transition matrix,
+weighted by chunk instances. It shows real structure: `up 2`, `up 3` and `up 4`
+each have **out-degree 1** — a multi-row jump is always followed by a descent.
+Out-degrees are `down 1`: 7, `next col`: 4, `up 1`: 4, `up 2/3/4`: 1, `END`: 0.
+
+Also updated with the corrected binary: ROM-path chunks whose depth term leaves
+the uint8 domain within the run are 8.699% (host 1.107%), and the ROM-vs-host
+layer disagreements are L2 92.022%, L3 42.278%, L4 17.880%. Those remain
+*disagreement* figures between two implementations; the adjudication above is what
+says which of them is right.

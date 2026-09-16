@@ -19,6 +19,9 @@ on:
       - 'tools/build_progjoin_live_rom.sh'
       - 'tools/progjoin_live_ab.py'
       - 'tools/progjoin_shape_canon.py'
+      - 'tools/rung1/geometry_reference.h'
+      - 'tools/rung1/geometry_reference_test.c'
+      - 'tools/rung1/depth_adjudicate.c'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   pull_request:
@@ -38,6 +41,9 @@ on:
       - 'tools/build_progjoin_live_rom.sh'
       - 'tools/progjoin_live_ab.py'
       - 'tools/progjoin_shape_canon.py'
+      - 'tools/rung1/geometry_reference.h'
+      - 'tools/rung1/geometry_reference_test.c'
+      - 'tools/rung1/depth_adjudicate.c'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   workflow_dispatch:
@@ -66,6 +72,26 @@ jobs:
             | tee build/progjoin_live/pack.txt
           python3 tools/gg_progjoin_emit_assets.py build/progjoin_live/packed build/progjoin_live/gen --base-bank 48 \
             | tee build/progjoin_live/assets.txt
+
+      - name: Continuous-geometry reference gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Guards the reference the depth adjudication was measured against.
+          # screen_depth_plane was shown to be far more faithful to the intended
+          # perspective geometry than the historical host inv0/inv1 path; that
+          # conclusion is only as good as the reference, and the failure mode to
+          # guard is the reference and the implementation sharing a mistaken
+          # convention. Four independent arms: the conventions asserted against
+          # the shipped tables, the closed linear form against explicit ray/plane
+          # intersection, hand-derived cases taken from the geometry rather than
+          # from either implementation, and a tie back to the shipped
+          # inv_for_dq4. No sampled data of any kind.
+          mkdir -p build
+          cc -O2 -Wall -Isrc -Itools/rung1 tools/rung1/geometry_reference_test.c \
+            src/tilesector_polar_motion.c -lm -o build/rung1_geom_test
+          ./build/rung1_geom_test | tee build/geometry-reference.txt
+          grep -q GEOMETRY_REFERENCE_OK build/geometry-reference.txt
 
       - name: Closed-form shape gate
         shell: bash
@@ -176,4 +202,5 @@ jobs:
             build/progjoin_live/*.csv
             build/progjoin_live/renderer.*.c
             build/progjoin_live/materializer.*.s
+            build/geometry-reference.txt
           retention-days: 30
