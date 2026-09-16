@@ -1142,3 +1142,87 @@ which is exactly the `iq + c*step` form the depth plane uses, whereas the host p
 quantizes `inv0` and `inv1` to uint8 and derives an increment between already
 quantized values. Neither should be assumed correct. Both must be measured against
 a high-precision perspective reference, by error magnitude rather than incidence.
+
+## Correction: the -14/-15 moves were a wraparound artifact, not geometry
+
+The previous entry canonised a seven-move alphabet on the strength of two extra
+jumps, and explained them as extreme near-field edges. **That explanation was
+wrong**, and inspecting the cases rather than believing the story found it.
+
+Two signals gave it away. First the move histogram was non-monotonic: `up 4`
+occurred 395,330 times in 69 trajectories while `up 15` occurred 2,244,321 times
+in 449. Genuine near-field geometry falls off with steepness; it does not dip at 4
+and spike at 15. Second, the captured cases showed the edge moving *down* by one
+or two rows while the model computed a jump of -14 or -15:
+
+```
+jump -14: y(c)=59 -> y(c+1)=71   dy=+12px   rows 7 -> 8
+jump -15: y(c)=52 -> y(c+1)=64   dy=+12px   rows 6 -> 8
+```
+
+The mechanism is the mask in the renderer's own depth term,
+`h = (((iq + c*step + 32) >> 6) & 0xFF) >> 1`. Evaluating a column where the
+pre-mask value leaves `[0,255]` wraps it, and the wrap appears as a ~127px leap,
+which is 15.875 tile rows:
+
+```
+jump=-15 col=3  raw>>6 at c,c+1,c+2 = [38, 14,  -9]   valid range 0..255
+jump=-14 col=3  raw>>6 at c,c+1,c+2 = [25,  0, -25]
+```
+
+`|dy|` across captured cases maxes at exactly 127, the full range of `h`.
+
+### What the corrected model shows
+
+The model now refuses to evaluate outside the domain, and the final chunk of a
+run emits a terminator instead of extrapolating into a column that lies past the
+run. With that:
+
+```
+out-of-family jumps                    0     the FIVE-move alphabet is complete
+distinct raster trajectories         432     (was 1,643 with the artifacts)
+shared by both families              427     of 432, 98.8%
+mean / max length              9.8 / 16     moves
+move-stream payload                1,586 B  at 3 bits per move
+collapse                       110,715 : 1
+```
+
+`-599` now records **zero** occurrences, and the alphabet falls off monotonically
+— `up 1` 29.9M, `up 2` 7.6M, `up 3` 4.8M, `up 4` 249K — which is what real
+geometry looks like.
+
+So the vocabulary is **smaller** than claimed, not larger: 432 trajectories and
+about 1.6 KB of move payload, over a five-move alphabet plus a terminator.
+
+### A real finding hiding underneath the artifact
+
+Respecting the domain exposes something the artifact was masking: **10.46% of
+ROM-path chunks have the depth term leave the uint8 range within the run itself**,
+against 1.28% on the host path. That is a genuine property of `screen_depth_plane`
+marching `iq` by `+-step` until it runs out of byte, and it is not explained by the
+trailing-column issue (which accounted for only 12.37% -> 10.46%). It needs
+handling in any executor built on this path, and it is further reason not to
+assume either derivation is correct before the adjudication.
+
+### Cell coverage, stated unambiguously
+
+The exhaustive sweep processed the full 64x64 local translation space and all 256
+headings of **every 64th walkable cell — eight cells**, not all walkable cells.
+The checkpoint numbers 1, 65, 129 ... are cell indices, not progress markers. The
+translational domain is complete *within* each tested cell; the cell sample is
+1.7% of the map. A denser sweep over every 4th cell is running.
+
+### Accounting note
+
+The byte figure is **move-stream payload**, not total generic-program ROM. An
+executor also needs per-trajectory start and length; at two bytes of offset plus
+one of length for 432 entries that is about 1.3 KB more. Call it under 3 KB all
+in, against roughly 114 KB for the sparse pose-trained apparatus.
+
+Whether to store 432 programs at all is now an open implementation choice rather
+than a constraint: the closed form generates the sequence from canonical line
+state, so procedural generation and packed replay can be raced on CPU-versus-ROM
+economics.
+
+`build/rung1-dashboard.png` plots saturation, per-checkpoint discovery, rank
+frequency, cumulative share and the move alphabet.

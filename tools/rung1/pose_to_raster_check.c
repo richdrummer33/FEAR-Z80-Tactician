@@ -59,6 +59,9 @@ static int hq(int16_t iq,int16_t step,int c){ return (int)((((iq+c*step+32)>>6)&
 static int yq(int16_t iq,int16_t step,int c,int fam){ int h=hq(iq,step,c); return fam==0?71-h:72+h; }
 
 static int g_bad_jump,g_bad_want,g_bad_col;
+static int g_ctx_px,g_ctx_py,g_ctx_yaw;
+#define WMAX 4000
+static FILE *g_wf=NULL; static int g_wn=0; static FILE *g_growth=NULL;
 #define JMIN (-40)
 #define JMAX 8
 static unsigned long jhist[JMAX-JMIN+1];
@@ -66,10 +69,23 @@ static unsigned long jhist_fam[JMAX-JMIN+1][3];
 static unsigned long jwant[JMAX-JMIN+1][8];
 
 /* canonical raster shape; returns cell count, fills moves[] and rows[]/cols[] */
-static int shape_of(int16_t iq,int16_t step,int fam,int want,int *moves,int *rows,int *cols)
+/* The depth term is a uint8: h = (((iq + c*step + 32)>>6) & 0xFF) >> 1. Evaluating
+ * a column where the pre-mask value leaves [0,255] wraps it, which shows up as a
+ * spurious ~127px (15 row) leap. That is a domain violation, not geometry, so it
+ * is reported rather than modelled. Returns -2 for it, -1 for a genuine
+ * out-of-family jump. */
+static int depth_in_domain(int16_t iq,int16_t step,int c){
+    int raw=(iq+c*step+32)>>6; return raw>=0&&raw<=255;
+}
+static int shape_of(int16_t iq,int16_t step,int fam,int want,int *moves,int *rows,int *cols,int is_last)
 {
     int span_lo[CHUNK+2],span_hi[CHUNK+2],c,n=0,row,col=0;
-    for(c=0;c<want+1;++c){
+    /* The exit move needs one column past the chunk. The final chunk of a run has
+     * no successor, so that column lies outside the run and the depth model has no
+     * business being evaluated there: such a chunk terminates instead. */
+    int ncols = is_last ? want+1 : want+2;
+    for(c=0;c<ncols;++c) if(!depth_in_domain(iq,step,c)) return -2;
+    for(c=0;c<(is_last?want:want+1);++c){
         int a=yq(iq,step,c,fam),b=yq(iq,step,c+1,fam);
         int lo=a<=b?a:b, hi=a<=b?b:a;
         span_lo[c]=lo>>3; span_hi[c]=hi>>3;
@@ -78,9 +94,16 @@ static int shape_of(int16_t iq,int16_t step,int fam,int want,int *moves,int *row
     for(c=0;c<want;++c){
         int r0=span_lo[c],r1=span_hi[c],k,jump;
         for(k=0;k<r1-r0;++k){ rows[n]=row; cols[n]=col; moves[n]=39; ++n; ++row; }
+        if(is_last&&c==want-1){ rows[n]=row; cols[n]=col; moves[n]=0; ++n; break; }  /* terminator */
         jump=span_lo[c+1]-r1;
         if((jump<-4&&jump!=-14&&jump!=-15)||jump>0){ g_bad_jump=jump; g_bad_want=want; g_bad_col=c; return -1; }
         rows[n]=row; cols[n]=col; moves[n]= jump==0?1:(jump==-1?-39:(jump==-2?-79:(jump==-3?-119:(jump==-4?-159:(jump==-14?-559:-599)))));
+        if((jump==-14||jump==-15)&&g_wf&&g_wn<WMAX){
+            fprintf(g_wf,"%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                    jump,(int)iq,(int)step,fam,want,c,
+                    yq(iq,step,c,fam),yq(iq,step,c+1,fam),yq(iq,step,c+2,fam),
+                    r1,span_lo[c+1],g_ctx_px,g_ctx_py,g_ctx_yaw);
+            ++g_wn; }
         ++n; ++col; row+=jump;
     }
     return n;
@@ -115,15 +138,26 @@ static HSet vstate,vshape;
 #define TMAX 20000
 #define TLEN 96
 static signed short tmoves[TMAX][TLEN]; static int tlen[TMAX]; static int tfam[TMAX]; static int ntraj=0;
-static void traj_keep(const int *mv,int n,int fam){
-    int i,j;
+static unsigned long tcount[TMAX];
+#define TIBITS 18
+#define TISIZE (1u<<TIBITS)
+static int tidx[TISIZE]; static uint64_t tkey[TISIZE]; static int tidx_init=0;
+static void traj_keep(const int *mv,int n,int fam,uint64_t h){
+    unsigned i; int j;
     if(n>TLEN) return;
-    for(i=0;i<ntraj;++i){ if(tlen[i]!=n) continue;
-        for(j=0;j<n;++j) if(tmoves[i][j]!=mv[j]) break;
-        if(j==n){ tfam[i]|=(fam==0?1:2); return; } }
+    if(!tidx_init){ for(i=0;i<TISIZE;++i) tidx[i]=-1; tidx_init=1; }
+    i=(unsigned)((h^(h>>29))&(TISIZE-1u));
+    for(;;){ if(tidx[i]<0) break;
+             if(tkey[i]==h){ int k=tidx[i]; tfam[k]|=(fam==0?1:2); ++tcount[k]; return; }
+             i=(i+1u)&(TISIZE-1u); }
     if(ntraj<TMAX){ for(j=0;j<n;++j) tmoves[ntraj][j]=(signed short)mv[j];
-                    tlen[ntraj]=n; tfam[ntraj]=(fam==0?1:2); ++ntraj; }
+                    tlen[ntraj]=n; tfam[ntraj]=(fam==0?1:2); tcount[ntraj]=1;
+                    tidx[i]=ntraj; tkey[i]=h; ++ntraj; }
 }
+#define MOVE_N 8
+static const int k_moves[MOVE_N]={39,1,-39,-79,-119,-159,0,-599};  /* 0 = run terminator */
+static int move_slot(int m){ int i; for(i=0;i<MOVE_N;++i) if(k_moves[i]==m) return i; return -1; }
+static unsigned long mv_occ[MOVE_N]; static unsigned long mv_traj[MOVE_N];
 
 int main(int argc,char**argv)
 {
@@ -137,9 +171,14 @@ int main(int argc,char**argv)
     TSPState s; unsigned gx,gy,yaw,oi,i,c;
     static const int8_t off[][2]={{0,0},{7,3},{3,7},{11,5},{19,23},{41,37}};
     unsigned long runs=0,dp_ok=0,chunks=0;
-    unsigned long l1=0,l2=0,l3=0,l4=0,unmodelled_a=0,unmodelled_b=0;
+    unsigned long l1=0,l2=0,l3=0,l4=0,unmodelled_a=0,unmodelled_b=0,domain_a=0,domain_b=0;
     unsigned long inst=0;
     vstate=hs_new(); vshape=hs_new();
+    {   const char *od=argc>3?argv[3]:NULL; char pth[512];
+        if(od){ snprintf(pth,sizeof pth,"%s/weird_moves.csv",od); g_wf=fopen(pth,"w");
+                if(g_wf) fprintf(g_wf,"jump,iq,step,fam,want,col,y_c,y_c1,y_c2,row_hi,next_lo,px,py,yaw\n");
+                snprintf(pth,sizeof pth,"%s/growth.csv",od); g_growth=fopen(pth,"w");
+                if(g_growth) fprintf(g_growth,"cell,instances,trajectories,states\n"); } }
     for(gy=0;gy<GRID_H;++gy) for(gx=0;gx<GRID_W;++gx){
         int16_t px0=(int16_t)(gx*CELL_Q4+32),py0=(int16_t)(gy*CELL_Q4+32);
         if(!tsp_is_walkable_q4(px0,py0)) continue;
@@ -189,10 +228,12 @@ int main(int argc,char**argv)
                             ++chunks; ++inst;
                             for(k=0;k<=want+1;++k) if(hq(qa,st_a,k)!=hq(qb,st_b,k)) { bad2=1; break; }
                             if(bad2) ++l2;
-                            na=shape_of(qa,st_a,fam,want,ma,ra,ca);
-                            nb=shape_of(qb,st_b,fam,want,mb,rb,cb);
-                            if(na<0) ++unmodelled_a;
-                            if(nb<0){
+                            g_ctx_px=px; g_ctx_py=py; g_ctx_yaw=(int)yaw;
+                            na=shape_of(qa,st_a,fam,want,ma,ra,ca,left-want==0);
+                            nb=shape_of(qb,st_b,fam,want,mb,rb,cb,left-want==0);
+                            if(na==-2) ++domain_a; else if(na<0) ++unmodelled_a;
+                            if(nb==-2) ++domain_b;
+                            else if(nb<0){
                                 ++unmodelled_b;
                                 if(g_bad_jump>=JMIN&&g_bad_jump<=JMAX){
                                     ++jhist[g_bad_jump-JMIN];
@@ -213,7 +254,8 @@ int main(int argc,char**argv)
                                 if(cover_hash(na,ra,ca,row0a,cc0)!=cover_hash(nb,rb,cb,row0b,cc0)) ++l4;
                                 /* vocabulary AFTER canonicalization, on the ROM path */
                                 { uint64_t sh=1469598103934665603ull; for(k=0;k<nb;++k){ sh^=(uint64_t)(mb[k]+200); sh*=1099511628211ull; }
-                                  hs_add(&vshape,sh); traj_keep(mb,nb,fam);
+                                  hs_add(&vshape,sh); traj_keep(mb,nb,fam,sh);
+                                  for(k=0;k<nb;++k){int sl=move_slot(mb[k]); if(sl>=0) ++mv_occ[sl];}
                                   hs_add(&vstate,((uint64_t)(uint16_t)qb<<32)|((uint64_t)(uint16_t)st_b<<16)|((uint64_t)fam<<8)|(uint64_t)want); }
                             }
                             cs+=CHUNK; left-=want;
@@ -222,9 +264,10 @@ int main(int argc,char**argv)
                 }
             }
         }
-        if(exh && ((cellno-1u)%exh)==0u)
+        if(exh && ((cellno-1u)%exh)==0u){
             printf("  growth: after cell %-5u  trajectories=%-6lu states=%-9lu instances=%lu\n",
                    cellno,vshape.n,vstate.n,inst);
+            if(g_growth){ fprintf(g_growth,"%u,%lu,%lu,%lu\n",cellno,inst,vshape.n,vstate.n); fflush(g_growth); } }
     }
     if(exh) printf("\nEXHAUSTIVE local sweep: full 64x64 translations of every %uth walkable cell\n",exh);
     else    printf("arbitrary poses: every walkable cell x 6 sub-cell offsets x %u headings\n",256u/yaw_step);
@@ -236,7 +279,9 @@ int main(int argc,char**argv)
     printf("  L2 depth     per-column h(c)  %lu (%.3f%%)\n",l2,100.0*l2/(double)chunks);
     printf("  L3 trajectory cursor moves    %lu (%.3f%%)\n",l3,100.0*l3/(double)chunks);
     printf("  L4 ownership covered cells    %lu (%.3f%%)  [evaluated independently of L3]\n",l4,100.0*l4/(double)chunks);
-    printf("  unmodelled (move family) A=%lu B=%lu\n",unmodelled_a,unmodelled_b);
+    printf("  out-of-family jump       A=%lu B=%lu\n",unmodelled_a,unmodelled_b);
+    printf("  depth term outside uint8 A=%lu (%.3f%%) B=%lu (%.3f%%)  [domain violation, not geometry]\n",
+           domain_a,100.0*domain_a/(double)chunks,domain_b,100.0*domain_b/(double)chunks);
     printf("\ninexpressible cursor moves on the ROM path, by required row jump\n");
     printf("  (the compiled-body family is jump 0..-4; anything else cannot be a body)\n");
     {
@@ -279,6 +324,25 @@ int main(int argc,char**argv)
         printf("  bytes at 1 byte per move      %ld\n",total_moves);
         printf("  bytes at 3 bits per move      %ld   (7 moves fit in 3 bits)\n",(total_moves*3+7)/8);
         printf("  distinct under reversal       %lu of %d\n",rev.n,ntraj);
+        if(argc>3){
+            char pth[512]; FILE *f; int m;
+            for(i=0;i<ntraj;++i){ int sl; for(j=0;j<tlen[i];++j){ sl=move_slot(tmoves[i][j]);
+                    if(sl>=0&&(j==0||1)) { } } }
+            for(i=0;i<ntraj;++i){ int seen[MOVE_N]; for(m=0;m<MOVE_N;++m) seen[m]=0;
+                for(j=0;j<tlen[i];++j){ int sl=move_slot(tmoves[i][j]); if(sl>=0) seen[sl]=1; }
+                for(m=0;m<MOVE_N;++m) if(seen[m]) ++mv_traj[m]; }
+            snprintf(pth,sizeof pth,"%s/trajectories.csv",argv[3]); f=fopen(pth,"w");
+            if(f){ fprintf(f,"id,count,length,fams\n");
+                   for(i=0;i<ntraj;++i) fprintf(f,"%d,%lu,%d,%d\n",i,tcount[i],tlen[i],tfam[i]);
+                   fclose(f); }
+            snprintf(pth,sizeof pth,"%s/moves.csv",argv[3]); f=fopen(pth,"w");
+            if(f){ fprintf(f,"move,rowjump,occurrences,trajectories_containing\n");
+                   for(m=0;m<MOVE_N;++m){ int rj = k_moves[m]==39?99:(k_moves[m]==1?0:-(( -k_moves[m]+1)/40));
+                       fprintf(f,"%d,%d,%lu,%lu\n",k_moves[m],rj,mv_occ[m],mv_traj[m]); }
+                   fclose(f); }
+            if(g_wf) fclose(g_wf);
+            if(g_growth) fclose(g_growth);
+        }
     }
     return 0;
 }
