@@ -335,6 +335,17 @@ int main(int argc,char**argv)
             if(f){ fprintf(f,"id,count,length,fams\n");
                    for(i=0;i<ntraj;++i) fprintf(f,"%d,%lu,%d,%d\n",i,tcount[i],tlen[i],tfam[i]);
                    fclose(f); }
+            /* The move stream of every retained trajectory, as slot indices into
+             * k_moves. This is what the state-transition matrix is built from:
+             * which move can follow which, and with what instance weight. */
+            snprintf(pth,sizeof pth,"%s/traj_moves.csv",argv[3]); f=fopen(pth,"w");
+            if(f){ fprintf(f,"id,count,fams,slots\n");
+                   for(i=0;i<ntraj;++i){
+                       fprintf(f,"%d,%lu,%d,",i,tcount[i],tfam[i]);
+                       for(j=0;j<tlen[i];++j){ int sl=move_slot(tmoves[i][j]);
+                           fprintf(f,"%s%d",j?" ":"",sl); }
+                       fprintf(f,"\n"); }
+                   fclose(f); }
             snprintf(pth,sizeof pth,"%s/moves.csv",argv[3]); f=fopen(pth,"w");
             if(f){ fprintf(f,"move,rowjump,occurrences,trajectories_containing\n");
                    for(m=0;m<MOVE_N;++m){ int rj = k_moves[m]==39?99:(k_moves[m]==1?0:-(( -k_moves[m]+1)/40));

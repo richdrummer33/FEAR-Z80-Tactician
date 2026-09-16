@@ -1226,3 +1226,122 @@ economics.
 
 `build/rung1-dashboard.png` plots saturation, per-checkpoint discovery, rank
 frequency, cumulative share and the move alphabet.
+
+## Rung 1.5, item 2: adjudicating both depth derivations against geometry
+
+The layered check said where `screen_depth_plane` and the host `inv0/inv1` path
+disagree. It could not say which is right, and the standing caution was explicit:
+the host is the historical reference implementation, not established ground truth.
+This settles it against a reference that is neither implementation.
+
+### The reference
+
+`tools/rung1/depth_adjudicate.c` computes, in double precision, the closed
+geometry the fixed-point code is approximating. Every constant in it is read off
+the source rather than fitted:
+
+| Quantity | Established from | Value |
+| --- | --- | --- |
+| ray direction for world bearing `b` | the `sy` branch of `bearing_q12` negates | `u(b) = (cos B, -sin B)`, `B = 2*pi*b/4096` |
+| screen x for relative angle | `k_tspf_angle_x_pos` matches to <=1 LSB over all 513 entries | `x = 80 + 80 tan(theta)` |
+| column-to-pixel mapping | `screen_depth_plane` anchors `iq` at column 10 = pixel 80 | column `c` samples pixel `8c` |
+| projection constant | `k_tspf_invz[z] == round(2560/z)` for every entry | `K = 2560`, `inv = K/z` |
+| screen model | `draw_run`, `TSPF_HORIZON = 72`, FULL decrements the top | `h = inv/2`, `y = 71-h` / `72+h` |
+
+For a plane of unit normal `n` through `V` at perpendicular distance
+`D = n.(V - P)`, the ray at `theta` meets it at `t = D/(n.u(phi+theta))` and
+`z = t cos theta`, giving
+
+```
+inv(x) = (K/D) * (A + B*(x-80)/80)     A = n.u(phi),  B = -(nx sin phi + ny cos phi)
+```
+
+which is **exactly linear in screen x**. The depth-plane model is therefore the
+correct model and only its quantization was ever in question. Every FULL wall on
+this map has a cardinal normal (`nx,ny` in `{0,+-32}` Q5), so `n` and `D` are
+exact and the reference carries no approximation of its own.
+
+### What had to be separated out first
+
+The first run put both paths at a mean error above 3 px with maxima above 100 px.
+Dumping the worst cases rather than explaining them showed every one of them at
+`D = 4.0` cells: inside `TSPF_NEAR_Z_Q4`, where `inv_for_dq4` saturates at 255 for
+**both** derivations. That is a property of the inverse-depth table, not of either
+`(iq,step)` derivation, so the reference now carries the same 10-cell near clip and
+127-cell far clip, and the clip is reported on its own:
+
+```
+columns behind the near clip 11.74%, past the far clip 2.27%
+edge displacement the clip alone causes: mean 17.86  p95 54.26  max 123.06 px
+```
+
+Both paths are also scored on **identical columns**: a column counts only when both
+integer derivations stay inside the uint8 depth domain and the reference is itself
+representable in it. Excluded: ROM outside domain 20.8M, host outside 0, reference
+above 255 (near field, unrepresentable by either) 22.8M.
+
+### Per-column screen Y, over 337,285,583 scored columns
+
+| Path | exact | within 1 px | within 2 px | worse | mean | p95 | max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| ROM `screen_depth_plane` (top) | 36.73% | 57.99% | 5.22% | **0.06%** | 0.70 | 1.52 | **2.69** |
+| ROM `screen_depth_plane` (bottom) | 36.72% | 57.92% | 5.29% | 0.06% | 0.70 | 1.52 | 2.69 |
+| host `inv0/inv1` (top) | 34.80% | 39.41% | 9.45% | **16.34%** | 2.01 | 9.38 | **40.34** |
+| host `inv0/inv1` (bottom) | 34.80% | 39.40% | 9.44% | 16.36% | 2.01 | 9.38 | 40.34 |
+
+The ROM path's worst column error anywhere in the sweep is 2.69 px. The host
+path's is 40.34 px, and it is worse than 2 px on one column in six. **The prior
+that the host is the accurate one and the ROM the approximation is withdrawn: it
+is the other way round, and by a wide margin.** The host path anchors on `inv0`
+and `inv1` evaluated at the run's clipped angular endpoints and then interpolates
+with `k_col_recip_q8`; those endpoints do not sit on column boundaries, so the
+interpolation is anchored in the wrong place. `screen_depth_plane` evaluates the
+exact linear law at the exact column positions.
+
+### Ownership, and the distance classification
+
+Two row intervals' symmetric difference always lies at their ends, so there is no
+such thing as a disputed cell strictly inside both. The first classifier reported
+one anyway (50% "interior"); it was wrong, and what actually distinguishes the
+cases is how far the end is off and how close the true edge sat to the tile line
+it was being rounded against.
+
+| Path | disputed cells | boundary-adjacent (<1 px, a coin flip) | 1 row off | 2+ rows off |
+| --- | --- | --- | --- | --- |
+| ROM | 69,206,640 (11.37% of 608.6M reference cells) | 88.08% | 11.89% | **0.03%** |
+| host | 120,789,845 (19.85%) | 59.18% | 37.93% | **2.89%** |
+
+This is the shape the question was asked in. For the ROM path, 2-or-more-rows-off
+disagreement is 21,087 cells out of 608.6 million reference cells: **0.0035%**.
+Per-run symmetric difference is 0 at the median for both paths.
+
+### Temporal behaviour
+
+26,327 sequences, 1.14M samples, one renderer input unit per step, kept only while
+the same wall still covers the same screen column.
+
+| Motion | reference (rounded) | ROM | host |
+| --- | --- | --- | --- |
+| strafe | 0.00 | **0.00** | 2.29 |
+| walk forward | 0.00 | **0.00** | 3.38 |
+| turn | 0.97 | 1.82 | 7.92 |
+| all | 0.19 | 0.36 | 3.84 |
+
+(reversals per 100 samples). The ROM path is no worse than the reference in 97.2%
+of sequences and adds **zero** reversals under translation; the host path in 52.1%.
+The continuous reference is itself monotone in 90.0% of sequences — the residue is
+real geometry during a turn, not quantization.
+
+Two harness bugs were found and fixed while producing this, both of which had been
+flattering the result: `reversals_d` truncated its direction accumulator to `int`,
+so a sub-pixel step zeroed it and no reversal could ever be reported (it claimed
+100% monotone); and a single `sid` reachable through more than one key contributed
+two samples to one motion step.
+
+### Status
+
+Item 2 of Rung 1.5 is closed, and it closes in favour of the architecture already
+in the ROM: `screen_depth_plane` is the accurate derivation, accurate enough that
+the raster's remaining disagreement with exact geometry is 88% tile-boundary coin
+flips and 0.03% visible extent error. `build/rung1-adjudication.png` carries
+visuals 5, 6, 7 and 8.
