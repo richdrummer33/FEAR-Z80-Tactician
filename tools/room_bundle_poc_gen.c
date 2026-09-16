@@ -21,41 +21,6 @@
 #include "polar_baked_composite.h"
 #include "room_mesh_bake.h"
 
-#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
-#include "generated/doomguy_mesh.inc"
-#ifdef ROOM_BUNDLE_DOOMGUY_SEAMS
-#include "generated/doomguy_seams.inc"
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS
-#define ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS 1
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY
-#define ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY 0
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_CREASE_COVERAGE
-#define ROOM_BUNDLE_DOOMGUY_CREASE_COVERAGE 0.30
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_CREASE_DEPTH
-#define ROOM_BUNDLE_DOOMGUY_CREASE_DEPTH 0.55
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_DITHER
-#define ROOM_BUNDLE_DOOMGUY_DITHER 1
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_CREASE
-#define ROOM_BUNDLE_DOOMGUY_CREASE 1
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT
-#define ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT 1
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_INCIDENT
-#define ROOM_BUNDLE_DOOMGUY_INCIDENT 0.60
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_AO_RADIUS
-#define ROOM_BUNDLE_DOOMGUY_AO_RADIUS 2.5
-#endif
-#ifndef ROOM_BUNDLE_DOOMGUY_AO_STRENGTH
-#define ROOM_BUNDLE_DOOMGUY_AO_STRENGTH 0.65
-#endif
 /*
  * Grounding pass, off by default.
  *
@@ -86,6 +51,12 @@
  *   occludes it. These two are the light-INDEPENDENT half: the cast shadow
  *   only anchors the figure on the side the light happens to throw it, and
  *   from every other angle on the orbit it does nothing at all.
+ *
+ * These live OUTSIDE the ROOM_BUNDLE_DOOMGUY_GENERATED guard even though only
+ * the doomguy chamber reads them: make_doomguy_hero_chamber is compiled in
+ * every configuration, so the knobs it dereferences have to exist in every
+ * configuration too. Without the generated mesh the chamber is a stub and the
+ * OFF defaults make the assignments no-ops.
  */
 #ifndef ROOM_BUNDLE_DOOMGUY_GROUNDING
 #define ROOM_BUNDLE_DOOMGUY_GROUNDING 0
@@ -148,6 +119,42 @@
 #else
 #define ROOM_BUNDLE_DOOMGUY_FLOOR_CONTACT_Z 3.0
 #endif
+#endif
+
+#ifdef ROOM_BUNDLE_DOOMGUY_GENERATED
+#include "generated/doomguy_mesh.inc"
+#ifdef ROOM_BUNDLE_DOOMGUY_SEAMS
+#include "generated/doomguy_seams.inc"
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS
+#define ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY
+#define ROOM_BUNDLE_DOOMGUY_LIGHTING_PROXY 0
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CREASE_COVERAGE
+#define ROOM_BUNDLE_DOOMGUY_CREASE_COVERAGE 0.30
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CREASE_DEPTH
+#define ROOM_BUNDLE_DOOMGUY_CREASE_DEPTH 0.55
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_DITHER
+#define ROOM_BUNDLE_DOOMGUY_DITHER 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CREASE
+#define ROOM_BUNDLE_DOOMGUY_CREASE 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT
+#define ROOM_BUNDLE_DOOMGUY_STATIC_LIGHT 1
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_INCIDENT
+#define ROOM_BUNDLE_DOOMGUY_INCIDENT 0.60
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_AO_RADIUS
+#define ROOM_BUNDLE_DOOMGUY_AO_RADIUS 2.5
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_AO_STRENGTH
+#define ROOM_BUNDLE_DOOMGUY_AO_STRENGTH 0.65
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS
 #define ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS 0.0
