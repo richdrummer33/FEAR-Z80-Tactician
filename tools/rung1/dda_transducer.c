@@ -141,9 +141,39 @@ static int selfcheck(void)
     return bad;
 }
 
-int main(void)
+/* Dump a phase x step atlas: for a sample of steps, the 6-column behaviour class
+ * at every phase, plus the eight analytic edges. This is what makes the band
+ * structure visible rather than merely tabulated. */
+static void dump_atlas(const char *path,int nsteps)
+{
+    FILE *f=fopen(path,"w"); int si,p,c,fam,stride;
+    uint64_t *ids; int nid=0; uint64_t seen[4096];
+    if(!f) return;
+    ids=seen; (void)ids;
+    fprintf(f,"step,phase,class,is_edge\n");
+    stride=g_nstep/nsteps; if(stride<1) stride=1;
+    for(si=0;si<g_nstep;si+=stride){
+        int edge[1024]; memset(edge,0,sizeof edge);
+        for(c=0;c<8;++c){ long v=-(long)c*(long)g_step[si]; v%=1024L; if(v<0)v+=1024L; edge[v]=1; }
+        for(p=0;p<1024;++p){
+            uint64_t sig=1469598103934665603ull; int cc,ok=1,id=-1,k;
+            for(fam=0;fam<2;++fam) for(cc=0;cc<6&&ok;++cc){ int o=col_out(p,g_step[si],cc,fam);
+                if(o<0){ ok=0; break; }
+                sig^=(uint64_t)(o+1); sig*=1099511628211ull; }
+            if(!ok){ fprintf(f,"%d,%d,-1,%d\n",g_step[si],p,edge[p]); continue; }
+            for(k=0;k<nid;++k) if(seen[k]==sig){ id=k; break; }
+            if(id<0&&nid<4096){ seen[nid]=sig; id=nid++; }
+            fprintf(f,"%d,%d,%d,%d\n",g_step[si],p,id,edge[p]);
+        }
+    }
+    fclose(f);
+    printf("  atlas written to %s (%d classes seen)\n",path,nid);
+}
+
+int main(int argc,char**argv)
 {
     int L,fam,si,p;
+    const char *atlas = argc>1 ? argv[1] : NULL;
     printf("DDA transducer: the generic raster machine, span length external\n\n");
     printf("1  the state space\n");
     build_invd();
@@ -313,6 +343,8 @@ int main(void)
                        "     lookup, and the distance to the next edge is the safe region.\n");
         }
     }
+
+    if(atlas){ printf("\n   atlas dump\n"); dump_atlas(atlas,192); }
 
     printf("\n5  candidates, sized (none chosen here)\n");
     printf("   %-34s %s\n","representation","cost");

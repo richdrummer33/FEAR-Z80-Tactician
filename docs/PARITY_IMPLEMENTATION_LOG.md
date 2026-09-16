@@ -1770,3 +1770,109 @@ Two consequences:
 The last two encode span termination and are therefore world-specific. The first
 two keep length external, which is the property worth having. Which is fastest is
 a Z80 cycle question; this only sizes them.
+
+## Rung 3: the phase-band certificate, validated against real player motion
+
+`tools/rung1/temporal_certificate.c`. Not a census — a falsification test. For
+every retained span it computes what the certificate *claims* is safe, then moves
+the player one unit at a time and records when the emitted raster actually
+changes.
+
+```
+certificate SAFE at step k  <=>  step unchanged
+                             AND projected columns c0,c1 unchanged
+                             AND no band edge crossed by any chunk's phase
+```
+
+The property is one-sided: conservative is fine (wake early), claiming safe after
+the output has already changed is fatal. Over **1,458,755 spans per motion axis**,
+every walkable cell sampled at 1-in-2, 8x8 sub-cell, 64 headings, 32 motion steps:
+
+| bearings | motion | spans | **UNSAFE** | conservative | exact |
+| --- | --- | --- | --- | --- | --- |
+| continuous truth | +X | 1,458,755 | **0** | 16.1% | 83.9% |
+| continuous truth | +Y | 1,458,755 | **0** | 33.9% | 66.1% |
+| continuous truth | +yaw | 1,458,755 | **0** | 30.0% | 70.0% |
+| bearing_q12 | +X | 1,450,811 | **0** | 16.0% | 84.0% |
+| bearing_q12 | +Y | 1,450,811 | **0** | 33.8% | 66.2% |
+| bearing_q12 | +yaw | 1,450,811 | **0** | 30.1% | 69.9% |
+
+Zero unsafe cases, and the certificate is *exact* — predicting the change on the
+very step it happens — in 66-84% of spans.
+
+### A real bug the test caught
+
+The first run reported 5-6 unsafe cases per axis, on **both** bearing paths, so
+not the `ratio_q8_exact` defect. Dumping them showed every one identical:
+`step == 0`, phase sitting exactly on 0, moving backwards. With `step == 0` all
+eight edges `p = (-c*step) mod 1024` collapse onto phase 0, and my crossing test
+treated "sitting on an edge" as uncrossable in *both* directions. Crossing is
+asymmetric: forward by m crosses edge e when `(e-p) mod 1024` is in `[1,m]`;
+backward by m crosses it when `(p-e) mod 1024` is in `[0,m-1]` — zero counts.
+Fixed, and the violations went to zero. Worth noting because the failing case was
+a degenerate one (a wall at constant depth across the span) that no amount of
+typical-case testing would have produced.
+
+### What actually forces re-evaluation — and it is not the phase
+
+| motion | phase band | **step** | endpoint column | left frame | unattributed | no change in 32 |
+| --- | --- | --- | --- | --- | --- | --- |
+| +X | 0.5% | **21.8%** | 29.1% | 3.1% | **0.0%** | 45.5% |
+| +Y | 0.9% | **43.8%** | 26.1% | 3.4% | **0.0%** | 25.8% |
+| +yaw | 7.2% | **80.3%** | 9.2% | 3.2% | **0.0%** | 0.0% |
+
+**Zero unattributed changes**: every real raster change has an identified cause.
+
+The phase band is *not* the binding constraint — it accounts for 0.5% of changes
+under +X. What forces re-evaluation is `step`, then the endpoint column. That
+redirects the next work: the phase machinery is nearly free, and the leverage is
+in certifying `step` and the endpoints.
+
+And `step = (invd * sf_q4[class][yaw]) >> 4`, so:
+
+* under **translation** `step` moves only through `invd`, the wall distance, so an
+  `invd`-stability certificate would extend the safe region directly;
+* under **rotation** `sf_q4` is indexed by yaw and changes almost every unit,
+  which is why +yaw has a median safe distance of **1**. The current certificate
+  is close to useless for turning.
+
+The fix for rotation is the one already visible in the band result: certify that
+`step` stays in the same *behaviour* region rather than that it keeps the same
+*value*. This harness tests exact equality, which is sound but the most
+conservative possible choice.
+
+### How long it holds
+
+| motion | median safe steps | p90 | still safe at 32 |
+| --- | --- | --- | --- |
+| +X (1/16 cell) | 22 | 32 | 40.1% |
+| +Y (1/16 cell) | 5 | 32 | 18.6% |
+| +yaw (1 unit) | 1 | 1 | 0.0% |
+
+Under forward-ish translation the certificate typically proves ~1.4 cells of
+travel safe for a given span, and 40% of spans are still provably unchanged after
+2 full cells. That is real leverage. Rotation is not, yet.
+
+## Visual pack
+
+`build/rung1-certificate.png` — six panels: the phase x step behaviour atlas with
+the analytic edges overlaid; how long the certificate holds per motion axis;
+predicted vs observed first change with the unsafe region marked empty; the cause
+breakdown; the Rung 2 worst tail; and the exhaustive saturation curve over all
+466 cells.
+
+`build/rung1-phase-bands.png` — annotated phase-band strips for six representative
+steps, showing the eight edges, the raster each band emits, and a worked safe
+distance. One detail visible there and relevant to the Z80 indexing question: the
+edge labels are **not monotonic** along the phase line (step 143 runs c0,c7,c6...;
+step 287 runs c0,c7,c3,c6,c2...), so the band rank is not a simple ordering of c
+and a naive eight-way compare is not obviously the cheapest decision procedure.
+
+## Framing correction
+
+"The last two encode termination and are world-specific" was stronger than
+warranted. Some or all of those 432 complete trajectories might well occur in
+other maps, because the tiny raster imposes the same possibilities. The accurate
+objection is narrower: **their claimed completeness is established only for the
+span lengths and geometries this domain exercises, whereas phase + step with an
+external stop condition describes the generic raster process itself.**
