@@ -2176,3 +2176,74 @@ boundary is a single constraint on that whole expression — one plane in
 11.06% composability failures exactly, and it says the eventual certificate is a
 small polyhedron, or a conservative test on the coupled expression, rather than a
 box.
+
+## Two corrections to how the last result was stated
+
+**"The foundation claim now holds end-to-end" was too strong.** The accurate
+statement is: *the arbitrary-destination architecture reproduces the renderer
+exactly across the tested translation, rotation, combined-motion and
+multi-cell-crossing matrix.* 162,482 cases is strong validation; it is not the
+exhaustive proof the 2.68-billion-instance trajectory census was.
+
+**"Retaining `(sid,v0,v1)` and `(rel,len)`" should not read as four values
+predicting arbitrary translation.** They do two different jobs. `(rel, len)` is
+the angular state, and it advances directly for rotation. `(sid, v0, v1)` is
+geometric *identity*, and for translation nothing is advanced at all: the
+identity is what lets the destination cell and leaf be located so the baked
+geometry can be re-evaluated there. The architecture is
+
+> retain enough identity to cheaply re-evaluate the right generic baked geometry
+> at the new destination
+
+not "incrementally massage yesterday's answer forward".
+
+## Fixing ratio_q8_exact
+
+`ratio_q8_exact(n, d)` is called only with `n <= d`, so the true Q8 ratio is in
+`[0, 256]` and reaches 256 exactly when `n == d`. 256 does not fit the byte, the
+cast wrapped it to **0**, and every caller read that as a ratio of zero. In
+`bearing_q12` that turned a diagonal into an axis direction.
+
+It now saturates:
+
+```c
+return (uint8_t)(q > 255u ? 255u : q);
+```
+
+One compare. The residual is about one Q12 unit — `atan_q12[255]` is
+`atan(255/256)`, 44.89 degrees against a true 45 — which is inside the table's own
+quantisation. Widening the atan table to 257 entries would remove even that, at
+the cost of a 16-bit index on the Z80; not worth it for one LSB.
+
+| measurement | before | after |
+| --- | --- | --- |
+| `ratio_q8_exact(n,n)` | 0 for all 255 n | 255 for all 255 n |
+| worst `bearing_q12` error, 361,200 vectors | 512 Q12 (45.0 deg) | **4.45 Q12 (0.39 deg)** |
+| worst error on the vectors that trip the wrap | 512 Q12 | **1.28 Q12 (0.11 deg)** |
+| baked field vs `bearing_q12`, worst | 515 Q12 (80.5 px) | **8 Q12 (1.25 px)** |
+
+The same helper had been copied verbatim into the lattice floor-light runtime in
+`tools/apply_lattice_floor_light_runtime.py`; fixed there too, so a corrected bug
+does not survive in a copy.
+
+### The poisonous tails are gone
+
+Re-running Rung 2. The baked field is unchanged, as it must be — it never had the
+defect. `bearing_q12`, the supposedly trustworthy fallback, improves sharply:
+
+| measure (bearing_q12) | before | after |
+| --- | --- | --- |
+| worst endpoint jump, interior | **32 px** | **4 px** |
+| worst endpoint jump, leaf boundary | **32 px** | **2 px** |
+| jumps <= 1 px, leaf boundary | 54.15% | **79.65%** |
+| worst cells added+removed, interior | 28 | 12 |
+| approximation-induced transitions, leaf boundary | 3.673% | **2.482%** |
+| static disagreement, leaf boundary | 4.563% | **3.841%** |
+
+The rare catastrophic tail that made retained state unsafe is eliminated. The
+baked field is still the more faithful path everywhere, but the fallback is now a
+trustworthy slow path rather than the opposite.
+
+Arm E of the geometry regression test no longer *reports* this as a finding; it
+**asserts** it, so the saturation cannot be lost silently. Rung 6 re-verified
+after the source change: still 162,482 cases, zero mismatches.

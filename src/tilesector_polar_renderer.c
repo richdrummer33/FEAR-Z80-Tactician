@@ -420,7 +420,22 @@ static void projection_eval_fallback(const TSPState *s)
 #endif
 
 /* Exact modulo-8-bit equivalent of ((uint32_t)n*recip_q16 + 128)>>8,
- * decomposed into two 8x8->16 products so SDCC never pulls __mullong. */
+ * decomposed into two 8x8->16 products so SDCC never pulls __mullong.
+ *
+ * Callers always pass n <= d, so the true Q8 ratio lies in [0, 256]. It reaches
+ * 256 exactly when n == d, and 256 does not fit in the byte: the old cast
+ * wrapped it to 0, which every caller then read as a ratio of ZERO. In
+ * bearing_q12 that turned a 45-degree diagonal into an axis direction, a 512 Q12
+ * unit error, and the wrap fires not only on exact diagonals but wherever the
+ * operands scale into equal bytes -- 0.17% of corner lookups over every walkable
+ * pose, with a worst observed bearing error of 45.2 degrees and a 32 pixel
+ * raster jump. That is poison for any retained state, so it saturates instead.
+ *
+ * Saturating to 255 costs one compare and leaves a residual of about one Q12
+ * unit (atan_q12[255] is atan(255/256), 44.89 degrees against a true 45), which
+ * is inside the table's own quantisation. Widening the atan table to 257 entries
+ * would remove even that, at the price of a 16-bit index on the Z80; not worth
+ * it for one LSB. */
 static uint8_t ratio_q8_exact(uint8_t n, uint8_t d)
 {
     uint16_t rec, p_lo, p_hi, q;
@@ -430,7 +445,7 @@ static uint8_t ratio_q8_exact(uint8_t n, uint8_t d)
     p_lo = (uint16_t)n * (uint8_t)rec;
     p_hi = (uint16_t)n * (uint8_t)(rec >> 8);
     q = (uint16_t)(p_hi + ((p_lo + 128u) >> 8));
-    return (uint8_t)q;
+    return (uint8_t)(q > 255u ? 255u : q);
 }
 
 static uint16_t bearing_q12(int16_t dxq4, int16_t dyq4)

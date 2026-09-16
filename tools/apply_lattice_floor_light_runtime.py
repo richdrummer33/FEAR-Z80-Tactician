@@ -109,7 +109,11 @@ static uint8_t flrt_ratio_q8_exact(uint8_t n,uint8_t d){{
     p_lo=(uint16_t)n*(uint8_t)rec;
     p_hi=(uint16_t)n*(uint8_t)(rec>>8);
     q=(uint16_t)(p_hi+((p_lo+128u)>>8));
-    return (uint8_t)q;
+    /* n == d gives a true ratio of 256, which does not fit the byte. Casting
+       wrapped it to 0 and every caller read that as a ratio of zero; see the
+       note on ratio_q8_exact in tilesector_polar_renderer.c. Same fix here so a
+       corrected bug does not survive in a copy. */
+    return (uint8_t)(q>255u?255u:q);
 }}
 
 static uint8_t flrt_inv_for_dq4(int16_t dq4){{

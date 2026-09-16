@@ -298,9 +298,12 @@ static void arm_bearing_convention(void)
         ax=dx<0?-dx:dx; ay=dy<0?-dy:dy;
         b=(double)bearing_q12((int16_t)dx,(int16_t)dy);
         if(ax==ay){
-            /* ratio_q8_exact(n,n) returns 0, not 255: the true ratio 1.0 is 256
-             * and does not fit the byte. Every exact diagonal therefore reads as
-             * an axis direction. Counted and reported below, not folded in. */
+            /* ratio_q8_exact used to return 0 rather than 255 for n == d, because
+             * the true ratio 1.0 is 256 and does not fit the byte. Every caller
+             * read that as a ratio of zero, so a 45-degree diagonal reported an
+             * axis direction: a 512 Q12 error and, downstream, a 32-pixel raster
+             * jump. It now saturates. This is the regression guard, so the
+             * diagonals are ASSERTED here rather than merely counted. */
             double e=fabs(wrap12(b-atan2((double)dy,(double)dx)*4096.0/(2.0*M_PI)));
             ++diag; if(e>8.0){ ++diagbad; if((int)e>worstdiag) worstdiag=(int)e; }
             continue;
@@ -317,12 +320,18 @@ static void arm_bearing_convention(void)
     ck(wB>100.0,"the opposite handedness is rejected",wB,4096.0,4096.0);
     printf("   the reference uses (cos, +sin); the opposite is rejected by %.0fx   %s\n",
            wB/(wA>0?wA:1.0), (wA<8.0&&wB>100.0)?"ok":"FAIL");
-    printf("   FINDING, not a failure of the reference: ratio_q8_exact(n,n) returns 0\n");
-    printf("   rather than 255, so all %ld exact diagonals (|dx| == |dy|) read as an\n",diag);
-    printf("   axis direction. %ld of them are off by more than 8 Q12 units, worst %d\n",
-           diagbad,worstdiag);
-    printf("   (= %.1f degrees). This is a renderer bug, reported separately.\n",
-           worstdiag*360.0/4096.0);
+    {   int rbad=0,dd;
+        for(dd=1;dd<=255;++dd) if(ratio_q8_exact((uint8_t)dd,(uint8_t)dd)!=255u) ++rbad;
+        ck(rbad==0,"ratio_q8_exact(n,n) saturates to 255",(double)rbad,0.0,0.0);
+        printf("   ratio_q8_exact(n,n) == 255 for all 255 n                      %s\n",
+               rbad?"FAIL":"ok");
+    }
+    ck(diagbad==0,"no diagonal reads as an axis direction",(double)diagbad,0.0,0.0);
+    printf("   %ld vectors whose scaled operands are equal, %ld off by more than\n",diag,diagbad);
+    printf("   8 Q12 units, worst %d (%.2f degrees)                           %s\n",
+           worstdiag,worstdiag*360.0/4096.0,diagbad?"FAIL":"ok");
+    if(diagbad)
+        printf("   REGRESSION: the ratio_q8_exact saturation has been lost.\n");
 }
 
 /* ---- D: tie the constant back to the shipped inv_for_dq4 ----------------- */

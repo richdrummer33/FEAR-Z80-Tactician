@@ -282,10 +282,10 @@ static void compare(int pi,int cls,const Frame *ba,const Frame *bb,
 /* The bake was fitted against float atan2, not against bearing_q12, so that is
  * what it must be scored on. Scoring it against bearing_q12 instead produced a
  * worst error of 515 Q12 units and looked like a broken transcription; it was
- * not. Those cases are the exact diagonals, where ratio_q8_exact(n,n) returns 0
- * instead of 255 because the true ratio 1.0 needs nine bits, and bearing_q12
- * reports an axis direction 45 degrees away. There the BAKE is right and the
- * shipped integer bearing is wrong. Both comparisons are reported. */
+ * not. Those cases were the ratio_q8_exact(n,n) == 0 wrap, where bearing_q12
+ * reported an axis direction 45 degrees away and the bake was right. That wrap
+ * is now fixed, and this arm is kept as the place the difference would reappear.
+ * Both comparisons are reported. */
 static double wrap12d(double a){ while(a>2048.0)a-=4096.0; while(a<-2048.0)a+=4096.0; return a; }
 static int arm_transcription(void)
 {
@@ -324,9 +324,11 @@ static int arm_transcription(void)
            worst_q12_nodiag,(double)worst_q12_nodiag*160.0/1024.0);
     printf("   vs bearing_q12, all samples                     worst %d Q12 (%.3f px)\n",
            worst_q12,(double)worst_q12*160.0/1024.0);
-    printf("   %lu exact-diagonal samples, %lu of them off by more than 8 Q12: that is\n",diag,diagbad);
-    printf("   the ratio_q8_exact(n,n) == 0 bug, where the BAKE is right and the\n");
-    printf("   shipped integer bearing is 45 degrees wrong.\n");
+    printf("   %lu samples whose scaled operands are equal, %lu off by more than 8 Q12.\n",diag,diagbad);
+    printf("   These used to be the ratio_q8_exact(n,n) == 0 wrap, where bearing_q12\n");
+    printf("   reported an axis direction 45 degrees away and the bake was the correct\n");
+    printf("   one. That is now fixed by saturating the ratio, and the residue here is\n");
+    printf("   ordinary quantisation.\n");
     if(worst_true>8.0){
         printf("   the bake was emitted at a threshold of 4 Q12 units; a worst error far\n");
         printf("   above that against its own fitting target means this transcription is\n");
