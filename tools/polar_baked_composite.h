@@ -59,6 +59,16 @@ typedef struct TSPHostSceneRect {
 typedef int (*TSPHostExtraOccluderFn)(const void *user,
                                       double lx,double ly,double lz,
                                       double wx,double wy,double wz);
+/* Partial visibility of the source, 0 (fully shadowed) .. 255 (fully lit). */
+typedef uint8_t (*TSPHostExtraCoverageFn)(const void *user,
+                                          double lx,double ly,double lz,
+                                          double wx,double wy,double wz,
+                                          double source_radius);
+/* Fraction of the ambient hemisphere the mesh leaves open at a floor point,
+ * 0 (fully enclosed) .. 255 (fully open). */
+typedef uint8_t (*TSPHostContactFn)(const void *user,
+                                    double wx,double wy,double wz,
+                                    double radius);
 
 typedef struct TSPHostCompositeScene {
     const TSPHostSceneVertex *vertices;
@@ -74,6 +84,24 @@ typedef struct TSPHostCompositeScene {
      * Nothing here exists in the GG runtime representation. */
     TSPHostExtraOccluderFn extra_occluder;
     const void *extra_occluder_user;
+    /* Optional partial-visibility form of the same query: 0 fully shadowed,
+     * 255 fully lit. When present the floor bake asks this once per cell
+     * instead of firing a fan of rays at extra_occluder, which is what lets
+     * the soft shadow be both finer and cheaper than the hard one it
+     * replaces. NULL keeps the historical ray-fan behaviour exactly. */
+    TSPHostExtraCoverageFn extra_coverage;
+    const void *extra_coverage_user;
+    /* Radius, in world units, over which the mesh occludes ambient light on
+     * the floor around itself. Zero disables the contact term. This is a
+     * different question from the cast shadow -- it does not depend on where
+     * the light is -- and it is the half of "standing on the floor" that
+     * survives even where the cast shadow points away from the viewer. */
+    double contact_radius;
+    /* How dark a fully-occluded floor cell gets, 0..1 as a fraction of the
+     * light coverage that would otherwise reach it. */
+    double contact_strength;
+    TSPHostContactFn extra_contact;
+    const void *extra_contact_user;
     /* Angular size of the light source, in world units. Zero keeps the exact
      * point-light cast. Non-zero bakes a soft floor shadow instead: a point
      * source resolves every gap in an occluder perfectly, which for foliage

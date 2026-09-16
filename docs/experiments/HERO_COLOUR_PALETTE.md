@@ -168,8 +168,8 @@ untouched.
 
 Everything else here is derived or measured. How saturated the piece should
 look is not something a metric settles, so `--hero-chroma` is exposed rather
-than buried, and the default of **0.72** was chosen by rendering the sweep and
-looking at it:
+than buried, and the default of **0.68** (0.72 for the single-hue palette) was chosen by
+rendering the sweep and looking at it:
 
 ![chroma 1.00, 0.72 and 0.50 against the greyscale reference](images/doomguy-colour-chroma-sweep.png)
 
@@ -186,7 +186,7 @@ adjacent stops end up separated by almost nothing the eye reads as lightness.
 The figure keeps its colour and loses its form. `fitRampChroma` reduces chroma
 until every adjacent pair of quantized stops clears 0.055 Oklab L -- the
 greyscale design's own tightest gap. On this hue at this band the cap does not
-bind (it allows 1.00), so 0.72 is taste, not necessity. On a saturated blue it
+bind (it allows 1.00), so the setting is taste, not necessity. On a saturated blue it
 binds hard, which is what the unit test checks.
 
 ## The 60 Hz interleave

@@ -118,8 +118,11 @@ if(roomHue.length!==3||roomHue.some(v=>!(v>=0&&v<=255))) fail('--room-hue must b
  * (see LIGHTNESS_DELTA in tools/recolour_semantic_frames.py). Chosen by
  * rendering 1.00 / 0.72 / 0.50 and looking at them; the sweep is committed as
  * docs/experiments/images/doomguy-colour-chroma-sweep.png so the choice can be
- * argued with rather than taken on trust. */
-const heroChroma=Number(argValue(args,'--hero-chroma','0.72'));
+ * argued with rather than taken on trust. Settled at 0.68 for this room after
+ * looking at the three-material renders against the cool walls; the sweep that
+ * picked 0.72 was of the single-hue palette, where there was no green to sit
+ * against the red. */
+const heroChroma=Number(argValue(args,'--hero-chroma','0.68'));
 const roomChroma=Number(argValue(args,'--room-chroma','1.0'));
 if(!(heroChroma>=0&&heroChroma<=2)||!(roomChroma>=0&&roomChroma<=2))
   fail('--hero-chroma/--room-chroma must be in 0..2');

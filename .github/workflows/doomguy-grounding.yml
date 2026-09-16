@@ -1,0 +1,211 @@
+name: Doomguy grounding
+
+on:
+  push:
+    branches:
+      - temp/doomguy-material-form-v2
+    paths:
+      - ".github/workflows/doomguy-grounding.yml"
+      - "tools/room_mesh_bake.c"
+      - "tools/room_mesh_bake.h"
+      - "tools/polar_baked_composite.c"
+      - "tools/polar_baked_composite.h"
+      - "tools/room_bundle_poc_gen.c"
+      - "tests/test_rmb_shadow_map.c"
+  workflow_dispatch:
+
+jobs:
+  grounding:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    env:
+      ASSET: assets/gg-hero/hunyuan_diorama_vertical_112-optimized.glb
+      BASE: -DROOM_BUNDLE_DOOMGUY_GENERATED -DROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install --user pillow
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Shadow map unit tests
+        run: |
+          set -euo pipefail
+          mkdir -p build/grounding
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tests/test_rmb_shadow_map.c -lm -o build/grounding/test-shadow
+          build/grounding/test-shadow
+
+      - name: Import the asset
+        run: |
+          set -euo pipefail
+          mkdir -p tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc \
+            --name doomguy --up y --height 12.2 \
+            --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5 \
+            --hue-families 3 > build/grounding/import.json
+          node tools/glb_rmb/gg_palette_design.mjs \
+            tools/generated/doomguy_mesh_palette.json \
+            build/grounding/palette > /dev/null
+
+      - name: Grounding off leaves the bake byte-identical
+        run: |
+          set -euo pipefail
+          # The shadow map agrees with the exact ray cast to ~99.9%, and the
+          # remaining tenth of a percent is real: built unconditionally it moved
+          # tile_loads from 5756 to 5759. Every other proof in this repository
+          # was measured against the exact cast, so the default must not have
+          # the map quietly substituted underneath it.
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror $BASE -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/grounding/bake-off
+          mkdir -p build/grounding/off
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
+            build/grounding/bake-off build/grounding/off \
+            | tee build/grounding/route-off.txt
+          grep -q 'tile_loads=5756 ' build/grounding/route-off.txt
+          grep -q 'scheduled_peak=58 ' build/grounding/route-off.txt
+          grep -q 'canonical=E4F108D3C424CCE3$' build/grounding/route-off.txt
+
+      - name: Build with grounding on
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror $BASE \
+            -DROOM_BUNDLE_DOOMGUY_GROUNDING=1 -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/grounding/bake-on
+
+      - name: Sanitized build with grounding on
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer $BASE \
+            -DROOM_BUNDLE_DOOMGUY_GROUNDING=1 -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/grounding/bake-san
+          mkdir -p build/grounding/san
+          ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
+            build/grounding/bake-san build/grounding/san > /dev/null
+
+      - name: The map may over-shadow, never under-shadow
+        run: |
+          set -euo pipefail
+          # The shadow map is an approximation of the exact ray cast and the
+          # useful property is that its error is ONE-SIDED. Conservative
+          # rasterisation over-covers by under a texel, so the map must be a
+          # strict superset of the true shadow: an extra shadowed cell is a
+          # silhouette about 0.03 world units too wide and nothing at 160x144
+          # can resolve it, while a missing one is a lit speckle inside a
+          # shadow and reads as noise. The tool exits non-zero on any miss;
+          # the bound on `extra` catches a regression that widens the map.
+          for dim in 512 1024; do
+            ROOM_BUNDLE_SHADOW_SELFCHECK=$dim \
+            ROOM_BUNDLE_SHADOW_DUMP=build/grounding/shadow-map-$dim.pgm \
+            ROOM_BUNDLE_SHADOW_FLOOR_DUMP=build/grounding/floor-$dim.pgm \
+              build/grounding/bake-on build/grounding \
+              | tee -a build/grounding/selfcheck.txt
+          done
+          python3 - <<'PY'
+          import re
+          rows = [m.groupdict() for m in re.finditer(
+              r"SHADOW_SELFCHECK dim=(?P<dim>\d+) grid=\S+ exact=(?P<exact>\d+) "
+              r"map=(?P<map>\d+) missed=(?P<missed>\d+) extra=(?P<extra>\d+) "
+              r"agree_pct_x1000=(?P<agree>\d+)",
+              open("build/grounding/selfcheck.txt").read())]
+          assert len(rows) == 2, rows
+          for r in rows:
+              missed, extra = int(r["missed"]), int(r["extra"])
+              exact, agree = int(r["exact"]), int(r["agree"])
+              assert missed == 0, r
+              assert extra < exact * 0.05, r
+              assert agree >= 99000, r
+              print("dim=%s agreement %.3f%% missed=%d extra=%d of %d shadowed"
+                    % (r["dim"], agree / 1000.0, missed, extra, exact))
+          # Higher resolution must converge, not drift.
+          assert int(rows[1]["extra"]) <= int(rows[0]["extra"]), rows
+          print("over-shadowing shrinks with resolution: %s -> %s"
+                % (rows[0]["extra"], rows[1]["extra"]))
+          PY
+
+      - name: Route bake, review capture, and the cost of it
+        run: |
+          set -euo pipefail
+          mkdir -p build/grounding/capture
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
+          ROOM_BUNDLE_CAPTURE_REVIEW=1 ROOM_BUNDLE_CAPTURE_OWNER=0 \
+            build/grounding/bake-on build/grounding/capture \
+            | tee build/grounding/route-on.txt
+          grep -q '^ROOM_BUNDLE_POC_PASS ' build/grounding/route-on.txt
+          test "$(find build/grounding/capture -name 'review-doomguy-detail-*.ppm' | wc -l)" -eq 120
+          python3 - <<'PY'
+          import re
+          def stat(path, key):
+              m = re.search(r"bundle=11 route=0->1 .*?%s=(\d+)" % key,
+                            open(path).read())
+              return int(m.group(1))
+          off_peak = stat("build/grounding/route-off.txt", "scheduled_peak")
+          on_peak = stat("build/grounding/route-on.txt", "scheduled_peak")
+          off_loads = stat("build/grounding/route-off.txt", "tile_loads")
+          on_loads = stat("build/grounding/route-on.txt", "tile_loads")
+          print("scheduled_peak %d -> %d, tile_loads %d -> %d"
+                % (off_peak, on_peak, off_loads, on_loads))
+          # Grounding is baked, so it costs no runtime work -- but the dithered
+          # floor does turn more background tiles over as the camera moves, and
+          # this chamber is already above the ~48-pattern/VBlank budget. Bound
+          # the growth so a retune cannot quietly make it much worse.
+          assert on_peak <= off_peak + 8, (off_peak, on_peak)
+          assert on_loads <= off_loads * 1.15, (off_loads, on_loads)
+          PY
+
+      - name: Recolour, contact sheet, orbit video
+        run: |
+          set -euo pipefail
+          python3 tools/recolour_semantic_frames.py \
+            build/grounding/palette.json build/grounding/capture \
+            build/grounding/render --scale 3 --sheet-every 15 \
+            | tee build/grounding/recolour.txt
+          grep -q '^RECOLOUR_PASS frames=120 masked=120 family=120 ' \
+            build/grounding/recolour.txt
+          ffmpeg -y -loglevel error \
+            -framerate 15 -i build/grounding/render/blend/%03d.png \
+            -vf "scale=480:432:flags=neighbor,setpts=2.0*PTS" -r 15 \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            -movflags +faststart \
+            build/grounding/doomguy-grounded-orbit.mp4
+          test -s build/grounding/doomguy-grounded-orbit.mp4
+          python3 - <<'PY'
+          from PIL import Image
+          # The shadow map and the floor comparison, as pictures rather than
+          # counts: a shape regression is obvious here and invisible in a
+          # percentage.
+          Image.open("build/grounding/shadow-map-1024.pgm").convert("RGB")\
+               .resize((512, 512), Image.NEAREST)\
+               .save("build/grounding/shadow-map.png")
+          Image.open("build/grounding/floor-1024.pgm").convert("RGB")\
+               .resize((1020, 340), Image.NEAREST)\
+               .save("build/grounding/floor-exact-vs-map.png")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-grounding
+          path: |
+            build/grounding/selfcheck.txt
+            build/grounding/route-off.txt
+            build/grounding/route-on.txt
+            build/grounding/recolour.txt
+            build/grounding/shadow-map.png
+            build/grounding/floor-exact-vs-map.png
+            build/grounding/doomguy-grounded-orbit.mp4
+            build/grounding/render/sheet-blend.png
+            build/grounding/render/sheet-grey.png
+          if-no-files-found: error
+          retention-days: 30

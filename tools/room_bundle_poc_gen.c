@@ -56,6 +56,99 @@
 #ifndef ROOM_BUNDLE_DOOMGUY_AO_STRENGTH
 #define ROOM_BUNDLE_DOOMGUY_AO_STRENGTH 0.65
 #endif
+/*
+ * Grounding pass, off by default.
+ *
+ * -DROOM_BUNDLE_DOOMGUY_GROUNDING=1 turns on all four parts with the values
+ * they were tuned at; each is still individually overridable. Everything here
+ * defaults OFF because every other proof in the repository was measured
+ * against the hard point cast of the low-poly proxy, and the shadow map does
+ * not reproduce it bit for bit (it agrees to ~99.9%, the rest being a
+ * silhouette under one texel too wide). Substituted silently it moved this
+ * chamber's tile_loads from 5756 to 5759 -- invisible on screen, and exactly
+ * the kind of drift that makes an old measurement untrustworthy.
+ *
+ * The four parts, and what each one is for:
+ *
+ *   SHADOW_DETAIL moves the cast from the 188-triangle shadow proxy onto the
+ *   full visual mesh, via the silhouette shadow map. Rasterising the caster
+ *   once from the light makes the per-receiver cost independent of how complex
+ *   the caster is, so the detail is not merely affordable -- it is several
+ *   hundred times cheaper than ray casting the same mesh would be.
+ *
+ *   SOFT_SHADOW gives that shadow a penumbra whose width is measured from how
+ *   far the blocker sits above the receiver, so contact is crisp and the far
+ *   end is diffuse. (The radius is a float and cannot be tested by the
+ *   preprocessor, hence the separate integer flag.)
+ *
+ *   GROUND_CONTACT darkens the statue's own lower surfaces where the floor
+ *   occludes them, and CONTACT_RADIUS darkens the floor where the statue
+ *   occludes it. These two are the light-INDEPENDENT half: the cast shadow
+ *   only anchors the figure on the side the light happens to throw it, and
+ *   from every other angle on the orbit it does nothing at all.
+ */
+#ifndef ROOM_BUNDLE_DOOMGUY_GROUNDING
+#define ROOM_BUNDLE_DOOMGUY_GROUNDING 0
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL
+#define ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL ROOM_BUNDLE_DOOMGUY_GROUNDING
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_SOFT_SHADOW
+#define ROOM_BUNDLE_DOOMGUY_SOFT_SHADOW ROOM_BUNDLE_DOOMGUY_GROUNDING
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_GROUND_CONTACT
+#define ROOM_BUNDLE_DOOMGUY_GROUND_CONTACT ROOM_BUNDLE_DOOMGUY_GROUNDING
+#endif
+/* Resolution of the silhouette shadow map. 1024 agrees with the exact ray cast
+ * to 99.87% on the proxy and 99.43% on the visual mesh, always in the
+ * over-shadowing direction; 2048 halves the remaining error for four times the
+ * build cost, which is not worth it at 160x144. */
+#ifndef ROOM_BUNDLE_DOOMGUY_SHADOW_MAP_DIM
+#define ROOM_BUNDLE_DOOMGUY_SHADOW_MAP_DIM 1024
+#endif
+/* Source disc radius in world units. Zero keeps the shadow hard even with a
+ * map. 3.0 puts the penumbra at roughly a tile wide at the far end of this
+ * chamber's throw while staying crisp at the feet. */
+#ifndef ROOM_BUNDLE_DOOMGUY_SOURCE_RADIUS
+#if ROOM_BUNDLE_DOOMGUY_GROUNDING
+#define ROOM_BUNDLE_DOOMGUY_SOURCE_RADIUS 3.0
+#else
+#define ROOM_BUNDLE_DOOMGUY_SOURCE_RADIUS 0.0
+#endif
+#endif
+/* How far out across the floor the statue occludes ambient light. */
+#ifndef ROOM_BUNDLE_DOOMGUY_CONTACT_RADIUS
+#if ROOM_BUNDLE_DOOMGUY_GROUNDING
+#define ROOM_BUNDLE_DOOMGUY_CONTACT_RADIUS 5.0
+#else
+#define ROOM_BUNDLE_DOOMGUY_CONTACT_RADIUS 0.0
+#endif
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_CONTACT_STRENGTH
+#define ROOM_BUNDLE_DOOMGUY_CONTACT_STRENGTH 0.80
+#endif
+/*
+ * How far up the statue the floor still occludes it, in world units.
+ *
+ * Sized to the object -- it is ~29.5 tall here -- and deliberately NOT to
+ * AO_RADIUS, which is 2.5 because it is sized to the statue's own crevices. A
+ * contact band 2.5 units tall is three screen pixels and nobody can see it.
+ * Swept at 4 / 6 / 9: 4 barely reads, 9 darkens over half the skirt, 6 puts
+ * the gradient on the base where the eye looks for it.
+ */
+#ifndef ROOM_BUNDLE_DOOMGUY_GROUND_REACH
+#define ROOM_BUNDLE_DOOMGUY_GROUND_REACH 6.0
+#endif
+/* World Z of the surface the statue stands on. Floor-mount puts it on the room
+ * floor; the plinth build stands it on the plinth top, and contact occlusion
+ * has to be measured against whichever it actually touches. */
+#ifndef ROOM_BUNDLE_DOOMGUY_FLOOR_CONTACT_Z
+#if defined(ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT) && ROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT
+#define ROOM_BUNDLE_DOOMGUY_FLOOR_CONTACT_Z 0.0
+#else
+#define ROOM_BUNDLE_DOOMGUY_FLOOR_CONTACT_Z 3.0
+#endif
+#endif
 #ifndef ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS
 #define ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS 0.0
 #endif
@@ -261,6 +354,12 @@ typedef struct World {
     uint8_t scene_vertex_count;
     uint8_t scene_rect_count;
     uint8_t lighting_stage;
+    /* Whether the silhouette shadow map covers this world's caster and light.
+     * Recorded rather than assumed: the detailed-shadow path has no usable
+     * fallback (ray casting the full visual mesh per receiver pixel is orders
+     * of magnitude slower than the proxy it replaced), so a failure here has
+     * to be loud. */
+    uint8_t shadow_map_ok;
 } World;
 typedef struct Pose {
     double x,y,z;
@@ -548,6 +647,19 @@ static int room_mesh_light_occluder(const void *user,
     return rmb_segment_occluded((const RMBScene *)user,lx,ly,lz,wx,wy,wz);
 }
 
+static uint8_t room_mesh_light_coverage(const void *user,
+                                        double lx,double ly,double lz,
+                                        double wx,double wy,double wz,
+                                        double source_radius){
+    return rmb_shadow_coverage((const RMBScene *)user,lx,ly,lz,wx,wy,wz,
+                               source_radius);
+}
+
+static uint8_t room_mesh_contact(const void *user,
+                                 double wx,double wy,double wz,double radius){
+    return rmb_ground_contact_openness((const RMBScene *)user,wx,wy,wz,radius);
+}
+
 static void finalize_scene(World *w){
     w->scene.vertices=w->scene_vertices;
     w->scene.vertex_count=w->scene_vertex_count;
@@ -559,10 +671,51 @@ static void finalize_scene(World *w){
     w->scene.rect_count=w->scene_rect_count;
     w->scene.extra_occluder=w->mesh.triangle_count?room_mesh_light_occluder:(TSPHostExtraOccluderFn)0;
     w->scene.extra_occluder_user=w->mesh.triangle_count?(const void *)&w->mesh:(const void *)0;
+    w->scene.extra_coverage=w->mesh.triangle_count?room_mesh_light_coverage:(TSPHostExtraCoverageFn)0;
+    w->scene.extra_coverage_user=w->mesh.triangle_count?(const void *)&w->mesh:(const void *)0;
+    w->scene.extra_contact=w->mesh.triangle_count?room_mesh_contact:(TSPHostContactFn)0;
+    w->scene.extra_contact_user=w->mesh.triangle_count?(const void *)&w->mesh:(const void *)0;
     /* Default to the exact point cast; chambers with a high, gappy occluder
      * opt into a soft source. */
     w->scene.source_radius=0.0;
+    w->scene.contact_radius=0.0;
+    w->scene.contact_strength=0.0;
+
+    /*
+     * No shadow map by default.
+     *
+     * The map agrees with the exact ray cast to about 99.9% and the remaining
+     * 0.1% is a silhouette under a texel too wide -- invisible, but not
+     * nothing: built unconditionally it moved this chamber's tile_loads from
+     * 5756 to 5759. Every other proof in the repository was measured against
+     * the exact cast, so a scene has to ask for the map rather than have it
+     * quietly substituted underneath it.
+     */
+    rmb_shadow_map_reset();
+    w->shadow_map_ok=0u;
 }
+
+/*
+ * Opt a finished world into the silhouette shadow map.
+ *
+ * Reset first rather than letting the builder decide it can reuse what it has:
+ * World is an ordinary local, so two chambers built one after another can land
+ * on the same stack address, and a map keyed on that pointer would be handed
+ * to the wrong scene. Cheap to rebuild, unpleasant to debug if it is wrong.
+ */
+#if defined(ROOM_BUNDLE_DOOMGUY_GENERATED) && \
+    (ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL || ROOM_BUNDLE_DOOMGUY_SOFT_SHADOW)
+static void enable_shadow_map(World *w,uint16_t dim){
+    double lx,ly,lz;
+    rmb_shadow_map_reset();
+    w->shadow_map_ok=0u;
+    if(!w->mesh.triangle_count||!w->scene.light_count)return;
+    lx=(double)w->scene_lights[0].x_q4/16.0;
+    ly=(double)w->scene_lights[0].y_q4/16.0;
+    lz=(double)w->scene_lights[0].height_q4/16.0;
+    w->shadow_map_ok=(uint8_t)rmb_shadow_map_build(&w->mesh,lx,ly,lz,dim);
+}
+#endif
 static void add_transformed_exit_seg(World *w,double ax,double ay,double bx,double by){
     add_seg(w,152.0-ax,48.0-ay,152.0-bx,48.0-by,0,32,0);
 }
@@ -924,8 +1077,18 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
      * does not participate in light visibility. A separately simplified,
      * invisible proxy owns cast shadows. Both came from the same normalized
      * GLB master, so their silhouettes remain registered. */
-    rmb_set_object_flags(m,visual,1u,0u);
+    /* SHADOW_DETAIL moves the cast from the decimated proxy to the visual
+     * mesh itself. Both were normalized from the same GLB so they are already
+     * registered; what changes is that the shadow's outline finally has as
+     * much detail as the thing casting it. */
+    rmb_set_object_flags(m,visual,1u,
+                         (uint8_t)(ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL?1u:0u));
     rmb_set_object_shade_levels(m,visual,(uint8_t)ROOM_BUNDLE_DOOMGUY_SHADE_LEVELS);
+#if ROOM_BUNDLE_DOOMGUY_GROUND_CONTACT
+    rmb_set_object_ground_contact(m,visual,1u,
+                                  (double)ROOM_BUNDLE_DOOMGUY_FLOOR_CONTACT_Z,
+                                  (double)ROOM_BUNDLE_DOOMGUY_GROUND_REACH);
+#endif
     /* The family plane only exists when the importer was run with
      * --hue-families and found a genuinely polychrome asset; without it this
      * is the plain recess path and every existing proof is unaffected. */
@@ -988,7 +1151,11 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
     rmb_set_object_flags(m,lighting,0u,0u);
 #endif
 
-    rmb_set_object_flags(m,shadow,0u,1u);
+    /* The proxy stops casting when the visual mesh does it properly; keeping
+     * both would union two silhouettes of the same object and put the coarse
+     * one's overhang back around the fine one's edge. */
+    rmb_set_object_flags(m,shadow,0u,
+                         (uint8_t)(ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL?0u:1u));
     rmb_add_indexed_mesh_q8(m,shadow,&t,
                             doomguy_shadow_xyz_q8,DOOMGUY_SHADOW_VERTEX_COUNT,
                             doomguy_shadow_indices,DOOMGUY_SHADOW_TRIANGLE_COUNT,0);
@@ -1091,6 +1258,20 @@ static void make_doomguy_hero_chamber(World *w){
     w->scene_lights[0].intensity=255u;
     w->lighting_stage=TSP_HOST_LIGHT_HARD;
     finalize_scene(w);
+#if ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL || ROOM_BUNDLE_DOOMGUY_SOFT_SHADOW
+    enable_shadow_map(w,(uint16_t)ROOM_BUNDLE_DOOMGUY_SHADOW_MAP_DIM);
+#if ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL
+    /* In detail mode the low-poly proxy has stopped casting, so there is
+     * nothing cheap left to fall back to -- ray casting the full visual mesh
+     * per receiver pixel is several hundred times slower than the proxy it
+     * replaced. A failure here has to stop the bake, not slow it down. */
+    if(!w->shadow_map_ok)
+        die("shadow-detail mode needs a silhouette shadow map and none built");
+#endif
+#endif
+    w->scene.source_radius=(double)ROOM_BUNDLE_DOOMGUY_SOURCE_RADIUS;
+    w->scene.contact_radius=(double)ROOM_BUNDLE_DOOMGUY_CONTACT_RADIUS;
+    w->scene.contact_strength=(double)ROOM_BUNDLE_DOOMGUY_CONTACT_STRENGTH;
 }
 
 static void add_bonsai_generated_mesh(RMBScene *m){
@@ -2935,6 +3116,66 @@ int main(int argc,char **argv){
 
     if(argc!=2){fprintf(stderr,"usage: %s OUTPUT_DIR\n",argv[0]);return 2;}
     outdir=argv[1];
+    if(getenv("ROOM_BUNDLE_SHADOW_SELFCHECK")){
+        /*
+         * The shadow map against the thing it replaced, over a grid covering
+         * the whole chamber floor.
+         *
+         * The map is an approximation of the exact ray cast and the useful
+         * question is not "are they identical" but "is the approximation
+         * one-sided". Conservative rasterisation over-covers by under a texel,
+         * so the map must be a strict SUPERSET of the true shadow: extra
+         * shadowed cells are a silhouette a hair too wide and invisible at
+         * this pixel scale, whereas a missing one is a lit speckle inside a
+         * shadow and reads as noise. missed == 0 is therefore the assertion,
+         * and extra is reported so a regression that widens it is visible.
+         */
+        static World w;
+        const double lx=62.0,ly=-96.0,lz=18.0;
+        const double x0=36.0,x1=116.0,y0=-40.0,y1=88.0;
+        const int n=160;
+        unsigned dim=(unsigned)atoi(getenv("ROOM_BUNDLE_SHADOW_SELFCHECK"));
+        int gx,gy,exact_count=0,map_count=0,missed=0,extra=0;
+        static uint8_t panel[160*160*3];
+        const char *fdump=getenv("ROOM_BUNDLE_SHADOW_FLOOR_DUMP");
+        if(dim<64u)dim=1024u;
+        make_world(11u,&w);
+        /* Explicit: the chamber only enables a map when its defines ask for
+         * one, and this check has to work either way. */
+        if(!rmb_shadow_map_build(&w.mesh,lx,ly,lz,(uint16_t)dim))
+            die("shadow self-check: no shadow map could be built");
+        for(gy=0;gy<n;++gy)for(gx=0;gx<n;++gx){
+            double wx=x0+(x1-x0)*((double)gx+0.5)/(double)n;
+            double wy=y0+(y1-y0)*((double)gy+0.5)/(double)n;
+            int e=rmb_segment_occluded_exact(&w.mesh,lx,ly,lz,wx,wy,0.0);
+            int a=rmb_shadow_coverage(&w.mesh,lx,ly,lz,wx,wy,0.0,0.0)<128u;
+            if(e)++exact_count;
+            if(a)++map_count;
+            if(e&&!a)++missed;
+            if(a&&!e)++extra;
+            /* Three panels side by side: exact cast, map, and the two
+             * overlaid, so a shape difference is visible rather than only a
+             * count. */
+            panel[(gy*3*n)+gx]=(uint8_t)(e?0u:255u);
+            panel[(gy*3*n)+n+gx]=(uint8_t)(a?0u:255u);
+            panel[(gy*3*n)+2*n+gx]=
+                (uint8_t)(e&&a?64u:(e?0u:(a?160u:255u)));
+        }
+        if(getenv("ROOM_BUNDLE_SHADOW_DUMP"))
+            rmb_shadow_map_write_pgm(getenv("ROOM_BUNDLE_SHADOW_DUMP"));
+        if(fdump){
+            FILE *pf=fopen(fdump,"wb");
+            if(!pf)die("cannot write shadow floor comparison");
+            fprintf(pf,"P5\n%d %d\n255\n",n*3,n);
+            fwrite(panel,1,(size_t)n*3u*(size_t)n,pf);
+            fclose(pf);
+        }
+        printf("SHADOW_SELFCHECK dim=%u grid=%dx%d exact=%d map=%d "
+               "missed=%d extra=%d agree_pct_x1000=%d\n",
+               dim,n,n,exact_count,map_count,missed,extra,
+               (int)((double)(n*n-missed-extra)*100000.0/(double)(n*n)));
+        return missed?1:0;
+    }
     if(getenv("ROOM_BUNDLE_ONLY")){
         only_bundle=atoi(getenv("ROOM_BUNDLE_ONLY"));
         if(only_bundle<0||only_bundle>=(int)BUNDLE_COUNT)

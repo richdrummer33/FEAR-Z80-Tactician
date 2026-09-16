@@ -780,7 +780,7 @@ static void perp_basis(double dx,double dy,double dz,
 
 static void bake_floor_shadow(void){
     TSPHostSceneLight light;
-    double lx,ly,lz,radius;
+    double lx,ly,lz,radius,contact,contact_strength;
     double minx=1e30,maxx=-1e30,miny=1e30,maxy=-1e30;
     uint8_t v;
     uint16_t gx,gy;
@@ -792,7 +792,10 @@ static void bake_floor_shadow(void){
 
     if(!g_scene_override||!g_scene_override->extra_occluder)return;
     radius=g_scene_override->source_radius;
-    if(!(radius>0.0))return;
+    contact=g_scene_override->contact_radius;
+    /* Either half alone is worth baking the grid for: a soft cast shadow with
+     * no contact term, or a contact term under a hard cast shadow. */
+    if(!(radius>0.0)&&!(contact>0.0&&g_scene_override->extra_contact))return;
     if(!scene_light(0u,&light))return;
     lx=(double)light.x_q4/16.0;
     ly=(double)light.y_q4/16.0;
@@ -815,27 +818,57 @@ static void bake_floor_shadow(void){
     if(g_floor_cov_sx<=0.0)g_floor_cov_sx=1.0;
     if(g_floor_cov_sy<=0.0)g_floor_cov_sy=1.0;
 
+    contact_strength=g_scene_override->contact_strength;
+    if(contact_strength<0.0)contact_strength=0.0;
+    if(contact_strength>1.0)contact_strength=1.0;
+
     for(gy=0u;gy<FLOOR_COV_DIM;++gy)for(gx=0u;gx<FLOOR_COV_DIM;++gx){
         double wx=g_floor_cov_x0+(double)gx*g_floor_cov_sx;
         double wy=g_floor_cov_y0+(double)gy*g_floor_cov_sy;
-        double dx=wx-lx,dy=wy-ly,dz=-lz;
-        double ux,uy,uz,vx2,vy2,vz2;
-        uint8_t k,open=0u;
-        perp_basis(dx,dy,dz,&ux,&uy,&uz,&vx2,&vy2,&vz2);
-        for(k=0u;k<FLOOR_COV_SAMPLES;++k){
-            /* Deterministic spiral over the source disc: fixed sample set so
-             * two bakes of the same scene are identical. */
-            double t=((double)k+0.5)/(double)FLOOR_COV_SAMPLES;
-            double r=radius*sqrt(t);
-            double a=(double)k*2.399963229728653; /* golden angle */
-            double sx=lx+(ux*cos(a)+vx2*sin(a))*r;
-            double sy=ly+(uy*cos(a)+vy2*sin(a))*r;
-            double sz=lz+(uz*cos(a)+vz2*sin(a))*r;
-            if(!g_scene_override->extra_occluder(
-                   g_scene_override->extra_occluder_user,sx,sy,sz,wx,wy,0.0))
-                ++open;
+        double cov=255.0;
+        if(radius>0.0){
+            if(g_scene_override->extra_coverage){
+                /* One query that already knows how far the blocker sits above
+                 * the receiver, instead of a fan of binary rays that has to
+                 * infer it from how many of them missed. */
+                cov=(double)g_scene_override->extra_coverage(
+                        g_scene_override->extra_coverage_user,
+                        lx,ly,lz,wx,wy,0.0,radius);
+            }else{
+                double dx=wx-lx,dy=wy-ly,dz=-lz;
+                double ux,uy,uz,vx2,vy2,vz2;
+                uint8_t k,open=0u;
+                perp_basis(dx,dy,dz,&ux,&uy,&uz,&vx2,&vy2,&vz2);
+                for(k=0u;k<FLOOR_COV_SAMPLES;++k){
+                    /* Deterministic spiral over the source disc: fixed sample
+                     * set so two bakes of the same scene are identical. */
+                    double t=((double)k+0.5)/(double)FLOOR_COV_SAMPLES;
+                    double r=radius*sqrt(t);
+                    double a=(double)k*2.399963229728653; /* golden angle */
+                    double sx=lx+(ux*cos(a)+vx2*sin(a))*r;
+                    double sy=ly+(uy*cos(a)+vy2*sin(a))*r;
+                    double sz=lz+(uz*cos(a)+vz2*sin(a))*r;
+                    if(!g_scene_override->extra_occluder(
+                           g_scene_override->extra_occluder_user,
+                           sx,sy,sz,wx,wy,0.0))
+                        ++open;
+                }
+                cov=(double)((open*255u)/FLOOR_COV_SAMPLES);
+            }
         }
-        g_floor_cov[gy][gx]=(uint8_t)((open*255u)/FLOOR_COV_SAMPLES);
+        if(contact>0.0&&g_scene_override->extra_contact){
+            /* Multiplied in, not added: the contact term says what fraction of
+             * the ambient hemisphere survives, and a floor cell already in
+             * full cast shadow cannot be darkened further by also being in a
+             * corner. Adding them would drive the sum past the one bit the
+             * floor actually has and quietly widen the cast shadow instead. */
+            double open=(double)g_scene_override->extra_contact(
+                    g_scene_override->extra_contact_user,wx,wy,0.0,contact)/255.0;
+            cov*=1.0-contact_strength*(1.0-open);
+        }
+        if(cov<0.0)cov=0.0;
+        if(cov>255.0)cov=255.0;
+        g_floor_cov[gy][gx]=(uint8_t)(cov+0.5);
     }
 
     g_floor_cov_active=1u;

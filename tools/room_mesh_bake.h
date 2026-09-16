@@ -92,6 +92,15 @@ typedef struct RMBObject {
     uint8_t recess_supplied;
     /* Set when the importer supplied a per-vertex material family. */
     uint8_t family_supplied;
+    /* Treat the plane z = ground_z as an occluder in this object's ambient
+     * occlusion probe, so its lower surfaces darken where they meet it. */
+    uint8_t ground_contact;
+    double ground_contact_z;
+    /* Reach of the ground-contact probe, kept separate from ao_radius. The
+     * two measure different things at different scales: ao_radius is sized to
+     * the object's own crevices, while contact is about how far up the object
+     * the floor still matters, which is a fraction of its height. */
+    double ground_contact_radius;
     double crease_coverage;
     /* How far a fully-recessed pixel is darkened, as a fraction of its
      * brightness. Applied BEFORE quantization so the ramp equalization sees
@@ -207,5 +216,89 @@ void rmb_render(const RMBScene *s,double cam_x,double cam_y,double cam_z,
 int rmb_segment_occluded(const RMBScene *s,
                          double lx,double ly,double lz,
                          double wx,double wy,double wz);
+/* The exact ray cast, bypassing any shadow map. This is what the map is
+ * measured against; it is also still the answer for a light the map was not
+ * built for. */
+int rmb_segment_occluded_exact(const RMBScene *s,
+                               double lx,double ly,double lz,
+                               double wx,double wy,double wz);
+
+/* ---------------------------------------------------------------------------
+ * Silhouette shadow map
+ *
+ * The cast shadow used to be answered by ray-casting the segment from the
+ * light to every receiver pixel against a decimated shadow proxy. That is
+ * expensive enough that the proxy has to stay coarse -- and a coarse proxy is
+ * exactly why the shadow on the floor reads as a flat polygon while the statue
+ * above it reads as a detailed object. The two are the same silhouette and
+ * they do not look like it.
+ *
+ * Rasterising the caster ONCE from a pinhole at the light inverts that trade.
+ * Building the map is linear in triangles, so the caster can be the full
+ * visual mesh instead of a 188-triangle blob, and every subsequent query is a
+ * projection and a texture read rather than a mesh traversal. Higher fidelity
+ * and less work: the per-pixel cost stops depending on the caster's complexity
+ * at all.
+ *
+ * The map stores distance from the light along its own forward axis, so a
+ * query is the standard depth comparison and a receiver nearer the light than
+ * the caster is correctly left lit -- which a pure 2D silhouette mask could
+ * not do.
+ * ------------------------------------------------------------------------ */
+
+/* Build (or rebuild) the shadow map for this scene and light position. Safe to
+ * call repeatedly: it rebuilds only when the scene pointer, the light or the
+ * requested resolution actually changed. Returns 0 when no shadow-casting
+ * geometry exists or the light sits inside the caster bounds, in which case
+ * every query falls back to the exact ray cast. */
+int rmb_shadow_map_build(const RMBScene *s,double lx,double ly,double lz,
+                         uint16_t resolution);
+/* Discard the map; the next query falls back to ray casting. */
+void rmb_shadow_map_reset(void);
+/* 1 when a map is built and covers this scene/light. */
+int rmb_shadow_map_ready(const RMBScene *s,double lx,double ly,double lz);
+
+/*
+ * Fraction of the source visible from a receiver, 0 (fully shadowed) to 255
+ * (fully lit).
+ *
+ * source_radius 0 asks for the exact point cast and answers 0 or 255. A
+ * positive radius runs percentage-closer soft shadows: the penumbra is sized
+ * from the measured distance between the blocker and the receiver, so contact
+ * is sharp and the far end of the shadow is soft. That is not a stylistic
+ * choice -- it is what a disc source actually does, and it is the single
+ * strongest cue that an object is standing ON something rather than floating
+ * over it.
+ */
+uint8_t rmb_shadow_coverage(const RMBScene *s,
+                            double lx,double ly,double lz,
+                            double wx,double wy,double wz,
+                            double source_radius);
+
+/* Write the depth map as a PGM for eyes-on debugging. 0 on failure. */
+int rmb_shadow_map_write_pgm(const char *path);
+
+/* ---------------------------------------------------------------------------
+ * Ground-plane contact occlusion
+ *
+ * A finite-radius ambient occlusion probe treats the ground as an occluder, so
+ * surfaces close to it darken and surfaces further up do not. An INFINITE
+ * plane would be useless here: it subtends exactly the lower hemisphere from
+ * any height, so it occludes every point on a vertical wall equally and
+ * produces no gradient at all. The gradient that makes an object look planted
+ * comes entirely from the probe's limited reach -- a point at height h is
+ * occluded by the floor only while h is small next to the AO radius.
+ * ------------------------------------------------------------------------ */
+void rmb_set_object_ground_contact(RMBScene *s,uint8_t object_id,
+                                   uint8_t enabled,double ground_z,
+                                   double reach);
+/* The same measurement taken FROM the ground: how much of the upward
+ * hemisphere the shadow-casting geometry leaves open at a floor point, 0
+ * (enclosed) .. 255 (open). Light-independent by construction, which is the
+ * point -- a cast shadow only anchors the object on the side the light throws
+ * it, and from every other angle the figure still floats. */
+uint8_t rmb_ground_contact_openness(const RMBScene *s,
+                                    double wx,double wy,double wz,
+                                    double radius);
 
 #endif

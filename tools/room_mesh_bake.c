@@ -1,5 +1,6 @@
 #include <math.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +47,9 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     s->objects[id].smooth_shading=0u;
     s->objects[id].ramp_levels=0u;
     s->objects[id].family_supplied=0u;
+    s->objects[id].ground_contact=0u;
+    s->objects[id].ground_contact_z=0.0;
+    s->objects[id].ground_contact_radius=0.0;
     s->objects[id].static_light=0u;
     s->objects[id].incident_weight=1.0;
     s->objects[id].ao_radius=0.0;
@@ -121,6 +125,16 @@ void rmb_set_object_incident_weight(RMBScene *s,uint8_t object_id,double w){
     if(object_id>=s->object_count)rmb_fail("invalid incident-weight object id");
     if(w<0.0||w>1.0)rmb_fail("incident weight must be 0..1");
     s->objects[object_id].incident_weight=w;
+}
+
+void rmb_set_object_ground_contact(RMBScene *s,uint8_t object_id,
+                                   uint8_t enabled,double ground_z,
+                                   double reach){
+    if(object_id>=s->object_count)rmb_fail("invalid ground-contact object id");
+    if(enabled&&!(reach>0.0))rmb_fail("ground-contact reach must be positive");
+    s->objects[object_id].ground_contact=(uint8_t)(enabled?1u:0u);
+    s->objects[object_id].ground_contact_z=ground_z;
+    s->objects[object_id].ground_contact_radius=reach;
 }
 
 void rmb_set_object_static_light(RMBScene *s,uint8_t object_id,
@@ -715,9 +729,34 @@ static void ensure_static_lighting(const RMBScene *s,const RMBLight *light){
             if(ob->ao_radius>0.0){
                 uint8_t open=0u;
                 for(k=0u;k<RMB_AO_RAYS;++k){
-                    RMBVec3 d=hemisphere_dir(k,RMB_AO_RAYS,n,tx,ty);
-                    d.x*=ob->ao_radius;d.y*=ob->ao_radius;d.z*=ob->ao_radius;
-                    if(!bake_segment_hit(s,o,d))++open;
+                    RMBVec3 u=hemisphere_dir(k,RMB_AO_RAYS,n,tx,ty);
+                    RMBVec3 d;
+                    d.x=u.x*ob->ao_radius;
+                    d.y=u.y*ob->ao_radius;
+                    d.z=u.z*ob->ao_radius;
+                    if(bake_segment_hit(s,o,d))continue;
+                    /*
+                     * The ground counts as an occluder, and it is not in the
+                     * mesh -- the room's floor is drawn by the segment
+                     * renderer, so an AO probe against the triangle soup alone
+                     * never sees it and the statue's lowest surfaces come out
+                     * exactly as bright as its highest. That is the hard join
+                     * where the figure meets the floor.
+                     *
+                     * d already carries the AO radius, so t in (0,1] is
+                     * "within reach", and that finite reach is the whole
+                     * effect: an infinite plane subtends the lower hemisphere
+                     * from ANY height and would darken every vertex equally.
+                     * What makes an object look planted is that the floor is
+                     * only close enough to matter near the bottom.
+                     */
+                    if(ob->ground_contact&&u.z<-1e-12){
+                        /* Distance to the ground along the UNIT direction, so
+                         * the contact reach is independent of ao_radius. */
+                        double t=(ob->ground_contact_z-o.z)/u.z;
+                        if(t>1e-6&&t<=ob->ground_contact_radius)continue;
+                    }
+                    ++open;
                 }
                 g_vao[vi]=(float)((double)open/(double)RMB_AO_RAYS);
             }
@@ -1156,9 +1195,9 @@ static int segment_triangle_hit(RMBVec3 o,RMBVec3 d,
     return t>1e-6&&t<1.0-1e-6;
 }
 
-int rmb_segment_occluded(const RMBScene *s,
-                         double lx,double ly,double lz,
-                         double wx,double wy,double wz){
+int rmb_segment_occluded_exact(const RMBScene *s,
+                               double lx,double ly,double lz,
+                               double wx,double wy,double wz){
     RMBVec3 o={lx,ly,lz},d={wx-lx,wy-ly,wz-lz};
     uint16_t i;
     if(!s||!s->triangle_count||!segment_aabb_hit(s,o,d))return 0;
@@ -1172,6 +1211,525 @@ int rmb_segment_occluded(const RMBScene *s,
             return 1;
     }
     return 0;
+}
+
+/*
+ * The same question, answered from the shadow map when one covers this light.
+ * Kept as a wrapper rather than replacing the exact test outright: the exact
+ * one is what the map is validated against, and it is still the answer for any
+ * light the map was not built for.
+ */
+int rmb_segment_occluded(const RMBScene *s,
+                         double lx,double ly,double lz,
+                         double wx,double wy,double wz){
+    if(rmb_shadow_map_ready(s,lx,ly,lz))
+        return rmb_shadow_coverage(s,lx,ly,lz,wx,wy,wz,0.0)<128u;
+    return rmb_segment_occluded_exact(s,lx,ly,lz,wx,wy,wz);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Silhouette shadow map. See room_mesh_bake.h for why this exists.
+ * ------------------------------------------------------------------------ */
+#define RMB_SM_MAX_DIM 2048u
+/* Rasterisation over-coverage, in map pixels. See sm_raster_triangle. */
+/*
+ * Conservative-rasterisation over-coverage, in map pixels.
+ *
+ * Half a pixel diagonal (0.7072) is the value that PROVABLY covers the centre
+ * of every pixel a triangle overlaps. Measured against the exact ray cast at
+ * 1024, the smaller 0.50 already reaches zero missed receivers on both casters
+ * and over-covers noticeably less:
+ *
+ *   dilation  proxy missed/extra   visual-mesh missed/extra
+ *   0.00           7 / 2                  10 / 13
+ *   0.15           1 / 9                   5 / 25
+ *   0.35           1 / 16                  2 / 50
+ *   0.50           0 / 21                  0 / 91
+ *   0.7072         0 / 32                  0 / 146
+ *
+ * Zero missed is the property worth buying: a hole inside a shadow is a lit
+ * speckle and reads as noise, while over-covering by well under one texel
+ * widens the silhouette by around 0.03 world units, which no part of this
+ * renderer can resolve. Both directions of error shrink with resolution.
+ */
+#define SM_DILATE 0.50
+
+static float *g_sm_depth;               /* distance from the light, +inf empty */
+static uint16_t g_sm_dim;
+static const RMBScene *g_sm_scene;
+static double g_sm_lx,g_sm_ly,g_sm_lz;
+static RMBVec3 g_sm_f,g_sm_r,g_sm_u;    /* light-space basis */
+static double g_sm_tan_x,g_sm_tan_y;    /* half-extents at unit forward depth */
+static double g_sm_near;
+static uint8_t g_sm_valid;
+static uint32_t g_sm_skipped_tris;
+
+void rmb_shadow_map_reset(void){
+    free(g_sm_depth);
+    g_sm_depth=(float *)0;
+    g_sm_dim=0u;
+    g_sm_scene=(const RMBScene *)0;
+    g_sm_valid=0u;
+    g_sm_skipped_tris=0u;
+}
+
+int rmb_shadow_map_ready(const RMBScene *s,double lx,double ly,double lz){
+    return g_sm_valid&&g_sm_scene==s&&
+           g_sm_lx==lx&&g_sm_ly==ly&&g_sm_lz==lz;
+}
+
+/* Light-space coordinates of a world point: forward distance plus the two
+ * transverse offsets, before the division that makes them a screen position. */
+static void sm_light_space(double wx,double wy,double wz,
+                           double *fz,double *rr,double *uu){
+    double dx=wx-g_sm_lx,dy=wy-g_sm_ly,dz=wz-g_sm_lz;
+    *fz=dx*g_sm_f.x+dy*g_sm_f.y+dz*g_sm_f.z;
+    *rr=dx*g_sm_r.x+dy*g_sm_r.y+dz*g_sm_r.z;
+    *uu=dx*g_sm_u.x+dy*g_sm_u.y+dz*g_sm_u.z;
+}
+
+/* Project to fractional map pixels. Returns 0 when the point is behind the
+ * near plane, where the projection is meaningless. */
+static int sm_project(double wx,double wy,double wz,
+                      double *px,double *py,double *fz_out){
+    double fz,rr,uu;
+    sm_light_space(wx,wy,wz,&fz,&rr,&uu);
+    if(fz<=g_sm_near)return 0;
+    *px=(rr/(fz*g_sm_tan_x)*0.5+0.5)*(double)g_sm_dim;
+    *py=(uu/(fz*g_sm_tan_y)*0.5+0.5)*(double)g_sm_dim;
+    *fz_out=fz;
+    return 1;
+}
+
+static void sm_store(int x,int y,double fz){
+    float *slot;
+    if(x<0||y<0||x>=(int)g_sm_dim||y>=(int)g_sm_dim)return;
+    slot=&g_sm_depth[(size_t)y*g_sm_dim+(size_t)x];
+    if((float)fz<*slot)*slot=(float)fz;
+}
+
+/*
+ * Rasterise one triangle into the depth map.
+ *
+ * Depth is interpolated as 1/fz, which is the quantity that is linear in
+ * screen space under a perspective projection. Interpolating fz directly is
+ * the classic error and it bows the stored surface toward the light in the
+ * middle of every large triangle -- which on a floor-length shadow shows up as
+ * a bite taken out of the middle of the silhouette.
+ */
+static void sm_raster_triangle(RMBVec3 a,RMBVec3 b,RMBVec3 c){
+    double pax,pay,paz,pbx,pby,pbz,pcx,pcy,pcz;
+    double minx,maxx,miny,maxy,area;
+    double nx[3],ny[3],dmin,dmax;
+    int x0,x1,y0,y1,x,y;
+    if(!sm_project(a.x,a.y,a.z,&pax,&pay,&paz)||
+       !sm_project(b.x,b.y,b.z,&pbx,&pby,&pbz)||
+       !sm_project(c.x,c.y,c.z,&pcx,&pcy,&pcz)){
+        /* Straddles the light's near plane. Counted rather than silently
+         * dropped: a non-zero total means the map is not authoritative and the
+         * caller must keep ray casting. */
+        ++g_sm_skipped_tris;
+        return;
+    }
+    area=(pbx-pax)*(pcy-pay)-(pby-pay)*(pcx-pax);
+    if(fabs(area)<1e-12)return;
+    if(area<0.0){
+        /*
+         * Back-facing in light space. Swap two corners so the winding is
+         * positive and the inside test below works, rather than dropping the
+         * triangle.
+         *
+         * Dropping it is the tempting shortcut -- for a closed manifold the
+         * front faces alone define the silhouette exactly -- but these are
+         * decimated shells with no guarantee of being closed or consistently
+         * wound, so a discarded back face can be the only surface covering
+         * that part of the map. Keeping both costs nothing: the buffer keeps
+         * the minimum, so a back face behind a front face never wins.
+         */
+        double tx=pbx,ty=pby,tz=pbz;
+        pbx=pcx;pby=pcy;pbz=pcz;
+        pcx=tx;pcy=ty;pcz=tz;
+        area=-area;
+    }
+
+    /*
+     * Conservative rasterisation: push each EDGE outward along its own normal
+     * by half a pixel diagonal, then re-derive the corners as the
+     * intersections of the pushed edges.
+     *
+     * Pixel-centre sampling loses any triangle thinner than a pixel, and the
+     * triangles that go thin here are not an edge case -- they are the ones
+     * that matter most. The statue's base is almost edge-on to a light that
+     * sits barely above the floor, so the whole contact region projects into
+     * light space as slivers a fraction of a texel wide. Dropping them punches
+     * lit holes exactly where the object most needs to look planted, and the
+     * holes radiate outward from the base because that is the direction the
+     * projection magnifies.
+     *
+     * Expanding from the centroid instead -- the obvious cheap version -- does
+     * not work: on a sliver the centroid lies on the sliver, so that offset
+     * lengthens it without widening it at all. The offset has to be per EDGE,
+     * along that edge's own normal.
+     *
+     * Worth about seven missed receivers in ten thousand at 1024 (see
+     * SM_DILATE). Small, and one-sided in the direction that matters.
+     */
+    {
+        double vx[3],vy[3],vz[3],ox[3],oy[3];
+        int e;
+        vx[0]=pax;vy[0]=pay;vz[0]=paz;
+        vx[1]=pbx;vy[1]=pby;vz[1]=pbz;
+        vx[2]=pcx;vy[2]=pcy;vz[2]=pcz;
+        /* Outward normal offsets, one per edge i -> i+1. Winding is positive
+         * by now, so the interior is left of each directed edge. */
+        for(e=0;e<3;++e){
+            double dx=vx[(e+1)%3]-vx[e],dy=vy[(e+1)%3]-vy[e];
+            double l=sqrt(dx*dx+dy*dy);
+            if(l<1e-12){ox[e]=0.0;oy[e]=0.0;continue;}
+            ox[e]=dy/l*SM_DILATE;
+            oy[e]=-dx/l*SM_DILATE;
+        }
+        for(e=0;e<3;++e){
+            /* Corner e joins edge e-1 and edge e. */
+            int p=(e+2)%3;
+            double a1x=vx[p]+ox[p],a1y=vy[p]+oy[p];
+            double d1x=vx[e]-vx[p],d1y=vy[e]-vy[p];
+            double a2x=vx[e]+ox[e],a2y=vy[e]+oy[e];
+            double d2x=vx[(e+1)%3]-vx[e],d2y=vy[(e+1)%3]-vy[e];
+            double den=d1x*d2y-d1y*d2x,t;
+            if(fabs(den)<1e-9){
+                /* Edges effectively parallel: no well-defined intersection, so
+                 * take the averaged offset rather than a point at infinity. */
+                nx[e]=vx[e]+(ox[p]+ox[e])*0.5;
+                ny[e]=vy[e]+(oy[p]+oy[e])*0.5;
+                continue;
+            }
+            t=((a2x-a1x)*d2y-(a2y-a1y)*d2x)/den;
+            nx[e]=a1x+d1x*t;
+            ny[e]=a1y+d1y*t;
+        }
+        pax=nx[0];pay=ny[0];
+        pbx=nx[1];pby=ny[1];
+        pcx=nx[2];pcy=ny[2];
+        /* Depths stay the originals; the expansion is a coverage device, not a
+         * change of geometry. Interpolating to an expanded corner extrapolates
+         * beyond the real triangle, so the result is clamped to the triangle's
+         * own depth range below. */
+        dmin=vz[0]<vz[1]?(vz[0]<vz[2]?vz[0]:vz[2]):(vz[1]<vz[2]?vz[1]:vz[2]);
+        dmax=vz[0]>vz[1]?(vz[0]>vz[2]?vz[0]:vz[2]):(vz[1]>vz[2]?vz[1]:vz[2]);
+        area=(pbx-pax)*(pcy-pay)-(pby-pay)*(pcx-pax);
+        if(fabs(area)<1e-12)return;
+    }
+
+    minx=pax<pbx?(pax<pcx?pax:pcx):(pbx<pcx?pbx:pcx);
+    maxx=pax>pbx?(pax>pcx?pax:pcx):(pbx>pcx?pbx:pcx);
+    miny=pay<pby?(pay<pcy?pay:pcy):(pby<pcy?pby:pcy);
+    maxy=pay>pby?(pay>pcy?pay:pcy):(pby>pcy?pby:pcy);
+    x0=(int)floor(minx); x1=(int)ceil(maxx);
+    y0=(int)floor(miny); y1=(int)ceil(maxy);
+    if(x0<0)x0=0;
+    if(y0<0)y0=0;
+    if(x1>(int)g_sm_dim-1)x1=(int)g_sm_dim-1;
+    if(y1>(int)g_sm_dim-1)y1=(int)g_sm_dim-1;
+    if(x0>x1||y0>y1)return;
+
+    for(y=y0;y<=y1;++y)for(x=x0;x<=x1;++x){
+        double sx=(double)x+0.5,sy=(double)y+0.5;
+        /* Edge functions, all three in the same orientation:
+         * cross(edge, sample - edge start). Mixing the operand order on one of
+         * them negates that barycentric, and the inside test then accepts a
+         * half-plane the triangle does not occupy -- which does not blank the
+         * map, it fills it with neighbouring triangles' wrong halves and
+         * leaves structured holes that look like an aliasing problem. */
+        double w0=((pbx-pax)*(sy-pay)-(pby-pay)*(sx-pax))/area;
+        double w1=((pcx-pbx)*(sy-pby)-(pcy-pby)*(sx-pbx))/area;
+        double w2,inv;
+        if(w0<-1e-9||w1<-1e-9)continue;
+        w2=1.0-w0-w1;
+        if(w2<-1e-9)continue;
+        /* w1,w2,w0 weight a,b,c respectively for this edge ordering. */
+        inv=w1/paz+w2/pbz+w0/pcz;
+        if(inv<=1e-12)continue;
+        {
+            double d=1.0/inv;
+            if(d<dmin)d=dmin;
+            if(d>dmax)d=dmax;
+            sm_store(x,y,d);
+        }
+    }
+}
+
+int rmb_shadow_map_build(const RMBScene *s,double lx,double ly,double lz,
+                         uint16_t resolution){
+    RMBVec3 centre,d;
+    double bmin[3],bmax[3];
+    double len,maxr=0.0,maxu=0.0,minf=1e30;
+    uint16_t i;
+    uint8_t any=0u;
+    int corner;
+    size_t n;
+
+    if(rmb_shadow_map_ready(s,lx,ly,lz)&&g_sm_dim==resolution)return 1;
+    rmb_shadow_map_reset();
+    if(!s||!s->triangle_count)return 0;
+    if(resolution<64u)resolution=64u;
+    if(resolution>RMB_SM_MAX_DIM)resolution=RMB_SM_MAX_DIM;
+
+    /* Bounds of the shadow-casting geometry only. Sizing the frustum to the
+     * whole scene would spend most of the map's resolution on the room. */
+    bmin[0]=bmin[1]=bmin[2]=1e30;
+    bmax[0]=bmax[1]=bmax[2]=-1e30;
+    for(i=0u;i<s->triangle_count;++i){
+        const RMBTriangle *t=&s->triangles[i];
+        uint8_t k;
+        if(!s->objects[t->object_id].casts_shadow)continue;
+        for(k=0u;k<3u;++k){
+            RMBVec3 p=s->vertices[t->v[k]];
+            double q[3];
+            q[0]=p.x;q[1]=p.y;q[2]=p.z;
+            for(corner=0;corner<3;++corner){
+                if(q[corner]<bmin[corner])bmin[corner]=q[corner];
+                if(q[corner]>bmax[corner])bmax[corner]=q[corner];
+            }
+        }
+        any=1u;
+    }
+    if(!any)return 0;
+
+    centre.x=(bmin[0]+bmax[0])*0.5;
+    centre.y=(bmin[1]+bmax[1])*0.5;
+    centre.z=(bmin[2]+bmax[2])*0.5;
+    d.x=centre.x-lx; d.y=centre.y-ly; d.z=centre.z-lz;
+    len=sqrt(vdot(d,d));
+    if(len<1e-9)return 0;              /* light inside the caster */
+    g_sm_f.x=d.x/len; g_sm_f.y=d.y/len; g_sm_f.z=d.z/len;
+    basis_from_normal(g_sm_f,&g_sm_r,&g_sm_u);
+
+    g_sm_lx=lx; g_sm_ly=ly; g_sm_lz=lz;
+    /* Half-angles that just contain the caster's eight corners, then a margin
+     * so a bilinear/PCF tap at the very edge still reads real data. */
+    for(corner=0;corner<8;++corner){
+        double px=(corner&1)?bmax[0]:bmin[0];
+        double py=(corner&2)?bmax[1]:bmin[1];
+        double pz=(corner&4)?bmax[2]:bmin[2];
+        double fz,rr,uu;
+        sm_light_space(px,py,pz,&fz,&rr,&uu);
+        if(fz<minf)minf=fz;
+        if(fz<=1e-6)return 0;          /* caster straddles the light */
+        if(fabs(rr)/fz>maxr)maxr=fabs(rr)/fz;
+        if(fabs(uu)/fz>maxu)maxu=fabs(uu)/fz;
+    }
+    g_sm_tan_x=maxr*1.08+1e-3;
+    g_sm_tan_y=maxu*1.08+1e-3;
+    g_sm_near=minf*0.5;
+
+    g_sm_dim=resolution;
+    n=(size_t)g_sm_dim*(size_t)g_sm_dim;
+    g_sm_depth=(float *)malloc(n*sizeof(float));
+    if(!g_sm_depth){g_sm_dim=0u;return 0;}
+    for(i=0u;i<g_sm_dim;++i){
+        size_t j;
+        for(j=0u;j<g_sm_dim;++j)g_sm_depth[(size_t)i*g_sm_dim+j]=1e30f;
+    }
+
+    g_sm_scene=s;
+    g_sm_valid=1u;
+    g_sm_skipped_tris=0u;
+    for(i=0u;i<s->triangle_count;++i){
+        const RMBTriangle *t=&s->triangles[i];
+        if(!s->objects[t->object_id].casts_shadow)continue;
+        sm_raster_triangle(s->vertices[t->v[0]],
+                           s->vertices[t->v[1]],
+                           s->vertices[t->v[2]]);
+    }
+    if(g_sm_skipped_tris){
+        /* Incomplete map: refuse it rather than cast a shadow with holes. */
+        rmb_shadow_map_reset();
+        return 0;
+    }
+    return 1;
+}
+
+/* Nearest blocker depth at a fractional map position, or 0 when the tap is
+ * outside the map or empty. */
+static double sm_tap(double px,double py){
+    int x=(int)floor(px),y=(int)floor(py);
+    float v;
+    if(x<0||y<0||x>=(int)g_sm_dim||y>=(int)g_sm_dim)return 0.0;
+    v=g_sm_depth[(size_t)y*g_sm_dim+(size_t)x];
+    return v>1e29f?0.0:(double)v;
+}
+
+uint8_t rmb_shadow_coverage(const RMBScene *s,
+                            double lx,double ly,double lz,
+                            double wx,double wy,double wz,
+                            double source_radius){
+    double px,py,fz,bias;
+    if(!rmb_shadow_map_ready(s,lx,ly,lz))
+        return rmb_segment_occluded_exact(s,lx,ly,lz,wx,wy,wz)?0u:255u;
+    if(!sm_project(wx,wy,wz,&px,&py,&fz))return 255u;
+    /* Scaled with depth: a fixed world bias is either useless close to the
+     * light or a visible shadow gap far from it. */
+    bias=fz*2e-3+1e-3;
+
+    if(!(source_radius>0.0)){
+        double b=sm_tap(px,py);
+        return (b>0.0&&b+bias<fz)?0u:255u;
+    }
+    {
+        /*
+         * Percentage-closer soft shadows.
+         *
+         * Two passes: find how far in front of the receiver the blockers
+         * actually are, then filter over a kernel sized from that distance.
+         * The penumbra a disc source casts widens with the blocker-to-receiver
+         * gap, so this is not a stylistic blur -- it is why a shadow is crisp
+         * where the object touches the ground and diffuse where it is thrown
+         * across the room, which is the cue that reads as "standing on".
+         */
+        double search,sum=0.0,pen;
+        int count=0,k,taps=0,lit=0;
+        double avg;
+        /* Blocker search radius in map pixels: the source's angular size at
+         * the receiver, expressed in the map's own projection. */
+        search=(source_radius/(fz*g_sm_tan_x))*0.5*(double)g_sm_dim;
+        if(search<1.0)search=1.0;
+        if(search>64.0)search=64.0;
+        for(k=0;k<16;++k){
+            double a=(double)k*2.399963229728653;
+            double rr=search*sqrt(((double)k+0.5)/16.0);
+            double b=sm_tap(px+cos(a)*rr,py+sin(a)*rr);
+            if(b>0.0&&b+bias<fz){sum+=b;++count;}
+        }
+        if(!count)return 255u;
+        avg=sum/(double)count;
+        /* Penumbra half-width at the receiver, projected back into map
+         * pixels. (fz - avg)/avg is the similar-triangles ratio. */
+        pen=(source_radius*(fz-avg)/avg);
+        pen=(pen/(fz*g_sm_tan_x))*0.5*(double)g_sm_dim;
+        if(pen<0.5)pen=0.5;
+        if(pen>96.0)pen=96.0;
+        for(k=0;k<24;++k){
+            double a=(double)k*2.399963229728653;
+            double rr=pen*sqrt(((double)k+0.5)/24.0);
+            double b=sm_tap(px+cos(a)*rr,py+sin(a)*rr);
+            ++taps;
+            if(!(b>0.0&&b+bias<fz))++lit;
+        }
+        return (uint8_t)((lit*255)/taps);
+    }
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Ground-contact occlusion, seen from the ground
+ *
+ * The companion to the per-vertex ground_contact term: that one darkens the
+ * OBJECT where it approaches the floor, this one darkens the FLOOR where it
+ * approaches the object. Both are the same physical statement -- a
+ * finite-reach ambient probe finds less open sky inside a corner -- applied to
+ * the two surfaces that form the corner, and they have to agree or the join
+ * reads as two unrelated smudges rather than as one contact.
+ *
+ * Deliberately independent of the light. The cast shadow only anchors the
+ * object on the side the light happens to throw it; from any other angle the
+ * figure still floats. This term is there from every angle because ambient
+ * occlusion does not have a direction.
+ */
+uint8_t rmb_ground_contact_openness(const RMBScene *s,
+                                    double wx,double wy,double wz,
+                                    double radius){
+    /* Caster bounds, cached across calls.
+     *
+     * This function is asked about every cell of a floor-wide grid, and the
+     * overwhelming majority of them are nowhere near the object -- the bounds
+     * test below rejects them immediately. Recomputing the bounds to perform
+     * that rejection made the rejection cost a full pass over the triangle
+     * list, so the cheap path was the expensive one and the whole grid took
+     * tens of seconds. */
+    static const RMBScene *cache_scene;
+    static uint16_t cache_tris;
+    static double lo[3],hi[3];
+    static uint8_t cache_ok;
+    RMBVec3 n={0.0,0.0,1.0},o,tx,ty,d;
+    uint16_t i;
+    uint8_t k,open=0u;
+    if(!s||!s->triangle_count||!(radius>0.0))return 255u;
+
+    if(cache_scene!=s||cache_tris!=s->triangle_count){
+        cache_scene=s;
+        cache_tris=s->triangle_count;
+        lo[0]=lo[1]=lo[2]=1e30;
+        hi[0]=hi[1]=hi[2]=-1e30;
+        for(i=0u;i<s->triangle_count;++i){
+            const RMBTriangle *t=&s->triangles[i];
+            uint8_t c;
+            if(!s->objects[t->object_id].casts_shadow)continue;
+            for(c=0u;c<3u;++c){
+                RMBVec3 p=s->vertices[t->v[c]];
+                double q[3];
+                uint8_t a;
+                q[0]=p.x;q[1]=p.y;q[2]=p.z;
+                for(a=0u;a<3u;++a){
+                    if(q[a]<lo[a])lo[a]=q[a];
+                    if(q[a]>hi[a])hi[a]=q[a];
+                }
+            }
+        }
+        cache_ok=(uint8_t)(lo[0]<=hi[0]);
+    }
+    if(!cache_ok)return 255u;
+    if(wx<lo[0]-radius||wx>hi[0]+radius||
+       wy<lo[1]-radius||wy>hi[1]+radius||
+       wz<lo[2]-radius||wz>hi[2]+radius)return 255u;
+
+    o.x=wx;o.y=wy;o.z=wz+1e-3;
+    basis_from_normal(n,&tx,&ty);
+    for(k=0u;k<RMB_AO_RAYS;++k){
+        uint8_t blocked=0u;
+        d=hemisphere_dir(k,RMB_AO_RAYS,n,tx,ty);
+        d.x*=radius;d.y*=radius;d.z*=radius;
+        for(i=0u;i<s->triangle_count;++i){
+            const RMBTriangle *t=&s->triangles[i];
+            if(!s->objects[t->object_id].casts_shadow)continue;
+            if(segment_triangle_hit(o,d,s->vertices[t->v[0]],
+                                    s->vertices[t->v[1]],s->vertices[t->v[2]])){
+                blocked=1u;
+                break;
+            }
+        }
+        if(!blocked)++open;
+    }
+    return (uint8_t)(((uint16_t)open*255u)/RMB_AO_RAYS);
+}
+
+int rmb_shadow_map_write_pgm(const char *path){
+    FILE *f;
+    size_t i,n;
+    double lo=1e30,hi=-1e30;
+    if(!g_sm_valid||!g_sm_depth)return 0;
+    n=(size_t)g_sm_dim*(size_t)g_sm_dim;
+    for(i=0u;i<n;++i){
+        double v=(double)g_sm_depth[i];
+        if(v>1e29)continue;
+        if(v<lo)lo=v;
+        if(v>hi)hi=v;
+    }
+    if(lo>hi){lo=0.0;hi=1.0;}
+    if(hi-lo<1e-9)hi=lo+1.0;
+    f=fopen(path,"wb");
+    if(!f)return 0;
+    fprintf(f,"P5\n%u %u\n255\n",(unsigned)g_sm_dim,(unsigned)g_sm_dim);
+    for(i=0u;i<n;++i){
+        double v=(double)g_sm_depth[i];
+        int q=v>1e29?0:(int)(255.0-(v-lo)/(hi-lo)*200.0);
+        if(q<0)q=0;
+        if(q>255)q=255;
+        fputc(q,f);
+    }
+    fclose(f);
+    return 1;
 }
 
 void rmb_render(const RMBScene *s,double cx,double cy,double cz,

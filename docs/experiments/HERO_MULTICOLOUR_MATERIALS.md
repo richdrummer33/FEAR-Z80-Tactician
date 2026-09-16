@@ -151,12 +151,12 @@ the hero vocabulary differ.
 
 ## Saturation
 
-![chroma 1.00, 0.72 and 0.50 against greyscale](images/doomguy-multicolour-chroma-sweep.png)
+![chroma 1.00, 0.68 and 0.50 against greyscale](images/doomguy-multicolour-chroma-sweep.png)
 
-The default stays at 0.72 because that is what keeps the guarantee from
+The default (0.68 in this room; see HERO_GROUNDING.md) stays low because that is what keeps the guarantee from
 `HERO_COLOUR_PALETTE.md` intact: no pixel may be displaced by a full ramp step
 (0.062 Oklab L) from where the greyscale design put it. Measured max
-displacement is 0.0534 at 0.72 and **0.0637 at 1.00** -- a 3% overshoot on one
+displacement is 0.0534 at 0.72, similar at 0.68, and **0.0637 at 1.00** -- a 3% overshoot on one
 stop, the brightest red, because a saturated red cannot reach the grey ramp's
 top lightness inside the gamut and the gamut mapper pulls it down.
 
