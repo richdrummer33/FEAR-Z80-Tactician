@@ -16,6 +16,16 @@ on:
       - "tools/resident_tile_dictionary.py"
       - "tools/resident_tile_lloyd.py"
       - "tools/shared_resident_lod.py"
+      # The ROM is baked from these, so a change here can break the job even
+      # though nothing in the list above moved. Leaving them out is how a
+      # compile error in room_bundle_poc_gen.c reached this branch unnoticed.
+      - "tools/glb_rmb/convert.mjs"
+      - "tools/polar_baked_composite.[ch]"
+      - "tools/room_mesh_bake.[ch]"
+      - "tools/room_bundle_poc_gen.c"
+      - "tools/room_bundle_pack_to_c.py"
+      - "src/tilesector_polar_ntstate_gg.s"
+      - "src/tilesector_polar_ntupload_raw_gg.s"
   workflow_dispatch:
 
 jobs:
