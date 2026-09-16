@@ -2003,3 +2003,103 @@ am I in" problem to a 20-entry permutation table. Per the standing direction thi
 is recorded and not optimised: a renderer that already knows its band needs only
 the two neighbouring edges, and the non-monotonic labelling stops mattering the
 moment the band is state rather than a classification.
+
+## Withdrawing an overstated conclusion
+
+**"No compact yaw machine exists" was wrong.** What Rung 4 actually showed is:
+
+> no deterministic +-1-yaw successor machine exists over the span-state
+> representations tested.
+
+Those are different claims, and the second one does not imply the first. Worse,
+the whole framing was wrong: a renderer takes an arbitrary `(dx, dy, dyaw)`
+between frames. Unit-step experiments are a fine way to *discover* boundaries and
+a bad model of the runtime. Nothing should ever imply "the player turned 5 units,
+so execute five yaw transitions". The runtime question is:
+
+> given a retained state and an arbitrary delta, can we cheaply prove the
+> destination is in the same behavioural region; and if not, can we classify the
+> destination directly without replaying what was crossed?
+
+Margins, not counters. The translation numbers above (median 23, 28, 32) should
+be read as displacement budgets tested against whatever `dx` a frame brings, not
+as decrements.
+
+## Rung 5: arbitrary-delta endpoint projection
+
+`tools/rung1/endpoint_machine.c`. Every delta is applied **directly**; nothing is
+derived by iterating single steps. Deltas tested: +-1, 2, 3, 5, 8, 13, 21, 34, 55,
+89, 128.
+
+### The rotation shortcut is exact
+
+Under pure rotation the camera does not move, so every corner's absolute bearing
+is fixed and only the camera angle changes. From `project_key`,
+`st = signed_q12(a0 - (yaw << 4))`, so with the pose fixed
+
+```
+st' = signed_q12(rel - dyaw*16)      for ANY dyaw,   len unchanged
+```
+
+and the wrap, the +-512 clip, `angle_x`, the columns and both real-edge flags all
+follow. Checked against the full pipeline rather than assumed:
+
+```
+224,493 comparisons, 224,493 exact, 0 mismatched
+columns, pixel endpoints and both edge flags all agree, for every delta
+including +-128, computed in one shot
+```
+
+So arbitrary-delta rotation needs **no projection at all**: two 12-bit values per
+run, one subtract, and two `angle_x` lookups. No `bearing_q12`, no atan.
+
+### The successor conflicts were a lossy variable, exactly as suspected
+
+Is the destination column determined by the retained state?
+
+| retained state | states | conflicting | by state |
+| --- | --- | --- | --- |
+| c0, c1 (the column alone) | 3,392 | 2,950 | **86.97%** |
+| c0, c1, len | 165,885 | 12,181 | 7.34% |
+| x0, x1 (pixel endpoints) | 61,779 | 4,297 | 6.96% |
+| **rel, len (angular state)** | 205,795 | **0** | **0.00%** |
+
+Two endpoints at screen x 36.51 and 37.46 share column 37 and separate under a
+turn. The column had destroyed the sub-column angular phase. Retain the angular
+state instead and the destination is determined exactly. **The Rung 4 conflicts
+were a representation defect, not physical complexity** — the same lesson the DDA
+work already taught once.
+
+### But the yaw margin really is near zero
+
+```
+7,275 spans   mean 0.55   median 0   p90 1 yaw unit
+distribution  0: 70.8%   1: 25.9%   2+: 3.3%
+```
+
+One yaw unit is 1/256 of a turn over a 90-degree, 160-pixel screen: about 2.5
+pixels, a third of a tile column. A column change per tick is close to
+unavoidable, and no better retained variable can rescue that — it is geometry.
+
+**So rotation is not a reuse problem, it is a recomputation problem, and the
+recomputation is nearly free.** The architecture for turning is "classify the
+destination directly in O(1) from retained angular state", not "prove nothing
+changed". That is the same answer the unit-step experiment gave, arrived at
+honestly, but it now comes with the mechanism that makes it cheap instead of a
+verdict that rotation is expensive.
+
+### Independent margins are NOT composable
+
+```
+mean translation margin        X 19.71,  Y 18.39  sixteenths of a cell
+moves inside BOTH X and Y margins    7,031 tested,  376 broke the columns  (5.35%)
+moves inside BOTH X and yaw margins  4,302 tested,  476 broke the columns  (11.06%)
+```
+
+Per-axis margins cannot be conjoined. A certificate has to represent a genuinely
+joint region of pose space, or use a conservative test that accounts for the
+coupling. This is measured, not assumed, and it is a constraint on any future
+certificate design.
+
+Translation margins themselves are healthy: a mean of about 19 sixteenths, so
+more than a cell of travel before the projected columns move.
