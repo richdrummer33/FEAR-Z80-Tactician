@@ -66,11 +66,25 @@ static int yq(int16_t iq,int16_t step,int c,int fam){ int h=hq(iq,step,c); retur
 
 /* one run's canonical raster state: the move stream of every chunk, and the
  * cells it covers. Identical in construction to the Rung 1 harness. */
+/* 18 rows x 20 columns of name table, as an explicit bitmap rather than a hash,
+ * so the SIZE of a disagreement can be measured and not just its incidence.
+ * Incidence alone was what made the depth-layer numbers misleading before. */
+#define COVW 6
 typedef struct {
     uint8_t sid,c0,c1,ok;
+    uint8_t x0,x1;      /* screen pixels, finer than the tile column */
     uint64_t traj;      /* hash of the move stream over both families */
-    uint64_t cover;     /* order-independent hash of the covered cells */
+    uint64_t cover[COVW];
 } RunState;
+static int cov_popdiff(const uint64_t *a,const uint64_t *b)
+{
+    int i,n=0; for(i=0;i<COVW;++i){ uint64_t x=a[i]^b[i];
+        while(x){ x&=x-1; ++n; } } return n;
+}
+static int cov_eq(const uint64_t *a,const uint64_t *b)
+{ int i; for(i=0;i<COVW;++i) if(a[i]!=b[i]) return 0; return 1; }
+static void cov_set(uint64_t *c,int row,int col)
+{ int b; if(row<0||row>=NT_ROWS||col<0||col>=20) return; b=row*20+col; c[b>>6]|=1ull<<(b&63); }
 typedef struct { int n; RunState r[MAXRUN]; } Frame;
 
 static void chunk_state(int16_t iq,int16_t step,int fam,int want,int is_last,
@@ -87,12 +101,10 @@ static void chunk_state(int16_t iq,int16_t step,int fam,int want,int is_last,
         int k,jump;
         for(k=0;k<hi[c]-lo[c];++k){
             *traj^=39u; *traj*=1099511628211ull;
-            if(row>=0&&row<NT_ROWS&&c0abs+col<20)
-                *cover+=(uint64_t)(row*20+c0abs+col)*1099511628211ull+1469598103934665603ull;
+            cov_set(cover,row,c0abs+col);
             ++row;
         }
-        if(row>=0&&row<NT_ROWS&&c0abs+col<20)
-            *cover+=(uint64_t)(row*20+c0abs+col)*1099511628211ull+1469598103934665603ull;
+        cov_set(cover,row,c0abs+col);
         if(is_last&&c==want-1){ *traj^=200u; *traj*=1099511628211ull; break; }
         jump=lo[c+1]-hi[c];
         if(jump>0||jump<-4){ *ok=0; return; }
@@ -176,14 +188,15 @@ static void sample(int16_t px,int16_t py,unsigned yaw,unsigned gx,unsigned gy,
         invd=inv_for_dq4(wall_d_q4(r->sid,k_tspf_seg_anchor[r->sid],&s));
         o=&f->r[f->n++];
         o->sid=r->sid; o->c0=cc0; o->c1=cc1; o->ok=1;
-        o->traj=1469598103934665603ull; o->cover=0;
+        o->x0=r->x0; o->x1=r->x1;
+        o->traj=1469598103934665603ull; memset(o->cover,0,sizeof o->cover);
         if(!dp_derive(r->sid,invd,cc0,cc1,(uint8_t)yaw,&iq,&step)){ o->ok=0; continue; }
         for(fam=0;fam<=2;fam+=2){
             int okf=1; left=n; cs=0;
             while(left>0&&okf){
                 int want=left>CHUNK?CHUNK:left;
                 int16_t q=(int16_t)(iq+(int16_t)(cs*step));
-                chunk_state(q,step,fam,want,left-want==0,cc0+(cs),&o->traj,&o->cover,&okf);
+                chunk_state(q,step,fam,want,left-want==0,cc0+(cs),&o->traj,o->cover,&okf);
                 cs+=CHUNK; left-=want;
             }
             if(!okf) o->ok=0;
@@ -215,6 +228,25 @@ static unsigned long ph_end[NPATH][CLS_N],ms_end[NPATH][CLS_N];
 static unsigned long ph_traj[NPATH][CLS_N],ms_traj[NPATH][CLS_N];
 static unsigned long ph_cov[NPATH][CLS_N],ms_cov[NPATH][CLS_N];
 static unsigned long st_end[NPATH][CLS_N],st_traj[NPATH][CLS_N],st_cov[NPATH][CLS_N];
+/* How BIG is a manufactured transition, not just how often. A 2% incidence of
+ * one-pixel-early threshold crossings is a different result from a 2% incidence
+ * of five-pixel jumps, and incidence alone cannot tell them apart. */
+#define MAGB 33
+static unsigned long mag_px[NPATH][CLS_N][MAGB];    /* |dx0|+|dx1| on the phantom step */
+static unsigned long mag_cells[NPATH][CLS_N][MAGB]; /* cells added+removed by it */
+static void mag_add(unsigned long *h,int v){ if(v<0)v=0; if(v>=MAGB)v=MAGB-1; ++h[v]; }
+static double mag_pct(const unsigned long *h,double q)
+{
+    unsigned long tot=0,acc=0; int i;
+    for(i=0;i<MAGB;++i) tot+=h[i];
+    if(!tot) return 0.0;
+    for(i=0;i<MAGB;++i){ acc+=h[i]; if((double)acc>=q*(double)tot) return (double)i; }
+    return MAGB-1;
+}
+static unsigned long mag_atmost(const unsigned long *h,int k)
+{ unsigned long a=0; int i; for(i=0;i<=k&&i<MAGB;++i) a+=h[i]; return a; }
+static unsigned long mag_total(const unsigned long *h)
+{ unsigned long a=0; int i; for(i=0;i<MAGB;++i) a+=h[i]; return a; }
 
 static const RunState *find(const Frame *f,uint8_t sid)
 { int i; for(i=0;i<f->n;++i) if(f->r[i].sid==sid) return &f->r[i]; return 0; }
@@ -232,13 +264,17 @@ static void compare(int pi,int cls,const Frame *ba,const Frame *bb,
         ++cmp_runs[pi][cls];
         if(b0->c0!=e0->c0||b0->c1!=e0->c1) ++st_end[pi][cls];
         if(b0->traj!=e0->traj) ++st_traj[pi][cls];
-        if(b0->cover!=e0->cover) ++st_cov[pi][cls];
+        if(!cov_eq(b0->cover,e0->cover)) ++st_cov[pi][cls];
         ec=(e0->c0!=e1->c0||e0->c1!=e1->c1); bc=(b0->c0!=b1->c0||b0->c1!=b1->c1);
-        if(bc&&!ec) ++ph_end[pi][cls]; else if(ec&&!bc) ++ms_end[pi][cls];
+        if(bc&&!ec){ ++ph_end[pi][cls];
+            mag_add(mag_px[pi][cls],abs((int)b1->x0-(int)b0->x0)+abs((int)b1->x1-(int)b0->x1)); }
+        else if(ec&&!bc) ++ms_end[pi][cls];
         ec=(e0->traj!=e1->traj); bc=(b0->traj!=b1->traj);
         if(bc&&!ec) ++ph_traj[pi][cls]; else if(ec&&!bc) ++ms_traj[pi][cls];
-        ec=(e0->cover!=e1->cover); bc=(b0->cover!=b1->cover);
-        if(bc&&!ec) ++ph_cov[pi][cls]; else if(ec&&!bc) ++ms_cov[pi][cls];
+        ec=!cov_eq(e0->cover,e1->cover); bc=!cov_eq(b0->cover,b1->cover);
+        if(bc&&!ec){ ++ph_cov[pi][cls];
+            mag_add(mag_cells[pi][cls],cov_popdiff(b0->cover,b1->cover)); }
+        else if(ec&&!bc) ++ms_cov[pi][cls];
     }
 }
 
@@ -344,15 +380,20 @@ int main(int argc,char**argv)
         }
     }
 
-    printf("   both integer paths scored against continuous geometry, not each other\n\n");
+    printf("   Both integer paths are scored against a reference path: the identical\n");
+    printf("   raster pipeline driven by continuous-truth bearings, quantised to Q12\n");
+    printf("   only at the bearing step. That isolates the corner-bearing source,\n");
+    printf("   which is what a coarse-cell crossing actually changes.\n\n");
     printf("   %-14s %10s %12s\n","step class","steps","run pairs");
     for(t=0;t<CLS_N;++t)
         printf("   %-14s %10lu %12lu\n",CLSN[t],steps[t],cmp_runs[0][t]);
     {
         int pi;
-        printf("\n   PHANTOM transitions: the integer path moves to a new raster state\n");
-        printf("   where continuous geometry stays put. This is the number that decides\n");
-        printf("   whether a step manufactures an event.\n");
+        printf("\n   APPROXIMATION-INDUCED transitions: the integer path changes quantised\n");
+        printf("   raster state on this step although the reference path -- the SAME raster\n");
+        printf("   pipeline driven by continuous-truth bearings -- did not cross the\n");
+        printf("   corresponding raster boundary. The projected geometry of course moves on\n");
+        printf("   every step; what is counted is a state change the reference never called for.\n");
         for(pi=0;pi<NPATH;++pi){
             printf("    %s\n",PATHN[pi]);
             printf("     %-14s %14s %14s %14s\n","step class","L1 endpoint","L3 trajectory","L4 ownership");
@@ -363,7 +404,8 @@ int main(int argc,char**argv)
                        ph_cov[pi][t],100.0*ph_cov[pi][t]/d);
             }
         }
-        printf("\n   MISSED transitions: geometry moves and the integer path does not\n");
+        printf("\n   MISSED transitions: the reference path crosses a raster boundary\n");
+        printf("   and the integer path does not\n");
         for(pi=0;pi<NPATH;++pi){
             printf("    %s\n",PATHN[pi]);
             for(t=0;t<CLS_N;++t){
@@ -373,7 +415,7 @@ int main(int argc,char**argv)
                        ms_cov[pi][t],100.0*ms_cov[pi][t]/d);
             }
         }
-        printf("\n   Static disagreement with geometry at a single pose, for reference\n");
+        printf("\n   Static disagreement with the reference path at a single pose\n");
         for(pi=0;pi<NPATH;++pi){
             printf("    %s\n",PATHN[pi]);
             for(t=0;t<CLS_N;++t){
@@ -384,6 +426,28 @@ int main(int argc,char**argv)
             }
         }
     }
+    {
+        int pi;
+        printf("\n   MAGNITUDE of the approximation-induced transitions (not just incidence)\n");
+        for(pi=0;pi<NPATH;++pi){
+            printf("    %s\n",PATHN[pi]);
+            printf("     %-14s %28s   %28s\n","step class",
+                   "endpoint jump, screen px","cells added+removed");
+            printf("     %-14s %8s %8s %8s   %8s %8s %8s\n","",
+                   "<=1px","p95","max","<=2","p95","max");
+            for(t=0;t<CLS_N;++t){
+                const unsigned long *hp=mag_px[pi][t],*hc=mag_cells[pi][t];
+                unsigned long tp=mag_total(hp),tc=mag_total(hc);
+                printf("     %-14s %7.2f%% %8.0f %8.0f   %7.2f%% %8.0f %8.0f\n",CLSN[t],
+                       tp?100.0*mag_atmost(hp,1)/(double)tp:0.0,mag_pct(hp,0.95),mag_pct(hp,1.0),
+                       tc?100.0*mag_atmost(hc,2)/(double)tc:0.0,mag_pct(hc,0.95),mag_pct(hc,1.0));
+            }
+        }
+        printf("     (a transition that moves an endpoint by one pixel or swaps one or two\n");
+        printf("      cells is a threshold crossing arriving a step early or late; a large\n");
+        printf("      jump would be a different and much worse result)\n");
+    }
+
     printf("\n2  cost of a crossing\n");
     printf("   %lu coarse cells carry a baked record, %lu bytes total, %.1f B mean\n",
            loads,load_bytes,(double)load_bytes/(double)(loads?loads:1));

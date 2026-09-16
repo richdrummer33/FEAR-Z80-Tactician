@@ -1621,3 +1621,152 @@ been the wrong way round.
 
 Crossing cost: 466 coarse cells carry a record, 43,805 B total, 94.0 B mean. A
 crossing re-parses one whole cell record; nothing is reloaded within a cell.
+
+## Rung 2, restated precisely, with magnitudes
+
+Two phrasings in the entry above are withdrawn.
+
+**"the integer path moves to a new raster state where geometry stays put."** The
+projected geometry never stays put: the player moves through a fixed map, so the
+continuous projection of every edge changes on every step, and a raster
+transition is *expected* whenever that moving edge crosses a quantization
+threshold. The measurement was right; the sentence was not. The implementation
+compares, for each step, whether the scored path's quantized raster state changed
+against whether the **reference path's** did, where the reference path is the
+identical raster pipeline driven by continuous-truth bearings quantized to Q12
+only at the bearing step. So the quantity is:
+
+> an approximation-induced transition occurs when the baked (or integer)
+> projection changes quantized raster state although the continuous reference has
+> not crossed the corresponding raster boundary.
+
+That is what the code counts, verified by reading it; only the prose was loose.
+Isolating the bearing source is the right control for Rung 2, because a
+coarse-cell crossing changes nothing else.
+
+**"Continuity holds with a bounded penalty."** Stronger than the metric supports.
+The result is: *no catastrophic coarse-cell discontinuity was observed;
+approximation-induced raster transitions rise from 1.041% for interior motion to
+2.358% on coarse-cell crossings.*
+
+### And the magnitudes, which incidence alone cannot supply
+
+The depth investigation taught this lesson once already, so the harness now
+carries an explicit 18x20 cover bitmap rather than a hash, and measures how large
+each manufactured transition is:
+
+| path | step class | endpoint jump <=1px | p95 | max | cells changed <=2 | p95 | max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| baked | interior | 94.94% | 2 | **3** | 60.57% | 4 | 6 |
+| baked | leaf boundary | 94.04% | 2 | **2** | 62.39% | 4 | 8 |
+| baked | CELL BOUNDARY | 90.27% | 2 | **2** | 61.73% | 4 | 8 |
+| bearing_q12 | interior | 81.91% | 2 | **32** | 55.60% | 6 | 28 |
+| bearing_q12 | leaf boundary | 54.15% | **32** | **32** | 45.07% | 24 | 32 |
+| bearing_q12 | CELL BOUNDARY | 82.38% | 2 | 3 | 63.03% | 4 | 6 |
+
+For the baked field every manufactured transition is a threshold crossing
+arriving a step early or late: **the largest endpoint jump anywhere in the sweep
+is 3 pixels**, and 90-95% are one pixel or less. The multi-cell figures are the
+same events seen on tall spans, where a one-row shift moves several cells at once.
+
+`bearing_q12` is a different story: 32-pixel jumps, and at leaf boundaries a p95
+of 32 with only 54% at one pixel. That is the `ratio_q8_exact` defect appearing
+as exactly the kind of large jump that incidence alone would have hidden.
+
+## Separating the proof vocabulary from the runtime architecture
+
+The 432 trajectories are the complete set of **finished strings** the renderer
+emits over this map and domain. Their endpoints carry span-length and termination
+information, which is world-specific. They are excellent evidence and a possible
+implementation; they are not automatically the thing to store, and turning them
+into another dictionary would repeat the mistake this whole investigation was
+started to undo.
+
+The generic result underneath them is the algebraic one:
+
+```
+WORLD-SPECIFIC     visible wall span -> projected endpoints
+                   -> depth-plane parameters -> span length / stop X
+                            |
+GENERIC STATE               v      10-bit DDA phase + step
+                            |
+GENERIC MACHINE             v      emit move, advance, ... stop after span length
+```
+
+Nothing below that line knows a wall id, a map cell, or a neighbouring span.
+
+## The DDA compiled into a transducer
+
+`tools/rung1/dda_transducer.c` builds that machine directly rather than inferring
+it from strings. State `(phase, step)`, input "advance one column", output
+`(ndown, jump)`, successor `phase' = (phase + step) mod 1024`. Span length stays
+outside. It reads no map data, no pose and no sampled trajectory, and it
+self-checks against the direct shape computation over 200,000 random cases with
+zero mismatches.
+
+The parameter space is `1024 phases x 3103 reachable steps = 3,177,472` states.
+The reachable step set is derived from the shipped tables (205 distinct step
+factors, 226 distinct inverse depths).
+
+States surviving L-column output equivalence — two states merge when they emit
+the same output for the next L columns:
+
+| L | fam 0 | fam 2 | both |
+| --- | --- | --- | --- |
+| 1 | 9 | 9 | 13 |
+| **6** (one chunk) | **146** | **146** | **175** |
+| 12 | 812 | 812 | 905 |
+| 20 (longest run) | 3238 | 3238 | 3461 |
+
+At the chunk length the renderer actually uses, 3.18 million parameter states
+collapse to **175 behaviours**. Note this is *smaller* than the 432 trajectories,
+because it does not encode termination.
+
+### But a small behaviour space is not a cheap runtime
+
+Naming a class costs nothing; **mapping a `(phase, step)` to it is the whole
+cost**, and a map over 3.18 million parameter states is not a table anyone ships.
+That is precisely where the sampled dictionary died, in a new guise. So the
+question is how the classes sit along one step's phase line:
+
+```
+distinct 6-column behaviours among the 1024 phases of ONE step
+  mean 8.0, worst 8; distribution  1:3  2:4  4:6  8:3090
+contiguous behaviour bands per step
+  mean 7.98, worst 8
+```
+
+Eight, and they are **contiguous bands**, not interleaved. They are not the eight
+128-wide blocks of phase (only 25 of 3103 steps), so it is not a bare shift. But
+the edges have a closed form, and it is verified for **all 3,103 steps**:
+
+> every band edge lies at `p = (-c * step) mod 1024` for some `c` in 0..7
+
+which is exactly where it must be: a row boundary is crossed when the accumulator
+passes a multiple of 1024, and a 6-column span inspects columns 0..7. The eight
+predicted phases are a *superset* of the actual edges (mean 7.98 of 8 are real),
+which is the safe direction: a distance computed against them never overstates.
+
+Two consequences:
+
+1. **Indexing is a rank among eight computed phases, not a lookup.** That is what
+   would make a compiled transducer cheaper than re-running six columns of DDA
+   arithmetic — and it is the first version of this idea that does not need a
+   dictionary.
+2. **The distance to the nearest band edge is the safe region.** While the phase
+   stays inside its band, the emitted 6-column span does not change at all. That
+   is the temporal certificate, in closed form, rather than as a measured
+   coincidence.
+
+### Candidates, sized; none chosen
+
+| representation | cost |
+| --- | --- |
+| arithmetic DDA | 0 B of table, per-column arithmetic |
+| compiled 6-column transducer | a band rank + a 175-entry table |
+| 432 packed trajectories | 1,586 B moves + 1,296 B index |
+| 220-state trajectory DFA | 866 B, but accepts finished strings |
+
+The last two encode span termination and are therefore world-specific. The first
+two keep length external, which is the property worth having. Which is fastest is
+a Z80 cycle question; this only sizes them.
