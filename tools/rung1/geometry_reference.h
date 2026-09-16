@@ -14,14 +14,22 @@
  * THE DERIVATION, and where each constant comes from
  * ---------------------------------------------------------------------------
  *
- * Bearing convention. bearing_q12() computes atan(|dy|/|dx|) and then, in the
- * sy branch, negates for dy < 0. So a world bearing b in 4096-unit turns names
- * the direction
+ * Bearing convention. bearing_q12() is a plain atan2: a world bearing b in
+ * 4096-unit turns names the direction
  *
- *     u(b) = (cos B, -sin B),          B = 2*pi*b/4096
+ *     u(b) = (cos B, +sin B),          B = 2*pi*b/4096
  *
- * Verify: (dx,dy) = (1,1) has ax == ay, ratio 1.0, atan_q12 ~ 512, sy set, so
- * b = -512 = 3584, and u(3584) = (cos -45, -sin -45) = (0.707, 0.707). Correct.
+ * This is NOT derived here by reading the sy branch, because reading it is how
+ * it was got wrong once already: an earlier version of this file claimed
+ * u(b) = (cos B, -sin B) from exactly that argument. The convention is instead
+ * PINNED EMPIRICALLY against bearing_q12 itself, in arm E of the regression
+ * test, which sweeps thousands of vectors and rejects the opposite handedness
+ * by a margin of three orders of magnitude. Any future claim about the sign of
+ * the y term belongs in that arm, not in a comment.
+ *
+ * (For a cardinal normal the two conventions give identical |inv|, which is why
+ * the mistake did not disturb the adjudication: every FULL wall on this map is
+ * axis aligned. It would have mattered the moment one was not.)
  *
  * Screen mapping. angle_x() indexes k_tspf_angle_x_pos by |rel| in q12 and
  * mirrors about 80. That table equals round(80 + 80 tan(theta)) to within one
@@ -47,8 +55,8 @@
  * t = D / (n . u(phi+theta)), and the camera-axis depth is z = t cos(theta).
  * Expanding n . u(phi+theta) = A cos(theta) + B sin(theta) with
  *
- *     A = n.u(phi)              =  nx cos(phi) - ny sin(phi)
- *     B = n.u(phi + 90 degrees) = -(nx sin(phi) + ny cos(phi))
+ *     A = n.u(phi)              =  nx cos(phi) + ny sin(phi)
+ *     B = n.u(phi + 90 degrees) = -nx sin(phi) + ny cos(phi)
  *
  * gives
  *
@@ -88,8 +96,8 @@ static void geom_plane(double nx,double ny,double vx,double vy,
     if(a<GEOM_NEAR_CELLS){ a=GEOM_NEAR_CELLS; p->clipped=1; }
     else if(a>GEOM_FAR_CELLS){ a=GEOM_FAR_CELLS; p->clipped=2; }
     p->D_eff = p->D<0.0 ? -a : a;
-    p->A = nx*cos(phi) - ny*sin(phi);
-    p->B = -(nx*sin(phi) + ny*cos(phi));
+    p->A = nx*cos(phi) + ny*sin(phi);
+    p->B = -nx*sin(phi) + ny*cos(phi);
 }
 /* inverse depth at screen pixel x, under the renderer's own depth clip */
 static double geom_inv_at_pixel(const GeomPlane *p,double x)

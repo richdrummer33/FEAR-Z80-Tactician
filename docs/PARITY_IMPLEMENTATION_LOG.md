@@ -1439,3 +1439,185 @@ the uint8 domain within the run are 8.699% (host 1.107%), and the ROM-vs-host
 layer disagreements are L2 92.022%, L3 42.278%, L4 17.880%. Those remain
 *disagreement* figures between two implementations; the adjudication above is what
 says which of them is right.
+
+## The exhaustive certificate: 432, over the whole map
+
+The every-4th-cell result is now proof rather than extrapolation. Every walkable
+cell, the complete 64x64 local translation space of each, and all 256 headings:
+
+```
+FULL runs                       831,745,536
+chunk-family instances        2,675,675,264
+out-of-family jumps                       0
+distinct raster trajectories            432
+  top only 0, bottom only 0, BOTH       432
+mean / max length                 9.8 / 16 moves
+move-stream payload                   1,586 B at 3 bits per move
+collapse instances->trajectories  6,193,693 : 1
+```
+
+All 432 are found by the **tenth** walkable cell. The remaining 456 cells and
+2.58 billion further chunk instances discover nothing new. "Extremely convincing
+saturation" is now exhaustive coverage of this map and this domain.
+
+## Is the vocabulary a list or a grammar?
+
+`tools/rung1/grammar_census.py`. Three measurements, no representation chosen.
+
+**Short context does not determinise it.** The hypothesis that order-2 or order-3
+context would make almost every transition deterministic is **not supported**:
+
+| context | contexts | H unweighted | determined | H weighted | determined |
+| --- | --- | --- | --- | --- | --- |
+| order 0 | 1 | 2.1354 | 0.00% | 2.0154 | 0.00% |
+| last 1 | 7 | 1.7349 | 12.65% | 1.7390 | 4.43% |
+| last 2 | 19 | 1.2010 | 17.01% | 1.3537 | 9.94% |
+| last 3 | 41 | 1.0857 | 20.08% | 1.2884 | 10.75% |
+| last 4 | 71 | 0.9896 | 23.04% | 1.2391 | 11.48% |
+
+Entropy falls by half but determinism only reaches 23%, and 11% by instance
+weight. A short-context Markov model is not the structure here.
+
+**The minimal automaton is 220 states.** A trie over the 432 sequences accepts
+exactly that language; Moore partition refinement minimises it to 220 states and
+433 transitions over the 7-symbol alphabet, a 4.1x reduction from the 896-state
+trie. Verified by construction: the minimised machine accepts exactly 432
+distinct strings, counted as paths through the DAG.
+
+Panel 8's observation in numbers: `up 2`, `up 3` and `up 4` each have
+**out-degree 1** and are always followed by `down 1`. They are excursions with a
+prescribed recovery, not free symbols. `down 1` has out-degree 7, `next col` and
+`up 1` have 4.
+
+**But the real state is a DDA accumulator.** The move sequence is a function of
+`(a mod 1024, step, length, family)` where `a = iq + 32`. That is provable, not
+observed: `h(c) = a(c) >> 7` and `row(c) = y(c) >> 3`, so adding 1024 to `a`
+shifts `h` by exactly 8 and every row by exactly 1, leaving the row *differences*
+— which is what the moves are — unchanged. Checked over 2,265,184 in-domain
+comparisons across step, length, family, terminator and accumulator phase, with
+no map data and no sampled poses: **no mismatch**.
+
+So the raster walker's entire state is a 10-bit accumulator phase and a step.
+This is Bresenham/DDA at exactly the precision the renderer permits, which is why
+the closed-form walker needs no table at all.
+
+| candidate | cost |
+| --- | --- |
+| 432 packed trajectories | 1,586 B moves + 1,296 B index = 2,882 B |
+| minimal automaton | 866 B at 2 B per transition, 220 states |
+| closed-form DDA walker | 0 B of table |
+
+None is chosen here; that is a Z80 cycle question, not a ROM-size one.
+
+## A correction: the reference had the bearing convention backwards
+
+The geometry reference stated `u(b) = (cos B, -sin B)`, derived by reading the
+`sy` branch of `bearing_q12`. **That was wrong.** `bearing_q12` is a plain
+atan2: `u(b) = (cos B, +sin B)`.
+
+What caught it was not the regression test. It was Rung 2's independent
+transcription of the baked projection field, whose self-check refused to
+validate. Arms B and C could not catch it **because they were written from the
+same mistaken reading** — arm B's ray/plane intersection used the same `u`, and
+arm C's hand cases were derived on paper from the same premise. That is exactly
+the shared-premise failure the hand cases were meant to rule out, and they did
+not rule it out.
+
+The reference now pins the convention **empirically**, in a new arm E, against
+`bearing_q12` itself over 17,822 vectors: the correct handedness agrees to 2.82
+Q12 units, the opposite to 2041.74, a 725x margin. A new hand case C8 uses a
+**non-cardinal** normal, where the two conventions genuinely disagree, so the
+hand cases can now separate them too. Any future claim about the sign of the y
+term belongs in arm E, not in a comment.
+
+**The adjudication is unaffected, verified rather than asserted.** For a cardinal
+normal the two conventions give identical `|inv|`: with `ny = 0` the expressions
+for A and B are literally the same, and with `nx = 0` both flip sign together, so
+the magnitude is unchanged. Every FULL wall on this map is axis aligned. Re-running
+the 337-million-column adjudication after the fix produces a **byte-identical**
+report. It would have mattered the moment a diagonal FULL wall existed.
+
+## Renderer bug: ratio_q8_exact returns 0 for equal arguments
+
+`ratio_q8_exact(n, d)` computes `round(n * 65536/d / 256)` as a `uint8_t`. For
+`n == d` the true value is 256, which does not fit, and it returns **0**. Every
+one of the 255 equal-argument cases is affected.
+
+`bearing_q12` scales `|dx|, |dy|` down until both fit in a byte and then takes
+that ratio, so the defect fires whenever the *scaled* magnitudes are equal — not
+only on exact diagonals but on near-diagonals at distance. When it fires,
+`atan_q12[0] = 0` is used and the bearing reports an **axis direction up to 45.2
+degrees away**.
+
+Measured over every walkable pose at Q4 resolution against all 14 corners
+(26,507,261 lookups):
+
+| corner class | lookups | hits | rate |
+| --- | --- | --- | --- |
+| all | 26,507,261 | 45,085 | 0.1701% |
+| served by the bake (correct there) | 17,981,440 | 31,272 | 0.1739% |
+| certified fallback, exact path | 28,669 | 378 | **1.3185%** |
+
+In the shipped ROM the local-projection bake masks this for every corner it
+covers, so the exposure is the certified fallback corners and any build with
+`TSPF_LOCAL_PROJECTION=0` — including the host tooling. It is a one-frame 45
+degree bearing pop where it does reach the screen, which is precisely the kind of
+artificial temporal event the certificate architecture cannot tolerate.
+
+## Rung 2: does the representation survive a coarse-cell crossing?
+
+`tools/rung1/cross_cell_check.c`. The projection's front half is a per-coarse-cell
+baked field; crossing a cell swaps the whole record set. The question is not
+whether anything changes when the player moves — it must — but whether a boundary
+step changes **more than an ordinary step in open space**.
+
+`tools/rung1/local_projection_host.h` transcribes the ROM's baked evaluator onto
+the host: the cell parse from `projection_load_cell`, the leaf indexing and the
+truncate-toward-zero scaled multiply from `tilesector_polar_projection_gg.s`. The
+bake bytes are lifted verbatim from the generated bank units the ROM is built
+from. Validated against what the bake was fitted to: **worst 3.98 Q12 units**,
+against an emit threshold of 4.
+
+Steps are classified by what they cross, and **both** integer paths are scored
+against continuous geometry rather than against each other. The first version of
+this harness used `bearing_q12` as "exact" and would have charged every
+near-diagonal defect to the bake.
+
+PHANTOM transitions — the integer path moves to a new raster state where geometry
+stays put, i.e. a manufactured event:
+
+| step class | baked L1 / L3 / L4 | bearing_q12 L1 / L3 / L4 |
+| --- | --- | --- |
+| interior | 1.041% / 1.021% / 0.985% | 1.437% / 1.403% / 1.342% |
+| leaf boundary | 1.344% / 1.319% / 1.202% | 3.673% / 3.533% / 3.332% |
+| **CELL BOUNDARY** | **2.358% / 2.312% / 2.248%** | 2.370% / 2.361% / 2.271% |
+
+MISSED transitions — geometry moves and the integer path does not:
+
+| step class | baked | bearing_q12 |
+| --- | --- | --- |
+| interior | 0.993% / 0.964% / 0.919% | 1.412% / 1.369% / 1.278% |
+| leaf boundary | 0.635% / 0.616% / 0.565% | 0.953% / 0.917% / 0.852% |
+| CELL BOUNDARY | 0.557% / 0.557% / 0.532% | 1.273% / 1.262% / 1.175% |
+
+Static disagreement with geometry at a single pose: baked 1.56% of run instances,
+`bearing_q12` **3.99%**.
+
+### Reading
+
+**Cross-cell continuity holds, with a bounded penalty.** A coarse-cell crossing
+raises the phantom-event rate from 1.04% to 2.36% — about 2.3x, not a cliff. A
+crossing costs roughly what two ordinary steps cost. Leaf boundaries are barely
+worse than open space (1.34%), so the quadtree refinement inside a cell is not a
+source of artificial events at all.
+
+**And the same inversion as the depth result.** The baked field is not an
+approximation of the exact path; it is **more faithful to geometry than the exact
+path is**, by 2.5x on static disagreement and on every phantom and missed
+transition measure except cell-boundary L1, where they tie. The bake was fitted
+against continuous truth; `bearing_q12` is an integer atan2 with a byte-ratio
+defect. This is the second time the "legacy path is the oracle" assumption has
+been the wrong way round.
+
+Crossing cost: 466 coarse cells carry a record, 43,805 B total, 94.0 B mean. A
+crossing re-parses one whole cell record; nothing is reloaded within a cell.

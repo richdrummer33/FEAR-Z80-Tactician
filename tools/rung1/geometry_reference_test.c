@@ -35,6 +35,12 @@
  *      the projection constant is confirmed against live code and not only
  *      against the table it was fitted from.
  *
+ *   E  BEARING CONVENTION, against bearing_q12 itself. Added after arms B and C
+ *      failed to catch a handedness error: both had been written from the same
+ *      reading of the source, so they agreed with each other and with nothing
+ *      else. A convention is now decided by the shipped function over thousands
+ *      of vectors, not by an argument in a comment.
+ *
  * Prints GEOMETRY_REFERENCE_OK on success and returns non-zero on any failure.
  */
 #include <stdint.h>
@@ -105,7 +111,7 @@ static double inv_by_intersection(double nx,double ny,double vx,double vy,
     double phi=2.0*M_PI*yaw/256.0;
     double theta=atan((x_pixel-80.0)/80.0);
     double beta=phi+theta;
-    double ux=cos(beta), uy=-sin(beta);          /* u(b) = (cos B, -sin B) */
+    double ux=cos(beta), uy=sin(beta);           /* u(b) = (cos B, +sin B), pinned by arm E */
     double D=nx*(vx-px)+ny*(vy-py);
     double denom=nx*ux+ny*uy;
     double t,z;
@@ -208,9 +214,9 @@ static void arm_hand_cases(void)
     }
 
     /* 5. A wall with a +y normal instead of +x, to pin the normal convention.
-     *    Plane y = 80, camera at (20,20) facing +x. Ray (cos theta, -sin theta)
-     *    reaches y = 80 at t = -60/sin theta, z = -60/tan theta = 60*80/(80-x),
-     *    so inv = (2560/60)(80-x)/80. */
+     *    Plane y = 80, camera at (20,20) facing +x. Ray (cos theta, sin theta)
+     *    reaches y = 80 at t = 60/sin theta, z = 60/tan theta = 60*80/(x-80),
+     *    so inv = (2560/60)|x-80|/80. */
     {
         int before=g_fail;
         geom_plane(0,1, 0,80, 20,20, 0, &p);
@@ -235,6 +241,25 @@ static void arm_hand_cases(void)
                g_fail==before?"ok":"FAIL");
     }
 
+    /* 8. A NON-CARDINAL normal, where the two bearing conventions genuinely
+     *    disagree. For n = (0.6, 0.8) through V = (80,60) with the camera at
+     *    (20,20) facing +x, D = 0.6*60 + 0.8*40 = 68 and
+     *        inv(x) = (2560/68) * |0.6 + 0.8*(x-80)/80|
+     *    which is SMALLEST at the left edge. Under the opposite handedness the
+     *    sign of the second term flips and it would be largest there, so this
+     *    case alone separates them. Every FULL wall on this map is axis aligned,
+     *    which is why the handedness error went unnoticed; this pins it anyway. */
+    {
+        int before=g_fail;
+        geom_plane(0.6,0.8, 80,60, 20,20, 0, &p);
+        near_("C8 non-cardinal, D    ",p.D,                      68.0,         1e-9);
+        near_("C8 non-cardinal, col10",geom_inv_at_column(&p,10),(2560.0/68.0)*0.6,1e-9);
+        near_("C8 non-cardinal, col 0",geom_inv_at_column(&p,0), (2560.0/68.0)*0.2,1e-9);
+        near_("C8 non-cardinal, col19",geom_inv_at_column(&p,19),(2560.0/68.0)*1.32,1e-9);
+        printf("   C8 non-cardinal normal separates the two handedness choices  %s\n",
+               g_fail==before?"ok":"FAIL");
+    }
+
     /* 7. The near clip is a policy of inv_for_dq4, not a property of either
      *    (iq,step) derivation, so the reference carries it and reports it. A
      *    wall 4 cells away is inside the 10-cell clip: the clipped reference
@@ -253,6 +278,51 @@ static void arm_hand_cases(void)
         printf("   C7 near/far clip is reported, not folded into the error       %s\n",
                g_fail==before?"ok":"FAIL");
     }
+}
+
+/* ---- E: pin the bearing convention against bearing_q12 itself ------------ */
+/* This arm exists because arms B and C could not catch a handedness error: both
+ * were written from the same reading of bearing_q12's sy branch, and that
+ * reading was wrong. Sharing a premise is exactly the failure mode the hand
+ * cases were meant to rule out, and they did not. So the convention is now
+ * decided by the shipped function, over thousands of vectors, with the losing
+ * candidate rejected by three orders of magnitude rather than by argument. */
+static double wrap12(double a){ while(a>2048.0)a-=4096.0; while(a<-2048.0)a+=4096.0; return a; }
+static void arm_bearing_convention(void)
+{
+    int dx,dy; double wA=0.0,wB=0.0; long n=0,diag=0,diagbad=0; int worstdiag=0;
+    printf("\nE  bearing convention pinned against bearing_q12\n");
+    for(dx=-200;dx<=200;dx+=3) for(dy=-200;dy<=200;dy+=3){
+        double b,eA,eB; int ax,ay;
+        if(!dx&&!dy) continue;
+        ax=dx<0?-dx:dx; ay=dy<0?-dy:dy;
+        b=(double)bearing_q12((int16_t)dx,(int16_t)dy);
+        if(ax==ay){
+            /* ratio_q8_exact(n,n) returns 0, not 255: the true ratio 1.0 is 256
+             * and does not fit the byte. Every exact diagonal therefore reads as
+             * an axis direction. Counted and reported below, not folded in. */
+            double e=fabs(wrap12(b-atan2((double)dy,(double)dx)*4096.0/(2.0*M_PI)));
+            ++diag; if(e>8.0){ ++diagbad; if((int)e>worstdiag) worstdiag=(int)e; }
+            continue;
+        }
+        eA=fabs(wrap12(b-atan2( (double)dy,(double)dx)*4096.0/(2.0*M_PI)));
+        eB=fabs(wrap12(b-atan2(-(double)dy,(double)dx)*4096.0/(2.0*M_PI)));
+        if(eA>wA) wA=eA;
+        if(eB>wB) wB=eB;
+        ++n;
+    }
+    printf("   %ld vectors:  u(b)=(cos,+sin) worst %6.2f Q12   u(b)=(cos,-sin) worst %8.2f Q12\n",
+           n,wA,wB);
+    ck(wA<8.0,"bearing_q12 is a plain atan2",wA,0.0,8.0);
+    ck(wB>100.0,"the opposite handedness is rejected",wB,4096.0,4096.0);
+    printf("   the reference uses (cos, +sin); the opposite is rejected by %.0fx   %s\n",
+           wB/(wA>0?wA:1.0), (wA<8.0&&wB>100.0)?"ok":"FAIL");
+    printf("   FINDING, not a failure of the reference: ratio_q8_exact(n,n) returns 0\n");
+    printf("   rather than 255, so all %ld exact diagonals (|dx| == |dy|) read as an\n",diag);
+    printf("   axis direction. %ld of them are off by more than 8 Q12 units, worst %d\n",
+           diagbad,worstdiag);
+    printf("   (= %.1f degrees). This is a renderer bug, reported separately.\n",
+           worstdiag*360.0/4096.0);
 }
 
 /* ---- D: tie the constant back to the shipped inv_for_dq4 ----------------- */
@@ -287,6 +357,7 @@ int main(void)
     printf("(guards the reference the depth adjudication was measured against)\n\n");
     arm_conventions();
     arm_algebra();
+    arm_bearing_convention();
     arm_hand_cases();
     arm_shipped();
     printf("\n");
