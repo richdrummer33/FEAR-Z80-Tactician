@@ -2247,3 +2247,63 @@ trustworthy slow path rather than the opposite.
 Arm E of the geometry regression test no longer *reports* this as a finding; it
 **asserts** it, so the saturation cannot be lost silently. Rung 6 re-verified
 after the source change: still 162,482 cases, zero mismatches.
+
+## Three follow-ups to the fallback fix
+
+### ratio_q8_exact is now ratio_q8_sat
+
+The name was actively dangerous. The helper is **not** exact at unity — 1.0 is 256
+in Q8 and does not fit a byte — so anyone reading "exact" could reasonably decide
+the clamp is a wart and remove it, which is precisely the bug it fixes. Renamed
+in all six files that referenced it, with the reasoning written at the definition.
+
+### A shared vector suite, because the copies cannot be shared
+
+`tools/rung1/helper_vectors.h` holds 30 canonical `{n, d, expected, tolerance}`
+vectors, checked inside the geometry reference gate.
+
+Expected values are derived from the **ideal**, `round(n*256/d)`, not from the
+implementation — recording whatever the code prints would make the suite circular
+and unable to catch the next regression. Two of my hand-derived values were wrong
+on the first run, and the reason is worth keeping: the helper rounds through a
+reciprocal table, so `100/101` is 253.47 ideally but the table rounds `65536/101`
+up to 649 and carries it to 254. That vector now carries an explicit tolerance of
+1 and says why, rather than the expectation being quietly bent to match. Unity,
+zero, exact binary fractions and near-unity all carry tolerance **zero**.
+
+### A lint against divergent copies
+
+`tools/check_duplicated_helpers.py` fails the build if any copy of the ratio
+helper drops the saturating return or if the old name reappears in code (a
+historical mention in a comment is allowed). Self-tested: reintroducing
+`return (uint8_t)q;` makes it exit non-zero, and restoring the clamp makes it
+pass. It runs in CI before the geometry gate.
+
+Lint and vectors both exist because either alone would have missed this bug: the
+vectors only cover the copy they are compiled against, and the lint only covers
+the shape.
+
+### The representation handoff, sought out rather than stumbled upon
+
+Rung 6 gained a `REPRESENTATION HANDOFF` class: a move where a corner changes
+which representation serves it, baked field to `bearing_q12` fallback or back. It
+outranks the geometric classes, because whichever boundary was crossed, that is
+the interesting fact.
+
+A uniform sweep lands on one by accident — 276 cases out of 1.1 million — and
+that is a coincidence, not a regression. So the fallback corners are now
+enumerated first and moves are **aimed across** their cell boundaries in both
+directions:
+
+```
+7 certified fallback corners map-wide
+632 moves aimed across a representation boundary, 0 mismatched   EXACT
+both directions, deltas from 1 to 96 sixteenths,
+compared at the endpoint, iq/step and raster
+```
+
+632 is modest, and it is bounded by there being only seven such corners in the
+whole map. But it is now deliberate coverage of the seam rather than incidental.
+
+The denser Rung 6 run also stands: **1,100,367 cases, zero mismatches** at the
+endpoint, `iq/step` and raster layers.

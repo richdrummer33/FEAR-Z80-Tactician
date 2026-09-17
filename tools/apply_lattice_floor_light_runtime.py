@@ -102,7 +102,7 @@ static int8_t flrt_clamp_s8(int16_t v,int8_t lo,int8_t hi){{if(v<lo)return lo;if
 static int16_t flrt_shr_signed(int16_t v,uint8_t n){{return v>=0?(int16_t)(v>>n):(int16_t)-(((-v)>>n));}}
 static int8_t flrt_row_floor(int16_t y){{return y>=0?(int8_t)(y>>3):(int8_t)-(((-y)+7)>>3);}}
 
-static uint8_t flrt_ratio_q8_exact(uint8_t n,uint8_t d){{
+static uint8_t flrt_ratio_q8_sat(uint8_t n,uint8_t d){{
     uint16_t rec,p_lo,p_hi,q;
     if(!d)return 0u;
     rec=k_fl_recip8_q16[d];
@@ -111,7 +111,7 @@ static uint8_t flrt_ratio_q8_exact(uint8_t n,uint8_t d){{
     q=(uint16_t)(p_hi+((p_lo+128u)>>8));
     /* n == d gives a true ratio of 256, which does not fit the byte. Casting
        wrapped it to 0 and every caller read that as a ratio of zero; see the
-       note on ratio_q8_exact in tilesector_polar_renderer.c. Same fix here so a
+       note on ratio_q8_sat in tilesector_polar_renderer.c. Same fix here so a
        corrected bug does not survive in a copy. */
     return (uint8_t)(q>255u?255u:q);
 }}
@@ -138,7 +138,7 @@ static void flrt_put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){{
 #define clamp_s8 flrt_clamp_s8
 #define shr_signed flrt_shr_signed
 #define row_floor flrt_row_floor
-#define ratio_q8_exact flrt_ratio_q8_exact
+#define ratio_q8_sat flrt_ratio_q8_sat
 #define inv_for_dq4 flrt_inv_for_dq4
 #define put_cell flrt_put_cell
 #define k_tspf_sin_q7 k_fl_sin_q7
@@ -149,7 +149,7 @@ static void flrt_put_cell(uint16_t *out,uint8_t row,uint8_t col,uint16_t word){{
 #undef clamp_s8
 #undef shr_signed
 #undef row_floor
-#undef ratio_q8_exact
+#undef ratio_q8_sat
 #undef inv_for_dq4
 #undef put_cell
 #undef k_tspf_sin_q7

@@ -120,7 +120,7 @@ static void chunk_state(int16_t iq,int16_t step,int fam,int want,int is_last,
  *   PATH_TRUE   continuous geometry, quantised to Q12 only at the last step
  *
  * The first version of this harness compared BAKE against INT and called INT
- * "exact". It is not: ratio_q8_exact(n,n) returns 0, so bearing_q12 reports an
+ * "exact". It is not: ratio_q8_sat(n,n) returns 0, so bearing_q12 reports an
  * axis direction for near-diagonal corners, and every one of those would have
  * been charged to the bake as a phantom event. Both integer paths are now
  * scored against continuous truth, the same way the depth derivations were. */
@@ -282,7 +282,7 @@ static void compare(int pi,int cls,const Frame *ba,const Frame *bb,
 /* The bake was fitted against float atan2, not against bearing_q12, so that is
  * what it must be scored on. Scoring it against bearing_q12 instead produced a
  * worst error of 515 Q12 units and looked like a broken transcription; it was
- * not. Those cases were the ratio_q8_exact(n,n) == 0 wrap, where bearing_q12
+ * not. Those cases were the ratio_q8_sat(n,n) == 0 wrap, where bearing_q12
  * reported an axis direction 45 degrees away and the bake was right. That wrap
  * is now fixed, and this arm is kept as the place the difference would reappear.
  * Both comparisons are reported. */
@@ -325,7 +325,7 @@ static int arm_transcription(void)
     printf("   vs bearing_q12, all samples                     worst %d Q12 (%.3f px)\n",
            worst_q12,(double)worst_q12*160.0/1024.0);
     printf("   %lu samples whose scaled operands are equal, %lu off by more than 8 Q12.\n",diag,diagbad);
-    printf("   These used to be the ratio_q8_exact(n,n) == 0 wrap, where bearing_q12\n");
+    printf("   These used to be the ratio_q8_sat(n,n) == 0 wrap, where bearing_q12\n");
     printf("   reported an axis direction 45 degrees away and the bake was the correct\n");
     printf("   one. That is now fixed by saturating the ratio, and the residue here is\n");
     printf("   ordinary quantisation.\n");

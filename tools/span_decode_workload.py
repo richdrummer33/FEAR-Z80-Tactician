@@ -189,7 +189,7 @@ def instruction_counted_decode_estimate(spans_tested_mean, gates_mean):
       best case (SPANC, a0 reused)                    262 T
 
     GATE selector (two 8x8->16 exact-decomposition products + add + sign test,
-    same shape as ratio_q8_exact in tilesector_polar_renderer.c)  ~115 T
+    same shape as ratio_q8_sat in tilesector_polar_renderer.c)  ~115 T
 
     This mirrors the ORIGINAL emit estimate's methodology exactly - and that
     estimate was measured 94% LOW once actually simulated cycle-exactly

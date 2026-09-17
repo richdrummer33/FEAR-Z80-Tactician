@@ -128,6 +128,18 @@ static uint16_t bearing_at(unsigned v,int16_t px,int16_t py)
     return bearing_q12((int16_t)(((int16_t)k_tspf_vx[v]<<4)-px),
                        (int16_t)(((int16_t)k_tspf_vy[v]<<4)-py));
 }
+/* Which representation serves this corner here: 1 = the baked field, 0 = the
+ * exact bearing_q12 fallback. A move that changes this is a REPRESENTATION
+ * HANDOFF, and it is the case worth naming: the fallback is rare, so a defect in
+ * it hides, and we have already seen one produce a 45 degree bearing and a 32
+ * pixel raster jump. */
+static int repr_of(unsigned v,int16_t px,int16_t py)
+{
+    unsigned gx=(unsigned)(px/CELL_Q4),gy=(unsigned)(py/CELL_Q4);
+    if(!proj_host_load(gx,gy)) return 0;
+    return g_pj_depth[v]==0xffu ? 0 : 1;
+}
+
 /* leaf identity of a corner at a position, for classifying the delta */
 static long leaf_id(unsigned v,int16_t px,int16_t py)
 {
@@ -197,9 +209,9 @@ static Run *find(Frame *f,uint8_t sid,uint8_t v0,uint8_t v1)
     if(f->r[i].sid==sid&&f->r[i].v0==v0&&f->r[i].v1==v1) return &f->r[i];
   return 0; }
 
-enum { K_SAME=0,K_LEAF=1,K_CELL=2,K_FAR=3,K_N=4 };
+enum { K_SAME=0,K_LEAF=1,K_CELL=2,K_FAR=3,K_SEAM=4,K_N=5 };
 static const char *KN[K_N]={"same leaf","crosses a leaf","crosses a coarse cell",
-                            "crosses several cells"};
+                            "crosses several cells","REPRESENTATION HANDOFF"};
 enum { D_T=0,D_R=1,D_C=2,D_N=3 };
 static const char *DN[D_N]={"translation only","rotation only","combined dx,dy,dyaw"};
 static unsigned long tot[D_N][K_N],ep_bad[D_N][K_N],dda_bad[D_N][K_N],ras_bad[D_N][K_N];
@@ -253,7 +265,13 @@ int main(int argc,char**argv)
                         if(!b2) continue;               /* visibility event, not an error */
                         /* classify the delta by what it crossed */
                         l0=leaf_id(a->v0,px,py); l1=leaf_id(a->v0,qx,qy);
-                        if((unsigned)(px/CELL_Q4)!=(unsigned)(qx/CELL_Q4)||
+                        /* A handoff outranks the geometric classes: whichever
+                         * boundary was crossed, the interesting fact is that a
+                         * corner changed which representation serves it. */
+                        if(repr_of(a->v0,px,py)!=repr_of(a->v0,qx,qy)||
+                           repr_of(a->v1,px,py)!=repr_of(a->v1,qx,qy))
+                            kcls = K_SEAM;
+                        else if((unsigned)(px/CELL_Q4)!=(unsigned)(qx/CELL_Q4)||
                            (unsigned)(py/CELL_Q4)!=(unsigned)(qy/CELL_Q4))
                             kcls = (abs(dx)+abs(dy)>=CELL_Q4) ? K_FAR : K_CELL;
                         else kcls = (l0==l1) ? K_SAME : K_LEAF;
@@ -358,6 +376,75 @@ int main(int argc,char**argv)
             fclose(fp);
             printf("\n   safe-region slices written to %s (%d runs)\n",pth,found);
         }
+    }
+
+    /* 3. The handoff seam, sought out rather than stumbled upon.
+     *
+     * Only seven corners map-wide fall back to bearing_q12, so a uniform sweep
+     * lands on a handoff by accident a few hundred times and calls it tested.
+     * That is not a regression. Here the fallback corners are enumerated first,
+     * and then moves are aimed ACROSS each one's cell boundary in both
+     * directions, so the baked -> fallback and fallback -> baked transitions are
+     * exercised on purpose. */
+    {
+        struct { unsigned gx,gy,v; } fb[64]; int nfb=0;
+        unsigned long seam=0,seam_bad=0;
+        int gx2,gy2,v2;
+        for(gy2=0;gy2<(int)GRID_H;++gy2) for(gx2=0;gx2<(int)GRID_W;++gx2){
+            if(!proj_host_load((unsigned)gx2,(unsigned)gy2)) continue;
+            for(v2=0;v2<14;++v2)
+                if((g_pj_fallback_mask&k_corner_mask[v2])&&nfb<64){
+                    fb[nfb].gx=(unsigned)gx2; fb[nfb].gy=(unsigned)gy2; fb[nfb].v=(unsigned)v2; ++nfb; }
+        }
+        printf("\n3  representation handoff, targeted\n");
+        printf("   %d certified fallback corners map-wide\n",nfb);
+        {
+            static const int SD[]={1,2,5,11,23,47,64,96};
+            int fi,si,sg,ax,ay2; unsigned yw;
+            for(fi=0;fi<nfb;++fi) for(ay2=0;ay2<4;++ay2) for(ax=0;ax<4;++ax){
+                int16_t bx=(int16_t)(fb[fi].gx*CELL_Q4+ax*16+8);
+                int16_t by=(int16_t)(fb[fi].gy*CELL_Q4+ay2*16+8);
+                if(!tsp_is_walkable_q4(bx,by)) continue;
+                for(yw=0;yw<256u;yw+=32u) for(si=0;si<(int)(sizeof(SD)/sizeof(SD[0]));++si)
+                for(sg=0;sg<4;++sg){
+                    int dx2=(sg&1)?((sg&2)?-SD[si]:SD[si]):0;
+                    int dy2=(sg&1)?0:((sg&2)?-SD[si]:SD[si]);
+                    int16_t qx2=(int16_t)(bx+dx2),qy2=(int16_t)(by+dy2);
+                    Frame g0,g1; int gi2;
+                    if(qx2<0||qy2<0) continue;
+                    if(!tsp_is_walkable_q4(qx2,qy2)) continue;
+                    /* only keep moves that actually change a representation */
+                    sample(bx,by,yw,&g0);
+                    if(!g0.n) continue;
+                    sample(qx2,qy2,yw,&g1);
+                    for(gi2=0;gi2<g0.n;++gi2){
+                        Run *a2=&g0.r[gi2],*b3=find(&g1,a2->sid,a2->v0,a2->v1);
+                        EP pr; uint16_t e0,e1,rl,ln; TSPState s2;
+                        int16_t ji,js; uint8_t jd;
+                        if(!b3) continue;
+                        if(repr_of(a2->v0,bx,by)==repr_of(a2->v0,qx2,qy2)&&
+                           repr_of(a2->v1,bx,by)==repr_of(a2->v1,qx2,qy2)) continue;
+                        ++seam;
+                        e0=bearing_at(a2->v0,qx2,qy2); e1=bearing_at(a2->v1,qx2,qy2);
+                        ln=(uint16_t)((e1-e0)&4095u);
+                        rl=(uint16_t)((e0-((uint16_t)yw<<4))&4095u);
+                        ep_from_rel(rl,ln,0,&pr);
+                        if(!pr.ok||pr.c0!=b3->ep.c0||pr.c1!=b3->ep.c1||
+                           pr.x0!=b3->ep.x0||pr.x1!=b3->ep.x1||
+                           pr.lr!=b3->ep.lr||pr.rr!=b3->ep.rr){ ++seam_bad; continue; }
+                        memset(&s2,0,sizeof s2); s2.x_q4=qx2; s2.y_q4=qy2; s2.yaw=(uint8_t)yw;
+                        jd=inv_for_dq4(wall_d_q4(a2->sid,k_tspf_seg_anchor[a2->sid],&s2));
+                        if(!dp_derive(a2->sid,jd,pr.c0,pr.c1,(uint8_t)yw,&ji,&js)) continue;
+                        if(ji!=b3->iq||js!=b3->step){ ++seam_bad; continue; }
+                        if(raster_hash(ji,js,(int)(pr.c1-pr.c0+1),pr.c0)!=b3->ras) ++seam_bad;
+                    }
+                }
+            }
+        }
+        printf("   moves aimed across a representation boundary: %lu, %lu mismatched   %s\n",
+               seam,seam_bad,seam_bad?"FAIL":"EXACT");
+        printf("   both directions, baked -> fallback and fallback -> baked, at deltas\n");
+        printf("   from 1 to 96 sixteenths, compared at the endpoint, iq/step and raster\n");
     }
 
     printf("\n2  is the cheaper in-leaf incremental update equal to destination evaluation?\n");

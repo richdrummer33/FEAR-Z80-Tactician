@@ -22,6 +22,8 @@ on:
       - 'tools/rung1/geometry_reference.h'
       - 'tools/rung1/geometry_reference_test.c'
       - 'tools/rung1/depth_adjudicate.c'
+      - 'tools/rung1/helper_vectors.h'
+      - 'tools/check_duplicated_helpers.py'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   pull_request:
@@ -44,6 +46,8 @@ on:
       - 'tools/rung1/geometry_reference.h'
       - 'tools/rung1/geometry_reference_test.c'
       - 'tools/rung1/depth_adjudicate.c'
+      - 'tools/rung1/helper_vectors.h'
+      - 'tools/check_duplicated_helpers.py'
       - 'Makefile'
       - '.github/workflows/gg-progjoin-live-rung.yml'
   workflow_dispatch:
@@ -72,6 +76,17 @@ jobs:
             | tee build/progjoin_live/pack.txt
           python3 tools/gg_progjoin_emit_assets.py build/progjoin_live/packed build/progjoin_live/gen --base-bank 48 \
             | tee build/progjoin_live/assets.txt
+
+      - name: Duplicated fixed-point helper lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The ratio helper existed verbatim in two places, so fixing its
+          # wrap-to-zero bug in one left a corrected bug in the other. This
+          # fails the build if any copy drops the saturation or if the old
+          # "exact" name comes back in code.
+          python3 tools/check_duplicated_helpers.py | tee build/helper-lint.txt
+          grep -q DUPLICATED_HELPERS_OK build/helper-lint.txt
 
       - name: Continuous-geometry reference gate
         shell: bash
@@ -203,4 +218,5 @@ jobs:
             build/progjoin_live/renderer.*.c
             build/progjoin_live/materializer.*.s
             build/geometry-reference.txt
+            build/helper-lint.txt
           retention-days: 30

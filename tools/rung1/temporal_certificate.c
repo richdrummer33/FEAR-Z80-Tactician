@@ -26,7 +26,7 @@
  * where the next work belongs, not in the phase machinery.
  *
  * Two bearing sources are measured. Continuous-truth bearings validate the
- * certificate mechanism itself; bearing_q12 shows what the ratio_q8_exact defect
+ * certificate mechanism itself; bearing_q12 shows what the ratio_q8_sat defect
  * does to retained state, which is the case for fixing it before any temporal
  * integration.
  */

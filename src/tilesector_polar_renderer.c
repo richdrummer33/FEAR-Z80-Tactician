@@ -419,8 +419,15 @@ static void projection_eval_fallback(const TSPState *s)
 }
 #endif
 
-/* Exact modulo-8-bit equivalent of ((uint32_t)n*recip_q16 + 128)>>8,
- * decomposed into two 8x8->16 products so SDCC never pulls __mullong.
+/* SATURATING Q8 ratio: n/d in Q8, with the mathematical value 256 clamped to 255.
+ *
+ * The name matters. This was called ratio_q8_exact, and it is NOT exact at
+ * unity: 1.0 is 256 in Q8 and does not fit the byte. Anyone reading "exact"
+ * could reasonably decide the clamp below is a wart and remove it, which is
+ * precisely the bug it fixes.
+ *
+ * Modulo-8-bit equivalent of ((uint32_t)n*recip_q16 + 128)>>8, decomposed into
+ * two 8x8->16 products so SDCC never pulls __mullong.
  *
  * Callers always pass n <= d, so the true Q8 ratio lies in [0, 256]. It reaches
  * 256 exactly when n == d, and 256 does not fit in the byte: the old cast
@@ -436,7 +443,7 @@ static void projection_eval_fallback(const TSPState *s)
  * is inside the table's own quantisation. Widening the atan table to 257 entries
  * would remove even that, at the price of a 16-bit index on the Z80; not worth
  * it for one LSB. */
-static uint8_t ratio_q8_exact(uint8_t n, uint8_t d)
+static uint8_t ratio_q8_sat(uint8_t n, uint8_t d)
 {
     uint16_t rec, p_lo, p_hi, q;
     if (!d)
@@ -467,12 +474,12 @@ static uint16_t bearing_q12(int16_t dxq4, int16_t dyq4)
     ay8 = (uint8_t)ay;
     if (ax8 >= ay8)
     {
-        ratio = ratio_q8_exact(ay8, ax8);
+        ratio = ratio_q8_sat(ay8, ax8);
         a = k_tspf_atan_q12[ratio];
     }
     else
     {
-        ratio = ratio_q8_exact(ax8, ay8);
+        ratio = ratio_q8_sat(ax8, ay8);
         a = (uint16_t)(1024u - k_tspf_atan_q12[ratio]);
     }
     if (sx)

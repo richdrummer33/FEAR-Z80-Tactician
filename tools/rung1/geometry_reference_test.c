@@ -50,6 +50,7 @@
 #include <math.h>
 #include "tilesector_polar_renderer.c"
 #include "geometry_reference.h"
+#include "helper_vectors.h"
 
 static int g_fail=0;
 static void ck(int ok,const char *what,double got,double want,double tol)
@@ -298,7 +299,7 @@ static void arm_bearing_convention(void)
         ax=dx<0?-dx:dx; ay=dy<0?-dy:dy;
         b=(double)bearing_q12((int16_t)dx,(int16_t)dy);
         if(ax==ay){
-            /* ratio_q8_exact used to return 0 rather than 255 for n == d, because
+            /* ratio_q8_sat used to return 0 rather than 255 for n == d, because
              * the true ratio 1.0 is 256 and does not fit the byte. Every caller
              * read that as a ratio of zero, so a 45-degree diagonal reported an
              * axis direction: a 512 Q12 error and, downstream, a 32-pixel raster
@@ -320,18 +321,29 @@ static void arm_bearing_convention(void)
     ck(wB>100.0,"the opposite handedness is rejected",wB,4096.0,4096.0);
     printf("   the reference uses (cos, +sin); the opposite is rejected by %.0fx   %s\n",
            wB/(wA>0?wA:1.0), (wA<8.0&&wB>100.0)?"ok":"FAIL");
-    {   int rbad=0,dd;
-        for(dd=1;dd<=255;++dd) if(ratio_q8_exact((uint8_t)dd,(uint8_t)dd)!=255u) ++rbad;
-        ck(rbad==0,"ratio_q8_exact(n,n) saturates to 255",(double)rbad,0.0,0.0);
-        printf("   ratio_q8_exact(n,n) == 255 for all 255 n                      %s\n",
+    {   int rbad=0,dd,vi;
+        for(dd=1;dd<=255;++dd) if(ratio_q8_sat((uint8_t)dd,(uint8_t)dd)!=255u) ++rbad;
+        ck(rbad==0,"ratio_q8_sat(n,n) saturates to 255",(double)rbad,0.0,0.0);
+        printf("   ratio_q8_sat(n,n) == 255 for all 255 n                      %s\n",
                rbad?"FAIL":"ok");
+        /* the shared vectors every copy of this helper is held to */
+        for(vi=0;vi<RATIO_Q8_N;++vi){
+            int got=(int)ratio_q8_sat((uint8_t)RATIO_Q8[vi][0],(uint8_t)RATIO_Q8[vi][1]);
+            int want=(int)RATIO_Q8[vi][2],tol=(int)RATIO_Q8[vi][3],e=got-want;
+            if(e<0) e=-e;
+            if(e>tol){ ++rbad;
+                printf("   FAIL ratio_q8_sat(%u,%u) = %d, want %d (tol %d)\n",
+                       RATIO_Q8[vi][0],RATIO_Q8[vi][1],got,want,tol); ++g_fail; }
+        }
+        printf("   %d shared helper vectors (tools/rung1/helper_vectors.h)      %s\n",
+               RATIO_Q8_N,rbad?"FAIL":"ok");
     }
     ck(diagbad==0,"no diagonal reads as an axis direction",(double)diagbad,0.0,0.0);
     printf("   %ld vectors whose scaled operands are equal, %ld off by more than\n",diag,diagbad);
     printf("   8 Q12 units, worst %d (%.2f degrees)                           %s\n",
            worstdiag,worstdiag*360.0/4096.0,diagbad?"FAIL":"ok");
     if(diagbad)
-        printf("   REGRESSION: the ratio_q8_exact saturation has been lost.\n");
+        printf("   REGRESSION: the ratio_q8_sat saturation has been lost.\n");
 }
 
 /* ---- D: tie the constant back to the shipped inv_for_dq4 ----------------- */
