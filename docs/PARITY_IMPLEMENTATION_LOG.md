@@ -2307,3 +2307,90 @@ whole map. But it is now deliberate coverage of the seam rather than incidental.
 
 The denser Rung 6 run also stands: **1,100,367 cases, zero mismatches** at the
 endpoint, `iq/step` and raster layers.
+
+## The Z80 race: measured, and the elegant answer loses
+
+`tools/race/`. Three implementations of **one** function — given `(iq, step)` and
+a span length supplied from outside, emit the raster move stream — built as a
+Game Gear ROM and timed under Gearsystem. Units are Z80 T-states: Gearsystem
+accumulates what `RunInstruction()` returns, which is the instruction's own cycle
+count.
+
+* **DDA** straight-line arithmetic, no table at all.
+* **BAND** the transducer, implemented honestly: setup once per run computes the
+  eight edge phases; each chunk classifies its band and replays a six-byte
+  program, memoising each band's program the first time it is needed.
+* **PACKED** copies a stored stream and is **charged nothing** for identifying
+  which stream it needs. Deliberately flattered: it is a floor on what any
+  table-driven approach could cost, not a proposal.
+
+Span length is external for DDA and BAND, so chunk chaining is charged rather
+than hidden by benchmarking only the six-column case. The profiler refuses to
+print timings until the ROM has proved all three byte-identical against the
+generated expectation.
+
+### The race caught my own hand-wave first
+
+The first run reported 66 of 88 cases disagreeing, and the host checker localised
+it: DDA correct everywhere, BAND diverging on the **second** chunk of every
+multi-chunk span. The cause was the phrase from the earlier analysis — "the band
+index is a rank among eight computed phases". That was never a valid index.
+Counting edges *within half a turn behind* the phase puts two different bands on
+the same number, so a memoised program gets replayed for a chunk it does not
+describe. The correct index is the count of edges **at or below** the phase, which
+needs no wrap case because the `c = 0` edge always sits at phase 0. With that,
+88 of 88 agree.
+
+### T-states per span
+
+| columns | DDA | BAND setup | BAND chunks | **BAND total** | **PACKED** |
+| --- | --- | --- | --- | --- | --- |
+| 3 | 7,500 | 2,123 | 12,178 | **14,301** | **1,228** |
+| 6 | 13,926 | 2,081 | 15,058 | **17,139** | **1,844** |
+| 12 | 26,741 | 2,081 | 29,141 | **31,222** | **3,286** |
+| 18 | 39,340 | 2,123 | 41,524 | **43,647** | **4,427** |
+
+Per column: DDA 2,500 / 2,321 / 2,228 / 2,186; BAND 4,767 / 2,857 / 2,602 / 2,425;
+PACKED 410 / 307 / 274 / 246.
+
+**The band transducer loses to the plain DDA at every length** — 1.91x at three
+columns, 1.23x at six, 1.17x at twelve, 1.11x at eighteen. The gap narrows as
+memoisation amortises but never closes, and the reason is structural: building a
+band's program *is* a six-column DDA, so BAND pays the DDA's work plus
+classification plus replay. It could only win if bands repeated often within one
+run, and with at most four chunks in a twenty-column run they do not.
+
+That is a clean negative result for the prettiest idea in this investigation, and
+it is exactly why the race was worth running before building it.
+
+**PACKED replay is 6.1x to 8.9x faster than the DDA**, with identification free.
+That gap is the real finding: it is the prize available to any scheme that can
+name a stream cheaply — and naming is precisely where the sampled dictionary
+died. The question is therefore not "which of the three kernels", it is whether
+the generic machine can be arranged to fetch as cheaply as replay does.
+
+### Footprint
+
+| | code | RAM held between calls |
+| --- | --- | --- |
+| DDA | — | **0 bytes** |
+| BAND | — | 65 bytes (8x2 edges + 8x6 programs + 1 valid mask) |
+| PACKED | — | 0 bytes; 1,433 B of ROM for these 88 spans (1,169 move bytes + 264 B of index) |
+
+Code size per kernel is **not cleanly separable** from these build artifacts: the
+map file has no end markers for the static functions, and an empty translation
+unit still emits 1,824 bytes because SDCC keeps them. All three together are
+about 1.8 KB of SDCC C. Rather than report a number I cannot defend, that is
+stated as unmeasured here.
+
+### What this does and does not establish
+
+These are **SDCC C**, like the renderer's own C paths, not hand assembly. All
+three would improve, and PACKED would improve most — a byte-copy loop becomes
+`LDIR`. So the ratios are, if anything, conservative in PACKED's favour and the
+DDA's 2,200 T-states per column is far above what hand-written assembly achieves;
+the shipped materializer is hand assembly for exactly this reason. What is being
+tested is which **shape** of algorithm the Z80 prefers, and the answer is that
+classification-plus-replay is not worth it at these span lengths.
+
+`tools/race/build_and_run.sh` reproduces the whole thing.
