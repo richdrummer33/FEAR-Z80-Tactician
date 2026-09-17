@@ -8,9 +8,11 @@ import draco3d from 'draco3dgltf';
 import { MeshoptDecoder, MeshoptSimplifier } from 'meshoptimizer';
 import sharp from 'sharp';
 import { computeSourceConcavity, transferToShell } from './recess.mjs';
-import { srgbToLinear, linearToOklab, synthesizeRamp, solveRamp, oklabDistance,
-         ggToSrgb8, materialResidual, chromaGridStep, clusterFamilies,
-         chromaConfidence, transferFamilyToShell } from './palette.mjs';
+import { srgbToLinear, linearToOklab, srgb8ToOklab, synthesizeRamp, solveRamp,
+         oklabDistance, ggToSrgb8, materialResidual, chromaGridStep,
+         clusterFamilies, chromaConfidence,
+         transferFamilyToShell } from './palette.mjs';
+import { loadRegionSpec, assignFamilies, familyAreaShares } from './regions.mjs';
 
 function fail(msg) { console.error('fatal:', msg); process.exit(2); }
 function argValue(args, name, fallback) {
@@ -407,7 +409,7 @@ async function collectWorldMaterialForm(doc,blurSigma){
 }
 
 const args=process.argv.slice(2);
-if(args.length<2) fail('usage: convert.mjs INPUT.glb OUTPUT.inc [--name doomguy] [--height 19] [--up z] [--visual-tris 1800] [--lighting-tris 72] [--shadow-tris 350] [--shading-source geometry|hybrid|material] [--material-strength 0.65] [--material-blur 6] [--hue-families 0|4] [--hue-shades 4]');
+if(args.length<2) fail('usage: convert.mjs INPUT.glb OUTPUT.inc [--name doomguy] [--height 19] [--up z] [--visual-tris 1800] [--lighting-tris 72] [--shadow-tris 350] [--shading-source geometry|hybrid|material] [--material-strength 0.65] [--material-blur 6] [--hue-families 0|4] [--hue-shades 4] [--family-regions regions.json]');
 const input=args[0], output=args[1];
 const name=sanitizeName(argValue(args,'--name','doomguy'));
 const height=Number(argValue(args,'--height','19'));
@@ -433,11 +435,33 @@ const hueFamilies=Math.max(0,Number(argValue(args,'--hue-families','0'))|0);
  * shade stop to buy a fourth material, a trade this asset's measured
  * distribution does not justify. */
 const hueShades=Math.max(2,Number(argValue(args,'--hue-shades','5'))|0);
+/*
+ * Authored material regions, for an asset that has no material to measure.
+ *
+ * Mutually exclusive with --hue-families rather than layered with it: one of
+ * them says which material a surface IS because the texture said so, and the
+ * other says it because a person did, and silently mixing the two would make
+ * it impossible to tell afterwards which parts of a palette were measured.
+ * See regions.mjs for why this asset needs it at all.
+ */
+const familyRegionsPath=argValue(args,'--family-regions',null);
+if(familyRegionsPath&&hueFamilies>0)
+  fail('--family-regions and --hue-families both assign the material family; '+
+       'use the measured one (--hue-families) when the asset has a texture');
 /* The mono-ramp layout reuses the compositor's existing five-stop brightness
  * ramp verbatim, so these two are dictated by polar_baked_composite.c's
  * k_shade_ramp and must not be tuned independently of it. */
 const MONO_RAMP_STOPS=5;
 const MONO_RAMP_PALETTE_INDICES=[3,6,4,7,5];
+let regionSpec=null;
+if(familyRegionsPath){
+  try{
+    regionSpec=loadRegionSpec(JSON.parse(await fs.readFile(familyRegionsPath,'utf8')));
+  }catch(e){ fail(`${familyRegionsPath}: ${e.message}`); }
+  if(regionSpec.families.length*MONO_RAMP_STOPS>15)
+    fail(`${regionSpec.families.length} region families x ${MONO_RAMP_STOPS} shades `+
+         'exceeds the 15 usable sprite palette entries');
+}
 if(!(height>0)) fail('--height must be positive');
 if(!['geometry','hybrid','material'].includes(shadingSource))
   fail('--shading-source must be geometry, hybrid, or material');
@@ -654,6 +678,90 @@ if(hueFamilies>0){
   };
 }
 
+/* ---- Authored material regions ------------------------------------------
+ * The same output as the measured path above -- a per-vertex family plane and
+ * a palette report -- from geometric predicates instead of from a texture.
+ *
+ * Evaluated directly on the SHELL, with no transfer step, because unlike an
+ * albedo sample a region is not a measurement taken somewhere else: it is a
+ * predicate that can be asked at any point in space, so asking it at the
+ * shell's own vertices is exact rather than approximate. That also means the
+ * boundary lands where the author drew it at whatever --visual-tris the build
+ * uses, instead of moving with the decimation.
+ */
+if(regionSpec){
+  const probeL=0.55;
+  const assigned=assignFamilies(regionSpec,visualPos,visualGeom.vertexCount);
+  visualHue=assigned.family;
+  const areas=vertexAreas(visualGeom,visualQ8);
+  const shellShare=familyAreaShares(visualHue,areas,regionSpec.families.length);
+
+  /* A region that claimed nothing is almost always a typo in a coordinate,
+   * and it produces a build that looks entirely fine except that one material
+   * is missing. Cheap to check, so checked. */
+  const empty=assigned.hits.map((n,i)=>n?null:regionSpec.regions[i].name).filter(Boolean);
+  if(empty.length)
+    fail(`region(s) ${empty.join(', ')} matched no vertex of the shell; check `+
+         'their coordinates against the model bounds in this report');
+  const unusedFamily=shellShare.findIndex(v=>v<=0);
+  if(unusedFamily>=0)
+    fail(`family ${unusedFamily} (${regionSpec.families[unusedFamily].name}) ends up `+
+         'with no surface; every family costs five palette entries so an empty '+
+         'one is always a mistake');
+
+  let agree=0;
+  for(let t=0;t<visualGeom.triangleCount;++t){
+    const i=visualGeom.indices[t*3],j=visualGeom.indices[t*3+1],k=visualGeom.indices[t*3+2];
+    if(visualHue[i]===visualHue[j]&&visualHue[j]===visualHue[k])agree++;
+  }
+  const coherence=visualGeom.triangleCount?agree/visualGeom.triangleCount:1;
+
+  const polychrome=regionSpec.families.length>1;
+  const entries=regionSpec.families.map((fam,f)=>{
+    const lab=srgb8ToOklab(fam.srgb[0],fam.srgb[1],fam.srgb[2]);
+    const L=Math.max(lab[0],0.02);
+    const chromaticity=[lab[1]/L,lab[2]/L];
+    const center=[probeL,chromaticity[0]*probeL,chromaticity[1]*probeL];
+    const solved=solveRamp(synthesizeRamp(center,MONO_RAMP_STOPS));
+    return {
+      family:f, name:fam.name,
+      areaShare:shellShare[f], shellAreaShare:shellShare[f],
+      chromaticity, saturation:Math.hypot(chromaticity[0],chromaticity[1]),
+      hueDeg:(Math.atan2(chromaticity[1],chromaticity[0])*180/Math.PI+360)%360,
+      sourceMeanL:lab[0],
+      /* The author's albedo offset, carried through to the palette designer.
+       * It is the only lightness statement in the file and it is explicit. */
+      lightnessOffset:fam.lightnessOffset,
+      centerOklab:center,
+      centerSrgb8:solved[Math.min(2,solved.length-1)].srgb8,
+      indices:polychrome?null:MONO_RAMP_PALETTE_INDICES.slice(0,solved.length),
+      stops:solved
+    };
+  });
+  const flat=entries.flatMap(f=>f.stops);
+  paletteReport={
+    layout:polychrome?'family-split':'mono-ramp',
+    requestedFamilies:regionSpec.families.length,
+    families:entries.length, shades:MONO_RAMP_STOPS,
+    source:{kind:'authored-regions',path:path.resolve(familyRegionsPath),
+            regions:regionSpec.regions.map((r,i)=>
+              ({name:r.name,family:r.family,vertices:assigned.hits[i]}))},
+    /* No texture was measured, so there is no material residual to report and
+     * saying zero would read as "the fit is perfect". */
+    materialResidualOklab:null, chromaGridStepOklab:chromaGridStep(),
+    polychrome, familyResidualOklab:null,
+    shellTriangleCoherence:coherence,
+    meanStopQuantErrOklab:flat.reduce((a,x)=>a+x.nearestErr,0)/flat.length,
+    meanStopStaticErrOklab:flat.reduce((a,x)=>a+x.staticErr,0)/flat.length,
+    meanStopInterleavedErrOklab:flat.reduce((a,x)=>a+x.interleave.err,0)/flat.length,
+    interleaveGainPct:0,
+    unsafeInterleaveStops:flat.filter(x=>!x.interleave.safe).length,
+    entries
+  };
+  paletteReport.interleaveGainPct=paletteReport.meanStopQuantErrOklab>0
+    ?100*(1-paletteReport.meanStopInterleavedErrOklab/paletteReport.meanStopQuantErrOklab):0;
+}
+
 const visualRecess=new Uint8Array(visualGeom.vertexCount);
 for(let i=0;i<visualGeom.vertexCount;++i){
   const g=geomField[i],m=visualMaterial[i];
@@ -694,7 +802,7 @@ const header=`/* Generated by tools/glb_rmb/convert.mjs. DO NOT HAND EDIT.
  * crease source: ${srcWelded.vertexCount} welded source vertices,
  *   transfer radius ${recessRadius}, positive-concavity max ${concMax.toFixed(5)}
  * material form: ${materialStats ? `base=${materialStats.baseColor} normal=${materialStats.normal} ao=${materialStats.occlusion}` : 'disabled'}${paletteReport ? `
- * palette: ${paletteReport.layout}, ${paletteReport.families} family/families x ${paletteReport.shades} shades, chroma residual ${paletteReport.familyResidualOklab.toFixed(4)} Oklab` : ''}
+ * palette: ${paletteReport.layout}, ${paletteReport.families} family/families x ${paletteReport.shades} shades, ${paletteReport.familyResidualOklab===null?`families authored from ${path.basename(familyRegionsPath)}`:`chroma residual ${paletteReport.familyResidualOklab.toFixed(4)} Oklab`}` : ''}
  */
 `;
 const body=header+

@@ -58,6 +58,7 @@ uint8_t rmb_new_object(RMBScene *s,uint8_t outline_mode){
     s->objects[id].shadow_floor=1.0;
     s->objects[id].equalize=0u;
     s->objects[id].highlight_fraction=0.0;
+    s->objects[id].shadow_fraction=0.0;
     s->objects[id].crease_coverage=0.0;
     s->objects[id].crease_depth=0.0;
     s->objects[id].ramp_dither=0u;
@@ -119,6 +120,14 @@ void rmb_set_object_ramp_highlight_fraction(RMBScene *s,uint8_t object_id,
     if(fraction<0.0||fraction>=1.0)
         rmb_fail("highlight fraction must be in [0,1)");
     s->objects[object_id].highlight_fraction=fraction;
+}
+
+void rmb_set_object_ramp_shadow_fraction(RMBScene *s,uint8_t object_id,
+                                         double fraction){
+    if(object_id>=s->object_count)rmb_fail("invalid shadow-fraction object id");
+    if(fraction<0.0||fraction>=1.0)
+        rmb_fail("shadow fraction must be in [0,1)");
+    s->objects[object_id].shadow_fraction=fraction;
 }
 
 void rmb_set_object_incident_weight(RMBScene *s,uint8_t object_id,double w){
@@ -890,7 +899,30 @@ static void ensure_static_lighting(const RMBScene *s,const RMBLight *light){
                 qsort(bsamp,bn,sizeof(double),cmp_double);
                 for(k=0u;k<ob->ramp_levels;++k){
                     uint32_t idx;
-                    if(ob->highlight_fraction>0.0 &&
+                    if(ob->shadow_fraction>0.0 && ob->ramp_levels>=3u &&
+                       k+1u<ob->ramp_levels){
+                        /*
+                         * Both ends pinned: the bottom stop gets
+                         * shadow_fraction, the top gets highlight_fraction,
+                         * and the stops between them split what is left.
+                         *
+                         * This is a strict generalization, not a different
+                         * policy. Substituting
+                         *   shadow_fraction = (1-highlight_fraction)/(L-1)
+                         * reduces it algebraically to the branch below, which
+                         * is why that value is a provable no-op and the
+                         * default path can be asserted byte-identical.
+                         */
+                        double high=ob->highlight_fraction;
+                        double mid=1.0-ob->shadow_fraction-high;
+                        double q;
+                        if(mid<0.0)mid=0.0;
+                        q = k==0u ? ob->shadow_fraction
+                                  : ob->shadow_fraction +
+                                    mid*(double)k/(double)(ob->ramp_levels-2u);
+                        if(q>1.0)q=1.0;
+                        idx=(uint32_t)floor(q*(double)bn);
+                    }else if(ob->highlight_fraction>0.0 &&
                        k+1u<ob->ramp_levels){
                         /* Reserve only highlight_fraction for the top stop.
                          * The remaining probability mass is spread evenly

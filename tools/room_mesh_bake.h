@@ -80,6 +80,21 @@ typedef struct RMBObject {
      * its entire surface on the same near-white used by bright architecture,
      * while preserving true highlights and all five geometric shade levels. */
     double highlight_fraction;
+    /* The counterpart at the dark end: the fraction of the distribution given
+     * to the BOTTOM ramp stop. Zero keeps the existing policy exactly.
+     *
+     * Equal quantiles are the right default for an unknown light rig, but they
+     * also fix how much of the figure is allowed to be dark, and on a figure
+     * whose form lives in its creases that is the wrong thing to hold fixed.
+     * Raising this hands more of the surface to the darkest stop, and because
+     * occlusion and crease dominate the bottom of the ranking, the surface it
+     * hands over is the creases and the rim -- which is where the extra range
+     * is wanted and nowhere else.
+     *
+     * (1 - highlight_fraction) / (ramp_levels - 1) reproduces equal quantiles
+     * exactly; the code is written so that identity holds, not approximately,
+     * so this knob has a provable no-op setting. */
+    double shadow_fraction;
     /* Crease emphasis. crease_coverage is the fraction of the surface that
      * receives it, taken as a percentile of the measured recess field, so the
      * control means "how much of the model reads as folded" rather than an
@@ -162,6 +177,8 @@ void rmb_set_object_ramp_shading(RMBScene *s,uint8_t object_id,
 void rmb_set_object_ramp_equalize(RMBScene *s,uint8_t object_id,uint8_t on);
 void rmb_set_object_ramp_highlight_fraction(RMBScene *s,uint8_t object_id,
                                             double fraction);
+void rmb_set_object_ramp_shadow_fraction(RMBScene *s,uint8_t object_id,
+                                         double fraction);
 void rmb_set_object_crease(RMBScene *s,uint8_t object_id,double coverage,
                            double depth);
 void rmb_set_object_ramp_dither(RMBScene *s,uint8_t object_id,uint8_t on);

@@ -172,8 +172,11 @@ the gradient on the base where the eye looks for it.
 |---|---:|---:|
 | host bake, bundle 11 with review capture | 18.4 s | 39.9 s |
 | `scheduled_peak` | 58 | 63 |
-| `tile_loads` | 5756 | 6207 |
+| `tile_loads` | 5756 | 6213 |
 | runtime cost | — | none: all of it is baked |
+
+(`tile_loads` was 6207 before deep shading rode in on the same flag; the six
+extra loads are pixels changing which ramp stop they land on, not new tiles.)
 
 The bake time is dominated by the floor contact grid (192x192 cells, 24
 hemisphere rays each). The one optimisation that mattered was caching the
@@ -212,6 +215,27 @@ Hero chroma default moved from 0.72 to **0.68**, which is where the
 three-material palette sits best against this room's cool walls. The sweep that
 picked 0.72 was of the single-hue palette, where there was no green to sit
 against the red.
+
+## Since: this transfers to the other statue unchanged
+
+Everything above was developed against the floral diorama, and the obvious
+question is whether any of it was really about that asset. Applied to the
+original `FullDoomguyclassic` statue with no retuning, the shadow map holds its
+one-sided error (zero missed cells, over-coverage 564 -> 178 as resolution
+doubles) and the contact term needs no new constant. The one number that moves
+is over-coverage at 512, 5% on the diorama against 11.6% here, which is a
+property of an asset with a gun, separated fingers and a rocky base rather than
+of the algorithm.
+
+`ROOM_BUNDLE_DOOMGUY_GROUNDING=1` now also turns on
+`ROOM_BUNDLE_DOOMGUY_DEEP_SHADING`, which answers the complaint grounding did
+not: the figure's own form, as opposed to how it sits on the floor. See
+[DOOMGUY_CLASSIC_MATERIALS.md](DOOMGUY_CLASSIC_MATERIALS.md) for that, for the
+per-family albedo offset, and for what to do with an asset that carries no
+material information at all.
+
+The cost table above already includes it; grounding off is still
+byte-identical.
 
 ## Reproduce
 

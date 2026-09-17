@@ -1,0 +1,343 @@
+name: Doomguy classic grounding and materials
+
+# The grounding pass and the material palette, applied to the ORIGINAL statue
+# (FullDoomguyclassic-single-notex.glb) rather than to the floral diorama they
+# were developed against.
+#
+# The interesting difference between the two assets is not their shape, it is
+# that this one carries no material information whatsoever: a single glTF
+# material with a flat grey baseColorFactor of 0.604, no texture, no image, no
+# COLOR_0, POSITION and NORMAL only, and one connected component after welding.
+# The diorama's three materials were MEASURED out of its texture. There is
+# nothing here to measure, so its two materials are authored, in
+# assets/gg-hero/FullDoomguyclassic-regions.json, and this workflow's first job
+# is to prove that distinction rather than blur it: it asks the importer for
+# three materials and asserts that what comes back is one achromatic one, with
+# no albedo texture on any primitive.
+
+on:
+  push:
+    branches:
+      - temp/doomguy-material-form-v2
+    paths:
+      - ".github/workflows/doomguy-classic-grounding.yml"
+      - "assets/gg-hero/FullDoomguyclassic-regions.json"
+      - "tools/glb_rmb/regions.mjs"
+      - "tools/glb_rmb/regions.test.mjs"
+      - "tools/glb_rmb/convert.mjs"
+      - "tools/glb_rmb/palette.mjs"
+      - "tools/glb_rmb/gg_palette_design.mjs"
+      - "tools/recolour_semantic_frames.py"
+      - "tools/polar_baked_composite.[ch]"
+      - "tools/room_mesh_bake.[ch]"
+      - "tools/room_bundle_poc_gen.c"
+  workflow_dispatch:
+
+jobs:
+  classic:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+      REGIONS: assets/gg-hero/FullDoomguyclassic-regions.json
+      IMPORT: --name doomguy --height 19 --up z --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5
+      BASE: -DROOM_BUNDLE_DOOMGUY_GENERATED -DROOM_BUNDLE_DOOMGUY_FLOOR_MOUNT=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install --user pillow pytest
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          mkdir -p build/classic
+          node tools/glb_rmb/regions.test.mjs
+          node tools/glb_rmb/palette.test.mjs
+          python3 -m pytest tests/ -q
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tests/test_rmb_shadow_map.c -lm -o build/classic/test-shadow
+          build/classic/test-shadow
+
+      - name: The asset really does carry no material
+        run: |
+          set -euo pipefail
+          # The premise of the whole region file, asserted rather than asserted
+          # in a comment. If this asset ever gains a texture, this step fails
+          # and the right answer becomes --hue-families, not an authored file.
+          node --max-old-space-size=6144 tools/glb_rmb/convert.mjs "$ASSET" \
+            build/classic/plain.inc $IMPORT --hue-families 3 \
+            > build/classic/import-plain.json
+          python3 - <<'PY'
+          import json
+          p = json.load(open("build/classic/import-plain.json"))["palette"]
+          # Asked for three materials; the measurement comes back with one, and
+          # says why: no albedo texture on any primitive, only a flat glTF
+          # baseColorFactor, and that factor is achromatic. There is no
+          # clustering to do here and no amount of tuning changes that.
+          assert p["source"]["albedoTexture"] is False, p["source"]
+          assert p["source"]["untexturedPrimitives"] == 1, p["source"]
+          assert p["requestedFamilies"] == 3 and p["families"] == 1, p
+          assert p["layout"] == "mono-ramp", p["layout"]
+          assert p["entries"][0]["saturation"] < 1e-4, p["entries"][0]["saturation"]
+          print("asked for 3 materials, measured 1 achromatic one "
+                "(saturation %.2g, no texture): authored regions are the only option"
+                % p["entries"][0]["saturation"])
+          PY
+
+      - name: Import with authored regions
+        run: |
+          set -euo pipefail
+          mkdir -p tools/generated
+          node --max-old-space-size=6144 tools/glb_rmb/convert.mjs "$ASSET" \
+            tools/generated/doomguy_mesh.inc $IMPORT --family-regions "$REGIONS" \
+            > build/classic/import.json
+          cp tools/generated/doomguy_mesh_palette.json build/classic/
+          python3 - <<'PY'
+          import json
+          p = json.load(open("build/classic/import.json"))["palette"]
+          assert p["layout"] == "family-split", p["layout"]
+          assert p["families"] == 2, p["families"]
+          # Every region must have claimed something. A coordinate typo
+          # produces a build that looks entirely fine except that part of a
+          # material is missing, and nothing else in the pipeline would say so.
+          for r in p["source"]["regions"]:
+              assert r["vertices"] > 0, r
+              print("  %-11s family %d  %4d vertices" % (r["name"], r["family"], r["vertices"]))
+          kit = [e for e in p["entries"] if e["name"] == "kit"][0]
+          # Sized so the kit is a real part of the figure and not a detail: the
+          # helmet, the gun and both boots together.
+          assert 0.10 < kit["shellAreaShare"] < 0.35, kit["shellAreaShare"]
+          # A geometric predicate evaluated at the shell's own vertices should
+          # produce REGIONS, not speckle -- better coherence than the measured
+          # texture path gets (0.882 on the diorama), because there is no
+          # transfer step to blur the boundary.
+          assert p["shellTriangleCoherence"] > 0.88, p["shellTriangleCoherence"]
+          print("kit %.1f%% of shell area, triangle coherence %.3f"
+                % (100 * kit["shellAreaShare"], p["shellTriangleCoherence"]))
+          PY
+
+      - name: Design the palette, with the kit darker at every stop
+        run: |
+          set -euo pipefail
+          node tools/glb_rmb/gg_palette_design.mjs \
+            tools/generated/doomguy_mesh_palette.json \
+            tools/generated/hero_colour_palette > build/classic/palette.json
+          python3 - <<'PY'
+          import json, sys, pathlib
+          sys.path.insert(0, str(pathlib.Path("tools")))
+          from recolour_semantic_frames import oklab_L
+          d = json.load(open("tools/generated/hero_colour_palette.json"))
+          body, kit = d["heroFamilies"]
+          assert kit["lightnessOffset"] < -0.05, kit["lightnessOffset"]
+          # The point of the albedo offset: at the SAME shade value the dark
+          # material must be darker. At every stop, not on average -- an
+          # average can be satisfied by a family that is darker at one end and
+          # brighter at the other, which reads as a different hue, not as a
+          # different material.
+          for i, (b, k) in enumerate(zip(body["stops"], kit["stops"])):
+              lb, lk = oklab_L(b["srgb8"]), oklab_L(k["srgb8"])
+              assert lk < lb, (i, lb, lk)
+          # And each family must still be a ramp: monotone, with no two stops
+          # colliding, or the material loses a level of form.
+          for fam in (body, kit):
+              ls = [oklab_L(s["srgb8"]) for s in fam["stops"]]
+              assert all(b > a for a, b in zip(ls, ls[1:])), (fam["family"], ls)
+          print("body %s" % [s["srgb8"] for s in body["stops"]])
+          print("kit  %s (offset %.3f L)" % ([s["srgb8"] for s in kit["stops"]],
+                                             kit["lightnessOffset"]))
+          PY
+
+      - name: The shadow-fraction generalization has a provable no-op
+        run: |
+          set -euo pipefail
+          # Deep shading hands the darkest ramp stop more of the surface by
+          # replacing the equal-quantile threshold policy with one that pins
+          # both ends. That is only safe to adopt if it is a strict
+          # generalization, so the value that reduces it algebraically to the
+          # old policy -- (1 - highlight_fraction) / (levels - 1) = 0.225 --
+          # must produce a byte-identical bake. Asserted, not argued.
+          for sf in 0.0 0.225; do
+            cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror $BASE \
+              -DROOM_BUNDLE_DOOMGUY_SHADOW_FRACTION=$sf -Isrc -Itools \
+              tools/polar_baked_composite.c tools/room_mesh_bake.c \
+              tools/room_bundle_poc_gen.c -lm -o build/classic/bake-sf
+            mkdir -p "build/classic/sf-$sf"
+            ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
+              build/classic/bake-sf "build/classic/sf-$sf" \
+              | tee "build/classic/route-sf-$sf.txt" > /dev/null
+          done
+          diff -r build/classic/sf-0.0 build/classic/sf-0.225
+          echo "shadow_fraction=0.225 reproduces equal quantiles byte for byte"
+
+      - name: Bake with grounding and deep shading off, then on
+        run: |
+          set -euo pipefail
+          cp build/classic/route-sf-0.0.txt build/classic/route-off.txt
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror $BASE \
+            -DROOM_BUNDLE_DOOMGUY_GROUNDING=1 -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/classic/bake-on
+
+      - name: Sanitized build
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O1 -g -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer $BASE \
+            -DROOM_BUNDLE_DOOMGUY_GROUNDING=1 -Isrc -Itools \
+            tools/polar_baked_composite.c tools/room_mesh_bake.c \
+            tools/room_bundle_poc_gen.c -lm -o build/classic/bake-san
+          mkdir -p build/classic/san
+          ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+          UBSAN_OPTIONS=halt_on_error=1 \
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
+            build/classic/bake-san build/classic/san > /dev/null
+
+      - name: The map may over-shadow, never under-shadow
+        run: |
+          set -euo pipefail
+          for dim in 512 1024; do
+            ROOM_BUNDLE_SHADOW_SELFCHECK=$dim \
+            ROOM_BUNDLE_SHADOW_DUMP=build/classic/shadow-map-$dim.pgm \
+              build/classic/bake-on build/classic \
+              | tee -a build/classic/selfcheck.txt
+          done
+          python3 - <<'PY'
+          import re
+          rows = [m.groupdict() for m in re.finditer(
+              r"SHADOW_SELFCHECK dim=(?P<dim>\d+) grid=\S+ exact=(?P<exact>\d+) "
+              r"map=(?P<map>\d+) missed=(?P<missed>\d+) extra=(?P<extra>\d+) "
+              r"agree_pct_x1000=(?P<agree>\d+)",
+              open("build/classic/selfcheck.txt").read())]
+          assert len(rows) == 2, rows
+          lo, hi = rows
+          # The property that matters is that the error is ONE-SIDED: an extra
+          # shadowed cell is a silhouette under a texel too wide and nothing at
+          # 160x144 resolves it, while a missing one is a lit speckle inside a
+          # shadow and reads as noise.
+          for r in rows:
+              assert int(r["missed"]) == 0, r
+          # This statue has a considerably finer silhouette than the diorama --
+          # a gun, separated fingers, a rocky base -- so 512 over-covers more
+          # here (11.6%) than the 5% the diorama needs. The bound that carries
+          # the meaning is convergence: over-coverage must SHRINK with
+          # resolution rather than drift, and 1024 must reach the same 5%.
+          assert int(hi["extra"]) < int(hi["exact"]) * 0.05, hi
+          assert int(hi["extra"]) < int(lo["extra"]), rows
+          assert int(lo["agree"]) >= 97000, lo
+          assert int(hi["agree"]) >= 99000, hi
+          print("agreement %.3f%% at 512 -> %.3f%% at 1024, missed=0, "
+                "over-coverage %s -> %s"
+                % (int(lo["agree"]) / 1000, int(hi["agree"]) / 1000,
+                   lo["extra"], hi["extra"]))
+          PY
+
+      - name: Route bake, review capture, and what it costs
+        run: |
+          set -euo pipefail
+          mkdir -p build/classic/capture
+          ROOM_BUNDLE_ONLY=11 ROOM_BUNDLE_SCHEDULER_MAX_UPLOADS=512 \
+          ROOM_BUNDLE_CAPTURE_REVIEW=1 ROOM_BUNDLE_CAPTURE_OWNER=0 \
+            build/classic/bake-on build/classic/capture \
+            | tee build/classic/route-on.txt
+          grep -q '^ROOM_BUNDLE_POC_PASS ' build/classic/route-on.txt
+          test "$(find build/classic/capture -name 'review-doomguy-detail-*.ppm' | wc -l)" -eq 120
+          test "$(find build/classic/capture -name 'family-doomguy-detail-*.pgm' | wc -l)" -eq 120
+          python3 - <<'PY'
+          import re
+          def stat(path, key):
+              m = re.search(r"bundle=11 route=0->1 .*?%s=(\d+)" % key, open(path).read())
+              return int(m.group(1))
+          off = {k: stat("build/classic/route-off.txt", k)
+                 for k in ("scheduled_peak", "tile_loads")}
+          on = {k: stat("build/classic/route-on.txt", k)
+                for k in ("scheduled_peak", "tile_loads")}
+          print("scheduled_peak %d -> %d, tile_loads %d -> %d"
+                % (off["scheduled_peak"], on["scheduled_peak"],
+                   off["tile_loads"], on["tile_loads"]))
+          # All of it is baked, so none of it costs runtime work. What it does
+          # cost is background tiles turning over as the camera moves -- the
+          # dithered penumbra and the contact gradient are per-pixel patterns
+          # on the floor. Bounded so a retune cannot quietly make it much
+          # worse; this chamber is already above the ~48/VBlank budget and the
+          # number to watch is the growth, not the absolute.
+          assert on["scheduled_peak"] <= off["scheduled_peak"] + 8, (off, on)
+          assert on["tile_loads"] <= off["tile_loads"] * 1.20, (off, on)
+          PY
+
+      - name: Recolour, and check the shading structure survived
+        run: |
+          set -euo pipefail
+          python3 tools/recolour_semantic_frames.py \
+            tools/generated/hero_colour_palette.json \
+            build/classic/capture build/classic/render \
+            --scale 3 --sheet-every 15 \
+            | tee build/classic/recolour.txt
+          grep -q '^RECOLOUR_PASS frames=120 masked=120 family=120 ' build/classic/recolour.txt
+          grep -q '^RAMP_ORDER families=2 violations=0$' build/classic/recolour.txt
+          python3 - <<'PY'
+          import re
+          txt = open("build/classic/recolour.txt").read()
+          signed = {(m.group(1), m.group(2)): (float(m.group(3)), float(m.group(4)))
+                    for m in re.finditer(
+                        r"LIGHTNESS_SIGNED mode=(\S+) role=(\S+) max_up_dL=(\S+) "
+                        r"at_up=\S+ max_down_dL=(\S+)", txt)}
+          for mode in ("static", "blend"):
+              room_up, room_down = signed[(mode, "room")]
+              hero_up, hero_down = signed[(mode, "hero")]
+              # The room is untouched by any of this and keeps the original
+              # symmetric bound: the greyscale ramp's tightest adjacent step.
+              assert max(room_up, room_down) < 0.062, (mode, room_up, room_down)
+              # The hero is held to the upward half of it. Downward is the
+              # feature -- a wider band and a darker second material -- and it
+              # has to actually have happened, or the gate is vacuous.
+              assert hero_up < 0.062, (mode, hero_up)
+              assert hero_down > 0.060, (mode, hero_down)
+              print("%-7s room +-%.4f  hero up %.4f / down %.4f"
+                    % (mode, max(room_up, room_down), hero_up, hero_down))
+          PY
+
+      - name: Contact sheets and orbit video
+        run: |
+          set -euo pipefail
+          ffmpeg -y -loglevel error \
+            -framerate 15 -i build/classic/render/blend/%03d.png \
+            -vf "scale=480:432:flags=neighbor,setpts=2.0*PTS" -r 15 \
+            -c:v libx264 -crf 15 -preset medium -pix_fmt yuv420p \
+            -movflags +faststart \
+            build/classic/doomguy-classic-orbit.mp4
+          test -s build/classic/doomguy-classic-orbit.mp4
+          python3 - <<'PY'
+          from PIL import Image
+          Image.open("build/classic/shadow-map-1024.pgm").convert("RGB")\
+               .resize((512, 512), Image.NEAREST)\
+               .save("build/classic/shadow-map.png")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doomguy-classic-grounding
+          path: |
+            build/classic/import.json
+            build/classic/import-plain.json
+            build/classic/doomguy_mesh_palette.json
+            build/classic/selfcheck.txt
+            build/classic/route-off.txt
+            build/classic/route-on.txt
+            build/classic/recolour.txt
+            build/classic/shadow-map.png
+            build/classic/doomguy-classic-orbit.mp4
+            build/classic/render/sheet-blend.png
+            build/classic/render/sheet-static.png
+            build/classic/render/sheet-grey.png
+            tools/generated/hero_colour_palette.inc
+            tools/generated/hero_colour_palette.json
+          if-no-files-found: error
+          retention-days: 30

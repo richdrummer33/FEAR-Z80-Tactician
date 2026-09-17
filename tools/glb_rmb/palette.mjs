@@ -316,6 +316,31 @@ export function synthesizeRamp(centerLab, stops = 4, meanL = null, lRange = null
  */
 export const RAMP_MIN_STEP_L = 0.055;
 
+/*
+ * Shift a lightness band by a material's albedo offset, clamping each end into
+ * the legal range independently.
+ *
+ * Lives here rather than in gg_palette_design.mjs because it is the one piece
+ * of that file's band arithmetic with a non-obvious rule, and the rule is
+ * asymmetric on purpose: the TOP end takes the offset in full, because the lit
+ * side of a material is what says how dark the material is, while the BOTTOM
+ * end stops at the scene's darkest value, because a pixel below that stops
+ * reading as material and starts reading as a hole in the figure. So a large
+ * offset narrows the band rather than sliding it out of view -- which is also
+ * what a dark material really does, having less reflectance range to spend.
+ *
+ * An offset large enough to drive the top below the floor would invert the
+ * band, so the top is additionally held at or above the bottom. That leaves a
+ * degenerate band rather than a backwards one, which the caller's minimum-span
+ * check then rejects with a message about the material losing its shading --
+ * a better error than anything this function could raise, since it is the one
+ * that knows how many stops the ramp has.
+ */
+export function offsetBand(band, offset, hardFloor, ceil) {
+  const lo = Math.min(ceil, Math.max(hardFloor, band[0] + offset));
+  return [lo, Math.max(lo, Math.min(ceil, band[1] + offset))];
+}
+
 export function fitRampChroma(centerLab, stops, lRange, minStepL = RAMP_MIN_STEP_L,
                               synth = null) {
   const build = synth || ((lab, n, r) => synthesizeRamp(lab, n, null, r));

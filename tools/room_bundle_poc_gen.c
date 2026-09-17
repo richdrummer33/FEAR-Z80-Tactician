@@ -61,6 +61,48 @@
 #ifndef ROOM_BUNDLE_DOOMGUY_GROUNDING
 #define ROOM_BUNDLE_DOOMGUY_GROUNDING 0
 #endif
+/*
+ * Deep shading: how much of the figure is allowed to be dark, and how much of
+ * the ranking that decides it belongs to occlusion.
+ *
+ * Grounding gave the statue a shadow and a contact gradient and the figure
+ * still read flat, because neither of those is what describes the form on the
+ * figure ITSELF. That is the shade ramp, and the ramp was being asked to do it
+ * across a lightness range of 0.435 with an equal-quantile policy that fixed
+ * the dark share of the surface at 22.5% regardless of how creased the model
+ * is. Two changes, in different places, for the same complaint:
+ *
+ *   - the palette's hero band now reaches down to L 0.290 instead of 0.355
+ *     (tools/glb_rmb/gg_palette_design.mjs), so the darkest stop is a dark
+ *     value rather than a mid grey. That is a palette change and touches no
+ *     baked byte.
+ *   - AO_STRENGTH 0.65 -> 0.80 and SHADOW_FRACTION 0 -> 0.32 here. The first
+ *     gives occlusion more of the brightness ranking, so the pixels that sort
+ *     to the bottom are the creases and the rim rather than merely the
+ *     unlit side; the second hands the bottom stop 32% of the surface instead
+ *     of 22.5%, so there is somewhere for them to go.
+ *
+ * Swept at 0.65/none, 0.80/0.32 and 0.90/0.38 against the classic statue;
+ * 0.90 starts eating the base into a single dark mass. Costs 1 tile load out
+ * of 7725 and nothing at runtime.
+ *
+ * Defaults to GROUNDING because it answers the same complaint about the same
+ * figure, and is separable for the same reason everything else here is.
+ */
+#ifndef ROOM_BUNDLE_DOOMGUY_DEEP_SHADING
+#define ROOM_BUNDLE_DOOMGUY_DEEP_SHADING ROOM_BUNDLE_DOOMGUY_GROUNDING
+#endif
+#ifndef ROOM_BUNDLE_DOOMGUY_SHADOW_FRACTION
+#if ROOM_BUNDLE_DOOMGUY_DEEP_SHADING
+#define ROOM_BUNDLE_DOOMGUY_SHADOW_FRACTION 0.32
+#else
+/* 0 keeps equal quantiles below the highlight reserve. The value that
+ * reproduces that exactly for this ramp is (1-0.10)/4 = 0.225, so anything
+ * above it is "give the creases more of the figure"; see
+ * rmb_set_object_ramp_shadow_fraction. */
+#define ROOM_BUNDLE_DOOMGUY_SHADOW_FRACTION 0.0
+#endif
+#endif
 #ifndef ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL
 #define ROOM_BUNDLE_DOOMGUY_SHADOW_DETAIL ROOM_BUNDLE_DOOMGUY_GROUNDING
 #endif
@@ -154,7 +196,11 @@
 #define ROOM_BUNDLE_DOOMGUY_AO_RADIUS 2.5
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_AO_STRENGTH
+#if ROOM_BUNDLE_DOOMGUY_DEEP_SHADING
+#define ROOM_BUNDLE_DOOMGUY_AO_STRENGTH 0.80
+#else
 #define ROOM_BUNDLE_DOOMGUY_AO_STRENGTH 0.65
+#endif
 #endif
 #ifndef ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS
 #define ROOM_BUNDLE_DOOMGUY_LIGHT_RADIUS 0.0
@@ -1131,6 +1177,8 @@ static void add_doomguy_proxy_mesh(RMBScene *m){
                                      (uint8_t)ROOM_BUNDLE_DOOMGUY_EQUALIZE);
     rmb_set_object_ramp_highlight_fraction(
         m,visual,(double)ROOM_BUNDLE_DOOMGUY_HIGHLIGHT_FRACTION);
+    rmb_set_object_ramp_shadow_fraction(
+        m,visual,(double)ROOM_BUNDLE_DOOMGUY_SHADOW_FRACTION);
 #if ROOM_BUNDLE_DOOMGUY_DITHER
     rmb_set_object_ramp_dither(m,visual,1u);
 #endif

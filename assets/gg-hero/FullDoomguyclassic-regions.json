@@ -1,0 +1,82 @@
+{
+  "_": [
+    "Material regions for FullDoomguyclassic-single-notex.glb.",
+    "",
+    "This asset carries NO material information: one glTF material with a flat",
+    "grey baseColorFactor of 0.604, no texture, no image, no COLOR_0, POSITION",
+    "and NORMAL only, and one connected component after welding. So unlike the",
+    "diorama -- whose three materials were measured out of its texture -- these",
+    "regions are AUTHORED. They are a statement about the model, not a",
+    "measurement of it, and they are in this file rather than inside a",
+    "heuristic so that they can be argued with.",
+    "",
+    "Coordinates are the importer's normalized space at --height 19 --up z:",
+    "Z up with the base at 0, XY centred on the bounding box. The model",
+    "measures x -6.64..6.67, y -6.01..6.01, z 0.01..19.00, and the regions",
+    "below were read off that.",
+    "",
+    "The figure, by height band: rocky base 0..2.5, boots 2.2..5.2, legs to 9,",
+    "torso 9..16, helmet 16..19. The gun is the only part that is hopeless to",
+    "bound with an axis-aligned anything -- it is held across the body and runs",
+    "diagonally out to (3.1, -5.3, 9.3) -- which is what the capsule is for."
+  ],
+  "families": [
+    {
+      "name": "armour",
+      "_": [
+        "The hue the diorama's dominant material measured at, so the two",
+        "statues share one palette design. Nothing about this asset chose it;",
+        "there was nothing here to choose with."
+      ],
+      "srgb": [204, 85, 68]
+    },
+    {
+      "name": "kit",
+      "_": [
+        "Helmet, gun and boots. Near-neutral and slightly warm, because the",
+        "only material statement the file actually makes is a neutral grey,",
+        "and because a hard-kit material reading as a second saturated hue",
+        "would compete with the armour instead of sitting under it.",
+        "",
+        "-0.12 in Oklab L is the albedo offset, a little under one ramp step",
+        "(0.125 at the current band). Enough that the kit is unmistakably a",
+        "darker material at the same incident angle, not so much that its own",
+        "five stops stop describing its shape."
+      ],
+      "srgb": [150, 128, 118],
+      "lightnessOffset": -0.12
+    }
+  ],
+  "default": 0,
+  "regions": [
+    {
+      "name": "helmet",
+      "family": 1,
+      "type": "sphere",
+      "center": [-2.0, 2.0, 17.6],
+      "radius": 2.8
+    },
+    {
+      "name": "gun",
+      "family": 1,
+      "type": "capsule",
+      "a": [0.2, -2.0, 10.9],
+      "b": [3.6, -5.6, 9.2],
+      "radius": 1.8
+    },
+    {
+      "name": "boot-left",
+      "family": 1,
+      "type": "box",
+      "min": [-6.9, -2.4, 2.2],
+      "max": [-2.0, 6.2, 5.2]
+    },
+    {
+      "name": "boot-right",
+      "family": 1,
+      "type": "box",
+      "min": [0.5, -1.2, 2.2],
+      "max": [6.1, 3.4, 5.2]
+    }
+  ]
+}

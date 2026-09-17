@@ -16,7 +16,8 @@ import {
   gamutMapOklab, synthesizeRamp, quantizeRamp, solveRamp, bestSingle, bestPair,
   interleavedOklab, materialResidual, chromaGridStep, fitRampChroma,
   kmeansOklab, oklabDistance, RAMP_MIN_STEP_L,
-  chromaticity, chromaConfidence, clusterFamilies, transferFamilyToShell
+  chromaticity, chromaConfidence, clusterFamilies, transferFamilyToShell,
+  offsetBand
 } from './palette.mjs';
 
 let failures = 0;
@@ -225,6 +226,88 @@ test('family transfer falls back to the nearest source when nothing is in range'
                                     new Float64Array([1]), 1,
                                     new Float64Array([0, 0, 0]), 1, 0.1, 3);
   assert.equal(out[0], 1);
+});
+
+/* ---- per-family albedo offset ------------------------------------------ */
+
+const HERO_BAND = [0.290, 0.790];
+const HARD_FLOOR = 0.201;
+const CEIL = 0.790;
+
+test('a zero offset returns the band untouched', () => {
+  assert.deepEqual(offsetBand(HERO_BAND, 0, HARD_FLOOR, CEIL), HERO_BAND);
+});
+
+test('a small offset shifts both ends and keeps the span exactly', () => {
+  const b = offsetBand(HERO_BAND, -0.05, HARD_FLOOR, CEIL);
+  assert.ok(Math.abs(b[0] - 0.240) < 1e-12, `lo ${b[0]}`);
+  assert.ok(Math.abs(b[1] - 0.740) < 1e-12, `hi ${b[1]}`);
+  assert.ok(Math.abs((b[1] - b[0]) - (HERO_BAND[1] - HERO_BAND[0])) < 1e-12,
+            'span changed while there was room to shift');
+});
+
+test('the lit end takes the whole offset even once the dark end has clamped', () => {
+  /* This is the property that makes a dark material read as dark. If the
+   * clamp pushed the band back UP instead, the offset would silently stop
+   * having any effect past the floor and a "darker" material would be
+   * identical to the default one. */
+  const off = -0.14;
+  const b = offsetBand(HERO_BAND, off, HARD_FLOOR, CEIL);
+  assert.ok(Math.abs(b[0] - HARD_FLOOR) < 1e-12, `lo did not clamp: ${b[0]}`);
+  assert.ok(Math.abs(b[1] - (HERO_BAND[1] + off)) < 1e-12,
+            `hi is ${b[1]}, expected the full offset ${HERO_BAND[1] + off}`);
+});
+
+test('no offset can put a stop below the hard floor', () => {
+  for (const off of [-0.2, -0.5, -10]) {
+    const b = offsetBand(HERO_BAND, off, HARD_FLOOR, CEIL);
+    assert.ok(b[0] >= HARD_FLOOR - 1e-12, `offset ${off} produced ${b[0]}`);
+  }
+});
+
+test('no offset can put a stop above the ceiling', () => {
+  for (const off of [0.2, 0.5, 10]) {
+    const b = offsetBand(HERO_BAND, off, HARD_FLOOR, CEIL);
+    assert.ok(b[1] <= CEIL + 1e-12, `offset ${off} produced ${b[1]}`);
+  }
+});
+
+test('an absurd offset degenerates the band but never inverts it', () => {
+  /* Inverted is the dangerous shape: synthesizeRamp would happily walk it
+   * backwards and produce a ramp that gets DARKER as the surface gets more
+   * lit. Degenerate is safe, because the caller's minimum-span check rejects
+   * it with a message that names the material. */
+  for (const off of [-0.9, -10, 0.9, 10]) {
+    const b = offsetBand(HERO_BAND, off, HARD_FLOOR, CEIL);
+    assert.ok(b[1] >= b[0], `offset ${off} inverted the band: ${b[0]}..${b[1]}`);
+    assert.ok(b[0] >= HARD_FLOOR - 1e-12 && b[1] <= CEIL + 1e-12,
+              `offset ${off} escaped the range: ${b[0]}..${b[1]}`);
+  }
+});
+
+test('an offset family still resolves to a monotone in-gamut ramp', () => {
+  /* The offset is only safe if the ramp it produces is still a ramp. Solve a
+   * darkened band the way the designer does and check the invariant the
+   * whole renderer depends on. */
+  const band = offsetBand(HERO_BAND, -0.12, HARD_FLOOR, CEIL);
+  const ramp = synthesizeRamp(TERRACOTTA, 5, null, band);
+  const solved = solveRamp(ramp);
+  for (let i = 1; i < solved.length; ++i) {
+    const a = ggToOklab(solved[i - 1].gg)[0], b = ggToOklab(solved[i].gg)[0];
+    assert.ok(b > a, `stop ${i} (${b}) is not brighter than stop ${i - 1} (${a})`);
+  }
+});
+
+test('a darkened family sits below the undarkened one at every stop', () => {
+  /* The point of the whole feature: at the SAME shade value the dark material
+   * must be darker, at every stop, not just on average. */
+  const base = solveRamp(synthesizeRamp(TERRACOTTA, 5, null, HERO_BAND));
+  const dark = solveRamp(synthesizeRamp(
+    TERRACOTTA, 5, null, offsetBand(HERO_BAND, -0.12, HARD_FLOOR, CEIL)));
+  for (let i = 0; i < base.length; ++i) {
+    const a = ggToOklab(base[i].gg)[0], b = ggToOklab(dark[i].gg)[0];
+    assert.ok(b < a, `stop ${i}: dark ${b} is not below base ${a}`);
+  }
 });
 
 console.log(failures ? `\n${failures} failing` : '\nall palette tests passed');

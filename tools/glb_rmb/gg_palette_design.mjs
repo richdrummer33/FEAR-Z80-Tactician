@@ -25,7 +25,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { srgb8ToOklab, synthesizeRamp, solveRamp, ggToSrgb8, ggToOklab,
          oklabDistance, oklabToLinear, gamutMapOklab, fitRampChroma,
-         RAMP_MIN_STEP_L } from './palette.mjs';
+         offsetBand, RAMP_MIN_STEP_L } from './palette.mjs';
 
 function fail(m){ console.error('fatal:',m); process.exit(2); }
 function argValue(a,n,d){ const i=a.indexOf(n); return i>=0&&i+1<a.length?a[i+1]:d; }
@@ -69,7 +69,41 @@ const ROOM_HUE_SRGB = [96,116,150];
  * greyscale build: it is the same image with hue added.
  */
 const ROOM_L_BAND = [0.388, 0.790];
-const HERO_L_BAND = [0.355, 0.790];
+/*
+ * The hero's band is WIDER at the bottom than the room's, and as of this pass
+ * considerably wider than it used to be.
+ *
+ * It started at 0.355 -- barely below the darkest wall stop at 0.388 -- which
+ * is why the figure read as a bright cut-out with its form only visible in the
+ * deepest creases. A shade ramp can only describe as much form as its
+ * lightness range allows, and 0.355..0.790 is a range of 0.435 spread over
+ * five stops. There is nothing the occlusion term can do with that: it can
+ * rank a pixel into the darkest stop, and the darkest stop is a mid grey.
+ *
+ * The floor is not free, though, and there are two real constraints:
+ *
+ *   - Sprite colour 0 is transparent and the compositor's SEM_BLACK is the
+ *     "no hero here" code, so a hero stop approaching black would make the
+ *     figure's own shadow side read as a hole in the figure.
+ *   - The statue stands on a floor at L 0.260. A darkest hero stop at or below
+ *     that merges the shadow side into the ground on contact.
+ *
+ * 0.290 clears the floor by 0.030 -- half a ramp step, enough to stay legible
+ * against it -- while putting the darkest stop well under the darkest wall.
+ * The range grows from 0.435 to 0.500, about 15% more lightness for the ramp
+ * to spend on shape. Overridable with --hero-l-floor; swept at
+ * 0.355/0.320/0.290/0.250 and committed as doomguy-shading-range-sweep.png.
+ */
+const HERO_L_FLOOR_DEFAULT = 0.290;
+const HERO_L_CEIL = 0.790;
+/*
+ * A hero stop may not go below this no matter what a family offset asks for.
+ * It is tied to CEILING_L on purpose: the ceiling is the darkest thing the
+ * room draws, so a hero pixel below it would be darker than anything else on
+ * screen and -- with SEM_BLACK next door as the "no hero here" code -- reads
+ * as a hole punched in the figure rather than as a dark material.
+ */
+const HERO_L_HARD_FLOOR = 0.201;
 const CEILING_L = 0.201;
 const FLOOR_L = 0.260;
 /* Aerial perspective: how much bluer and flatter the far end of the wall ramp
@@ -100,7 +134,8 @@ function aerialAdjust(ramp){
 
 const args=process.argv.slice(2);
 if(args.length<2) fail('usage: gg_palette_design.mjs IMPORT_PALETTE.json OUT_PREFIX '+
-  '[--room-hue r,g,b] [--hero-chroma 1.0] [--room-chroma 1.0]');
+  '[--room-hue r,g,b] [--hero-chroma 0.68] [--room-chroma 1.0] '+
+  '[--hero-l-floor 0.290] [--hero-family-lightness 0,-0.14]');
 const report=JSON.parse(await fs.readFile(args[0],'utf8'));
 const outPrefix=args[1];
 const roomHue=String(argValue(args,'--room-hue',ROOM_HUE_SRGB.join(','))).split(',').map(Number);
@@ -126,6 +161,36 @@ const heroChroma=Number(argValue(args,'--hero-chroma','0.68'));
 const roomChroma=Number(argValue(args,'--room-chroma','1.0'));
 if(!(heroChroma>=0&&heroChroma<=2)||!(roomChroma>=0&&roomChroma<=2))
   fail('--hero-chroma/--room-chroma must be in 0..2');
+const heroLFloor=Number(argValue(args,'--hero-l-floor',String(HERO_L_FLOOR_DEFAULT)));
+if(!(heroLFloor>=HERO_L_HARD_FLOOR&&heroLFloor<HERO_L_CEIL))
+  fail(`--hero-l-floor must be in ${HERO_L_HARD_FLOOR}..${HERO_L_CEIL}`);
+/*
+ * Per-family albedo offset, in Oklab L. Negative is darker.
+ *
+ * This is the one place a family is allowed to touch lightness, and it is
+ * worth being precise about why the general prohibition below does not apply
+ * to it. That prohibition exists because lightness is the shading channel: if
+ * the SHADE value meant one lightness on a red pixel and another on a green
+ * one, the family plane would be smuggling shading into the colour channel and
+ * the figure's form would change with which material faced the light.
+ *
+ * An albedo offset does not do that. It moves a family's WHOLE band by a
+ * constant, so within a family every shade stop keeps its spacing and its
+ * order, and the shading signal is untouched -- it is just being read off a
+ * darker surface, which is exactly what a dark material is. Black boots really
+ * are darker than bright armour at the same incident angle, and refusing to
+ * say so is not neutrality, it is just a wrong albedo.
+ *
+ * The offset shifts rather than compresses, so a dark family keeps the full
+ * ramp span and therefore the full amount of shape. A genuinely dark material
+ * would also compress, but compression is the thing this renderer cannot
+ * afford: it has five stops and they all carry form.
+ */
+const familyLightnessArg=argValue(args,'--hero-family-lightness',null);
+const familyLightnessOverride=familyLightnessArg===null?null:
+  String(familyLightnessArg).split(',').map(Number);
+if(familyLightnessOverride&&familyLightnessOverride.some(v=>!Number.isFinite(v)))
+  fail('--hero-family-lightness must be a comma-separated list of Oklab L offsets');
 
 const polychrome=report.layout==='family-split';
 if(!['mono-ramp','family-split'].includes(report.layout))
@@ -178,30 +243,68 @@ const floorSolved = solveRamp([floorLab])[0];
  * Re-synthesized here rather than reused from the importer's report: the
  * importer measured the material without knowing what scene it would stand in,
  * and the lightness band is the part that belongs to the scene. */
-const heroBand = HERO_L_BAND;
+const heroBand = [heroLFloor, HERO_L_CEIL];
 /*
- * Every family gets the SAME lightness band. That is deliberate and it is the
- * whole reason a family plane is safe to add: shade already says how lit a
- * pixel is, so if a green leaf and a red petal at the same shade level sat at
- * different lightnesses, the family plane would be smuggling shading
- * information into the colour channel and the figure's form would depend on
- * which material happened to be facing the light. Families differ in hue and
- * saturation. They do not differ in lightness.
+ * Families differ in HUE, in SATURATION, and -- only by an explicit albedo
+ * offset -- in where their band sits. They never differ in how that band is
+ * SPANNED: every family gets the same number of stops across the same width,
+ * so a given shade value means the same amount of light everywhere on the
+ * figure and the family plane cannot smuggle shading into the colour channel.
+ * See --hero-family-lightness above for why a constant shift is the one
+ * lightness move that keeps that promise.
  *
- * Chroma is fitted per family, though, because the cap is a per-hue property:
- * a saturated green rails its green channel at a different lightness than a
+ * Chroma is fitted per family, because the cap is a per-hue property: a
+ * saturated green rails its green channel at a different lightness than a
  * saturated red rails its red one.
  */
-const heroFamilies = report.entries.map(fam=>{
+const heroSpan = heroBand[1]-heroBand[0];
+const heroMinSpan = (BRIGHTNESS_ORDER.length-1)*RAMP_MIN_STEP_L;
+if(heroSpan < heroMinSpan)
+  fail(`hero band ${heroBand[0]}..${heroBand[1]} spans ${heroSpan.toFixed(3)}, `+
+       `below the ${heroMinSpan.toFixed(3)} the ${BRIGHTNESS_ORDER.length}-stop `+
+       `ramp needs to stay tonally distinct`);
+function familyBand(offset){
+  /*
+   * Shift both ends, then clamp each into the legal range independently.
+   *
+   * The asymmetry is the point. The TOP end carries the offset in full,
+   * because the lit side of a dark material is what actually tells you it is
+   * dark -- black boots in direct light are still darker than armour in
+   * direct light. The BOTTOM end stops at the scene's darkest value, because
+   * below that a shadowed pixel stops reading as material and starts reading
+   * as a hole. So a large offset narrows the band rather than sliding it out
+   * of the visible range, which is also what a dark material really does: it
+   * has less reflectance range to spend.
+   *
+   * Narrowing is bounded rather than unlimited: below heroMinSpan the stops
+   * stop being tonally distinct on 4-bit hardware and the material loses its
+   * shape, so that is a hard failure with a message, not a silent squeeze.
+   */
+  return offsetBand(heroBand, offset, HERO_L_HARD_FLOOR, HERO_L_CEIL);
+}
+const heroFamilies = report.entries.map((fam,i)=>{
+  const requested = familyLightnessOverride
+    ? (familyLightnessOverride[i] ?? 0)
+    : (fam.lightnessOffset ?? 0);
+  const band = familyBand(requested);
+  const applied = band[1]-heroBand[1];   /* what the lit side actually got */
+  const span = band[1]-band[0];
+  if(span < heroMinSpan)
+    fail(`family ${fam.family} lightness offset ${requested} leaves a band of `+
+         `${span.toFixed(3)} (${band[0].toFixed(3)}..${band[1].toFixed(3)}), below `+
+         `the ${heroMinSpan.toFixed(3)} the ${BRIGHTNESS_ORDER.length}-stop ramp `+
+         `needs; that material would lose its shading`);
   const lab = fam.centerOklab;
-  const fit = fitRampChroma(lab, BRIGHTNESS_ORDER.length, heroBand);
+  const fit = fitRampChroma(lab, BRIGHTNESS_ORDER.length, band);
   const scale = fit.scale*heroChroma;
   const ramp = synthesizeRamp([lab[0], lab[1]*scale, lab[2]*scale],
-                              BRIGHTNESS_ORDER.length, null, heroBand);
+                              BRIGHTNESS_ORDER.length, null, band);
   return {family:fam.family, areaShare:fam.areaShare,
           shellAreaShare:fam.shellAreaShare ?? fam.areaShare,
           hueDeg:fam.hueDeg, saturation:fam.saturation,
           fittedScale:fit.scale, appliedScale:scale,
+          requestedLightnessOffset:requested, lightnessOffset:applied,
+          lBand:band, lSpan:span,
           worstAdjacentGapL:fit.worstGapL,
           solved:solveRamp(ramp)};
 });
@@ -299,6 +402,7 @@ const design = {
             interleaveA:buildSprite(PICK.a),
             interleaveB:buildSprite(PICK.b) },
   heroLBand: heroBand, roomLBand: ROOM_L_BAND,
+  heroLFloor: heroLFloor, heroLSpan: heroSpan,
   polychrome,
   /* Palette index of every (family, ramp position) pair, so a renderer never
    * has to re-derive the packing. */
@@ -308,6 +412,8 @@ const design = {
     family:f.family, areaShare:f.areaShare, shellAreaShare:f.shellAreaShare,
     hueDeg:f.hueDeg, saturation:f.saturation,
     fittedChromaScale:f.fittedScale, appliedChromaScale:f.appliedScale,
+    requestedLightnessOffset:f.requestedLightnessOffset,
+    lightnessOffset:f.lightnessOffset, lBand:f.lBand, lSpan:f.lSpan,
     worstAdjacentGapL:f.worstAdjacentGapL,
     stops:f.solved
   })),

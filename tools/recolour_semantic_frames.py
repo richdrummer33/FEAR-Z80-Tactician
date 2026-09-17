@@ -192,6 +192,61 @@ def lightness_delta(ref_bg, ref_sprite, bg, sprite, counts, design):
     return acc / total, worst
 
 
+def lightness_signed(ref_bg, ref_sprite, bg, sprite, counts, design):
+    """Split the same comparison by role and by SIGN.
+
+    The two-sided bound above was the right check while colour was promising
+    to be "the greyscale image with hue added". It is the wrong check for a
+    palette that deliberately extends the hero's range downward, because it
+    cannot tell the difference between the two things it is asked to catch:
+
+      - a stop that moved UP, or that moved down past its neighbour, scrambles
+        the tonal ordering the tile vocabulary was trained on, and is exactly
+        as bad as it ever was;
+      - a stop that moved DOWN, monotonically, with its order intact, is more
+        contrast, which is the thing that was asked for. Bounding it bounds
+        the feature.
+
+    So report the worst UPWARD move and the worst DOWNWARD move separately,
+    per role. The room is still held to the symmetric bound; the hero is held
+    to the upward half of it, and its downward extent is a measurement of how
+    much range the wider band actually bought."""
+    out = {}
+    for role_name, want in (("room", 0), ("hero", 1)):
+        up = down = 0.0
+        up_at = down_at = None
+        for (role, f, v), n in counts.items():
+            if role != want:
+                continue
+            a = ref_sprite[v] if role else ref_bg[v]
+            b = sprite[hero_index(design, f, v)] if role else bg[v]
+            d = oklab_L(b) - oklab_L(a)
+            if d > up:
+                up, up_at = d, (f, v)
+            if -d > down:
+                down, down_at = -d, (f, v)
+        out[role_name] = (up, up_at, down, down_at)
+    return out
+
+
+def ramp_order_intact(design):
+    """Every hero family's stops must still ascend in lightness, in the
+    compositor's brightness order, with no two stops colliding.
+
+    This is the invariant the symmetric bound was really protecting. Widening
+    the band or shifting one family's albedo is safe precisely as long as it
+    holds: the tile quantizer's objective is defined on the ORDER of the shade
+    stops, not on their absolute values."""
+    order = design["brightnessOrder"]
+    bad = []
+    for fam in design["heroFamilies"]:
+        ls = [oklab_L(fam["stops"][i]["srgb8"]) for i in range(len(order))]
+        for i in range(1, len(ls)):
+            if ls[i] <= ls[i - 1]:
+                bad.append((fam["family"], i - 1, i, ls[i - 1], ls[i]))
+    return bad
+
+
 def render(sem, mask, family, w, h, bg, sprite, design):
     out = bytearray(w * h * 3)
     lut = {}
@@ -344,6 +399,20 @@ def main():
         at = f"{role}/fam{where[1]}/sem{where[2]}" if where else "-"
         print(f"LIGHTNESS_DELTA mode={mode} mean_abs_dL={mean:.4f} "
               f"max_abs_dL={worst:.4f} at={at}")
+        sg = lightness_signed(ref_bg, ref_sprite, bg, sprite, counts, design)
+        for role in ("room", "hero"):
+            up, up_at, down, down_at = sg[role]
+            fmt = lambda w: f"fam{w[0]}/sem{w[1]}" if w else "-"
+            print(f"LIGHTNESS_SIGNED mode={mode} role={role} "
+                  f"max_up_dL={up:.4f} at_up={fmt(up_at)} "
+                  f"max_down_dL={down:.4f} at_down={fmt(down_at)}")
+
+    bad = ramp_order_intact(design)
+    for fam, i, j, a, b in bad:
+        print(f"RAMP_ORDER_BROKEN family={fam} stop{i}={a:.4f} >= stop{j}={b:.4f}",
+              file=sys.stderr)
+    print(f"RAMP_ORDER families={len(design['heroFamilies'])} "
+          f"violations={len(bad)}")
 
     print(f"RECOLOUR_PASS frames={len(frames)} masked={n_masked} "
           f"family={n_family} modes={','.join(modes)} out={args.outdir}")
