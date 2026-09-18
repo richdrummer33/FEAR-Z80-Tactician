@@ -3,10 +3,10 @@
 #define SELECTOR_TABLES_H
 #include <stdint.h>
 
-#define SEL_NSTEP  22
+#define SEL_NSTEP  21
 #define SEL_NBODY  146
-#define SEL_NPAGE  7
-#define SEL_PBLOB  477
+#define SEL_NPAGE  6
+#define SEL_PBLOB  453
 #define SEL_BANK_A0_0 2
 #define SEL_BANK_A0_1 3
 #define SEL_BANK_FIX  4

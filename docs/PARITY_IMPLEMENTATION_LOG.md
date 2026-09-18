@@ -2836,3 +2836,152 @@ what it could win. It remains open and is explicitly *not* claimed dead.
 
 Also not done: integrating the winner into the renderer and re-profiling a
 complete update, which is where end-to-end accounting finally applies.
+
+## Rung 10 — validation at full domain, and what the real span distribution costs
+
+Two things happen here, and the second one revises the first's headline.
+
+Tools: `tools/race/selector_exhaustive.c`, `tools/race/stress_kernels.c` plus
+`stress_asm.s` and `stress_run.cpp` (driven by `tools/race/build_and_stress.sh`),
+`tools/race/span_census.c`, `tools/race/project_end_to_end.py`,
+`tools/race/plot_weighted.py`. Output: `build/stress/`, `build/race/per_length.csv`,
+`build/race/span_weights.csv`, `build/selector-weighted.png`.
+
+### Full-domain tables, and a correction the race could not see
+
+The race held all 22 of its steps in a single cartridge bank, so its pointer was
+a two-byte offset and its bank was a constant. At full domain the records occupy
+five banks, and that changes the layout arithmetic:
+
+- **PACKED** now needs three bytes per step, not two: fourteen bits of in-bank
+  address plus a bank index does not fit in sixteen. The step map and the pointer
+  table are therefore merged — one three-byte entry gives bank and address
+  directly — costing 14 pages × 768 B = 10,752 B.
+- **FIXED** is worse off than rung 9 reported. `ordinal × 24` overflows sixteen
+  bits past ordinal 2,730, and 24 does not divide 16,384, so the bank cannot be a
+  shift of the ordinal at all. It needs a division, a per-step pointer (which
+  discards the entire reason for the layout), or power-of-two bank packing that
+  wastes 4 KB a bank. **Splitting into 16-byte threshold and 8-byte body arrays
+  is the only FIXED variant that survives banking** — 1,024 and 2,048 records a
+  bank exactly — and that is not the variant that was raced.
+
+Production totals: 69,630 B of records plus 58 B of boundary padding in five
+banks, 10,752 B of step map in one, and the body stream, pointer and prefix
+tables in the fixed bank. A span pays two bank switches and one three-byte read,
+both per span rather than per chunk because the step does not change inside one.
+
+### Exhaustive host validation
+
+The reference is deliberately *not* the race kernels — it is the closed-form
+column rule written out in wide integers, so a shared 16-bit mistake cannot hide
+inside both sides of the comparison.
+
+| sweep | span evaluations | mismatches |
+| --- | --- | --- |
+| every step × every phase × twelve span lengths | 38,129,664 | 0 |
+| translation invariance, four accumulator offsets | 3,649,128 | 0 |
+| the thirteen exceptional multiples of 256, every phase, lengths 1..24 | 319,488 | 0 |
+| **total** | **42,098,280** | **0** |
+
+Translation invariance is the premise the whole selector rests on: the body is
+looked up by phase alone, so the same phase at different accumulator offsets must
+produce the same moves. If that were false the selector would be wrong in a way
+no single-offset sweep could detect.
+
+**Mutation control.** A sweep that cannot fail proves nothing, so three realistic
+defects were injected one at a time and all three were caught: a threshold
+compare that loses the equal case (8,927 of 759,240 cases), a terminal chunk
+using the previous column's prefix (303,696), and a map entry whose bank number
+loses its top bit (43,872). The first one being rare is the point — an equal-case
+bug only shows when the phase lands exactly on a band edge, which is precisely
+why the on-device sweep tests every edge rather than random phases.
+
+### On-device stress sweep
+
+The host sweep cannot test what only exists on the cartridge: five record banks
+reached through a real Frame-2 mapper write, a three-byte map entry carrying a
+bank number, and the hand-written Z80 scan rather than a C transcription of it.
+
+All 3,103 steps, every one of the eight band edges at the edge, one below and one
+above, at five span lengths, against the hand-written DDA:
+
+> **323,974 cases compared, byte-identical. 48,386 skipped** because the span
+> cannot be placed inside the renderer's eight-bit depth domain at any
+> accumulator congruent to that phase.
+
+Phases are adversarial rather than random on purpose: a scan over sorted
+thresholds fails at a boundary or not at all.
+
+### The span distribution, and the headline correction
+
+The race timed 3, 6, 12 and 18 columns because they are tidy multiples of the
+six-column chunk. That was a bad sample. Censusing 238,592 poses — every walkable
+map cell at four sub-cell offsets, yaw swept by 2 — gives 1,027,997 spans:
+
+- **mean span is 6.80 columns**, 4.31 spans per pose
+- the distribution peaks at **three to five columns**, not twelve or eighteen
+- **27.33% of spans are three columns or fewer**, though they carry only 8.55% of
+  the column work
+- 20-column spans (the full screen) are 3.11% of spans but 9.14% of columns
+- **99.12% of spans take the depth-plane path** the selector needs; the rest fall
+  back because the wall plane crosses zero inside the run
+
+So the race was re-run at **every length from 1 to 20** rather than interpolating,
+because the selector's cost is a step function in chunks while the DDA's is
+linear in columns — interpolation between sampled lengths would have been wrong
+in a structured way.
+
+| cols | hand DDA | B packed | speedup | | cols | hand DDA | B packed | speedup |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 856 | 1,271 | **0.67x** | | 11 | 4,972 | 2,414 | 2.06x |
+| 2 | 1,231 | 1,524 | **0.81x** | | 12 | 5,231 | 2,321 | 2.25x |
+| 3 | 1,612 | 1,318 | 1.22x | | 13 | 5,846 | 3,352 | 1.74x |
+| 6 | 2,937 | 1,463 | 2.01x | | 18 | 7,874 | 3,370 | 2.34x |
+| 7 | 3,434 | 2,417 | 1.42x | | 20 | 8,807 | 4,258 | 2.07x |
+
+The sawtooth is the chunk boundary: a seven-column span pays two full chunk
+lookups for one extra column of work. **The selector loses outright on one- and
+two-column spans**, and so does the ideal oracle, so that is not selector
+inefficiency — it is the per-span setup having nothing to amortise against.
+
+Weighted by the measured distribution:
+
+| kernel | T-states/span | per update | vs DDA |
+| --- | --- | --- | --- |
+| hand DDA | 3,279 | 14,132 | 1.00x |
+| **B packed, linear** | **1,951** | **8,407** | **1.68x** |
+| B fixed, linear | 2,140 | 9,225 | 1.53x |
+| A1 honest oracle | 1,782 | 7,680 | 1.84x |
+| A0 ideal oracle | 1,525 | 6,571 | 2.15x |
+| packed replay floor | 442 | 1,904 | 7.42x |
+
+**The rung 9 headline of 2.1x–2.2x was measured on spans longer than the renderer
+mostly produces.** Against the real distribution the packed interval selector is
+**1.68x**, and the absolute ceiling — the ideal oracle, ordinal free — is 2.15x,
+not 2.98x. Both numbers are lower than rung 9 implied and neither changes the
+conclusion that the selector works; they change what it is worth.
+
+### Short-span specialisation is not worth building
+
+The obvious response to a negative result at one and two columns is to dispatch
+on span length and use the DDA there. Projected with the measured per-length
+costs and a generous 25 T-states charged for the test:
+
+> 1.68x becomes **1.71x**. The ideal oracle's hybrid moves 2.15x to 2.14x.
+
+Short spans are numerous but cheap — 27% of spans, 8.5% of the column work — so
+specialising them recovers almost nothing. This was worth measuring rather than
+assuming in either direction, and the answer is: leave it alone.
+
+### Status
+
+Correctness is closed as far as it can be closed short of integration: 42 million
+host evaluations against an independent reference, three injected defects all
+caught, and 323,974 on-device cases through the real cartridge path. The number to
+carry forward is **1.68x on the raster kernel, weighted by real spans**, with a
+2.15x ceiling.
+
+What remains is integration and a real profile — and the gap between 1.68x
+projected and whatever integration measures is itself the interesting quantity,
+because it is where span scheduling, continuation state and bank interactions
+with the surrounding renderer show up.

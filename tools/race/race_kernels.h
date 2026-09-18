@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include "race_data.h"
 
-#define MAXMV 40
+#define MAXMV 72   /* a 20-column span with a steep step outruns 40 */
 #define CHUNK 6
 /* kernels timed per span length; the profiler decodes phases with this */
 #define RACE_NK 11

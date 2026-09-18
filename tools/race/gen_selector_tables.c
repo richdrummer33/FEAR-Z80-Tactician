@@ -41,6 +41,7 @@
 #define NPH    1024
 #define MAXSLOT 8
 #define BANKB  16384
+#define FULL_BANK0 2   /* the stress ROM parks the production records here */
 
 /* ---- the reachable step set, exactly as the census derives it ------------ */
 static int16_t g_step[8192]; static int g_nstep=0;
@@ -113,6 +114,7 @@ static void emit_bytes(FILE*f,const char*name,const unsigned char*d,size_t n)
 int main(int argc,char**argv)
 {
     const char *od = argc>1?argv[1]:"tools/race";
+    int full = (argc>2 && !strcmp(argv[2],"--full"));
     char path[512]; FILE *f;
     int si,i,j;
     int ex_step[64],ex_bands[64],nex=0;
@@ -237,6 +239,135 @@ int main(int argc,char**argv)
         printf("    24, which is NOT a power of two and so is not the cheap shift the\n");
         printf("    fixed-size argument assumes. Neither is free; the race says which\n");
         printf("    one the Z80 minds more.\n");
+    }
+
+    /* ---- full-domain production tables --------------------------------
+     *
+     * The race only ever held 22 steps, all of them inside one bank, so its
+     * pointer was a two-byte offset and its bank was a constant. At full domain
+     * the records occupy five banks, and that changes both layouts' arithmetic
+     * in ways the race could not see:
+     *
+     *   PACKED  a step's record now needs a BANK as well as an offset. Three
+     *           bytes, not two, because 14 bits of in-bank address plus a bank
+     *           index does not fit in 16. That is 3,103 x 3 B, not x 2 B.
+     *   FIXED   base = ordinal * 24 overflows 16 bits past ordinal 2730, and
+     *           24 does not divide 16384, so the bank cannot be a shift of the
+     *           ordinal. It needs a division, a per-step pointer (which throws
+     *           away the entire reason for the fixed layout), or power-of-two
+     *           bank packing that wastes 4 KB a bank.
+     *
+     * So the full-domain accounting below supersedes the race-scale figures.
+     *
+     * The runtime map is also merged here: rather than step -> ordinal ->
+     * pointer, one three-byte entry gives the bank and the in-bank address
+     * directly, so a span pays two bank switches and one read.
+     */
+    if(full){
+        long nrec=0, pad=0, cur=0, bank=0;
+        unsigned char *bankbuf[16]; int banklen[16], nbank=0;
+        unsigned char *ptr3;
+        int hipage[256], npage=0;
+        unsigned char *mappage;
+        int b;
+        for(b=0;b<16;++b){ bankbuf[b]=(unsigned char*)malloc(BANKB); banklen[b]=0; }
+        ptr3=(unsigned char*)calloc((size_t)g_nstep*3,1);
+        for(i=0;i<256;++i) hipage[i]=-1;
+
+        for(si=0;si<g_nstep;++si){
+            int thr[MAXSLOT],bod[MAXSLOT],n=bands_of(g_step[si],thr,bod),k;
+            int rec=3*n;
+            if(banklen[bank]+rec>BANKB){ pad+=BANKB-banklen[bank]; ++bank;
+                if(bank>=16){ fprintf(stderr,"packed records exceed 16 banks\n"); return 1; } }
+            ptr3[si*3+0]=(unsigned char)bank;
+            ptr3[si*3+1]=(unsigned char)(banklen[bank]&255);
+            ptr3[si*3+2]=(unsigned char)(banklen[bank]>>8);
+            for(k=n-1;k>=0;--k){
+                bankbuf[bank][banklen[bank]++]=(unsigned char)((thr[k]>>8)&255);
+                bankbuf[bank][banklen[bank]++]=(unsigned char)(thr[k]&255);
+                bankbuf[bank][banklen[bank]++]=(unsigned char)bod[k]; }
+            nrec+=rec;
+            if(hipage[((uint16_t)g_step[si])>>8]<0) hipage[((uint16_t)g_step[si])>>8]=npage++;
+        }
+        nbank=(int)bank+1;
+
+        /* the merged map: step high byte picks a page, step low byte gives the
+         * bank and in-bank address of that step's record in one three-byte read */
+        mappage=(unsigned char*)calloc((size_t)npage*768,1);
+        for(si=0;si<g_nstep;++si){
+            int pg=hipage[((uint16_t)g_step[si])>>8], lo=((uint16_t)g_step[si])&255;
+            memcpy(mappage+(size_t)pg*768+(size_t)lo*3, ptr3+(size_t)si*3, 3); }
+
+        printf("\n  FULL-DOMAIN production tables (these supersede the race-scale\n");
+        printf("  pointer accounting above, which only ever spanned one bank)\n");
+        printf("    PACKED records %ld B in %d banks, boundary padding %ld B\n",nrec,nbank,pad);
+        printf("    step map %d pages x 768 B = %d B (bank + in-bank address per step)\n",
+               npage,npage*768);
+        printf("    page index 256 B, body stream/pointer/prefix tables in the fixed bank\n");
+        printf("    total banked %ld B (%.1f KiB) in %d banks\n",
+               nrec+pad+(long)npage*768,(nrec+pad+(long)npage*768)/1024.0,nbank+1);
+        printf("    A span pays two bank switches and one three-byte read; the step does\n");
+        printf("    not change inside a span, so both are per span, not per chunk.\n");
+        printf("\n    Correction to the race-scale FIXED figure: a 24-byte stride cannot\n");
+        printf("    derive its bank by shifting, and ordinal*24 overflows 16 bits past\n");
+        printf("    ordinal 2730. Splitting into 16-byte threshold and 8-byte body arrays\n");
+        printf("    fixes both (1024 and 2048 records a bank exactly) and is the only\n");
+        printf("    FIXED variant that survives banking, but it was not the one raced.\n");
+
+        for(b=0;b<nbank;++b){
+            snprintf(path,sizeof path,"%s/selfull_b%d.c",od,b); f=fopen(path,"w");
+            emit_head(f,FULL_BANK0+b);
+            { char nm[64]; snprintf(nm,sizeof nm,"gg_selfull_rec%d",b);
+              emit_bytes(f,nm,bankbuf[b],(size_t)banklen[b]); }
+            fclose(f); }
+        snprintf(path,sizeof path,"%s/selfull_map.c",od); f=fopen(path,"w");
+        emit_head(f,FULL_BANK0+nbank);
+        emit_bytes(f,"gg_selfull_map",mappage,(size_t)npage*768);
+        fclose(f);
+        /* the page index is 256 bytes and every span reads it, so it belongs in
+         * the fixed bank alongside the body tables, not behind a switch */
+        snprintf(path,sizeof path,"%s/selfull_hi.c",od); f=fopen(path,"w");
+        emit_head(f,-1);
+        { static unsigned char d[256];
+          for(i=0;i<256;++i) d[i]=(unsigned char)(hipage[i]<0?0xFF:hipage[i]);
+          emit_bytes(f,"gg_selfull_hi",d,256); }
+        fclose(f);
+        snprintf(path,sizeof path,"%s/selfull_hdr.h",od); f=fopen(path,"w");
+        fprintf(f,"/* GENERATED by tools/race/gen_selector_tables.c --full. Do not edit. */\n");
+        fprintf(f,"#ifndef SELFULL_H\n#define SELFULL_H\n#include <stdint.h>\n");
+        fprintf(f,"#define SELFULL_NSTEP %d\n#define SELFULL_NBANK %d\n",g_nstep,nbank);
+        fprintf(f,"#define SELFULL_NPAGE %d\n#define SELFULL_BANK0 %d\n",npage,FULL_BANK0);
+        fprintf(f,"#define SELFULL_MAPBANK %d\n",FULL_BANK0+nbank);
+        fprintf(f,"#define SELFULL_STEPBANK %d\n",FULL_BANK0+nbank+1);
+        fprintf(f,"extern const uint8_t gg_selfull_steps[];\n");
+        for(b=0;b<nbank;++b) fprintf(f,"extern const uint8_t gg_selfull_rec%d[];\n",b);
+        fprintf(f,"extern const uint8_t gg_selfull_map[];\n");
+        fprintf(f,"extern const uint8_t gg_selfull_hi[];\n");
+        fprintf(f,"extern const uint8_t gg_sel_bstream[];\n");
+        fprintf(f,"extern const uint8_t gg_sel_bptr[];\n");
+        fprintf(f,"extern const uint8_t gg_sel_bpre[];\n");
+        fprintf(f,"#endif\n");
+        fclose(f);
+        /* the host needs the same tables to validate exhaustively */
+        snprintf(path,sizeof path,"%s/selfull_steps.h",od); f=fopen(path,"w");
+        fprintf(f,"/* GENERATED. The reachable step set, in ordinal order. */\n");
+        fprintf(f,"#ifndef SELFULL_STEPS_H\n#define SELFULL_STEPS_H\n#include <stdint.h>\n");
+        fprintf(f,"static const int16_t k_selfull_step[%d] = {",g_nstep);
+        for(si=0;si<g_nstep;++si){ if(!(si&15)) fprintf(f,"\n "); fprintf(f,"%d,",g_step[si]); }
+        fprintf(f,"\n};\n#endif\n");
+        fclose(f);
+        /* the stress ROM needs the reachable step set on the cartridge: the map
+         * is zero-filled for unreachable steps, so it cannot be used to decide
+         * reachability, only to resolve a step already known to be reachable */
+        snprintf(path,sizeof path,"%s/selfull_steps.c",od); f=fopen(path,"w");
+        emit_head(f,FULL_BANK0+nbank+1);
+        { unsigned char *d=(unsigned char*)malloc((size_t)g_nstep*2);
+          for(si=0;si<g_nstep;++si){ d[si*2]=(unsigned char)((uint16_t)g_step[si]&255);
+                                     d[si*2+1]=(unsigned char)(((uint16_t)g_step[si])>>8); }
+          emit_bytes(f,"gg_selfull_steps",d,(size_t)g_nstep*2); free(d); }
+        fclose(f);
+        free(ptr3); free(mappage);
+        for(b=0;b<16;++b) free(bankbuf[b]);
     }
 
     /* ---- race tables ---- */

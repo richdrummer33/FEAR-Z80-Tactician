@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     dbg.stop_on_run_to_breakpoint = false; dbg.stop_on_irq = false;
     Memory* mem = core.GetMemory();
 
-    static const int NPH = 61;   /* 0 = driver, then li*RACE_NK + kernel + 1 */
+    static const int NPH = 245;   /* 0 = driver, then li*RACE_NK + kernel + 1 */
     uint64_t acc[NPH] = {0};
     uint64_t prev = core.GetMasterClockCycles();
     const uint64_t limit = 4000000000ull;
@@ -112,11 +112,24 @@ int main(int argc, char** argv) {
     std::printf("units are Z80 T-states: Gearsystem accumulates the value RunInstruction\n"
                 "returns, which is the instruction's own cycle count.\n");
 
-    const unsigned nlen = 4, nk = 11, ncase = ncases / (nlen * (done ? done : 1));
+    const unsigned nlen = 20, nk = 11, ncase = ncases / (nlen * (done ? done : 1));
     const double per = (double)(ncase * (done ? done : 1));
-    static const int LEN[4] = {3, 6, 12, 18};
+    static int LEN[20]; for (int i = 0; i < 20; ++i) LEN[i] = i + 1;
 
     std::printf("\nT-states per span, by span length (%u cases each, %u iterations)\n", ncase, done);
+    {
+        FILE* csv = std::fopen("build/race/per_length.csv", "w");
+        if (csv) {
+            std::fprintf(csv, "cols,dda_c,band_c,dda_asm,pack_asm,a0,a1,bfl,bfb,bpl\n");
+            for (unsigned li = 0; li < nlen; ++li)
+                std::fprintf(csv, "%d,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n", LEN[li],
+                    acc[li*nk+1]/per, (acc[li*nk+2]+acc[li*nk+3])/per, acc[li*nk+5]/per,
+                    acc[li*nk+6]/per, acc[li*nk+7]/per, acc[li*nk+8]/per,
+                    acc[li*nk+9]/per, acc[li*nk+10]/per, acc[li*nk+11]/per);
+            std::fclose(csv);
+            std::printf("per-length timings written to build/race/per_length.csv\n");
+        }
+    }
     std::printf("\nreference points\n");
     std::printf("  %-8s %10s %10s %10s %10s %10s\n", "columns",
                 "DDA C", "BAND C", "DDA asm", "PACK asm", "asm gap");

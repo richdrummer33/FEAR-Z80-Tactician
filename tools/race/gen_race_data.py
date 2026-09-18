@@ -47,14 +47,17 @@ def stream(iq, step, ncols):
         out.append(1 if jump == 0 else 1 - jump)
     return out
 
-LENGTHS = [3, 6, 12, 18]
+# Every length the renderer produces (see tools/race/span_census.c): the span
+# distribution peaks at three to five columns, so timing only 3/6/12/18 would
+# weight the measurement towards spans that are comparatively rare.
+LENGTHS = list(range(1, 21))
 STEPS = [37, 61, 97, 143, 205, 251, 287, 331, 410, 461, 512, 587, 631, 703, 743, 787,
          -61, -143, -287, -410, -512, -631]
 
 cases = []
 for st in STEPS:
     # centre the run so every tested length stays inside the uint8 depth domain
-    span = 19 * abs(st)
+    span = 21 * abs(st)
     iq = max(0, (16383 - span) // 2)
     if st < 0:
         iq = min(16383 - 32, iq + span)
