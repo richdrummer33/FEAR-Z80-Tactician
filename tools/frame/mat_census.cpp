@@ -67,6 +67,12 @@ int main(int argc, char** argv) {
      * difference in one frame out of a hundred. */
     const char* hashp = argc > 6 ? argv[6] : nullptr;
     FILE* hf = hashp ? std::fopen(hashp, "w") : nullptr;
+    /* Raw per-frame name table. Emulation is slow and the analysis of these
+     * frames is not, so dumping them once and analysing offline keeps the
+     * delta-oracle work cheap to iterate on. 720 bytes a frame, little-endian
+     * words, 18 rows of 20 columns with a 40-byte row stride. */
+    const char* mapsp = argc > 7 ? argv[7] : nullptr;
+    FILE* mf = mapsp ? std::fopen(mapsp, "wb") : nullptr;
 
     const u16 P_FILL = (u16)need(noi, "_tsp_polar_p_fill");
     const u16 P_SPAN = (u16)need(noi, "_tsp_polar_p_span");
@@ -212,6 +218,13 @@ int main(int argc, char** argv) {
                         if (len && len < (int)hrun_hist.size()) ++hrun_hist[len];
                         if (len) ++hruns;
                     }
+                    if (mf) {
+                        unsigned char row[40];
+                        for (int r = 0; r < 18; ++r) {
+                            for (int i = 0; i < 40; ++i) row[i] = mem->DebugRetrieve((u16)(S_MAP + r * 40 + i));
+                            std::fwrite(row, 1, 40, mf);
+                        }
+                    }
                     {   /* read the name table once, use it for both analyses */
                         std::vector<uint16_t> cur_v(18 * 20);
                         for (int r = 0; r < 18; ++r) for (int c = 0; c < 20; ++c) {
@@ -343,6 +356,7 @@ int main(int argc, char** argv) {
     std::printf("    %llu runs over %llu cells, mean length %.2f\n",
                 (unsigned long long)hruns, (unsigned long long)hcells,
                 hruns ? (double)hcells / hruns : 0.0);
+    if (mf) { std::fclose(mf); std::printf("  raw name tables written to %s\n", mapsp); }
     if (hf) { std::fclose(hf); std::printf("  name-table digests written to %s\n", hashp); }
     std::printf("    length:");
     for (size_t i = 1; i < hrun_hist.size(); ++i) if (hrun_hist[i])

@@ -3455,3 +3455,85 @@ run-structure analysis rather than probed independently; the one- and two-cell
 runs above are mostly edges, but their tile-word transitions were not classified.
 Step five, the micro-race of current-fill against whole-column-skip against
 interval-delta, is the next piece and has not been started.
+
+## Rung 16 — the delta oracle: the representation is sound, and two cells wide
+
+Before the four-rung race, the question that has to be answered first: can a
+compact retained descriptor **predict** the changed cells, or does it have to
+rediscover them by scanning? If the descriptor has to be the eighteen words
+themselves then comparing it costs what the scan costs and the whole idea is
+circular.
+
+Tool: `tools/frame/delta_oracle.py`, fed by raw per-frame name tables dumped from
+the emulator (`build/frame/maps/*.bin`, 720 bytes a frame). Each column, each
+frame, is fitted to:
+
+> top edge (row, word) × k · fill (first, last, word) · bottom edge (row, word) × k
+
+and the predicted dirty set is computed **from two consecutive descriptors
+alone**, then checked against the real `g_map(N−1) XOR g_map(N)`.
+
+### Results, 11,920 column transitions across four traces
+
+| trace | representable, k=1 | representable, k=2 | unsound | over-prediction at k=2 |
+| --- | --- | --- | --- | --- |
+| cruise | 72.75% | **83.12%** | 0 | +124.8% |
+| spin | 55.64% | **88.39%** | 0 | +34.2% |
+| corners | 76.64% | **89.13%** | 0 | +71.0% |
+| stress | 72.11% | **90.10%** | 0 | +49.8% |
+
+**Zero unsound transitions.** Across every trace and every column transition, the
+predicted set never missed a cell that actually changed. That covers the three
+cases flagged as most likely to break it — a boundary moving and exposing a
+farther surface, a nearer surface entering or leaving a column, and a shade or
+border change with stationary geometry — because all three appear in the corpus
+and none produced a miss. A shade change is caught because the descriptor carries
+the fill *word*, so the whole interval is predicted dirty, which is correct and
+shows up as over-prediction rather than as a miss.
+
+**Zero ragged columns.** The surface cells in a column are always one contiguous
+row range, never a range with holes, in all 11,920 transitions. That is a
+stronger structural guarantee than the run census implied and it is what makes
+the fill-plus-two-edges shape adequate.
+
+**The descriptor should be two edge cells per side, not one.** Widening k from 1
+to 2 moves representability from 55.6–76.6% up to 83.1–90.1% and cuts
+over-prediction from +158–194% down to +34–125%. The edge-cell histogram says
+why: a side of the fill carries zero, one or two cells in 85–94% of columns.
+
+The 10–17% that remain unrepresentable need a fallback; the figures above already
+charge those as a full eighteen-cell column rewrite, so the over-prediction number
+includes the fallback cost.
+
+### What this is worth, in cells
+
+On cruise, 150 frames: 3,911 cells actually change, the scheme would touch 8,792
+— about 59 cells a frame against 26 strictly necessary. The current materializer
+visits roughly 170 interior rows an update, each one a compare that usually finds
+nothing, to effect about 40 changes. So the delta scheme touches roughly a third
+as many places, and each one is a direct write rather than a compare-and-maybe-write.
+
+### The gap this does not close
+
+The oracle fits descriptors **from the output**. It proves the representation is
+adequate and the prediction sound; it does not prove the runtime can produce the
+same descriptor from projection without doing the work it is trying to avoid.
+That is what rung four of the race has to charge, along with resolving a newly
+exposed owner when a nearer surface shrinks.
+
+### A bug worth recording
+
+The first run reported spin at exactly 0.00% representable. The cause was
+inferring the background word per row as that row's most common word. `0x000F` is
+the mid-shade full-wall tile and is the modal word in every row a wall usually
+covers, so background and wall swapped places and nothing fitted. The renderer's
+own `base_word` — ceiling `0x0000`, horizon `0x0002`, floor `0x0001` — is now
+used directly. Inferring a constant that the source already states was the
+mistake, and the exact-zero result is what gave it away.
+
+### Next
+
+The four-rung race: current materializer, whole-column descriptor skip, two-edge
+plus fill interval delta, and the same with the reveal fallback charged, on the
+real transition corpus, charging descriptor load, comparison, address formation,
+dirty marking, writes and fallback ownership resolution. Not started.
