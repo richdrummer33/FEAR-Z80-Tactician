@@ -3825,3 +3825,85 @@ This is a derivation, not a measurement. It is only as good as its inputs, and
 one of them — the per-cell emit cost of code that does not exist — is swept
 rather than known. If rung 3 is implemented, the frame timeline and the digest
 gate will say what it actually did, and that number supersedes this table.
+
+## Rung 21 — two corrections to rung 20, and the width that decides it
+
+Three things wrong with rung 20, one of them mine to own before anything else is
+built on it.
+
+### The sign convention was ambiguous
+
+The table mixed negative and positive values without saying what positive meant.
+`tools/frame/race_arith.py` now labels every figure **net T-states saved, positive
+is better**, and the numbers below use that convention throughout.
+
+### Charging the compare per component was wrong
+
+A first pass asked, component by component, whether each one was big enough to
+pay for a descriptor skip, and concluded none was: the bar came out at 707 T a
+column while the largest component, the mirrored edge pair, is 438 T. That was an
+arithmetic mistake — it charged the same 290 T compare eleven times. **One
+compare skips every component at once**, so the saving to weigh it against is the
+whole 2,481 T a column of emission, not one slice of it.
+
+### The answer turns almost entirely on descriptor width
+
+With one compare a column, the break-even is:
+
+| descriptor | cost a column | net saved an update | share of render |
+| --- | --- | --- | --- |
+| 6 bytes | 290 | +32,372 | +6.94% |
+| **12 bytes** | 580 | **+19,459** | **+4.17%** |
+| 16 bytes | 773 | +10,851 | +2.33% |
+| 18 bytes | 870 | +6,547 | +1.40% |
+| 21 bytes | 1,015 | +90 | +0.02% |
+| 24 bytes | 1,160 | −6,366 | −1.37% |
+
+**Break-even is 21 bytes.** Rung 20 assumed 16 and got +2.33%; the real question
+is how narrow a *sound* descriptor can be.
+
+Six bytes — fill interval, fill word, ownership mask — is not sound: it ignores
+the edge geometry entirely, so a column whose edge moved while its fill stayed
+put would be skipped and drawn wrong. Eighteen bytes, carrying raw pixel
+endpoints, is sound but matches only 17% of the time (rung 15) and comes out
+**negative**. Twelve bytes is the interesting width: tile rows, the two edge
+words, the fill word and the mask, which is sound and matches 41% — but the edge
+words only exist after `prepare_edge` has run, so that cost is not avoided.
+
+So rung 2 is worth about **+4%** at a sound width, not the +2.08% rung 20
+reported, and the 18-byte raw-input variant loses by more than rung 20 said.
+
+### Rung 3 is unchanged in value but its assumption is now explicit
+
+Rung 3 still shows +8.0% to +10.7%. Its load-bearing assumption, which rung 20
+did not state plainly, is that delta emission replaces **essentially all** of the
+2,481 T a column with roughly forty cell writes a frame. That is what separates
+it from rung 2: skipping is all-or-nothing and only pays on the 41% of columns
+that are wholly identical, while delta emission also profits from the ~59% that
+changed slightly. If an implementation finds that delta emission still has to
+walk each column's edge range to decide what changed, rung 3 collapses towards
+rung 2.
+
+### Accepting the pushback on building it
+
+Rung 20 argued that deterministic timing made four kernels unnecessary. That is
+right about a *known* instruction sequence and wrong about an *integrated*
+routine. Register pressure, whether a value is still live where the model assumed
+it was, scratch placement, address-generation shape, call and return elimination,
+and the interaction with the existing generation loop are all deterministic and
+none of them are specified until the routine exists. The arithmetic justifies
+building rung 3; it does not substitute for having built it. When it exists, the
+digest gate and the frame timeline supersede every number above.
+
+### Phases, as they now stand
+
+1. **Cell-level waste** — mask-first on the interior and the edges. Landed and
+   verified: 5.8–16.5% and 1.0–1.7%.
+2. **Temporal output waste** — delta emission, +8–11% derived, and only if the
+   descriptor is produced during generation rather than gathered afterwards.
+3. **Generation waste** — `polar_mark_span_fast` at 807 T a column is now the
+   largest single materializer item, and it runs *before* anything knows whether
+   the output changed. Whether ownership itself can be retained and incrementally
+   updated when no projected boundary has crossed a quantisation edge is the
+   question after phase 2, and it is where this work meets the validity-certificate
+   line.

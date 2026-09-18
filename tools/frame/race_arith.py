@@ -45,11 +45,23 @@ def delta(repr_, cell):
                        + CHANGED * repr_ * cell
                        + (1 - repr_) * COLUMNS * per_col)
 
-print(f"descriptor compare {cmp_c} T, store {sto_c} T, emission {per_col:.0f} T a column\n")
-print(f"rung 1  current materializer                          baseline")
-print(f"rung 2  skip on raw-input identity   {skip(HIT_IN):+9.0f} T  {100*skip(HIT_IN)/RENDER:+6.2f}% of render")
-print(f"rung 2q skip on quantised identity   {skip(HIT_Q):+9.0f} T  {100*skip(HIT_Q)/RENDER:+6.2f}% of render")
+def skip_n(hit, n):
+    """Rung 2 at a chosen descriptor width. ONE compare skips every emission
+    component, so the cost is charged once a column, not once a component."""
+    cost = n * CMP_BYTE + (1 - hit) * n * STO_BYTE
+    return (hit * per_col - cost) * COLUMNS
+
+print(f"emission {per_col:.0f} T a column; one compare skips all of it\n")
+print("All figures are NET T-STATES SAVED an update. Positive is better.\n")
+print(f"  {'rung':<44}{'net saved':>11}{'share':>9}")
+print(f"  {'1  current materializer':<44}{'baseline':>11}{'':>9}")
+for n, what in ((12, "quantised: rows, edge words, fill word, mask"),
+                (18, "raw inputs: rows, pixel endpoints, mask")):
+    hit = HIT_Q if n == 12 else HIT_IN
+    v = skip_n(hit, n)
+    print(f"  2  skip whole column, {n}B {what[:22]:<22}{v:>+11,.0f}{100*v/RENDER:>+8.2f}%")
+print(f"  {'   break-even descriptor width':<44}{HIT_Q*per_col/(CMP_BYTE+(1-HIT_Q)*STO_BYTE):>10.1f}B")
 for r in REPR:
-    for c in (CELL, 200.0, 300.0):
-        print(f"rung 3  delta, repr {r:.0%}, {c:3.0f} T a cell {delta(r,c):+9.0f} T  "
-              f"{100*delta(r,c)/RENDER:+6.2f}% of render")
+    for c in (CELL, 300.0):
+        v = delta(r, c)
+        print(f"  3  delta emission, repr {r:.0%}, {c:3.0f} T a cell{'':<10}{v:>+11,.0f}{100*v/RENDER:>+8.2f}%")
