@@ -3907,3 +3907,82 @@ digest gate and the frame timeline supersede every number above.
    updated when no projected boundary has crossed a quantisation edge is the
    question after phase 2, and it is where this work meets the validity-certificate
    line.
+
+## Rung 22 — the 41% was not sound, and granularity is what decides this
+
+Attempting to build rung 3 found the thing the arithmetic could not: there is no
+point in the current pipeline where a *sound* quantised descriptor exists.
+
+### The descriptor rung 15 measured was missing the edge word
+
+Rung 15 reported "identity keyed on the materialized result" at 35.3–47.0% and
+rung 21 built on it. That descriptor was `(shade, border, top_min, top_max,
+bot_min, bot_max, full_tile)`. It does **not** carry the edge tile word, and the
+edge word is not determined by those fields: `prepare_symfull_edges$` sets
+`r_edge_left$` directly from `_g_polar_mat_top_l`, a **pixel** quantity, and the
+word comes from `edge_entry(shade, local_left, slope, bottom)` where
+`local_left = edge_left − row*8`. A one-pixel camera movement changes the word
+while leaving every field of that descriptor untouched.
+
+So 41% was the rate at which columns looked identical to a descriptor that could
+not see part of what they emit. **Skipping on it would render the wrong picture.**
+A sound per-invocation descriptor has to carry the pixel endpoints, and rung 15
+already measured that rate: 10.8–24.4%.
+
+### At a sound rate, per-invocation skip loses
+
+| granularity | identity | net saved an update | share of render |
+| --- | --- | --- | --- |
+| per materializer invocation | 10.8% | −18,400 | −3.95% |
+| per materializer invocation | 24.4% | −1,878 | −0.40% |
+
+That closes rung 2 as specified. It is not a matter of tuning the descriptor
+width: at 44.52 invocations sharing 110,450 T of emission, each one is worth only
+2,417 T, and a sound identity test hits too rarely to pay for itself.
+
+### At final-column granularity it wins, and the rate is measured from the output
+
+Resolve ownership first, form **one** descriptor for the finished screen column,
+compare that. Now the unit is worth 5,380 T instead of 2,417, there are 20 of
+them instead of 44.52, and — critically — the identity rate is no longer a
+proxy. It can be read straight out of `g_map`, where it cannot be overstated:
+
+| trace | columns identical frame to frame | net saved an update | share of render |
+| --- | --- | --- | --- |
+| spin | 39.24% | +30,509 | **+6.54%** |
+| cruise | 56.62% | +50,293 | **+10.79%** |
+| corners | 58.74% | +52,707 | **+11.31%** |
+| stress | 65.25% | +60,117 | **+12.90%** |
+
+Same 12-byte descriptor, same compare, same store. **Granularity is the whole
+difference** — it moves the result from −3.95% to +10.79% on cruise.
+
+This is the architecture already sketched from the other direction: projection
+and visible surfaces, then ownership resolution, then *one* compact final column
+descriptor, then compare, then emit. The reason it works is not that the
+descriptor is cleverer. It is that a materializer invocation is the wrong thing
+to ask "did this change?" about, because several of them share a column and none
+of them owns the answer.
+
+### What this changes about the plan
+
+The precondition is bigger than "produce the descriptor during generation". It is
+**resolve ownership per column before emitting anything**, which is a
+restructuring of the materializer's control flow, not an addition to it. The
+current pipeline interleaves ownership and emission per surface on purpose —
+near-to-far with a coverage mask is what makes the first writer win.
+
+The prize justifies it: +6.5% to +12.9% of render from the skip alone, before any
+delta emission on the columns that did change. But it is a different and larger
+piece of work than rung 3 was scoped as, and it should be planned as such rather
+than grown from the current loop.
+
+### Corrections carried
+
+- Rung 15's 41% figure is withdrawn as a *skip* rate. It remains a valid
+  statement about that descriptor; it is not a sound basis for skipping.
+- Rung 21's +4.17% for a 12-byte descriptor used that rate and is superseded by
+  the −3.95% to −0.40% band above at invocation granularity.
+- Rung 20's rung-3 figures are unaffected in arithmetic but inherit the same
+  question: they assume a delta emitter can tell what changed, which needs the
+  same sound descriptor and therefore the same restructuring.
