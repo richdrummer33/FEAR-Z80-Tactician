@@ -2634,3 +2634,205 @@ Not "selector key screening — done, answer is no". Rather:
 > coarse direct keys rejected. **Exact-state lookup, exact-step phase-interval
 > lookup, and coarse-key-plus-cheap-residual selectors remain to be priced before
 > selector work is closed.**
+
+## Rung 9 — the selector ladder priced on real Z80 timing
+
+Everything before this was about whether a selector *could* exist. This is the
+first measurement of what one *costs*, on the emulator's cycle counter, with the
+correctness gate still refusing to release timings unless every kernel emits
+byte-identical move streams. Eleven kernels now run per case and all eleven
+agree, across 22 steps and span lengths 3, 6, 12 and 18.
+
+Tools: `tools/race/gen_selector_tables.c` (bakes the tables and does the ROM
+accounting), `tools/race/race_asm.s` (the hand-written kernels),
+`tools/race/plot_ladder.py`. Output: `build/race/ladder.txt`,
+`build/race/selector-tables.txt`, `build/selector-ladder.png`.
+
+### What each rung of the ladder is
+
+A **span body** is one of the 146 distinct six-column raster behaviours for the
+descending-row family. (The earlier figure of 175 counted a signature over both
+row families; a family-zero replay does not need that distinction.) A **selector**
+is whatever turns live renderer state into the address of one.
+
+- **A0** — the ideal oracle. A dense one-byte-per-state table indexed by step
+  ordinal and the exact ten-bit phase, with the ordinal *supplied free*. Not a
+  proposal: it is the lower bound any naming scheme is racing.
+- **A1** — the same table, paying the real step-to-ordinal conversion and address
+  formation. A0 and A1 bracket what "just look it up" costs.
+- **B** — the exact-step phase-interval selector, in three forms: eight fixed
+  slots scanned linearly, eight fixed slots searched in three compares, and the
+  packed variable-length record scanned linearly.
+
+Every one of them is charged its whole path: bank selection, address formation,
+the search, the body fetch, the replay, and chunk chaining with the span length
+supplied from outside. All share one replay, so the difference between any two is
+the cost of *finding* the body and nothing else.
+
+### The replay is an LDIR, which changes the arithmetic
+
+The packed-replay comparator had already shown that copying a stored byte stream
+is the floor for emitting moves — the Z80 copies a byte per 21 T-states with no
+loop overhead. So the body is now stored **as its move stream**, not as a
+six-byte descriptor to be expanded, and a chunk's replay is one `LDIR`.
+
+The run terminator is the only complication: the last column emits the terminator
+instead of its jump byte. Six prefix lengths are baked per body — the byte count
+up to the end of each column's downs — so a chunk that ends the run copies a
+prefix and writes the terminator, and a chunk that does not copies the whole
+stream. Nothing is counted at run time. For 146 bodies that is 1,612 bytes of
+stream, 292 of pointers and 1,168 of prefixes: small enough to live in the fixed
+bank, so no selector pays a bank switch to reach it.
+
+### Results, T-states per span
+
+| columns | hand DDA | packed floor | A0 oracle | A1 honest | B fixed linear | B fixed balanced | B packed linear |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 3 | 1,671 | 313 | 1,114 | 1,357 | 1,546 | 1,583 | 1,381 |
+| 6 | 2,926 | 425 | 1,226 | 1,496 | 1,574 | 1,639 | 1,381 |
+| 12 | 5,362 | 571 | 1,860 | 2,103 | 2,642 | 2,735 | 2,458 |
+| 18 | 7,603 | 743 | 2,550 | 2,849 | 3,675 | 4,104 | 3,444 |
+
+Speedup against the hand-written DDA, which is the thing to beat:
+
+| columns | A0 | A1 | B fixed linear | B fixed balanced | B packed linear |
+| --- | --- | --- | --- | --- | --- |
+| 3 | 1.50x | 1.23x | 1.08x | 1.06x | 1.21x |
+| 6 | 2.39x | 1.96x | 1.86x | 1.79x | **2.12x** |
+| 12 | 2.88x | 2.55x | 2.03x | 1.96x | **2.18x** |
+| 18 | 2.98x | 2.67x | 2.07x | 1.85x | **2.21x** |
+
+**Every selector beats deriving the raster.** That is the headline, and it is the
+first time in this investigation that a table has beaten the generic machine on
+the hardware rather than on paper. It reverses the reading that "no cheap key
+names the body" implied about the architecture: no cheap key does, but the
+*expensive* key — the exact step and the exact phase — is affordable after all,
+because the search over eight intervals is short and the replay is a copy.
+
+The three-column case is the exception, at 1.06x–1.21x. A three-column span is
+one short chunk, so the per-span setup is amortised over almost nothing. That is
+a real limitation, not noise: very short spans are close to a wash.
+
+### Balanced search loses to linear scan
+
+This was worth measuring rather than assuming, and the assumption would have been
+wrong. The balanced search is **slower at every length**, and its disadvantage
+*grows* with span length (1.79x vs 1.86x at six columns, 1.85x vs 2.07x at
+eighteen). Three compares beat an average of 4.8 only if a compare is cheap, and
+on the Z80 it is not: each one is a subroutine call, a 16-bit offset load and an
+`add hl,de`, so the constant-time search pays about as much per compare as the
+linear scan pays per *slot*, and then pays `push de` / `pop de` on top to free a
+register pair it does not otherwise need.
+
+The linear scan also gets a structural gift the balanced search cannot use: slot
+zero's threshold is always zero and the phase is never negative, so the walk
+terminates by construction and needs no counter, no bound and no index at all.
+
+### Fixed eight-slot versus packed variable-length records
+
+Both layouts store the same slot — two threshold bytes and one body byte — so the
+comparison is like for like. They differ only in how a step's record is found and
+how the scan knows where to stop.
+
+| | FIXED (8 slots always) | PACKED (n slots) |
+| --- | --- | --- |
+| records | 3,103 × 24 B = 74,472 B | 23,210 × 3 B = 69,630 B |
+| bank padding | 64 B | 58 B |
+| pointer table | none (base from the ordinal) | 6,206 B |
+| **total** | **74,536 B (72.8 KiB), 5 banks** | 75,894 B (74.1 KiB), 6 banks |
+| scan length | 4.763 slots/lookup | 4.243 slots/lookup |
+| measured speed | 2.07x | **2.21x** |
+
+**The fixed layout wins on ROM and loses on cycles, which is the opposite of the
+usual expectation both ways round.**
+
+It wins on ROM because the band count is *nearly* saturated. Padding every step
+to eight wastes 1,614 slots, 6.5% — but the two-byte pointer that a
+variable-length record needs to be found at all costs 6,206 bytes, which is more
+than the padding it saves. Packing here buys nothing and costs a pointer table.
+
+It loses on cycles for two reasons, both measurable:
+
+1. **The padding is not free at run time.** A descending scan that starts at slot
+   seven steps over the padding before it reaches any real threshold. Weighted by
+   phase across the whole domain, fixed examines 0.520 more slots per lookup than
+   packed does. The thirteen degenerate steps pay up to 7 extra.
+2. **Twenty-four is not a power of two.** This is where the original argument for
+   fixed-size records — waste a little ROM to get predictable addressing — does
+   not cash out. Three bytes a slot makes the record stride 24, so forming the
+   base is five shifts and adds plus a second base pointer, roughly 70 T-states
+   more per span than packed's single pointer load. The addressing advantage that
+   motivated the whole layout is absent *because the slot is three bytes wide*.
+
+A split layout — sixteen bytes of thresholds and eight of body ids, both true
+shifts — would restore it, at the cost of turning the scan's hit back into an
+index that has to be converted before the body can be fetched. That variant is
+**not measured** and should not be assumed either way.
+
+Where the fixed layout's predictability does pay off unambiguously is banking.
+A0's rows are 1,024 bytes and 1,024 divides a 16 KB bank exactly, so a step's row
+never straddles one and the bank is the ordinal's high nibble. That is the
+fixed-size argument working as advertised, one level up from the slot.
+
+### Cartridge banking
+
+At 72.8 KiB the interval records need five 16 KB banks, plus one for the
+step-to-ordinal map (256 B of page index and 7,168 B of pages — only 14 of 256
+step high bytes are reachable) and the small shared body tables in the fixed
+bank. Six banks of a 512 KiB cartridge. The step does not change inside a span,
+so the bank switch is hoisted to span setup and costs one `ld (0xFFFF),a` per
+span, not per chunk — that placement is charged in every measurement above.
+
+The earlier "~56 KB with ten-bit thresholds" figure should be read with two
+corrections: it counted 24,755 bands over a signature spanning both row families,
+where a family-zero replay needs 23,210; and bit-packing ten-bit thresholds would
+make every comparison a bit-extraction, which on the Z80 costs far more than the
+12 KiB it saves. The plain byte-aligned layouts above are the ones worth pricing.
+
+### The thirteen exceptional steps
+
+The steps with fewer than seven bands are exactly the multiples of 256:
+
+| bands | steps |
+| --- | --- |
+| 1 | 0, ±1024 |
+| 2 | ±512, ±1536 |
+| 4 | ±256, ±768, ±1280 |
+
+This is the sanity check the census was missing. Band edges sit at
+`(-c·step) mod 1024` for c in 0..7, so a step of 1024k collapses all eight edges
+onto phase 0 (one band), 512×odd onto {0, 512} (two), and 256×odd onto
+{0, 256, 512, 768} (four). The exceptions are not anomalies to be explained away;
+they are the direct arithmetic consequence of the eight-edge structure, and their
+appearing exactly where the theory says they must is a check on the whole band
+derivation.
+
+Note also that family-zero merging changes the distribution the census reported:
+3 steps with one band, 4 with two, 6 with four, **1,545 with seven and 1,545 with
+eight**. The count is not saturated at eight. Half the steps have one adjacent
+pair of bands that resolve to the same family-zero body and therefore merge.
+
+### What this does and does not settle
+
+Settled by measurement: an exact-step phase-interval selector is **real**. It
+beats the hand-written DDA by 1.9x–2.2x from six columns up, at 73 KB of ROM and
+six cartridge banks, with identical raster output as the gate.
+
+Bounded by measurement: the exact-state oracle, which is the cheapest any naming
+scheme can possibly be, runs at 2.4x–3.0x. So **at most another 35% is available
+to any cleverer selector**, and A1 shows that about half of A0's margin
+evaporates as soon as the step-to-ordinal conversion is paid for honestly.
+
+Not settled: rung **C** — the strongest coarse keys plus automatically searched
+depth-1..3 residual decision trees — has not been priced. The census bounds it
+but does not close it: of the four coarse keys measured, three resolve *no* state
+uniquely, and one cheap bit adds at most 0.07%. For the key with the tightest
+residual (edge-ordering family + band, at most 4 candidates) a two-bit residual is
+information-theoretically possible, but that key requires computing the band,
+which is the same interval search B already does — so it is circular unless a
+cheaper band classifier turns up. C was worth running to shrink the 73 KB; with B
+measured and working, the case for it is weaker, and the ceiling above bounds
+what it could win. It remains open and is explicitly *not* claimed dead.
+
+Also not done: integrating the winner into the renderer and re-profiling a
+complete update, which is where end-to-end accounting finally applies.

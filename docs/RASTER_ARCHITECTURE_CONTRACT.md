@@ -167,3 +167,59 @@ describes exactly where six-column raster behaviour changes, and that is the
 material for the temporal certificate whether or not BAND ever draws a pixel.
 An experiment can lose the implementation race and still contribute the
 mathematics.
+
+## Resolved by the selector ladder (rung 9)
+
+The question above — *how few Z80 instructions turn baked geometric state plus
+the current arbitrary pose into the address of the correct generic raster
+stream?* — now has a measured answer rather than a candidate family.
+
+**An exact-step phase-interval selector beats the arithmetic DDA by 1.9x–2.2x
+from six columns up**, on emulator cycle timing, with identical raster output as
+the gate and the whole path charged: bank selection, address formation, the
+interval search, the body fetch, the replay, and chunk chaining with the span
+length supplied from outside. It costs about 73 KB across six cartridge banks.
+Full numbers in `docs/PARITY_IMPLEMENTATION_LOG.md`, rung 9.
+
+Three rules follow, and they join the ones above.
+
+**Rule 11 — the body is stored as its move stream, not as a descriptor.** A
+six-byte packed descriptor has to be expanded column by column; the move stream
+is an `LDIR`. Six baked prefix lengths per body handle the run terminator, so a
+terminating chunk copies a prefix and writes the terminator. Any future body
+representation must beat a copy, not merely be smaller than one.
+
+**Rule 12 — measure linear against balanced; do not assume the asymptotics.**
+Three compares lost to an average of 4.8 slot steps at every span length, because
+a Z80 compare inside a balanced search costs a call, a 16-bit offset load and an
+`add hl,de`, while the linear scan's loop terminates by construction — slot
+zero's threshold is zero and the phase is never negative, so it needs no counter,
+no bound and no index. Structure that removes a loop control is worth more than
+an asymptotic improvement at n = 8.
+
+**Rule 13 — a fixed-size record buys addressing only if the record size is a
+power of two.** Padding every step to eight three-byte slots wins on ROM (the
+pointer table a variable-length record needs costs more than the padding saves)
+and *loses* on cycles, because a stride of 24 is five shifts and adds rather than
+one shift, and because a scan that starts at the padding steps over it: 0.520
+extra slots per lookup, weighted by phase across the domain. Where the record
+size *is* a power of two the argument works as advertised — the exact-state
+table's 1,024-byte rows never straddle a 16 KB bank and the bank is the ordinal's
+high nibble.
+
+### The ceiling on any future selector
+
+The exact-state oracle — one byte per (step ordinal, exact phase), ordinal
+supplied free — runs at 2.4x–3.0x. That is the cheapest any naming scheme can be,
+so **no selector can beat the measured interval selector by more than about 35%**.
+Paying the step-to-ordinal conversion honestly (A1) already gives back about half
+of the oracle's margin. Cleverness beyond the interval records is therefore
+bounded, and should be justified by ROM savings rather than by speed.
+
+### Still open
+
+Rung **C** — the strongest coarse keys plus automatically searched depth-1..3
+cheap residual decision trees — is priced only in bound, not in cycles, and is
+**not** claimed dead. Its purpose was to shrink the 73 KB; with the interval
+selector measured and working, that is a smaller prize, and the ceiling above
+caps what it could win on speed.

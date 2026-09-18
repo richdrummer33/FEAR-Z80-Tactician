@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     dbg.stop_on_run_to_breakpoint = false; dbg.stop_on_irq = false;
     Memory* mem = core.GetMemory();
 
-    static const int NPH = 25;   /* 0 = driver, then li*6 + kernel + 1 */
+    static const int NPH = 61;   /* 0 = driver, then li*RACE_NK + kernel + 1 */
     uint64_t acc[NPH] = {0};
     uint64_t prev = core.GetMasterClockCycles();
     const uint64_t limit = 4000000000ull;
@@ -87,35 +87,86 @@ int main(int argc, char** argv) {
     const unsigned nmis = rd16(mem, mism);
     const unsigned ncases = rd16(mem, cases);
     if (!ncases) { std::fprintf(stderr, "RACE_FAIL the ROM never completed a case\n"); return 5; }
-    if (nmis) { std::fprintf(stderr, "RACE_FAIL %u cases disagreed; timings withheld\n", nmis); return 6; }
+    if (nmis) {
+        u16 kmask = 0, first = 0;
+        std::fprintf(stderr, "RACE_FAIL %u cases disagreed; timings withheld\n", nmis);
+        if (sym2(argv[2], "_g_race_kmask", "g_race_kmask", kmask)) {
+            static const char* KN[13] = {"A0", "A1", "B fix lin", "B fix bin", "B pak lin",
+                                         "?5", "?6", "?7",
+                                         "DDA C", "BAND C", "PACKED C", "DDA asm", "PACK asm"};
+            const unsigned m = rd16(mem, kmask);
+            std::fprintf(stderr, "  failing kernels:");
+            for (int i = 0; i < 13; ++i) if (m & (1u << i)) std::fprintf(stderr, " %s", KN[i]);
+            std::fprintf(stderr, "\n");
+        }
+        if (sym2(argv[2], "_g_race_first", "g_race_first", first))
+            std::fprintf(stderr, "  first A0 failure: want len %u got len %u, byte0 got %u want %u\n",
+                         mem->DebugRetrieve(first), mem->DebugRetrieve((u16)(first + 1)),
+                         mem->DebugRetrieve((u16)(first + 2)), mem->DebugRetrieve((u16)(first + 3)));
+        return 6;
+    }
 
-    std::printf("RACE_EXACT %u cases, all five kernels byte-identical to the expectation\n", ncases);
+    std::printf("RACE_EXACT %u cases, all eleven kernels byte-identical to the expectation\n", ncases);
     std::printf("completed outer iterations %u, sampled instructions %llu\n",
                 done, (unsigned long long)steps);
     std::printf("units are Z80 T-states: Gearsystem accumulates the value RunInstruction\n"
                 "returns, which is the instruction's own cycle count.\n");
 
-    /* the ROM sweeps RACE_NLEN lengths x RACE_NCASE cases per outer iteration */
-    const unsigned nlen = 4, nk = 6, ncase = ncases / (nlen * (done ? done : 1));
+    const unsigned nlen = 4, nk = 11, ncase = ncases / (nlen * (done ? done : 1));
     const double per = (double)(ncase * (done ? done : 1));
     static const int LEN[4] = {3, 6, 12, 18};
 
-    std::printf("\nT-states per span, by span length (%u cases each, %u iterations)\n",
-                ncase, done);
-    std::printf("  %-8s %10s %10s %10s %10s %10s %10s\n", "columns",
-                "DDA C", "BAND C", "PACKED C", "DDA asm", "PACK asm", "asm gap");
+    std::printf("\nT-states per span, by span length (%u cases each, %u iterations)\n", ncase, done);
+    std::printf("\nreference points\n");
+    std::printf("  %-8s %10s %10s %10s %10s %10s\n", "columns",
+                "DDA C", "BAND C", "DDA asm", "PACK asm", "asm gap");
     for (unsigned li = 0; li < nlen; ++li) {
         double d  = (double)acc[li * nk + 1] / per;
         double b  = (double)(acc[li * nk + 2] + acc[li * nk + 3]) / per;
-        double pk = (double)acc[li * nk + 4] / per;
         double da = (double)acc[li * nk + 5] / per;
         double pa = (double)acc[li * nk + 6] / per;
-        std::printf("  %-8d %10.1f %10.1f %10.1f %10.1f %10.1f %10.1f\n",
-                    LEN[li], d, b, pk, da, pa, da - pa);
+        std::printf("  %-8d %10.1f %10.1f %10.1f %10.1f %10.1f\n", LEN[li], d, b, da, pa, da - pa);
+    }
+    std::printf("\nthe selector ladder, whole path charged (bank select, address\n"
+                "formation, search, body fetch, replay, chunk chaining)\n");
+    std::printf("  %-8s %10s %10s %10s %10s %10s\n", "columns",
+                "A0 oracle", "A1 honest", "B fix lin", "B fix bin", "B pak lin");
+    for (unsigned li = 0; li < nlen; ++li) {
+        std::printf("  %-8d %10.1f %10.1f %10.1f %10.1f %10.1f\n", LEN[li],
+                    (double)acc[li * nk + 7] / per, (double)acc[li * nk + 8] / per,
+                    (double)acc[li * nk + 9] / per, (double)acc[li * nk + 10] / per,
+                    (double)acc[li * nk + 11] / per);
+    }
+    std::printf("\nspeedup against the hand-written DDA, which is the thing to beat\n");
+    std::printf("  %-8s %10s %10s %10s %10s %10s\n", "columns",
+                "A0 oracle", "A1 honest", "B fix lin", "B fix bin", "B pak lin");
+    for (unsigned li = 0; li < nlen; ++li) {
+        double da = (double)acc[li * nk + 5] / per;
+        std::printf("  %-8d", LEN[li]);
+        for (int k = 7; k <= 11; ++k) {
+            double v = (double)acc[li * nk + k] / per;
+            std::printf(" %9.2fx", v > 0.0 ? da / v : 0.0);
+        }
+        std::printf("\n");
+    }
+    std::printf("\neverything beyond the bare copy: each selector minus the packed-replay\n"
+                "floor, which is handed both the stream and its length. This is the\n"
+                "search AND the address formation AND the chunk chaining, not naming alone.\n");
+    std::printf("  %-8s %10s %10s %10s %10s %10s\n", "columns",
+                "A0 oracle", "A1 honest", "B fix lin", "B fix bin", "B pak lin");
+    for (unsigned li = 0; li < nlen; ++li) {
+        double pa = (double)acc[li * nk + 6] / per;
+        std::printf("  %-8d", LEN[li]);
+        for (int k = 7; k <= 11; ++k)
+            std::printf(" %10.1f", (double)acc[li * nk + k] / per - pa);
+        std::printf("\n");
     }
     std::printf("\n  \"asm gap\" is the real selector budget: what a scheme that names a\n");
     std::printf("  stream must cost LESS than, to beat deriving it with the hand DDA.\n");
     std::printf("  The C columns are a shape comparison and overstate that budget.\n");
+    std::printf("  Every selector calls its lookup indirectly, which costs about twenty\n");
+    std::printf("  T-states a chunk more than a direct call; all five pay it and the DDA\n");
+    std::printf("  pays none of it, so the ladder is if anything understated.\n");
     std::printf("\n  driver and comparison overhead, excluded above: %llu T-states\n",
                 (unsigned long long)acc[0]);
     std::printf("  PACKED is charged nothing for identifying which stream it needs;\n");

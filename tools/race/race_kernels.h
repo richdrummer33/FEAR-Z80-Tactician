@@ -9,6 +9,8 @@
 
 #define MAXMV 40
 #define CHUNK 6
+/* kernels timed per span length; the profiler decodes phases with this */
+#define RACE_NK 11
 
 /* sampled per instruction by the profiler to attribute master cycles */
 
@@ -115,6 +117,106 @@ static uint8_t pack_span(const uint8_t *src, uint8_t mlen, uint8_t *out)
     uint8_t i;
     for (i = 0; i < mlen; ++i) out[i] = src[i];
     return mlen;
+}
+
+
+/* ---- phases 5..9: the selector ladder ----------------------------------- */
+/* Every selector below answers the SAME question in the same shape: given the
+ * ten-bit DDA phase, name the six-column body, then replay it. They differ only
+ * in how the body is named, so the difference between any two of them is the
+ * naming cost and nothing else.
+ *
+ * The replay is a straight copy of the body's move stream, because the packed
+ * comparator already established that a copy is the floor for emitting moves.
+ * A chunk that does not end the run copies the whole six-column stream; a chunk
+ * that ends the run copies the prefix up to that column's downs and then writes
+ * the run terminator in place of the jump byte. Those prefix lengths are baked
+ * per body, one byte each, so nothing is counted at run time.
+ *
+ *   A0   the ideal oracle: a dense one-byte-per-state table indexed by the step
+ *        ordinal and the exact phase, with the ordinal supplied free. It is not
+ *        a proposal -- it is the lower bound any naming scheme is racing.
+ *   A1   the same table, but paying the real step-to-ordinal conversion and
+ *        address formation. A0 and A1 bracket what "just look it up" costs.
+ *   B    the exact-step phase-interval selectors: eight fixed slots scanned
+ *        linearly, eight fixed slots searched in three compares, and the packed
+ *        variable-length record scanned linearly.
+ */
+#include "selector_tables.h"
+
+#define SEL_LK_A0   0
+#define SEL_LK_FLIN 1
+#define SEL_LK_FBIN 2
+#define SEL_LK_PAK  3
+
+static const uint8_t *sel_a0_row(uint8_t ord)
+{
+    return ord < 16u ? gg_sel_a0_0 + (uint16_t)ord * 1024u
+                     : gg_sel_a0_1 + (uint16_t)(ord - 16u) * 1024u;
+}
+/* the step-to-ordinal map A1 must walk: a page index on the step's high byte,
+ * then a two-byte entry on its low byte */
+static uint16_t sel_a1_ord(int16_t step)
+{
+    uint8_t pg = gg_sel_a1hi[(uint16_t)step >> 8];
+    const uint8_t *p = gg_sel_a1lo + (uint16_t)pg * 512u + ((uint16_t)step & 255u) * 2u;
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+/* thresholds are stored high byte first, so the scan compares the high byte
+ * before it needs the low one and never has to park a byte in a register */
+static uint8_t sel_thr_le(const uint8_t *r, uint16_t ph)
+{
+    uint8_t phh = (uint8_t)(ph >> 8);
+    if (r[0] < phh) return 1;
+    if (r[0] > phh) return 0;
+    return r[1] <= (uint8_t)ph;
+}
+static uint8_t sel_lookup(int mode, uint8_t ord, uint16_t ph)
+{
+    if (mode == SEL_LK_A0) return sel_a0_row(ord)[ph];
+    if (mode == SEL_LK_FLIN) {
+        const uint8_t *r = gg_sel_fix + (uint16_t)ord * 24u + 21u;
+        /* slot zero's threshold is zero, so the walk always terminates and
+         * needs no counter; padded slots hold 0xFFFF and are stepped over */
+        while (!sel_thr_le(r, ph)) r -= 3;
+        return r[2];
+    }
+    if (mode == SEL_LK_FBIN) {
+        const uint8_t *b = gg_sel_fix + (uint16_t)ord * 24u, *r = b + 12;
+        if (!sel_thr_le(r, ph)) r -= 12;
+        r += 6; if (!sel_thr_le(r, ph)) r -= 6;
+        r += 3; if (!sel_thr_le(r, ph)) r -= 3;
+        return r[2];
+    }
+    {
+        uint16_t off = (uint16_t)gg_sel_poff[ord * 2u] | ((uint16_t)gg_sel_poff[ord * 2u + 1u] << 8);
+        const uint8_t *r = gg_sel_pblob + off;
+        while (!sel_thr_le(r, ph)) r += 3;
+        return r[2];
+    }
+}
+static uint8_t sel_span(int mode, uint8_t ord, int16_t iq, int16_t step,
+                        uint8_t ncols, uint8_t *out)
+{
+    uint8_t n = 0, left = ncols;
+    int16_t a = (int16_t)(iq + 32);
+    for (;;) {
+        uint16_t ph = (uint16_t)(a & 1023);
+        uint8_t b = sel_lookup(mode, ord, ph), i;
+        const uint8_t *s = gg_sel_bstream +
+            ((uint16_t)gg_sel_bptr[b * 2u] | ((uint16_t)gg_sel_bptr[b * 2u + 1u] << 8));
+        if (left > CHUNK) {
+            uint8_t len = (uint8_t)(gg_sel_bpre[b * 8u + 5u] + 1u);
+            for (i = 0; i < len; ++i) out[n++] = s[i];
+            left = (uint8_t)(left - CHUNK);
+            a = (int16_t)(a + (int16_t)(CHUNK * step));
+        } else {
+            uint8_t len = gg_sel_bpre[b * 8u + left - 1u];
+            for (i = 0; i < len; ++i) out[n++] = s[i];
+            out[n++] = 6;
+            return n;
+        }
+    }
 }
 
 #endif
