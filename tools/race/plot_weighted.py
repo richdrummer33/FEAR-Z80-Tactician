@@ -53,15 +53,23 @@ for b in (6.5, 12.5, 18.5):
     ax[1].axvline(b, color="#f76707", lw=1.2, ls=":", zorder=0)
 ax[1].annotate("chunk boundaries", (6.6, 0.55), color="#f76707", fontsize=8.5)
 wavg = sum(weight[n] * cost[n]["dda_asm"] for n in N) / sum(weight[n] * cost[n]["bpl"] for n in N)
-ax[1].axhline(wavg, color="#2f9e44", lw=1.4, ls="--")
-ax[1].annotate(f"weighted by real spans: {wavg:.2f}x", (1.2, wavg + .06),
-               color="#2f9e44", fontsize=9)
+ax[1].axhline(wavg, color="#2f9e44", lw=1.2, ls="--", alpha=.55)
+ax[1].annotate(f"length-weighted projection: {wavg:.2f}x", (1.2, wavg + .07),
+               color="#2f9e44", fontsize=8.5, alpha=.8)
+# The projection above still samples (step, phase) from the race's cases. MEASURED
+# is the same two kernels replaying the renderer's own tuples, which is the number
+# to quote: at matched lengths the race's cases had steeper geometry, so they
+# inflated the DDA's per-move loop more than the selector's LDIR.
+MEASURED = 1.445
+ax[1].axhline(MEASURED, color="#c2255c", lw=2.0, ls="-")
+ax[1].annotate(f"measured on the renderer's real tuples: {MEASURED:.3f}x",
+               (1.2, MEASURED - .18), color="#c2255c", fontsize=9, fontweight="bold")
 ax[1].set_xlabel("columns in the span"); ax[1].set_ylabel("speedup vs hand DDA")
 ax[1].set_title("The selector pays per chunk and the DDA pays per column,\n"
                 "so the win sawtooths and is negative below three columns", fontsize=10)
 ax[1].set_xticks(N[::2]); ax[1].grid(alpha=.25, lw=.7); ax[1].legend(fontsize=8.5, loc="lower right")
 
-fig.suptitle("What the selector is worth once real span lengths are accounted for", fontsize=12)
+fig.suptitle("What the selector is worth once the renderer's real workload is accounted for", fontsize=12)
 fig.tight_layout()
 out.parent.mkdir(parents=True, exist_ok=True)
 fig.savefig(out, dpi=140)

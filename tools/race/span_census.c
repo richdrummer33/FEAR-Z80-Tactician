@@ -33,13 +33,16 @@
 #define CELL_Q4 64
 #define MAXCOL 24
 
+static FILE *g_dump = NULL;
+
 /* The renderer's depth-plane path is compiled only under SDCC, so on the host
  * r->depth_plane is always zero and a naive census would report that no span
  * uses the selector at all. This is a transcription of screen_depth_plane's
  * accept/reject decision -- NOT a second implementation of the geometry, just
  * the test for whether the signed wall plane crosses zero inside the run, which
  * is the only thing that sends a span to the endpoint fallback instead. */
-static int plane_accepts(uint8_t yaw, uint8_t sid, uint8_t invd, uint8_t c0, uint8_t c1, int *step_o)
+static int plane_accepts(uint8_t yaw, uint8_t sid, uint8_t invd, uint8_t c0, uint8_t c1,
+                         int *step_o, int *iq_o)
 {
     uint8_t cls = k_dp_normal_class[sid];
     int8_t nf = k_depth_nf_q7[cls][yaw], sf = k_depth_stepfac_q4[cls][yaw];
@@ -52,13 +55,19 @@ static int plane_accepts(uint8_t yaw, uint8_t sid, uint8_t invd, uint8_t c0, uin
     endq = iq;
     for (i = 0u; i < n; ++i) endq = (int16_t)(endq + step);
     if ((iq < 0 && endq > 0) || (iq > 0 && endq < 0)) return 0;
-    *step_o = step < 0 ? -step : step;
+    if (iq < 0 || endq < 0) { iq = (int16_t)-iq; step = (int16_t)-step; }
+    *step_o = step; *iq_o = iq;
     return 1;
 }
 
 int main(int argc, char **argv)
 {
     unsigned yaw_step = (argc > 1) ? (unsigned)strtoul(argv[1], 0, 0) : 4u;
+    if (argc > 2) {
+        g_dump = fopen(argv[2], "w");
+        if (!g_dump) { fprintf(stderr, "cannot open %s\n", argv[2]); return 1; }
+        fprintf(g_dump, "iq,step,cols\n");
+    }
     static const int8_t off[][2] = { {0,0},{7,3},{3,7},{11,5} };
     const unsigned n_off = sizeof off / sizeof off[0];
     TSPState s;
@@ -70,6 +79,7 @@ int main(int argc, char **argv)
     unsigned long cols_in_short = 0;    /* columns belonging to spans <= 3 cols */
     unsigned long spans_short = 0;
     unsigned long steps_seen = 0, plane_spans = 0, stepbig = 0;
+    unsigned long dumped = 0, dump_oor = 0;
 
     memset(hist, 0, sizeof hist);
     memset(tail, 0, sizeof tail);
@@ -124,11 +134,25 @@ int main(int argc, char **argv)
                     n = (unsigned)(c1 - c0 + 1u);
                     if (n > MAXCOL) n = MAXCOL;
                     ++spans; cols += n; ++hist[n];
-                    { int mag = 0;
+                    { int st = 0, iq = 0;
                       uint8_t invd = inv_for_dq4(wall_d_q4(r->sid, k_tspf_seg_anchor[r->sid], &s));
-                      if (plane_accepts((uint8_t)yaw, r->sid, invd, c0, c1, &mag)) {
+                      if (plane_accepts((uint8_t)yaw, r->sid, invd, c0, c1, &st, &iq)) {
+                          int mag = st < 0 ? -st : st;
                           ++plane_spans; steps_seen += (unsigned long)mag;
                           if (mag > 2047) ++stepbig;
+                          /* The tuple the raster walker is actually handed. Weighting
+                           * by span length alone is not enough: the linear scan's cost
+                           * depends on WHICH band the phase lands in, and the replay's
+                           * cost on how many move bytes the body expands to. Both vary
+                           * with (step, phase), so the honest projection replays the
+                           * real tuples rather than sampling step and phase uniformly. */
+                      { int cc; unsigned ok = 1;
+                        for (cc = 0; cc <= (int)n; ++cc) {
+                            long a = (long)iq + (long)cc * st + 32;
+                            if (a < 0 || (a >> 6) > 255) { ok = 0; break; }
+                        }
+                        if (ok) { ++dumped; if (g_dump) fprintf(g_dump, "%d,%d,%u\n", iq, st, n); }
+                        else ++dump_oor; }
                       } }
                     nf = (n - 1u) / 6u;         /* whole six-column chunks before the last */
                     tl = n - nf * 6u;           /* the terminal chunk, 1..6 */
@@ -173,5 +197,19 @@ int main(int argc, char **argv)
                  fclose(f);
                  printf("\n  weights written to build/race/span_weights.csv\n"); }
     }
+    if (g_dump) fclose(g_dump);
+    printf("\n  THE CLAMP. tilesector_polar_renderer.c:815 clamps the inverse depth to\n");
+    printf("  0..255 per column before deriving the row. The raced DDA and the baked\n");
+    printf("  bodies both implement the UNCLAMPED rule, so wherever a column clamps the\n");
+    printf("  selector and the shipping raster are different functions.\n");
+    printf("    %lu of %lu accepted spans (%.2f%%) stay inside the unclamped domain\n",
+           dumped, plane_spans, 100.0 * dumped / plane_spans);
+    printf("    %lu (%.2f%%) touch the clamp on at least one column\n",
+           dump_oor, 100.0 * dump_oor / plane_spans);
+    printf("    selector-eligible share of all spans: %.2f%%\n",
+           100.0 * dumped / spans);
+    printf("  Detecting it is two compares on the span endpoints, because the step has a\n");
+    printf("  fixed sign, so routing those spans to the existing path is cheap. This has\n");
+    printf("  to be part of integration; it is not optional.\n");
     return 0;
 }

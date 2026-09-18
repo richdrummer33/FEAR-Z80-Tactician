@@ -2857,13 +2857,22 @@ five banks, and that changes the layout arithmetic:
   address plus a bank index does not fit in sixteen. The step map and the pointer
   table are therefore merged — one three-byte entry gives bank and address
   directly — costing 14 pages × 768 B = 10,752 B.
-- **FIXED** is worse off than rung 9 reported. `ordinal × 24` overflows sixteen
+- **FIXED as raced** does not survive banking. `ordinal × 24` overflows sixteen
   bits past ordinal 2,730, and 24 does not divide 16,384, so the bank cannot be a
   shift of the ordinal at all. It needs a division, a per-step pointer (which
   discards the entire reason for the layout), or power-of-two bank packing that
-  wastes 4 KB a bank. **Splitting into 16-byte threshold and 8-byte body arrays
-  is the only FIXED variant that survives banking** — 1,024 and 2,048 records a
-  bank exactly — and that is not the variant that was raced.
+  wastes 4 KB a bank.
+
+  This rules out the **interleaved 24-byte** variant, not the fixed family.
+  **Splitting into 16-byte threshold and 8-byte body arrays restores exactly what
+  the fixed layout was supposed to buy** — 1,024 and 2,048 records a bank, both
+  powers of two, so bank and offset are pure shifts of the ordinal with no waste
+  and no straddle. The cost is that the scan's hit becomes an index that has to
+  be converted before the body can be fetched, which is per chunk rather than per
+  span. That variant is **unmeasured**, and it is deliberately left unmeasured:
+  packed is proven and works under banking, so it is what integration carries. If
+  a later profile says selector addressing is still a hotspot, split-fixed is the
+  first design to resurrect, and it should not be treated as dead in the meantime.
 
 Production totals: 69,630 B of records plus 58 B of boundary padding in five
 banks, 10,752 B of step map in one, and the body stream, pointer and prefix
@@ -2985,3 +2994,86 @@ What remains is integration and a real profile — and the gap between 1.68x
 projected and whatever integration measures is itself the interesting quantity,
 because it is where span scheduling, continuation state and bank interactions
 with the surrounding renderer show up.
+
+## Rung 11 — the projection with the modelling taken out
+
+Rung 10's 1.68x weighted per-length race timings by the span-length histogram.
+That corrects for span length and leaves a second bias untouched: within a
+length, the race sampled `(step, phase)` from 21 hand-chosen steps at centred
+accumulators. Both kernels care about more than length — the linear scan's cost
+depends on which of the eight phase bands the span starts in, and the replay's on
+how many move bytes the body expands to — so a length-weighted figure is still a
+model.
+
+Tools: `tools/race/gen_corpus.py`, `tools/race/corpus_kernels.c`,
+`tools/race/corpus_run.cpp`, driven by `tools/race/build_and_corpus.sh`. The pose
+corpus now dumps the actual `(iq, step, columns)` tuples the raster walker is
+handed, a uniform seeded sample is baked into the cartridge, and the ROM replays
+exactly those through both kernels.
+
+### The clamp, which has to be dealt with before integration
+
+`tilesector_polar_renderer.c:815` clamps the inverse depth to 0..255 per column
+before deriving the row. **The raced DDA and the baked bodies both implement the
+unclamped rule**, so wherever a column clamps, the selector and the shipping
+raster are different functions — not slower or faster, different.
+
+| | spans | share of accepted |
+| --- | --- | --- |
+| inside the unclamped domain, selector-eligible | 926,762 | 90.95% |
+| touch the clamp on at least one column | 92,203 | 9.05% |
+
+Selector-eligible share of *all* spans: **90.15%** (the plane test rejects 0.88%
+on top). Detecting it is two compares on the span endpoints, because the step has
+a fixed sign within a span, so routing those spans to the existing path is cheap —
+but it is mandatory, not optional, and it was invisible until the real tuples
+were extracted.
+
+### Measured on the renderer's own workload
+
+8,000 tuples drawn uniformly (seed 20260918) from the 926,762 eligible ones; the
+largest span-length share discrepancy between sample and corpus is 0.55
+percentage points. Both kernels byte-identical on all 8,000 — which is also a
+third independent correctness sweep, this time on the real workload.
+
+| | T-states per span |
+| --- | --- |
+| hand DDA | 2,763.9 |
+| B packed, linear | 1,912.3 |
+| **speedup** | **1.445x** |
+| saving | 851.6 T-states per span, 30.8% of the DDA's cost |
+
+### Decomposition: where 1.68x went
+
+| | speedup | effect |
+| --- | --- | --- |
+| all spans, length-weighted (rung 10) | 1.681x | — |
+| eligible spans only, length-weighted | 1.634x | population −0.047 |
+| eligible spans, real tuples **measured** | **1.445x** | joint distribution −0.189 |
+
+So most of the correction is the joint `(step, phase)` distribution, not the
+population change. The mechanism is measurable rather than inferred: **at matched
+span lengths the race's synthetic cases emit more move bytes than real spans do**,
+and the gap widens with length — 26.9 against 23.5 at twenty columns, 16.2
+against 15.2 at twelve. Every extra move byte costs the DDA a whole loop
+iteration but costs the selector only an `LDIR` byte, so steeper synthetic
+geometry inflated the DDA more than it inflated the selector. That accounts for
+the DDA side, which measured 8.5% cheaper than projected. The selector's residual
+(3.5% dearer than projected) is smaller and has **not** been isolated; scan
+position is the likely cause but that is not established here.
+
+### What to quote
+
+**1.445x on the raster kernel, over 90.15% of spans**, saving 851.6 T-states per
+eligible span. At 4.31 spans a pose that is roughly **3,300 T-states saved per
+update** — but the fraction of the whole raster subsystem that represents depends
+on what the ineligible 9.85% cost, which is not measured here. Integration is
+what settles that.
+
+The lesson is worth recording separately, because it generalises: **a synthetic
+benchmark corpus chosen for tidiness will systematically mis-rank two kernels
+whose costs scale with different quantities.** The race's cases were picked to be
+well-spread in step and centred in the depth domain, which made them steeper than
+real geometry; the DDA pays per move and the selector pays per chunk, so the
+tidiness landed asymmetrically. The fix is not a better synthetic corpus — it is
+replaying the real one.

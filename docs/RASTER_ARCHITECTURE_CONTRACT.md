@@ -207,6 +207,19 @@ size *is* a power of two the argument works as advertised — the exact-state
 table's 1,024-byte rows never straddle a 16 KB bank and the bank is the ordinal's
 high nibble.
 
+Rung 10 sharpens this rather than settling it. Under full-domain banking the
+interleaved 24-byte record fails outright: 24 neither divides a 16 KB bank nor
+keeps `ordinal * 24` inside sixteen bits, so the bank cannot be derived by
+shifting at all. A **split** layout — sixteen bytes of thresholds and eight of
+body ids — has neither problem: 1,024 and 2,048 records a bank exactly, both
+powers of two, bank and offset pure shifts, no waste and no straddle. Its cost is
+that the scan's hit becomes an index to convert before the body can be fetched,
+per chunk rather than per span, and that has **not been measured**. So what
+banking rules out is the variant that was raced, not the fixed family. Packed is
+what integration carries because it is proven; split-fixed stays on the shelf as
+the first design to resurrect if a real profile shows selector addressing is
+still a hotspot.
+
 ### The ceiling on any future selector
 
 The exact-state oracle — one byte per (step ordinal, exact phase), ordinal
