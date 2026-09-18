@@ -2458,3 +2458,77 @@ the C figures, which are a comparison of algorithm shapes.
 The hand DDA is still 6.6x to 11.4x slower than hand replay, so the gap the
 earlier C run found survives implementation quality. It narrows from the C
 ratio of 6.1x-8.9x only at the short end; at eighteen columns it widens.
+
+## Selector key screening: no cheap key names the body
+
+`tools/race/selector_keys.c`. Before writing Z80 for a selector, two host
+questions decide whether one can exist: is a candidate key **sufficient** (every
+state sharing it emits the same body), and how big is its table over the
+**complete** domain — all 1024 phases against every step the shipped depth tables
+can produce, 3,177,472 states, which overstates reachability in the safe
+direction for a ROM claim.
+
+Over that domain there are **175 distinct six-column behaviours**, so the map is
+massively many-to-one. The question is whether it *factors* through anything
+cheap.
+
+### A. Quantised (phase, step)
+
+| | phase>>0 | >>1 | >>2 | >>3 | >>4 | >>5 | >>6 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| step>>0 | 3,177,472 | — | — | — | — | — | — |
+| step>>1..6 | — | — | — | — | — | — | — |
+
+A dash is *not sufficient*. **Only the exact pair works**, at 3.2M entries. Even
+`phase>>1` breaks it: two adjacent phases can emit different bodies, because band
+edges can sit one apart.
+
+### B. Structured keys
+
+| key | entries | sufficient | what must be formed |
+| --- | --- | --- | --- |
+| step + band index | 24,755 | **yes** | 8 edges + 8 compares — BAND's own cost |
+| edge-ordering family + band index | 150 | **no** | |
+| edge-ordering family + full phase | 20,480 | **no** | |
+| step high byte + full phase | 14,336 | **no** | |
+
+### The reading
+
+**The twenty edge-ordering families are not a sufficient selector dimension.**
+The structural result was real — 3,103 steps do collapse to 20 orderings — and it
+is operationally insufficient, which is exactly the caution that was raised
+against it. An ordering says where the eight edges sit *relative to each other*;
+it does not carry their *spacing*, and the spacing is what determines the
+crossing pattern. `ordering + full phase` fails too, so this is not a matter of
+pairing it with something finer.
+
+The only sufficient keys are the exact pair (3.2M entries, ~6.4 MB of index) and
+`step + band` (24,755 entries, ~49.5 KB) — and the second **also** costs BAND's
+classification to form. It loses on both axes at once.
+
+So: **no key over these state spaces is both sufficient and small.** A
+packed-replay architecture selected from `(phase, step)` is not viable, and the
+6.6x-11.4x replay prize is not claimable through a table selector on that state.
+The upstream factorisation is no better on size: `(invd, class, yaw, c0, c1)` is
+exact but has 146,568 observed states, ~293 KB of index.
+
+This is the BAND trap generalised, and it is worth stating as a result rather
+than as a failed attempt: the cheapness of replay is real, but the body's
+identity carries essentially the full information content of `(phase, step)`, so
+naming it cannot be cheaper than deriving it.
+
+### Where that leaves the prize
+
+Three routes survive, and none of them is a table selector:
+
+1. **Make the derivation itself cheaper.** The hand DDA is 435-558 T-states per
+   column. That is the thing to attack directly, not to route around.
+2. **Find a decomposition where the body is generated rather than named** — the
+   closed form already needs no table at all.
+3. **Do not regenerate at all when nothing changed.** This is where the band
+   boundary mathematics genuinely pays, and it is the one route the screening
+   strengthens rather than weakens.
+
+The contract's memory-scaling rules did their job here: every candidate that
+could have looked attractive on speed alone was rejected on size or on key cost
+before a line of Z80 was written for it.

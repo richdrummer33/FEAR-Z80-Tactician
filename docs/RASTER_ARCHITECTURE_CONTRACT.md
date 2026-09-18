@@ -48,9 +48,73 @@ PACKED REPLAY
    successor conflicts; retaining `rel,len` gives **0.00%**.
 4. **Span length and absolute screen placement stay external** wherever possible.
    They are world-specific; the generic machine should not encode termination.
-5. **Margins, not counters.** A certificate is a region test on the destination
+5. **Arbitrary delta, never simulated steps.** Pure yaw has an exact direct
+   update in retained angular state, `rel' = rel - dyaw*16`, for any `dyaw`.
+   Translation jumps directly to the destination cell or leaf and evaluates
+   there. Acceleration, deceleration and varying frame time must never force the
+   renderer to simulate intermediate subcells because the player crossed several
+   between frames.
+6. **Margins, not counters.** A certificate is a region test on the destination
    pose, not a decrement. Per-axis margins are not composable (5.35% X+Y,
    11.06% X+yaw), so the region is a polyhedron, not a box.
+
+## Memory-scaling rules for any candidate table
+
+7. **Reject any structure whose size scales with sampled poses**, or with the
+   Cartesian product of map identity x translation x yaw. That is the sampled
+   dictionary wearing a new hat. The precedents are on file: a brute-force
+   coarse pose LUT reached ~136.6 MiB, and the early finite-program
+   representation ~6.76 MB before finite-horizon and shared-program compression.
+8. **Table dimensions must be the intrinsic finite raster state** -- phase, a
+   generic step or ordering family, length, orientation class -- with map
+   topology and current projected placement outside the generic vocabulary.
+9. **Every candidate reports ROM scaling over the complete intended domain**,
+   not over the benchmark corpus.
+10. **Prefer a larger table when it removes decode or index arithmetic.**
+    Optimise the runtime representation, not the archive format. Precedent: the
+    visibility pack deliberately grew from ~4.53 KiB archival to ~6.21 KiB at
+    runtime because a direct cell-to-recipe lookup beat decoding the compressed
+    form. Saving two kilobytes is not a victory if recovering it costs hundreds
+    of T-states every frame.
+
+## The selector trap
+
+**A lookup table is not cheap if manufacturing its key is expensive.** This
+renderer has hit that repeatedly:
+
+* **BAND** found a genuinely small behavioural representation, then had to do
+  DDA-like construction to discover which six-column program applied. It became
+  `classify + construct + replay` instead of `DDA`, and lost at every length.
+* **`edge_entry`** had an exact behavioural lookup under ~2 KiB, which sounded
+  excellent, but profiling put it at only ~19.6% of `DDA_G`. Making it free could
+  never have delivered the ~3x reduction being sought.
+
+So the question is not "which quantities can identify the stream". It is:
+
+> which are **already live** where raster generation begins, which can be made
+> nearly free by baking, and which would have to be **expensively reconstructed
+> solely to feed the selector**?
+
+A selector that solves most of the geometry in order to discover which answer it
+wanted is BAND under another name.
+
+## What the span body does NOT contain
+
+A projected corner lands at an arbitrary screen pixel, not on an 8-pixel tile
+boundary. One tile column can hold the end of span A and the start of span B, so:
+
+* the generic packed body describes the line trajectory through raster cells;
+* **span metadata carries the exact start and end, including the intra-tile pixel
+  phase or mask of the first and last tile columns**;
+* a vertex, an occlusion handoff or an ownership change terminates one span and
+  starts another at that arbitrary pixel.
+
+"Six columns" is a convenient maximum execution chunk inside a semantically
+continuous span, **not an indivisible six-tile object**. A transition halfway
+through the fourth column ends the span there; the body is not executed whole and
+patched afterwards. Span discovery, topology and ownership stay separate from
+generic raster execution -- a body that encoded "wall A becomes wall B halfway
+through this tile" would be baking screen arrangements again.
 
 ## What is settled
 
