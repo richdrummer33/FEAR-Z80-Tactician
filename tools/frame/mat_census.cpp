@@ -61,6 +61,12 @@ int main(int argc, char** argv) {
     const char* rom = argv[1]; const char* noi = argv[2]; const char* label = argv[3];
     const unsigned target = argc > 4 ? (unsigned)std::strtoul(argv[4], nullptr, 0) : 120u;
     const unsigned warmup = argc > 5 ? (unsigned)std::strtoul(argv[5], nullptr, 0) : 8u;
+    /* Optional per-frame name-table digest. Any change to the materializer has
+     * to leave g_map byte-identical, and a digest stream compared between two
+     * builds is the cheapest form of that gate that still catches a one-cell
+     * difference in one frame out of a hundred. */
+    const char* hashp = argc > 6 ? argv[6] : nullptr;
+    FILE* hf = hashp ? std::fopen(hashp, "w") : nullptr;
 
     const u16 P_FILL = (u16)need(noi, "_tsp_polar_p_fill");
     const u16 P_SPAN = (u16)need(noi, "_tsp_polar_p_span");
@@ -189,6 +195,13 @@ int main(int argc, char** argv) {
                         if (len && len < (int)hrun_hist.size()) ++hrun_hist[len];
                         if (len) ++hruns;
                     }
+                    if (hf) {
+                        uint64_t h = 1469598103934665603ull;
+                        for (int a = 0; a < 18 * 40; ++a) {
+                            h ^= mem->DebugRetrieve((u16)(S_MAP + a)); h *= 1099511628211ull;
+                        }
+                        std::fprintf(hf, "%u %016llx\n", frames, (unsigned long long)h);
+                    }
                     prev_desc = cur_desc;
                     for (auto& d : cur_desc) d.live = false;
                     ++frames;
@@ -241,6 +254,7 @@ int main(int argc, char** argv) {
     std::printf("    %llu runs over %llu cells, mean length %.2f\n",
                 (unsigned long long)hruns, (unsigned long long)hcells,
                 hruns ? (double)hcells / hruns : 0.0);
+    if (hf) { std::fclose(hf); std::printf("  name-table digests written to %s\n", hashp); }
     std::printf("    length:");
     for (size_t i = 1; i < hrun_hist.size(); ++i) if (hrun_hist[i])
         std::printf(" %zu:%.1f%%", i, 100.0 * hrun_hist[i] / (double)hruns);

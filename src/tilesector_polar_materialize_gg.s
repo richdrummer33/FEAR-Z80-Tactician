@@ -40,6 +40,8 @@
         .globl  _tsp_probe_top_max
         .globl  _tsp_probe_bot_min
         .globl  _tsp_probe_bot_max
+        .globl  _tsp_probe_occluded
+        .globl  _tsp_polar_p_fill_open
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
@@ -853,6 +855,9 @@ interior_multi$:
         call    map_ptr_row_col$
         call    full_tile_low$
         ld      (#r_full_tile$), a
+        ld      a, (#r_occluded$)
+        or      a
+        jr      z, interior_loop_open$
 interior_loop$:
         push    hl
         ld      a, (#r_row$)
@@ -888,6 +893,42 @@ polar_interior_done$:
         ld      (#r_row$), a
         dec     c
         jr      nz, interior_loop$
+        ret
+
+; Open-interior fill. Reached when no row of this span was already claimed, so
+; every interior row is this surface's to write and the per-row ownership query
+; is pure overhead. The body below is the same store/compare/dirty sequence as
+; interior_loop$ with that query removed; nothing else differs, which is what
+; makes the name table byte-identical.
+interior_loop_open$:
+_tsp_polar_p_fill_open::
+        ld      a, (#r_full_tile$)
+        ld      e, a
+        ld      a, (hl)
+        cp      e
+        jr      nz, polar_open_changed$
+        inc     hl
+        ld      a, (hl)
+        or      a
+        dec     hl
+        jr      z, polar_open_done$
+polar_open_changed$:
+        ld      (hl), e
+        inc     hl
+        ld      (hl), #0
+        dec     hl
+        push    hl
+        ld      a, (#r_row$)
+        call    polar_mark_dirty_fast$
+        pop     hl
+polar_open_done$:
+        ld      de, #40
+        add     hl, de
+        ld      a, (#r_row$)
+        inc     a
+        ld      (#r_row$), a
+        dec     c
+        jr      nz, interior_loop_open$
         ret
 
 ; Return low-byte full tile ID for current shade/border, cap none.
@@ -972,6 +1013,9 @@ polar_mark_span_fast$:
         ld      h, #0
         ld      de, #polar_prefix$
         add     hl, de
+        xor     a
+        ld      (#r_occluded$), a
+
         push    hl
 
         ; DE = cov_cur + column*3.
@@ -1000,6 +1044,12 @@ polar_mark_span_fast$:
         and     c
         ld      (#r_unclaimed0$), a
         ld      a, (#r_cov_old$)
+        and     c                      ; rows this span wanted but already owned
+        jr      z, polar_open_0$
+        ld      a, #1
+        ld      (#r_occluded$), a
+polar_open_0$:
+        ld      a, (#r_cov_old$)
         or      c
         ld      (hl), a
         inc     hl
@@ -1018,6 +1068,12 @@ polar_mark_span_fast$:
         and     c
         ld      (#r_unclaimed1$), a
         ld      a, (#r_cov_old$)
+        and     c                      ; rows this span wanted but already owned
+        jr      z, polar_open_1$
+        ld      a, #1
+        ld      (#r_occluded$), a
+polar_open_1$:
+        ld      a, (#r_cov_old$)
         or      c
         ld      (hl), a
         inc     hl
@@ -1035,6 +1091,12 @@ polar_mark_span_fast$:
         cpl
         and     c
         ld      (#r_unclaimed2$), a
+        ld      a, (#r_cov_old$)
+        and     c                      ; rows this span wanted but already owned
+        jr      z, polar_open_2$
+        ld      a, #1
+        ld      (#r_occluded$), a
+polar_open_2$:
         ld      a, (#r_cov_old$)
         or      c
         ld      (hl), a
@@ -1367,4 +1429,10 @@ r_unclaimed2$:
 _tsp_probe_unclaimed2::
         .ds     1
 r_claim_row$:
+        .ds     1
+; Nonzero when nearer geometry already owned at least one row of this span.
+; Zero is the common case (82-99% of spans, measured), and it licenses the
+; interior fill to skip the per-row ownership query entirely.
+r_occluded$:
+_tsp_probe_occluded::
         .ds     1

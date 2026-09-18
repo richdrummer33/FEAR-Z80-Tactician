@@ -3286,3 +3286,74 @@ changes that produce reusable identities rather than merely faster loops.
 
 Not done: the two new maps, which remain the outstanding piece and would move the
 run-length and interior-height distributions that decide item 3.
+
+## Rung 14 — mask-first interior fill: 5.8% to 16.5% off the whole loop
+
+Item one of the materializer ladder, implemented exactly as the census justified
+it and gated on byte-identical output.
+
+### The change
+
+`polar_mark_span_fast$` already computes, per byte of the 18-bit coverage mask,
+both the span this surface wants and the rows nearer geometry already owned. It
+now also records whether *any* row was already owned, in one flag byte, at a cost
+of three instructions per mask byte.
+
+`draw_plain_interior$` branches on that flag. When it is clear — which the census
+said is 82% to 99% of spans — the interior runs a new loop that is the same
+store, compare and dirty-mark sequence with the per-row ownership query removed.
+When it is set, the original loop runs unchanged.
+
+That is the whole change. The old loop is untouched, so the occluded case cannot
+regress, and the new loop differs from it by exactly one removed call.
+
+### Output equivalence, first
+
+Every measurement below was withheld until the name table matched. A digest of
+all 720 bytes of `g_map` is taken after each loop iteration and the digest stream
+compared against a baseline captured before the change:
+
+> cruise, spin, corners, stress — **name table identical over 60 frames each**.
+
+### What moved
+
+Paired, same 100 loop iterations, same traces, same build flags.
+
+| trace | loop mean before | after | change | materializer before | after | change |
+| --- | --- | --- | --- | --- | --- | --- |
+| cruise | 412,756 | 388,861 | **−5.79%** | 176,168 | 154,075 | −12.5% |
+| corners | 394,835 | 357,201 | **−9.53%** | 169,541 | 137,526 | −18.9% |
+| spin | 364,416 | 309,459 | **−15.08%** | 171,949 | 125,705 | −26.9% |
+| stress | 379,193 | 316,470 | **−16.54%** | 177,780 | 124,883 | −29.8% |
+
+The spread is not noise and it is not luck: it tracks the census exactly. The
+traces with the highest "interior wholly unclaimed" rate — stress at 95.27% and
+spin at 98.62% — take the largest win, and cruise at 82.19% takes the smallest.
+The census predicted the ordering before the code existed.
+
+Iterations still reaching the old loop, measured on the same probe:
+
+| trace | before | after | share moved to the open path |
+| --- | --- | --- | --- |
+| cruise | 170.6 a update | 41.7 | 75.6% |
+| spin | 249.7 a update | 2.1 | 99.2% |
+
+### Caveats worth keeping
+
+The tail moves much less than the mean: cruise p95 597,026 → 544,357 (−8.8%),
+spin p95 367,342 → 364,548 (−0.8%). Worst-case frames are dominated by something
+other than the ownership query, so this change does not help the spikes that
+decide whether a frame budget is met.
+
+And the Amdahl position is unchanged in kind. The loop still runs at roughly 9 to
+11 updates a second against a 20 Hz target. This is a real 6–17% for a change
+that adds three instructions per mask byte and removes one call per interior row,
+but it is not the thing that closes the gap.
+
+### Next
+
+Item two of the ladder — temporal reuse keyed on the quantised column result,
+which the census measured at 35.3%–47.0% — is now the largest remaining
+materializer item. Item three, the row-major transpose, is still unjustified by
+the run-length data. The two new maps remain outstanding and bear directly on
+item three.
