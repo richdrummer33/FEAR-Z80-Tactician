@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     dbg.stop_on_run_to_breakpoint = false; dbg.stop_on_irq = false;
     Memory* mem = core.GetMemory();
 
-    static const int NPH = 17;   /* 0 = driver, then li*4 + kernel + 1 */
+    static const int NPH = 25;   /* 0 = driver, then li*6 + kernel + 1 */
     uint64_t acc[NPH] = {0};
     uint64_t prev = core.GetMasterClockCycles();
     const uint64_t limit = 4000000000ull;
@@ -89,37 +89,33 @@ int main(int argc, char** argv) {
     if (!ncases) { std::fprintf(stderr, "RACE_FAIL the ROM never completed a case\n"); return 5; }
     if (nmis) { std::fprintf(stderr, "RACE_FAIL %u cases disagreed; timings withheld\n", nmis); return 6; }
 
-    std::printf("RACE_EXACT %u cases, all three kernels byte-identical to the expectation\n", ncases);
+    std::printf("RACE_EXACT %u cases, all five kernels byte-identical to the expectation\n", ncases);
     std::printf("completed outer iterations %u, sampled instructions %llu\n",
                 done, (unsigned long long)steps);
     std::printf("units are Z80 T-states: Gearsystem accumulates the value RunInstruction\n"
                 "returns, which is the instruction's own cycle count.\n");
 
     /* the ROM sweeps RACE_NLEN lengths x RACE_NCASE cases per outer iteration */
-    const unsigned nlen = 4, ncase = ncases / (nlen * (done ? done : 1));
+    const unsigned nlen = 4, nk = 6, ncase = ncases / (nlen * (done ? done : 1));
     const double per = (double)(ncase * (done ? done : 1));
     static const int LEN[4] = {3, 6, 12, 18};
-    static const char* KN[4] = {"DDA", "BAND setup", "BAND chunks", "PACKED replay"};
+
     std::printf("\nT-states per span, by span length (%u cases each, %u iterations)\n",
                 ncase, done);
-    std::printf("  %-8s %12s %12s %12s %12s %12s\n", "columns", "DDA",
-                "BAND setup", "BAND chunks", "BAND total", "PACKED");
+    std::printf("  %-8s %10s %10s %10s %10s %10s %10s\n", "columns",
+                "DDA C", "BAND C", "PACKED C", "DDA asm", "PACK asm", "asm gap");
     for (unsigned li = 0; li < nlen; ++li) {
-        double d = (double)acc[li * 4 + 1] / per;
-        double bs = (double)acc[li * 4 + 2] / per;
-        double bc = (double)acc[li * 4 + 3] / per;
-        double pk = (double)acc[li * 4 + 4] / per;
-        std::printf("  %-8d %12.1f %12.1f %12.1f %12.1f %12.1f\n",
-                    LEN[li], d, bs, bc, bs + bc, pk);
+        double d  = (double)acc[li * nk + 1] / per;
+        double b  = (double)(acc[li * nk + 2] + acc[li * nk + 3]) / per;
+        double pk = (double)acc[li * nk + 4] / per;
+        double da = (double)acc[li * nk + 5] / per;
+        double pa = (double)acc[li * nk + 6] / per;
+        std::printf("  %-8d %10.1f %10.1f %10.1f %10.1f %10.1f %10.1f\n",
+                    LEN[li], d, b, pk, da, pa, da - pa);
     }
-    std::printf("\n  %-8s %12s %12s %12s %12s %12s\n", "columns", "DDA/col",
-                "", "", "BAND/col", "PACKED/col");
-    for (unsigned li = 0; li < nlen; ++li) {
-        double d = (double)acc[li * 4 + 1] / per / LEN[li];
-        double b = (double)(acc[li * 4 + 2] + acc[li * 4 + 3]) / per / LEN[li];
-        double pk = (double)acc[li * 4 + 4] / per / LEN[li];
-        std::printf("  %-8d %12.1f %12s %12s %12.1f %12.1f\n", LEN[li], d, "", "", b, pk);
-    }
+    std::printf("\n  \"asm gap\" is the real selector budget: what a scheme that names a\n");
+    std::printf("  stream must cost LESS than, to beat deriving it with the hand DDA.\n");
+    std::printf("  The C columns are a shape comparison and overstate that budget.\n");
     std::printf("\n  driver and comparison overhead, excluded above: %llu T-states\n",
                 (unsigned long long)acc[0]);
     std::printf("  PACKED is charged nothing for identifying which stream it needs;\n");

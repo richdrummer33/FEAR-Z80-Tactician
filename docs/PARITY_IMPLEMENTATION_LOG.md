@@ -2394,3 +2394,67 @@ tested is which **shape** of algorithm the Z80 prefers, and the answer is that
 classification-plus-replay is not worth it at these span lengths.
 
 `tools/race/build_and_run.sh` reproduces the whole thing.
+
+## A framing correction, and the contract
+
+Saying "the question is whether the generic machine can be arranged to fetch as
+cheaply as replay" framed an already-decomposed problem as a fresh unknown. The
+projection, depth-plane and cell-metadata work had already identified stream
+identification as the central implementation problem and named the candidate
+solution family. What the race added is a **measured value** for solving it, and
+the elimination of one expensive way of doing it.
+
+That is the same over-generalisation as "no compact yaw machine exists": moving
+from *this representation failed* to *this architecture space is closed*. The
+harnesses keep catching it. The distinction now has its own line in
+`docs/RASTER_ARCHITECTURE_CONTRACT.md`, which freezes the shape, the five rules,
+what is settled and what is open, so later work is measured against it.
+
+It also records the separation the BAND result needs: **BAND as an execution
+strategy is dead; band boundaries as mathematics are not.** An experiment can
+lose the implementation race and still contribute the material the certificate
+work needs.
+
+## The race in hand assembly: the real selector budget
+
+`tools/race/race_asm.s` adds hand-written Z80 versions of the two kernels the
+decision rests on. Arguments arrive in globals rather than on the stack, so the
+calling convention costs nothing on either side. Rows are biased by +64
+throughout: they span -7..8, so the bias makes every comparison unsigned, which
+the Z80 does in one `CP` instead of a sign/overflow dance per column. `PACKED`
+becomes a single `LDIR`, which is the whole reason replay is hard to beat.
+
+Both are validated by the same gate as the C kernels: the profiler prints nothing
+until all five produce byte-identical output against the generated expectation.
+
+| columns | DDA C | BAND C | PACKED C | **DDA asm** | **PACK asm** | **budget** |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3 | 7,626 | 14,155 | 1,429 | **1,675** | **254** | **1,421** |
+| 6 | 13,926 | 17,202 | 2,087 | **2,819** | **338** | **2,481** |
+| 12 | 26,825 | 31,160 | 3,445 | **5,366** | **595** | **4,771** |
+| 18 | 39,591 | 43,417 | 4,754 | **7,830** | **684** | **7,145** |
+
+Per column the hand DDA costs 558 / 470 / 447 / 435 T-states against SDCC's
+2,542 / 2,321 / 2,235 / 2,200 — a factor of **4.55 to 5.06**. My earlier guess
+that C exaggerated the budget "by roughly an order of magnitude" was wrong; the
+measured factor is about five.
+
+The assembly `LDIR` replay costs about 27 T-states per emitted byte, which is
+`LDIR`'s own 21 plus setup amortised. That the number lands where the instruction
+timing says it should is a useful sign the measurement is real rather than an
+artifact of the harness.
+
+### What the budget means
+
+**The selector budget is 1,421 T-states at three columns, 2,481 at six, 4,771 at
+twelve and 7,145 at eighteen** — about 400 T-states per column. That is what a
+scheme which *names* a stream must cost less than, to beat *deriving* it with the
+hand DDA.
+
+At six columns that is roughly 600 Z80 instructions. It is a large budget, not a
+tight one, and it is the number the selector work should be priced against — not
+the C figures, which are a comparison of algorithm shapes.
+
+The hand DDA is still 6.6x to 11.4x slower than hand replay, so the gap the
+earlier C run found survives implementation quality. It narrows from the C
+ratio of 6.1x-8.9x only at the short end; at eighteen columns it widens.

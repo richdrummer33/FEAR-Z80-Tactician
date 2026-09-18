@@ -20,7 +20,7 @@ cc -O2 -Itools/race tools/race/race_host_check.c -o build/race_host_check
 ./build/race_host_check
 
 "$GBDK_HOME/bin/lcc" -mz80:gg -debug -Wb-ext=.rel -Wl-j -Wm-yo4 -Itools/race \
-  -Wf--opt-code-speed -o build/race/race.gg tools/race/race_kernels.c
+  -Wf--opt-code-speed -o build/race/race.gg tools/race/race_kernels.c tools/race/race_asm.s
 
 if [ ! -x build/race_profile ]; then
   g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \

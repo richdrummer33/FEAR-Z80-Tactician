@@ -41,6 +41,17 @@ uint16_t g_race_iter;
 uint16_t g_race_mismatch;
 uint16_t g_race_cases;
 
+/* argument block for the hand-written kernels: globals instead of the stack,
+ * so the calling convention costs nothing either side of the comparison */
+int16_t g_as_iq, g_as_step;
+uint8_t g_as_n, g_as_mlen, g_as_ret;
+uint8_t *g_as_outp;
+const uint8_t *g_as_srcp;
+void dda_span_asm(void);
+void pack_span_asm(void);
+uint8_t g_out_dasm[MAXMV], g_out_pasm[MAXMV];
+uint8_t g_n_dasm, g_n_pasm;
+
 void main(void)
 {
     uint8_t li, ci;
@@ -57,7 +68,7 @@ void main(void)
                 /* phase = li*4 + kernel + 1, so cycles are attributed per span
                  * length as well as per kernel. Aggregating over lengths hides
                  * the only question chunk chaining can answer. */
-                uint8_t ph = (uint8_t)(li * 4u + 1u);
+                uint8_t ph = (uint8_t)(li * 6u + 1u);
 
                 g_race_phase = ph;
                 g_n_dda = dda_span(iq, st, ncols, g_out_dda);
@@ -70,13 +81,27 @@ void main(void)
                 g_race_phase = (uint8_t)(ph + 3u);
                 g_n_pack = pack_span(&k_race_blob[k_race_off[idx]], k_race_mlen[idx], g_out_pack);
 
+                g_as_iq = iq; g_as_step = st; g_as_n = ncols; g_as_outp = g_out_dasm;
+                g_race_phase = (uint8_t)(ph + 4u);
+                dda_span_asm();
+                g_n_dasm = g_as_ret;
+
+                g_as_srcp = &k_race_blob[k_race_off[idx]];
+                g_as_mlen = k_race_mlen[idx]; g_as_outp = g_out_pasm;
+                g_race_phase = (uint8_t)(ph + 5u);
+                pack_span_asm();
+                g_n_pasm = g_as_ret;
+
                 g_race_phase = 0;
                 if (g_n_dda != k_race_mlen[idx]) bad = 1;
                 if (g_n_band != k_race_mlen[idx]) bad = 1;
                 if (g_n_pack != k_race_mlen[idx]) bad = 1;
+                if (g_n_dasm != k_race_mlen[idx]) bad = 1;
+                if (g_n_pasm != k_race_mlen[idx]) bad = 1;
                 for (k = 0; k < k_race_mlen[idx]; ++k) {
                     uint8_t want = k_race_blob[k_race_off[idx] + k];
-                    if (g_out_dda[k] != want || g_out_band[k] != want || g_out_pack[k] != want) bad = 1;
+                    if (g_out_dda[k] != want || g_out_band[k] != want || g_out_pack[k] != want ||
+                        g_out_dasm[k] != want || g_out_pasm[k] != want) bad = 1;
                 }
                 if (bad) ++g_race_mismatch;
                 ++g_race_cases;
