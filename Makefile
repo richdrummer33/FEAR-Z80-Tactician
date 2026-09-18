@@ -76,7 +76,10 @@ POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_raw_gg.o
 else
 POLAR_NTUPLOAD_OBJ := build/tilesector_polar_ntupload_profiled_gg.o
 endif
-POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ)
+# POLAR_EXTRA_OBJS lets a measurement build link one more object (a baked input
+# trace, for instance) without the shipping object list knowing about it.
+POLAR_EXTRA_OBJS ?=
+POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ) $(POLAR_EXTRA_OBJS)
 ifeq ($(POLAR_LOCAL_PROJECTION),1)
 POLAR_GG_OBJS += build/tilesector_polar_projection_gg.o $(POLAR_PROJ_OBJS)
 endif
@@ -397,6 +400,9 @@ $(POLAR_DEPTHPLANE_OBJ): $(POLAR_DEPTHPLANE_SRC) $(POLAR_DEPTHPLANE_HDR) | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $(POLAR_DEPTHPLANE_SRC)
 
 build/tilesector_polar_proj_bank%.o: $(POLAR_PROJ_GEN_DIR)/tilesector_polar_proj_bank%.c $(POLAR_PROJ_META) | build
+	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
+
+build/frame_trace_gg.o: build/frame_trace.c | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/main_tilesector_polar_gg.o: src/main_tilesector_polar_gg.c | build

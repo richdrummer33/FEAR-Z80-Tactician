@@ -3077,3 +3077,111 @@ well-spread in step and centred in the depth domain, which made them steeper tha
 real geometry; the DDA pays per move and the selector pays per chunk, so the
 tidiness landed asymmetrically. The fix is not a better synthetic corpus — it is
 replaying the real one.
+
+## Rung 12 — moving up a level, and what it says about the selector
+
+The instruction was to integrate the packed selector conservatively and then
+measure the whole loop. Measuring first changed the answer, so this rung reports
+the measurement and the integration blocker it exposed, and does **not** contain
+an integration.
+
+Tools: `tools/frame/frame_timeline.cpp`, `tools/frame/gen_traces.py`,
+`tools/frame/run_timeline.sh`, plus a `TSPF_TRACE_INPUT` build option in
+`src/main_tilesector_polar_gg.c` and a `POLAR_EXTRA_OBJS` hook in the Makefile so
+a measurement build can link a baked input trace without the shipping object list
+knowing about it. Output: `build/frame/<trace>.csv`.
+
+### The frame timeline
+
+Deterministic scripted input (`cruise`), 120 loop iterations, warmup discarded.
+A Game Gear NTSC frame is 59,739 T-states at 60 Hz.
+
+| whole loop | mean | p50 | p95 | p99 | worst |
+| --- | --- | --- | --- | --- | --- |
+| T-states | 353,919 | 477,890 | 595,277 | 598,597 | 601,307 |
+
+That is **5.92 sixty-hertz frames on average and 10.07 at the worst** — the loop
+runs at roughly 7 Hz. 65.8% of iterations exceed even the 30 Hz budget. The
+distribution is strongly bimodal: p25 is about 59,700 (one video frame) while p50
+is 477,890, because a third of the iterations are poses where the recipe grid
+selects almost nothing. That bimodality is itself worth knowing — a mean is
+close to meaningless here.
+
+| loop stage | mean | share |
+| --- | --- | --- |
+| render | 304,282 | 85.97% |
+| vsync | 33,285 | 9.40% |
+| input/motion | 8,745 | 2.47% |
+| VRAM upload | 7,539 | 2.13% |
+
+| inside render | mean | share of loop |
+| --- | --- | --- |
+| **materializer** | 146,807 | **41.48%** |
+| geometry walk | 31,496 | 8.90% |
+| nametable/VRAM | 15,562 | 4.40% |
+| arith helpers | 14,701 | 4.15% |
+| unattributed | 95,715 | 27.04% |
+
+Cross-checked against the existing PC-range function profiler on the same ROM,
+which agrees: materializer ≈43.3% of render (`tsp_polar_p_fill` alone 21.8%),
+geometry walk ≈14.9%, projection/setup ≈20%. The 27% my harness leaves
+unattributed is a limitation of its symbol grouping, not a disagreement — the
+function profiler resolves it into `project_key`, `screen_depth_plane`,
+`bearing_*` and friends.
+
+### Why the selector cannot be integrated conservatively
+
+The race compared two ways of producing a **move stream** — down a tile row,
+next column, next column up N. The shipping renderer does not contain that
+function. `tsp_polar_run_geometry_fast` computes, per column, two clamped
+inverse depths and four **pixel** endpoints, and hands them to
+`tsp_polar_surface_column_fast`, which floors them to tile rows itself.
+
+So the selector's body vocabulary is strictly coarser than what the renderer
+consumes. There is no drop-in. A body that *could* drive this renderer would have
+to store per-column deltas of `half = (iq + 32) >> 7` — eight times finer than a
+tile-row move — and the band edges multiply accordingly: roughly 48 per step
+instead of 8, so about 450 KB of records rather than 73 KB. That is a new design,
+not an integration.
+
+Two further consequences worth stating plainly:
+
+1. **The race's baseline was not the renderer's.** The geometry step costs
+   55,817 T per update over 44.52 columns, which is **1,254 T-states a column**.
+   The hand-written DDA the selector beat costs about 447 T a column. The race
+   measured the selector against something 2.8x cheaper than the real thing, so
+   the 1.445x does not transfer in either direction without redoing it.
+2. **The ceiling is small regardless.** Even if a correctly-shaped table made the
+   per-column geometry free, it removes 11.5% of render time. The materializer is
+   43%.
+
+### What to attack next
+
+The dominant cost centre is the **materializer**, and inside it `tsp_polar_p_fill`
+at 21.8% of render on its own, called 146.55 times an update. Second is
+projection and setup at ~20%, where `project_key` (6.95%) and
+`screen_depth_plane` (5.13%) lead. The raster geometry walk the entire selector
+line was aimed at is third, at ~15%, and the selector could address at most
+three-quarters of that.
+
+On the measured evidence the selector work should stop where it is: correct,
+validated, documented, and not worth integrating against a stage that is 11.5% of
+render when a 43% stage is sitting next to it.
+
+### Not done
+
+- **No integration.** Blocked as above; building it would have been a
+  body-vocabulary redesign, not the conservative drop-in that was asked for.
+- **No old-versus-new comparison**, because there is no new renderer to compare.
+- **Two new maps not built.** The world is a 16-vertex, 32-segment format
+  (`k_tspf_keys` packs sid:5, v0:4, v1:4) with a 48x24 potentially-visible-set
+  grid and hand-written walkable rectangles in `tsp_is_walkable_q4`. Making an
+  open-and-coarse map and a dense-corridor map means writing a level compiler for
+  that format — vertices, segment normals, keys, the PVS grid, the sub-cell
+  selector predicates and walkability. That is a self-contained piece of work and
+  it is the right next one, because the materializer's cost scales with drawn
+  area and the projection's with visible key count, so the two maps will move
+  those two stages in opposite directions and tell us which dominates in which
+  kind of level.
+- Only the `cruise` trace was run. `spin`, `corners` and `stress` are generated
+  and buildable but not yet measured.

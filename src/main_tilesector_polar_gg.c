@@ -60,6 +60,21 @@ static uint16_t upload_dirty_map(void){
 #endif
 }
 
+#if TSPF_TRACE_INPUT
+/* Deterministic scripted input for frame-timeline measurement. A profile that
+ * depends on whatever the pad happened to be doing is not comparable between
+ * builds, so the trace replaces the pad entirely and the same trace drives every
+ * build being compared. It is a build option, not a runtime one: the shipping
+ * path below is untouched. */
+extern const uint8_t k_tsp_trace[];
+extern const uint16_t k_tsp_trace_len;
+static uint16_t g_trace_i=0u;
+static uint8_t read_input(void){
+    uint8_t v=k_tsp_trace[g_trace_i];
+    if(++g_trace_i>=k_tsp_trace_len)g_trace_i=0u;
+    return v;
+}
+#else
 static uint8_t read_input(void){
     uint8_t pad=joypad(),pressed=(uint8_t)(pad&(uint8_t)~g_prev_pad),input=0u;
     if(pad&J_UP)input|=TSP_INPUT_UP;if(pad&J_DOWN)input|=TSP_INPUT_DOWN;if(pad&J_LEFT)input|=TSP_INPUT_LEFT;if(pad&J_RIGHT)input|=TSP_INPUT_RIGHT;
@@ -69,6 +84,7 @@ static uint8_t read_input(void){
     if(pressed&J_START){if(pad&J_B)g_tspf_appearance_mode=0u;else if(pad&J_A)g_tspf_appearance_mode=2u;else {++g_tspf_appearance_mode;if(g_tspf_appearance_mode>2u)g_tspf_appearance_mode=0u;}}
     g_prev_pad=pad;return input;
 }
+#endif
 
 void main(void){
     /* 423 generated 4-bpp patterns occupy VRAM through ~0x34DF. Keep the
