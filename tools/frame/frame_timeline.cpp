@@ -100,8 +100,16 @@ static Group classify(const std::string& raw) {
         s = s.substr(d1 + 1, d2 == std::string::npos ? std::string::npos : d2 - d1 - 1);
     }
     auto has = [&](const char* k){ return s.find(k) != std::string::npos; };
+    /* The tsp_h_ aliases added in rung 18 are materializer helpers. Without
+     * them here the group total silently shrinks and two runs stop being
+     * comparable, which is exactly the trap the per-function shares fell into. */
     if (has("p_fill") || has("p_span") || has("p_edge") || has("p_cap") ||
-        has("p_symbot") || has("p_symtop") || has("surface_column_fast")) return G_MAT;
+        has("p_symbot") || has("p_symtop") || has("surface_column_fast") ||
+        has("mark_span_fast") || has("row_unclaimed_fast") || has("mark_dirty_fast") ||
+        has("map_ptr_row_col") || has("full_tile_low") || has("row_floor_hl") ||
+        has("prepare_edge") || has("prepare_symfull_edges") ||
+        has("draw_symfull_edge_pair")) return G_MAT;
+    if (has("profile_half") || has("q6_round_u8")) return G_GEOM;
     if (has("run_geometry_fast") || has("draw_run") || has("draw_edge") ||
         has("draw_full") || has("put_cell") || has("edge_entry") || has("row_floor")) return G_GEOM;
     if (has("polar_nt") || has("upload") || has("map_init") || has("restore_touched")) return G_NT;

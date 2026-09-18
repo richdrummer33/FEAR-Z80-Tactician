@@ -3687,3 +3687,57 @@ mask-first change, because only the interior fill was converted. The edge paths 
 row. The `r_occluded$` flag already computed for the interior answers the same
 question for them, so the same change applies, and it is worth on the order of
 10,000 T-states an update. That is the next code change, ahead of the race.
+
+## Rung 19 — the same trick on the edges
+
+The repaired profile showed `polar_row_unclaimed_fast` still being called 138
+times an update after the interior fill was converted, because only the interior
+was converted. The three remaining callers — the generic edge row, the cap row,
+and the mirrored FULL pair — ask the same question the `r_occluded$` flag already
+answers.
+
+All three now test the flag first. The mirrored pair is the interesting one: it
+made *two* queries per row pair, and on the open path both are replaced by
+storing a constant, with C left as the query path leaves it so the register state
+downstream is unchanged.
+
+Gated on the same digest: **name table identical over 60 frames on all four
+traces.**
+
+| trace | before | after | change |
+| --- | --- | --- | --- |
+| cruise | 388,861 | 382,290 | −1.69% |
+| corners | 357,201 | 351,825 | −1.51% |
+| stress | 316,470 | 312,288 | −1.32% |
+| spin | 309,459 | 306,473 | −0.96% |
+
+`polar_row_unclaimed_fast` drops from 138.00 to **85.42 calls an update** and from
+17,291 to 10,792 T-states, a saving of 6,499 T — which matches the 6,571 T the
+whole loop actually lost on cruise almost exactly. The prediction was right in
+absolute terms; calling it "worth on the order of 10,000 T-states" overstated it
+by about half, and as a share of the loop it is 1.0–1.7%, not the 2.6% that
+figure implied.
+
+Why so much smaller than the interior conversion's 5.8–16.5%? Because the edges
+are a handful of rows a column while the interior is many, so the query was a
+much smaller fraction of the work being done around it.
+
+A tooling note: the `tsp_h_*` helper aliases added in rung 18 were not matched by
+the frame timeline's stage classifier, so the materializer group total silently
+shrank between runs and the two were not comparable. The classifier now includes
+them. Whole-loop means were never affected and are the numbers quoted above.
+
+### Where the race now stands
+
+After both conversions, on cruise:
+
+| | T/update | share of render |
+| --- | --- | --- |
+| generation (`surface_column_fast` + `mark_span_fast` + `row_floor_hl`) | ~66,966 | 14.4% |
+| emission (everything else in the materializer) | ~125,000 | 26.8% |
+
+The ratio is about 1 : 1.9. `polar_mark_span_fast` alone is 35,951 T an update at
+807 T a column — the largest single materializer item, and it is **ownership
+resolution, which a delta scheme still has to do**. That sets the floor: a delta
+materializer cannot go below roughly 67,000 T of generation plus the cost of
+emitting the ~59 cells that actually change.

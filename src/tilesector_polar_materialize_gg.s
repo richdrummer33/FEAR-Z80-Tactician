@@ -472,7 +472,18 @@ _tsp_h_draw_symfull_edge_pair::
         sub     c
         ld      (#r_sym_bottom_row$), a
 
-        ; Check both mirrored rows before paying for the LUT lookup.
+        ; Check both mirrored rows before paying for the LUT lookup -- unless
+        ; nothing was claimed, in which case both are this surface's by
+        ; construction and the two queries are pure overhead.
+        ld      a, (#r_occluded$)
+        or      a
+        jr      nz, sym_query_rows$
+        ld      a, #1
+        ld      (#r_sym_top_draw$), a
+        ld      (#r_sym_bot_draw$), a
+        ld      c, a                   ; leave C as the query path leaves it
+        jr      sym_rows_ready$
+sym_query_rows$:
         ld      a, c
         call    polar_row_unclaimed_fast$
 _tsp_polar_p_symtop::
@@ -485,6 +496,7 @@ _tsp_polar_p_symbot::
         ld      a, (#r_sym_top_draw$)
         or      c
         ret     z
+sym_rows_ready$:
 
         ; Top local coordinate and canonical top-edge LUT index.
         ld      a, (#r_row$)
@@ -669,10 +681,14 @@ edge_after_first$:
         ; Near->far fast path: only rows that were unclaimed before this
         ; surface entered may materialize. Same-surface top/bottom overlap is
         ; intentionally allowed because the mask is not consumed per subdraw.
+        ld      a, (#r_occluded$)
+        or      a
+        jr      z, edge_row_open$      ; no row of this span was already claimed
         ld      a, (#r_row$)
         call    polar_row_unclaimed_fast$
 _tsp_polar_p_edge::
         ret     z
+edge_row_open$:
 
         ; local = left_y - row*8; low-byte arithmetic is exact in this range.
         ld      a, c
@@ -789,10 +805,14 @@ full_first_ok$:
         ld      a, (#r_clip_last$)
         cp      c
         ret     c
+        ld      a, (#r_occluded$)
+        or      a
+        jr      z, cap_row_open$
         ld      a, (#r_row$)
         call    polar_row_unclaimed_fast$
 _tsp_polar_p_cap::
         ret     z
+cap_row_open$:
         ld      a, (#r_row$)
         call    map_ptr_row_col$
         call    full_tile_low$
