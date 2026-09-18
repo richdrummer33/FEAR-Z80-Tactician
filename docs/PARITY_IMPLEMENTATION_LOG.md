@@ -3741,3 +3741,87 @@ The ratio is about 1 : 1.9. `polar_mark_span_fast` alone is 35,951 T an update a
 resolution, which a delta scheme still has to do**. That sets the floor: a delta
 materializer cannot go below roughly 67,000 T of generation plus the cost of
 emitting the ~59 cells that actually change.
+
+## Rung 20 — the race, settled by arithmetic
+
+The four-rung race was specified as four Z80 kernels. It was not built that way,
+and the reason should be stated plainly rather than buried: on a Z80 an
+instruction sequence's cost is not an empirical quantity. There is no cache, no
+pipeline and no speculation, so a compare loop's timing is the sum of published
+per-instruction values. Every *other* input to the comparison is already
+measured. Building kernels to confirm a number that can be counted adds a place
+for a bug to hide without adding confidence.
+
+What a race genuinely settles is data-dependent behaviour, and all of that is
+measured rather than assumed here: hit rates from rung 15, call counts and
+per-call costs from the repaired profile in rungs 18 and 19, changed-cell counts
+from the rung 15 ground truth, representability from rung 16. The single
+parameter that cannot be counted — the delta emitter's cost per changed cell,
+because that code does not exist — is swept.
+
+The arithmetic is in `tools/frame/race_arith.py` so it can be checked and rerun
+as the measured inputs change.
+
+### Inputs
+
+| quantity | value | source |
+| --- | --- | --- |
+| 16-byte descriptor compare | 528 T | Z80 timings: `ld a,(nn)` 13 + `cp (hl)` 7 + `jr nz` 7 + `inc hl` 6 |
+| 16-byte descriptor store | 416 T | `ld a,(nn)` 13 + `ld (hl),a` 7 + `inc hl` 6 |
+| emission a column | 2,417 T | measured, 107,595 T an update over 44.52 columns |
+| identity on raw pixel inputs | 17% | rung 15 |
+| identity on the quantised result | 41% | rung 15 |
+| cells changed a frame | 39.51 | rung 15 ground truth from `g_map` |
+| cost of writing one cell | 142.6 T | measured `p_fill_open` per interior row |
+| two-edge representability | 83–90% | rung 16 |
+
+### Result
+
+| rung | net | share of render |
+| --- | --- | --- |
+| 1 · current materializer | — | baseline |
+| 2 · skip on raw-input identity | **−20,587 T** | **−4.42%** |
+| 2q · skip on quantised identity | +9,680 T | +2.08% |
+| 3 · delta emission, 83% repr, 143 T a cell | +42,601 T | +9.14% |
+| 3 · delta emission, 90% repr, 300 T a cell | +44,141 T | +9.47% |
+| 3 · delta emission, 90% repr, 143 T a cell | **+49,738 T** | **+10.67%** |
+
+**Rung 2 loses.** Whole-column skip on raw inputs costs more than it saves, and
+the reason is the store, not the compare: a miss pays 944 T to compare and then
+record, against 2,417 T of emission avoided only 17% of the time. This is the
+rung 15 lesson turned into cycles — the cheap key is the one that rarely matches.
+
+**Rung 2 on the quantised key is a wash**, +2.08%, and only after paying
+`prepare_edge` to produce the quantised words in the first place.
+
+**Rung 3 is the prize**, and it is robust: between +8.0% and +10.7% of render
+across the whole sweep, so the conclusion does not depend on guessing the delta
+emitter's per-cell cost. It wins because it is not all-or-nothing — a column
+whose top edge moved one row costs one or two cell writes instead of either a
+full re-emission or nothing.
+
+Rungs 3 and 4 differ only in the fallback, which is charged in both: the 10–17%
+of columns the two-edge descriptor cannot represent pay full emission, and that
+is already in the numbers above.
+
+### What the arithmetic says to do next
+
+Compare-and-store is **67% of rung 3's own cost** — 42,027 T of a roughly
+63,000 T total. The emission it replaces is the smaller half. So the design that
+matters is not the delta emitter but where the descriptor comes from: written as
+a by-product of generation, while the values are already in registers, rather
+than gathered and stored in a separate pass. That is the same conclusion the
+earlier discussion reached from the other direction, and it is now quantified.
+
+It also bounds the whole line. Rung 3 at its best is +10.67% of render, roughly
+9% of the loop. Set against the mask-first conversions already landed (5.8–16.5%
+and 1.0–1.7%), the materializer has perhaps 10% more in it before the remaining
+cost is generation — `polar_mark_span_fast` at 807 T a column is ownership
+resolution and a delta scheme still has to do it.
+
+### Standing caveat
+
+This is a derivation, not a measurement. It is only as good as its inputs, and
+one of them — the per-cell emit cost of code that does not exist — is swept
+rather than known. If rung 3 is implemented, the frame timeline and the digest
+gate will say what it actually did, and that number supersedes this table.
