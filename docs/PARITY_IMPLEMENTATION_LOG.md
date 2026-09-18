@@ -3537,3 +3537,78 @@ The four-rung race: current materializer, whole-column descriptor skip, two-edge
 plus fill interval delta, and the same with the reveal fallback charged, on the
 real transition corpus, charging descriptor load, comparison, address formation,
 dirty marking, writes and fallback ownership resolution. Not started.
+
+## Rung 17 — descriptor generation versus application, measured
+
+The column asked for before the race: how much of the materializer's cost is
+*producing* the descriptor, and how much is *applying* it? If generation
+dominates, a delta scheme only moves the furniture.
+
+The boundary already exists as an exported symbol. `_tsp_polar_p_span` sits
+immediately after `polar_mark_span_fast$`, so the range from
+`tsp_polar_surface_column_fast`'s entry to it is exactly the descriptor's
+geometric generation — four `row_floor`s, top and bottom min/max, the coverage
+span, and the ownership mask. Everything after it is emission.
+
+Current build, 40 updates, 44.52 columns an update:
+
+| | T-states/update | share of render | per column |
+| --- | --- | --- | --- |
+| **descriptor geometry generation** | 22,503 | **4.76%** | **505** |
+| application: p_span tail | 21,304 | 4.51% | 479 |
+| application: p_symbot | 35,018 | 7.41% | 787 |
+| application: p_edge | 15,275 | 3.23% | 343 |
+| application: p_cap | 14,092 | 2.98% | 317 |
+| application: p_fill_open | 89,889 | 19.02% | 2,019 |
+| **application total** | **175,578** | **37.15%** | **3,944** |
+
+**Generation is about one eighth of application** — 505 T-states a column against
+3,944. That is the answer the race needed before it was worth building: the
+expensive half is emission, not deciding what to emit.
+
+A bound rather than a headline: if a delta scheme cut application by 70% — which
+the oracle's 59-cells-touched against ~170 interior rows plus edges suggests is
+the right order — it would save roughly 123,000 T-states an update, about 26% of
+render and 22% of the whole loop. That is an estimate from two measurements, not
+a measurement.
+
+### Two things this figure does not include
+
+The "generation" range covers the descriptor's **geometry** only. The edge *tile
+word* is computed by the LUT inside `prepare_edge$` and `prepare_symfull_edges$`,
+which fall inside the application ranges, so generation is undercounted by
+however much that costs. And these PC ranges over-attribute in general, as
+recorded in rung 15: unexported helpers land in whichever exported range precedes
+them. The figures are indicative of the ratio, not exact.
+
+### Accepting two corrections
+
+The oracle did **not** solve reveal handling. It proved that the final-state
+representation encodes reveals soundly — the predicted set never missed a cell
+when a nearer surface shrank and a farther one appeared. It did not show that a
+runtime descriptor built from projection can arrive at that final state
+economically. Something still has to resolve the newly exposed owner, and that is
+rung four of the race.
+
+"Zero ragged columns" is an empirical property of these four traces on this one
+map, not a proved invariant of every map, profile and portal arrangement. The
+fallback stays regardless, which is what makes the scheme safe rather than the
+observation.
+
+### The race, specified but not built
+
+Four rungs on a corpus of real column transitions, driving the **real**
+`tsp_polar_surface_column_fast` as rung one rather than a reimplementation of it,
+so the baseline cannot drift:
+
+1. current materializer, as shipped;
+2. whole-column descriptor skip, falling through to (1) on any difference;
+3. two-edge plus fill interval delta, emitting only the components that changed;
+4. (3) with the reveal fallback charged when a nearer owner shrinks and the
+   exposed rows must be resolved.
+
+Charging previous-descriptor load, new-descriptor construction, comparison,
+component-change detection, address formation, `g_map` stores, dirty extent
+updates, and the full fallback for the 10–17% unrepresentable columns. Reporting
+generation and application separately per rung, and gated on `g_map` matching
+rung one exactly.
