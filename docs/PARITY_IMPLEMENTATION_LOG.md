@@ -3357,3 +3357,101 @@ which the census measured at 35.3%–47.0% — is now the largest remaining
 materializer item. Item three, the row-major transpose, is still unjustified by
 the run-length data. The two new maps remain outstanding and bear directly on
 item three.
+
+## Rung 15 — the delta census, and a classifier that was wrong first time
+
+Steps one, two and four of the temporal ladder, run on the optimized `79445c4`
+build before implementing anything.
+
+### Where the expensive tail goes now
+
+Top 5% of frames against the median frame, by stage:
+
+| trace | median | p95+ | ratio | materializer share of the excess | projection share |
+| --- | --- | --- | --- | --- | --- |
+| cruise | 477,931 | 588,374 | 1.23x | **52.5%** | −2.6% |
+| corners | 399,131 | 541,184 | 1.36x | **48.6%** | 21.8% |
+| stress | 298,798 | 504,997 | 1.69x | **44.4%** | 31.9% |
+| spin | 298,772 | 453,641 | 1.52x | **37.0%** | 33.8% |
+
+The materializer still dominates both the mean and the tail, so the ladder's
+ordering survives the mask-first change. Projection is a clear second on the
+three traces that turn hard.
+
+### Ground truth: how much actually changes
+
+Measured from `g_map` directly, so no probe can be wrong about it.
+
+| trace | cells changed a frame (of 360) | columns changed (of 20) | columns identical |
+| --- | --- | --- | --- |
+| stress | 31.38 (8.72%) | 6.95 | 65.25% |
+| corners | 38.75 (10.76%) | 8.25 | 58.74% |
+| cruise | 39.51 (10.97%) | 8.68 | 56.62% |
+| spin | 52.40 (14.56%) | 12.15 | 39.24% |
+
+**About nine tenths of the name table is identical from one frame to the next.**
+The materializer currently visits roughly 170 interior rows an update to effect
+about 40 cell changes.
+
+### A classifier that was wrong, and what it hid
+
+The first pass asked whether a column's changed cells formed one contiguous
+block, and reported 81.6%–87.9% "scattered". That reading would have killed the
+interval-delta idea. It was wrong: it treated a column as a single interval when
+the materializer already treats top and bottom as separate mirrored edges, so a
+symmetric FULL wall moving one row — two short runs, one at each edge — was being
+counted as scatter.
+
+Counting contiguous **runs** instead:
+
+| trace | 1 run | **2 runs** | 3+ runs | longest run 1–2 cells |
+| --- | --- | --- | --- | --- |
+| cruise | 18.4% | **67.2%** | 14.4% | 79.6% |
+| corners | 17.6% | **75.5%** | 6.8% | 80.6% |
+| stress | 12.1% | **86.5%** | 1.5% | 76.8% |
+| spin | 13.0% | **86.9%** | 0.1% | 79.3% |
+
+**One or two runs covers 85.6% to 99.9% of changed columns**, and the longest run
+is one or two cells in about 78%. Mean changed cells in a changed column is 4.3
+to 4.7 — two short runs of about two cells, exactly the signature of a mirrored
+wall whose top and bottom edges both moved by one tile row.
+
+So the interval-delta representation is supported, on the condition that it keeps
+top and bottom as separate intervals. A single-interval-per-column model would
+see the same data as scatter, which is precisely the mistake made above.
+
+### What that is worth, as an estimate rather than a measurement
+
+The materializer costs 154,075 T of a 388,861 T loop on cruise after the
+mask-first change. If it only compared a small retained descriptor per column and
+then touched the cells the descriptor says changed, the work would be on the
+order of twenty comparisons plus forty cell writes. That is an order-of-magnitude
+reduction on paper and it is **not measured**; a micro-race against real retained
+descriptor transitions is the next step and should come before any
+implementation.
+
+### A correction to earlier reporting
+
+The per-function figure "p_fill is 21.8% of render" over-attributes. The profiler
+builds ranges from one exported symbol to the next, and the labels inside the
+fill loop are followed by unexported helpers (`full_tile_low$`,
+`map_ptr_row_col$`, `polar_mark_dirty_fast$`, `polar_row_unclaimed_fast$`) which
+fall inside the same range. The same applies to the new `p_fill_open` at 19.02%.
+The stage-group figures in the frame timeline do not have this problem, because
+mis-attribution inside a group does not move the group, and those are the numbers
+to trust: materializer 39.6% of the loop on cruise after the change.
+
+### Also corrected
+
+The claim that a 75.6% fast-path rate "matches" the 82.19% wholly-unclaimed
+figure was loose: they count different populations, spans versus interior rows.
+The gap most likely means partially occluded interiors contain more rows than
+open ones, which is testable and has not been tested.
+
+### Not done
+
+Step three — a separate census of quantised **edge** deltas — was folded into the
+run-structure analysis rather than probed independently; the one- and two-cell
+runs above are mostly edges, but their tile-word transitions were not classified.
+Step five, the micro-race of current-fill against whole-column-skip against
+interval-delta, is the next piece and has not been started.

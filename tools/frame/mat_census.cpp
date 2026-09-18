@@ -112,6 +112,23 @@ int main(int argc, char** argv) {
     struct Desc { uint8_t shade, border, tmin, tmax, bmin, bmax, tile; uint16_t tl, tr; bool live; };
     std::vector<Desc> prev_desc(24), cur_desc(24);
     for (auto& d : prev_desc) d.live = false;
+    /* Frame-to-frame symmetric difference of the name table. This is the ground
+     * truth the whole temporal argument rests on: the number of cells that
+     * ACTUALLY have to change. Everything the materializer does beyond this is,
+     * by definition, work spent discovering that nothing happened. It needs no
+     * probes -- g_map is read directly -- so it cannot be wrong about the ROM.
+     *
+     * Changed cells are also classified by where they sit in their column, because
+     * the shape decides the representation. Changes only at the ends of a column's
+     * occupied range are a boundary that moved, and an interval-delta renderer
+     * touches one or two rows. Changes in the middle mean the tile word itself
+     * changed, and the whole interval has to be rewritten. */
+    uint64_t dcells = 0, dcols = 0, dframes = 0;
+    uint64_t cls_boundary = 0, cls_interior = 0, cls_mixed = 0, cls_whole = 0;
+    std::vector<uint64_t> dcell_hist(64, 0), dcol_hist(24, 0);
+    std::vector<uint64_t> run_hist(20, 0), runlen_hist(20, 0);
+    std::vector<uint16_t> prev_map(18 * 20, 0xFFFF);
+    bool have_prev_map = false;
     /* horizontal same-tile runs in the finished name table */
     uint64_t hruns = 0, hcells = 0;
     std::vector<uint64_t> hrun_hist(24, 0);
@@ -195,6 +212,53 @@ int main(int argc, char** argv) {
                         if (len && len < (int)hrun_hist.size()) ++hrun_hist[len];
                         if (len) ++hruns;
                     }
+                    {   /* read the name table once, use it for both analyses */
+                        std::vector<uint16_t> cur_v(18 * 20);
+                        for (int r = 0; r < 18; ++r) for (int c = 0; c < 20; ++c) {
+                            const u16 a = (u16)(S_MAP + r * 40 + c * 2);
+                            cur_v[r * 20 + c] = (uint16_t)(mem->DebugRetrieve(a) |
+                                              (mem->DebugRetrieve((u16)(a + 1)) << 8));
+                        }
+                        if (have_prev_map) {
+                            ++dframes;
+                            uint64_t fd = 0, fc = 0;
+                            for (int c = 0; c < 20; ++c) {
+                                int first = -1, last = -1, n = 0;
+                                for (int r = 0; r < 18; ++r)
+                                    if (cur_v[r * 20 + c] != prev_map[r * 20 + c]) {
+                                        if (first < 0) first = r; last = r; ++n;
+                                    }
+                                if (!n) continue;
+                                ++fc; fd += n;
+                                /* How many contiguous RUNS of changed cells, and how
+                                 * long are they? A single run is one boundary moving.
+                                 * TWO short runs is a symmetric FULL wall whose top and
+                                 * bottom edges both moved -- which an earlier, cruder
+                                 * classifier called "scattered" and wrote off, when it
+                                 * is exactly the case interval-delta handles best,
+                                 * because the materializer already treats top and
+                                 * bottom as separate mirrored edges. */
+                                int runs = 0, longest = 0, cur = 0;
+                                for (int r = 0; r < 18; ++r) {
+                                    if (cur_v[r * 20 + c] != prev_map[r * 20 + c]) {
+                                        if (!cur) ++runs;
+                                        if (++cur > longest) longest = cur;
+                                    } else cur = 0;
+                                }
+                                if (runs < (int)run_hist.size()) ++run_hist[runs];
+                                if (longest < (int)runlen_hist.size()) ++runlen_hist[longest];
+                                if (n >= 17) ++cls_whole;
+                                else if (runs <= 2 && longest <= 3) ++cls_boundary;
+                                else if (runs <= 2) ++cls_interior;
+                                else ++cls_mixed;
+                            }
+                            dcells += fd; dcols += fc;
+                            if (fd < dcell_hist.size()) ++dcell_hist[fd];
+                            if (fc < dcol_hist.size()) ++dcol_hist[fc];
+                        }
+                        prev_map.swap(cur_v);
+                        have_prev_map = true;
+                    }
                     if (hf) {
                         uint64_t h = 1469598103934665603ull;
                         for (int a = 0; a < 18 * 40; ++a) {
@@ -250,6 +314,31 @@ int main(int argc, char** argv) {
                 desc_total ? 100.0 * desc_same / desc_total : 0.0);
     std::printf("    keyed on the materialized result (tile rows + tile word)  %6.2f%%\n",
                 desc_total ? 100.0 * desc_same_q / desc_total : 0.0);
+    {
+        const double D = dframes ? (double)dframes : 1.0;
+        std::printf("  name-table change between consecutive frames (ground truth)\n");
+        std::printf("    %.2f cells change a frame, out of 360 (%.2f%%)\n",
+                    dcells / D, 100.0 * dcells / (D * 360.0));
+        std::printf("    %.2f of 20 columns change a frame; %.2f%% of columns are identical\n",
+                    dcols / D, 100.0 * (1.0 - dcols / (D * 20.0)));
+        const double C = dcols ? (double)dcols : 1.0;
+        std::printf("    changed columns by shape: <=2 runs and <=3 long %5.2f%%,"
+                    " <=2 longer runs %5.2f%%, 3+ runs %5.2f%%, whole column %5.2f%%\n",
+                    100.0 * cls_boundary / C, 100.0 * cls_interior / C,
+                    100.0 * cls_mixed / C, 100.0 * cls_whole / C);
+        std::printf("    contiguous runs of changed cells in a changed column:");
+        for (size_t i = 1; i < run_hist.size(); ++i) if (run_hist[i])
+            std::printf(" %zu:%.1f%%", i, 100.0 * run_hist[i] / C);
+        std::printf("\n    longest run:");
+        for (size_t i = 1; i < runlen_hist.size(); ++i) if (runlen_hist[i])
+            std::printf(" %zu:%.1f%%", i, 100.0 * runlen_hist[i] / C);
+        std::printf("\n");
+        std::printf("    changed cells in a changed column: %.2f mean\n", dcells / C);
+        std::printf("    cells changed per frame:");
+        for (size_t i = 0; i < dcell_hist.size(); ++i) if (dcell_hist[i])
+            std::printf(" %zu:%.0f%%", i, 100.0 * dcell_hist[i] / D);
+        std::printf("\n\n");
+    }
     std::printf("  horizontal same-tile runs in the finished name table:\n");
     std::printf("    %llu runs over %llu cells, mean length %.2f\n",
                 (unsigned long long)hruns, (unsigned long long)hcells,
