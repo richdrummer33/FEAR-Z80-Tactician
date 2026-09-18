@@ -3612,3 +3612,78 @@ component-change detection, address formation, `g_map` stores, dirty extent
 updates, and the full fallback for the 10–17% unrepresentable columns. Reporting
 generation and application separately per rung, and gated on `g_map` matching
 rung one exactly.
+
+## Rung 18 — attribution repaired, and rung 17's ratio was wrong
+
+Before building four race kernels on top of the profile, the profile itself was
+fixed. The PC profiler builds a range from one exported symbol to the *next*, so
+a label at the head of a loop swallows every unexported helper that follows it.
+The materializer has eleven such helpers and they were being charged to whichever
+exported label preceded them.
+
+The repair is labels only — an exported alias at the head of each helper and
+immediately after each fill loop's `ret`, plus one line in the host profiler to
+stop filtering them out of the display. No instruction is added, moved or
+changed, so the measured build is still cycle-identical to the shipping one.
+Unattributed cycles fell from **18.04% to 2.02%**.
+
+### What the repair moved
+
+| | before repair | after repair |
+| --- | --- | --- |
+| `p_fill_open` | 89,889 T/update (19.02%) | **14,173 T/update (3.00%)** |
+| `run_geometry_fast` | 55,818 (11.81%) | 27,379 (5.79%) |
+| `p_symbot` | 35,018 (7.41%) | 20,045 (4.24%) |
+| `p_span` | 21,304 (4.51%) | 5,544 (1.17%) |
+
+`p_fill_open` was over-attributed by **6.3×**. Its true cost is 14,173 T over
+99.38 iterations, **142.6 T-states an interior row** — which lands almost exactly
+on the ~137 T estimate made from reading the loop, a good sign that the repaired
+number is the real one.
+
+### The helpers, now visible
+
+| helper | T/update | share | calls/update | per call |
+| --- | --- | --- | --- | --- |
+| `polar_mark_span_fast` | 35,953 | **7.61%** | 44.55 | 807 |
+| `polar_row_unclaimed_fast` | 17,291 | 3.66% | **138.00** | 125 |
+| `profile_half` | 15,969 | 3.38% | 89.05 | 179 |
+| `prepare_edge` | 14,973 | 3.17% | 35.27 | 425 |
+| `map_ptr_row_col` | 14,720 | 3.11% | 100.90 | 146 |
+| `q6_round_u8` | 12,471 | 2.64% | 89.10 | 140 |
+| `row_floor_hl` | 8,512 | 1.80% | 137.28 | 62 |
+
+### Rung 17's ratio was wrong
+
+Rung 17 reported descriptor generation at 505 T a column, one eighth of
+application. That used `surface_column_fast`'s range, which **excludes**
+`polar_mark_span_fast` — the routine that builds the 18-bit coverage mask, which
+is the largest single piece of generation and costs 807 T a column on its own.
+
+Corrected:
+
+| | T/update | share of render | per column |
+| --- | --- | --- | --- |
+| generation (`surface_column_fast` + `mark_span_fast` + `row_floor_hl`) | 66,968 | **14.2%** | 1,504 |
+| emission (the `p_*` labels, `prepare_*`, `map_ptr`, `full_tile`, `mark_dirty`, `row_unclaimed`) | 138,643 | **29.3%** | 3,114 |
+
+**Generation to application is about 1 : 2.1, not 1 : 8.** The delta idea is still
+worth racing, but its ceiling is much lower than rung 17 implied: eliminating
+*all* emission would leave the 67,000 T of generation standing, so the prize is
+at most about 29% of render, and a scheme that still emits ~59 changed cells a
+frame will capture appreciably less.
+
+This also revises rungs 13 through 17 wherever they quoted a per-function share.
+The **group** figures from the frame timeline are unaffected and stand — the
+mis-attributed helpers are all materializer code, so pooling them into `p_fill`'s
+range inflated that function while leaving the materializer group total correct.
+That was the caveat recorded in rung 15 and it held.
+
+### An immediate, justified follow-up
+
+`polar_row_unclaimed_fast` is still called **138 times an update** after the
+mask-first change, because only the interior fill was converted. The edge paths —
+`p_edge` at 35.73 checks, `p_symtop` and `p_symbot` at 27.57 each — still ask per
+row. The `r_occluded$` flag already computed for the interior answers the same
+question for them, so the same change applies, and it is worth on the order of
+10,000 T-states an update. That is the next code change, ahead of the race.

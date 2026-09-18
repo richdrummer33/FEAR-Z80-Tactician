@@ -116,7 +116,7 @@ static std::vector<Range> load_polar_ranges(const char* noi,const char* sym) {
     auto fixed=load_fixed_symbols(sym);
     for(size_t i=0;i<fixed.size();++i) {
         const auto &name=fixed[i].second;
-        if(name.rfind("_tsp_polar_",0)!=0) continue;
+        if(name.rfind("_tsp_polar_",0)!=0 && name.rfind("_tsp_h_",0)!=0) continue;
         u16 lo=fixed[i].first,hi=(u16)(lo+1u);
         for(size_t j=i+1;j<fixed.size();++j) {
             if(fixed[j].first>lo) { hi=fixed[j].first; break; }

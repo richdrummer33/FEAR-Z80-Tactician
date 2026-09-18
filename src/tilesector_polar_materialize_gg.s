@@ -42,6 +42,19 @@
         .globl  _tsp_probe_bot_max
         .globl  _tsp_probe_occluded
         .globl  _tsp_polar_p_fill_open
+        .globl  _tsp_probe_end_fill
+        .globl  _tsp_probe_end_fill_open
+        .globl  _tsp_h_polar_mark_span_fast
+        .globl  _tsp_h_polar_row_unclaimed_fast
+        .globl  _tsp_h_polar_mark_dirty_fast
+        .globl  _tsp_h_map_ptr_row_col
+        .globl  _tsp_h_full_tile_low
+        .globl  _tsp_h_row_floor_hl
+        .globl  _tsp_h_profile_half
+        .globl  _tsp_h_q6_round_u8
+        .globl  _tsp_h_prepare_edge
+        .globl  _tsp_h_prepare_symfull_edges
+        .globl  _tsp_h_draw_symfull_edge_pair
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
@@ -146,6 +159,7 @@ run_geom_done$:
 ; HL = signed Q6-ish accumulator + rounding bias. Return the exact C
 ; clamp_u8i((value)>>6,255): arithmetic shift, negative -> 0, >255 -> 255.
 q6_round_u8$:
+_tsp_h_q6_round_u8::
         sra     h
         rr      l
         sra     h
@@ -176,6 +190,7 @@ q6_overflow$:
 ; Returns HL=top pixel Y, DE=bottom pixel Y using the exact C profile formulas.
 ; Profiles: 0 FULL, 1 LINTEL, 2 RAISED, 3 RISER.
 profile_half$:
+_tsp_h_profile_half::
         ld      (#r_run_half$), a
 
         ; POLAR_STAGE21_FULL_SYMMETRY_A: exact physical-screen mirror.
@@ -394,6 +409,7 @@ raster_done$:
 
 ; Signed floor(pixel/8). Arithmetic shifting gives true floor for negative Y.
 row_floor_hl$:
+_tsp_h_row_floor_hl::
         sra     h
         rr      l
         sra     h
@@ -409,6 +425,7 @@ row_floor_hl$:
 ; VFLIP|palette (high-byte 0x0C). The unclaimed mask is from the state before
 ; this surface entered, so top/bottom members can be tested independently.
 prepare_symfull_edges$:
+_tsp_h_prepare_symfull_edges::
         ld      hl, (#_g_polar_mat_top_l)
         ld      (#r_edge_left$), hl
         ld      de, (#_g_polar_mat_top_r)
@@ -443,6 +460,7 @@ sym_edge_rows_loop$:
 
 ; A=signed TOP tile row.
 draw_symfull_edge_pair$:
+_tsp_h_draw_symfull_edge_pair::
         ld      (#r_row$), a
         bit     7, a
         ret     nz
@@ -576,6 +594,7 @@ sym_word_changed$:
 ; A=0 top / 1 bottom. Prepares original edge endpoints/slope then draws the
 ; one or two hardware-tile rows that a <=7px connected edge can cross.
 prepare_edge$:
+_tsp_h_prepare_edge::
         ld      (#r_edge_bottom$), a
         or      a
         jr      nz, prep_bottom$
@@ -894,6 +913,7 @@ polar_interior_done$:
         dec     c
         jr      nz, interior_loop$
         ret
+_tsp_probe_end_fill::
 
 ; Open-interior fill. Reached when no row of this span was already claimed, so
 ; every interior row is this surface's to write and the per-row ownership query
@@ -930,9 +950,11 @@ polar_open_done$:
         dec     c
         jr      nz, interior_loop_open$
         ret
+_tsp_probe_end_fill_open::
 
 ; Return low-byte full tile ID for current shade/border, cap none.
 full_tile_low$:
+_tsp_h_full_tile_low::
         ld      a, (#_g_polar_mat_shade)
         or      a
         jr      z, full_far$
@@ -954,6 +976,7 @@ full_add_border$:
 ; A=row 0..17, B=current screen column. Expand the row's horizontal
 ; VDP interval directly. This preserves BC, including the interior-loop C count.
 polar_mark_dirty_fast$:
+_tsp_h_polar_mark_dirty_fast::
         ld      e, a
         ld      d, #0
         ld      hl, #_g_polar_nt_row_min
@@ -981,6 +1004,7 @@ polar_dirty_done$:
 ; this call sits at the column-materializer level where AF/C/DE/HL are scratch.
 ; span = prefix[last+1] XOR prefix[first], ORed into cov_cur[col*3].
 polar_mark_span_fast$:
+_tsp_h_polar_mark_span_fast::
         ld      (#r_cov_first$), a
         ld      a, c
         inc     a
@@ -1114,6 +1138,7 @@ polar_open_2$:
 ; current near->far surface claimed its complete span. Clobbers DE/HL only
 ; besides AF; B/C remain intact for column and fill-loop state.
 polar_row_unclaimed_fast$:
+_tsp_h_polar_row_unclaimed_fast::
         ld      (#r_claim_row$), a
         and     #7
         ld      l, a
@@ -1140,6 +1165,7 @@ polar_claim_g0$:
 
 ; A=row 0..17, B=column 0..19 -> HL=&g_map[row*20+col].
 map_ptr_row_col$:
+_tsp_h_map_ptr_row_col::
         ld      l, a
         ld      h, #0
         add     hl, hl                ; 2r
