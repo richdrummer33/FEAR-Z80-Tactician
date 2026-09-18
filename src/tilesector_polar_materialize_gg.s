@@ -27,6 +27,19 @@
         .globl  _tsp_polar_p_fill
         .globl  _tsp_polar_p_symtop
         .globl  _tsp_polar_p_symbot
+; Read-only probe aliases for the materializer census. These are LABELS on
+; existing storage, not new state: no instruction is added, moved or changed,
+; so a census build is cycle-identical to the shipping one.
+        .globl  _tsp_probe_fill_first
+        .globl  _tsp_probe_full_tile
+        .globl  _tsp_probe_unclaimed0
+        .globl  _tsp_probe_unclaimed1
+        .globl  _tsp_probe_unclaimed2
+        .globl  _tsp_probe_row
+        .globl  _tsp_probe_top_min
+        .globl  _tsp_probe_top_max
+        .globl  _tsp_probe_bot_min
+        .globl  _tsp_probe_bot_max
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
@@ -1280,18 +1293,23 @@ r_clip_last$:
 r_top_l_row$:
         .ds     1
 r_top_r_row$:
+_tsp_probe_row::
         .ds     1
 r_bot_l_row$:
         .ds     1
 r_bot_r_row$:
         .ds     1
 r_top_min$:
+_tsp_probe_top_min::
         .ds     1
 r_top_max$:
+_tsp_probe_top_max::
         .ds     1
 r_bot_min$:
+_tsp_probe_bot_min::
         .ds     1
 r_bot_max$:
+_tsp_probe_bot_max::
         .ds     1
 r_edge_left$:
         .ds     2
@@ -1322,8 +1340,10 @@ r_local_index$:
 r_cap_delta$:
         .ds     1
 r_fill_first$:
+_tsp_probe_fill_first::
         .ds     1
 r_full_tile$:
+_tsp_probe_full_tile::
         .ds     1
 r_cov_first$:
         .ds     1
@@ -1338,10 +1358,13 @@ r_cov_p2$:
 r_cov_old$:
         .ds     1
 r_unclaimed0$:
+_tsp_probe_unclaimed0::
         .ds     1
 r_unclaimed1$:
+_tsp_probe_unclaimed1::
         .ds     1
 r_unclaimed2$:
+_tsp_probe_unclaimed2::
         .ds     1
 r_claim_row$:
         .ds     1

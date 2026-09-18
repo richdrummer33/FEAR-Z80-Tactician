@@ -3185,3 +3185,104 @@ render when a 43% stage is sitting next to it.
   kind of level.
 - Only the `cruise` trace was run. `spin`, `corners` and `stress` are generated
   and buildable but not yet measured.
+
+## Rung 13 — materializer census: the mask is not the problem
+
+Step one of the materializer ladder, run before touching any code. Tools:
+`tools/frame/mat_census.cpp`, `tools/frame/run_mat_census.sh`, plus ten read-only
+alias labels in `src/tilesector_polar_materialize_gg.s`. Those aliases are labels
+on existing storage — no instruction is added, moved or changed — so the build
+measured is cycle-identical to the shipping one. Probes sample at the exported
+`_tsp_polar_p_fill` and `_tsp_polar_p_span` labels; zero ROM instrumentation.
+
+### Where p_fill iterations actually go
+
+| trace | iterations/update | already claimed | visible, already correct | visible and changes |
+| --- | --- | --- | --- | --- |
+| cruise | 170.6 | 9.22% | **82.29%** | 8.49% |
+| spin | 249.7 | 0.36% | **92.48%** | 7.16% |
+| corners | 191.9 | 5.06% | **88.38%** | 6.56% |
+| stress | 270.9 | 1.27% | **94.03%** | 4.70% |
+
+**The hypothesis that most fill iterations are hidden behind nearer geometry is
+wrong.** Occlusion rejects between 0.36% and 9.22%. The overwhelming majority —
+82% to 94% — are rows that are visible, that the loop happily materializes, and
+whose name-table word already contains exactly the right value. The Z80 is
+spending its time *proving that the picture has not changed*.
+
+The interior-mask prediction was right in shape and wrong in consequence:
+
+| trace | interior wholly unclaimed | partially occluded | wholly occluded | unclaimed runs per interior |
+| --- | --- | --- | --- | --- |
+| cruise | 82.19% | 10.98% | 6.83% | 0.93 |
+| spin | 98.62% | 0.89% | 0.49% | 1.00 |
+| corners | 83.69% | 9.91% | 6.40% | 0.94 |
+| stress | 95.27% | 3.81% | 0.92% | 1.00 |
+
+"Whole interior visible" is indeed extremely common (82–99%), and the unclaimed
+rows form essentially one contiguous run (0.93–1.00 per interior), so a mask-first
+enumeration is trivially expressible. But it is not worth much *as an occlusion
+filter*, because there is almost nothing to reject.
+
+It is still worth doing, for a different reason: the loop calls
+`polar_row_unclaimed_fast$` **once per interior row**, 170–271 times an update,
+and mask-first would call it once per span, 22–43 times. The saving is the
+ownership query on every iteration, not the 0.4–9% that get rejected. That is a
+real and safe win, and the census reframes why.
+
+### Temporal identity, and how the key changes the answer
+
+| trace | keyed on raw pixel endpoints | keyed on the materialized result |
+| --- | --- | --- |
+| cruise | 24.36% | **35.31%** |
+| spin | 10.82% | **46.96%** |
+| corners | 20.83% | **38.27%** |
+| stress | 17.81% | **41.89%** |
+
+Keying a column descriptor on raw pixel endpoints roughly halves the hit rate
+against keying it on what the materializer actually produces — the tile rows and
+the tile word. A one-pixel wobble in `top_l` changes the endpoints and changes no
+tile at all. **Any temporal reuse must be keyed on the quantised result, not on
+the geometry that produced it.**
+
+Even so, 35–47% of columns is well short of the 82–94% of *cells* that are
+unchanged, and the reason is granularity: a column whose single top row moved
+fails the whole-column test while seventeen of its eighteen cells are untouched.
+Column-level reuse captures roughly half of the available redundancy.
+
+### Row-major transpose: supported, but not by much
+
+| trace | mean same-tile run | share of runs that are a single cell |
+| --- | --- | --- |
+| cruise | 2.80 | 62.5% |
+| corners | 3.31 | 58.2% |
+| spin | 4.58 | 59.5% |
+| stress | 5.18 | 61.1% |
+
+The distribution is bimodal: most runs are one cell (wall edges and the boundary
+between surfaces), and a small tail of full-width 20-cell runs (2.6–9.8% of runs,
+but about a fifth of all cells) which are the ceiling and floor base rows rather
+than wall interiors. Horizontal structure is real but it is concentrated in the
+background, not in the thing p_fill is drawing. **The transpose is not yet
+justified by the data** and should stay behind the two cheaper changes.
+
+### The Amdahl check, restated
+
+The materializer is ~146,807 T of a ~353,919 T mean loop. Free materializer
+leaves ~207,000 T, about 17.3 updates a second against a 20 Hz budget of
+~179,000 T. Materializer work alone cannot finish the job, which argues for
+changes that produce reusable identities rather than merely faster loops.
+
+### Recommended order, on the evidence
+
+1. **Mask-first interior enumeration.** Safe, semantics-preserving, touches 100%
+   of iterations by removing the per-row ownership query. Justified — but by the
+   query cost, not by occlusion.
+2. **Temporal reuse keyed on the quantised column result.** 35–47% of columns,
+   and the census says exactly which key to use. This is the one that also buys
+   skips *above* the materializer.
+3. **Row-major transpose.** Not justified yet. Revisit if 1 and 2 leave the
+   materializer dominant, or if a denser map moves the run-length distribution.
+
+Not done: the two new maps, which remain the outstanding piece and would move the
+run-length and interior-height distributions that decide item 3.
