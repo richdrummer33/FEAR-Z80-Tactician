@@ -2506,16 +2506,42 @@ The only sufficient keys are the exact pair (3.2M entries, ~6.4 MB of index) and
 `step + band` (24,755 entries, ~49.5 KB) — and the second **also** costs BAND's
 classification to form. It loses on both axes at once.
 
-So: **no key over these state spaces is both sufficient and small.** A
-packed-replay architecture selected from `(phase, step)` is not viable, and the
-6.6x-11.4x replay prize is not claimable through a table selector on that state.
-The upstream factorisation is no better on size: `(invd, class, yaw, c0, c1)` is
-exact but has 146,568 observed states, ~293 KB of index.
+### Two corrections to how this was first stated
 
-This is the BAND trap generalised, and it is worth stating as a result rather
-than as a failed attempt: the cheapness of replay is real, but the body's
-identity carries essentially the full information content of `(phase, step)`, so
-naming it cannot be cheaper than deriving it.
+**The information-content claim was wrong.** I wrote that "the body's identity
+carries essentially the full information content of `(phase, step)`, so naming it
+cannot be cheaper than deriving it". That does not follow and is not true. There
+are only **175 bodies**, so an identity fits in eight bits, while the input pair
+spans 3,177,472 states. The mapping is enormously many-to-one and the output
+retains almost none of the input's information.
+
+What the screening actually shows is narrower, and is a statement about
+**computational structure, not information**: the mapping from exact phase and
+exact step onto the 175 bodies does not factor cleanly through any of the cheap
+coarse keys tested so far. That is a real and useful result. It is not a proof
+that lookup cannot beat derivation.
+
+**The ROM figure was also wrong.** I quoted ~6.4 MB for the exact-state index by
+assuming two bytes per entry. There is no reason to store a 16-bit pointer when
+only 175 destinations exist: one byte of body ID per state plus a 175-entry table
+from ID to descriptor. The flat exact-state table is therefore **~3.03 MiB**, not
+~6.4 MB. Still an absurd production trade, but useful as a controlled speed
+ceiling, and it scales over the intrinsic generic raster state rather than over
+map position or camera pose -- which makes it categorically different from the
+old pose dictionaries even at that size.
+
+### What is actually closed, and what is not
+
+**Closed:** the twenty-family direct selector, and naive coarse quantisation of
+phase or step as a sufficient direct key.
+
+**Not closed:** exact-state indexing, exact-step phase-interval lookup, and
+coarse first-stage keys followed by one or two cheap residual tests. The
+`step + band` result at 24,755 entries over 3,103 steps is an average of almost
+exactly eight bands per step, and those boundaries depend only on the exact step
+-- which means they can be **precomputed** rather than reconstructed at runtime.
+That is the difference between BAND and an interval lookup, and it has not been
+priced.
 
 ### Where that leaves the prize
 
@@ -2532,3 +2558,79 @@ Three routes survive, and none of them is a table selector:
 The contract's memory-scaling rules did their job here: every candidate that
 could have looked attractive on speed alone was rejected on size or on key cost
 before a line of Z80 was written for it.
+
+## Selector census: the band distribution, and the ambiguity structure
+
+`tools/race/selector_census.c`, plots in `build/selector-census.png`, raw data in
+`build/selector/`.
+
+### Bands per exact step: a spike, not an average
+
+```
+mean 7.98   median 8   p90 8   p95 8   p99 8   MAX 8
+histogram   1 band: 3 steps   2 bands: 4   4 bands: 6   8 bands: 3,090
+phases with no in-family body: 0 of 3,177,472
+```
+
+This is the best possible shape for the interval hypothesis. "About eight" is not
+an average hiding pathology: **no step anywhere in the domain has more than
+eight** merged contiguous phase bands, and 3,090 of 3,103 have exactly eight. The
+thirteen exceptions are degenerate steps at round values, visible in the plot as
+a regular comb.
+
+A selector that searches an exact step's stored intervals therefore has a **hard
+worst case of eight comparisons**, not a distribution with a tail.
+
+Storage if every step keeps its own record: 24,755 bands. At two bytes of
+threshold plus one of body ID that is ~74 KB; packing the ten-bit thresholds
+brings it to ~56 KB. The point of storing them is precisely that BAND's cost was
+*constructing* these boundaries at runtime, and they depend only on the exact
+step, so they can be built offline.
+
+### Body occupancy is flat
+
+Cumulative share of states: top 1 body 4.7%, top 5 17.0%, top 10 23.3%, top 25
+37.0%, top 50 55.5%, top 100 82.6%. **No small hot subset dominates**, so
+special-case fast paths for a handful of bodies will not buy anything, and an
+expected-cost selector has little skew to exploit.
+
+### Ambiguity structure: three keys are properly dead, one is not
+
+Sufficiency alone was the wrong test, so each failed key was measured for how
+badly it fails, and whether one cheap Z80 bit test rescues it. Permitted residual
+predicates: the ten phase bits, the eight low step bits, and the step sign — all
+single `BIT` instructions.
+
+| key | key values | unique keys | unique states | mean candidates | max | +1 bit |
+| --- | --- | --- | --- | --- | --- | --- |
+| edge-ordering family + band | 150 | 0 | 0.00% | 3.23 | 4 | → 0.00% |
+| edge-ordering family + full phase | 20,480 | 0 | 0.00% | 7.58 | 24 | → 0.00% |
+| step high byte + full phase | 14,336 | 0 | 0.00% | 7.28 | 11 | → 0.07% |
+| **step >> 4 + full phase** | 208,896 | 134,905 | **64.24%** | 1.40 | 7 | → **66.60%** |
+
+The first three are not merely insufficient, they are **thoroughly** insufficient:
+not one key value resolves to a single body, and a cheap bit adds essentially
+nothing. The edge-ordering family is confirmed dead in every form tested.
+
+The fourth is genuinely different — 64% of states are already unique — but it
+needs 208,896 key values, which is *worse* than the exact-step interval records
+on size, and a cheap bit only reaches 66.6%, leaving a third of states needing
+more. On present evidence the hybrid route looks weaker than the interval route,
+not stronger.
+
+### Cross-step structure
+
+The 120-step crop of the body map shows clear **diagonal wedges**: boundaries
+move smoothly as step changes, and neighbouring steps share body sequences over
+long runs. That is the structure cross-step compression would exploit, and it
+supports censusing it — **after** the uncompressed interval selector has been
+priced, not before.
+
+### Status, worded correctly
+
+Not "selector key screening — done, answer is no". Rather:
+
+> **Simple selector factorisation screening — done.** Edge-family and tested
+> coarse direct keys rejected. **Exact-state lookup, exact-step phase-interval
+> lookup, and coarse-key-plus-cheap-residual selectors remain to be priced before
+> selector work is closed.**

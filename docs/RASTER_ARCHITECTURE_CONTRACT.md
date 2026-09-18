@@ -126,6 +126,27 @@ through this tile" would be baking screen arrangements again.
 | Does yaw need incremental stepping? | no | `rel' = rel - dyaw*16`, exact for any delta |
 | Is the ROM depth plane the faithful derivation? | yes | worst 2.69 px vs the host path's 40.34 px |
 
+## Accounting rule for every selector candidate
+
+No candidate is reported in isolation. Each is measured end to end against the
+same six-column output contract, counting: key production or availability, state
+conversion, address formation, bank handling, table access, body selection,
+descriptor lookup, replay, and the handoff state the next chunk needs. That total
+is compared against the arithmetic DDA producing the identical result. BAND
+looked cheap precisely because part of its computation sat outside the advertised
+number; that accounting mistake is to be made impossible from here on.
+
+Report **both** absolute T-states and speedup against the same reference kernel.
+"Low hundreds of T-states" is a target, not a pass/fail theorem: what matters is
+the fraction of the required end-to-end improvement delivered.
+
+## Scope note on the 175
+
+The 175 bodies are the **six-column body vocabulary**. They are not "the
+rasteriser has 175 behaviours". Arbitrary span endpoints, shorter terminal
+chunks, multi-chunk continuation state and the surrounding span machinery all sit
+above them. Plots and conclusions stay labelled accordingly.
+
 ## What is open
 
 **How few Z80 instructions turn baked geometric state plus the current arbitrary
