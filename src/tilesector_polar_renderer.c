@@ -593,6 +593,7 @@ static uint16_t bearing_vertex_q12(uint8_t vid, const TSPState *s)
     return g_corner_bearing_q12[vid];
 }
 #endif
+#if !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
 static uint8_t angle_x(int16_t rel)
 {
     uint16_t a = (uint16_t)(rel < 0 ? -rel : rel);
@@ -602,6 +603,7 @@ static uint8_t angle_x(int16_t rel)
     x = rel < 0 ? (uint16_t)(160u - k_tspf_angle_x_pos[a]) : k_tspf_angle_x_pos[a];
     return (uint8_t)(x > 159u ? 159u : x);
 }
+#endif
 static uint8_t inv_for_dq4(int16_t dq4)
 {
     uint16_t a = (uint16_t)(dq4 < 0 ? -dq4 : dq4);
