@@ -1,0 +1,162 @@
+name: Renderer-optimized map playable build
+
+on:
+  push:
+    branches:
+      - feature/renderer-optimized-map
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-map:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake renderer-optimized map
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/optimized-map
+          GEN="$OUT/generated"
+          mkdir -p "$GEN"
+          python3 tools/optimized_renderer_map_bake.py             --repo-root . --out "$GEN/optimized_renderer_map_data.inc"             | tee "$OUT/bake.txt"
+          grep -q 'OPT_MAP_BAKE_PASS vertices=16 surfaces=16' "$OUT/bake.txt"
+          grep -q 'region_active_keys=5,8,8,6 max=8' "$OUT/bake.txt"
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build playable ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o             build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o             build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o             build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk"             POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0             POLAR_PROJ_GEN_DIR="$PWD/build/optimized-map/generated"             POLAR_ROM_BANKS=8             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_DEFAULT_APPEARANCE=0u"             gg-tilesector-polar 2>&1 | tee build/optimized-map/build.txt
+          cp build/gg-tilesector-polar.gg build/optimized-map/GG-Renderer-Optimized-Course.gg
+          cp build/gg-tilesector-polar.sym build/optimized-map/GG-Renderer-Optimized-Course.sym
+          cp build/gg-tilesector-polar.map build/optimized-map/GG-Renderer-Optimized-Course.map
+          sha256sum build/optimized-map/GG-Renderer-Optimized-Course.gg | tee build/optimized-map/SHA256.txt
+          stat -c 'rom_bytes=%s' build/optimized-map/GG-Renderer-Optimized-Course.gg | tee build/optimized-map/ROM-size.txt
+          git rev-parse HEAD > build/optimized-map/SOURCE_COMMIT.txt
+
+      - name: Build Gearsystem verification tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_e1m1_profile_tools.sh "$PWD/.toolchain/Gearsystem"
+          cp build/libretro_runner build/optimized-map/libretro_runner
+
+      - name: Prove boot, movement, turning and step height
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/optimized-map
+          ROM="$OUT/GG-Renderer-Optimized-Course.gg"
+          SYM="$OUT/GG-Renderer-Optimized-Course.sym"
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          STATE_ADDR="$(awk '$2=="_g_state"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATE_ADDR"
+
+          "$OUT/libretro_runner" "$CORE" "$ROM" 120 "$OUT/boot.ppm" "$STATE_ADDR" 7 | tee "$OUT/boot.txt"
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=20             "$OUT/libretro_runner" "$CORE" "$ROM" 900 "$OUT/forward.ppm" "$STATE_ADDR" 7 | tee "$OUT/forward.txt"
+          LIBRETRO_JOYPAD_MASK=128 LIBRETRO_JOYPAD_AFTER_FRAME=20             "$OUT/libretro_runner" "$CORE" "$ROM" 240 "$OUT/turn.ppm" "$STATE_ADDR" 7 | tee "$OUT/turn.txt"
+
+          python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
+          from pathlib import Path
+          import re,struct
+          root=Path("build/optimized-map")
+          def st(name):
+              m=re.search(r"data=([0-9A-Fa-f]{14})",(root/name).read_text())
+              if not m: raise SystemExit("missing state "+name)
+              b=bytes.fromhex(m.group(1))
+              x,y,z=struct.unpack("<hhh",b[:6])
+              return x,y,z,b[6]
+          boot=st("boot.txt"); fwd=st("forward.txt"); turn=st("turn.txt")
+          if fwd[:2]==boot[:2]: raise SystemExit(f"forward did not move: {boot} {fwd}")
+          if turn[3]==boot[3]: raise SystemExit(f"turn did not turn: {boot} {turn}")
+          if boot[2] != (16<<4): raise SystemExit(f"bad initial eye height: {boot}")
+          print("OPT_MAP_EMULATOR_PASS")
+          print("boot",boot)
+          print("forward",fwd)
+          print("turn",turn)
+          PY
+
+      - name: Write map README
+        if: always()
+        shell: bash
+        run: |
+          cat > build/optimized-map/README.txt <<'EOF'
+          GAME GEAR RENDERER-OPTIMIZED TEST COURSE
+
+          Intent:
+          This map is laid out for the measured strengths of the retained Polar renderer:
+          long cardinal FULL spans, few simultaneously active surfaces, stable surface IDs,
+          and hard room-to-room occlusion. Expensive/special profiles are isolated so a view
+          does not combine windows, steps and dense vertex junctions at once.
+
+          Layout, west to east:
+          Room A - FULL Gallery
+            Long boring FULL walls. Baseline/best-case retained-boundary workload.
+
+          Room B - Window Gallery
+            One true centered window made from a LINTEL upper band and RISER lower band
+            on the same wall span. The central aperture stays open.
+            The east doorway contains the low RISER face for the step up.
+
+          Room C - Raised Bay (+4 world-unit floor)
+            One RAISED profile wall, otherwise simple FULL boundaries.
+            Entering from Room B raises camera/floor by one discrete 4-unit step.
+            Exiting east crosses a second RISER and drops back to baseline.
+
+          Room D - Lintel Bay
+            One standalone LINTEL/overhang wall with otherwise simple geometry.
+
+          Visibility:
+          Four hand-authored recipe regions. Candidate counts are only 5 / 8 / 8 / 6.
+          Divider walls and narrow central doors prevent the busy profile areas from
+          sharing broad views. No selector tests are required.
+
+          Controls:
+          D-pad up/down = forward/back
+          D-pad left/right = turn
+          B/A = strafe left/right
+          Start = speed scale
+
+          Renderer:
+          Built from the Rung-27 retained FULL-wall boundary-patcher branch.
+          FULL walls at nominal eye height can use the retained mirrored fast path.
+          During the elevated Room-C step state, exact camera-height translation uses
+          the generic endpoint materializer; that room intentionally exercises a known
+          weaker path in isolation rather than contaminating the whole course.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GG-Renderer-Optimized-Course
+          path: |
+            build/optimized-map/GG-Renderer-Optimized-Course.gg
+            build/optimized-map/GG-Renderer-Optimized-Course.sym
+            build/optimized-map/GG-Renderer-Optimized-Course.map
+            build/optimized-map/README.txt
+            build/optimized-map/SHA256.txt
+            build/optimized-map/ROM-size.txt
+            build/optimized-map/SOURCE_COMMIT.txt
+            build/optimized-map/bake.txt
+            build/optimized-map/build.txt
+            build/optimized-map/emulator-proof.txt
+            build/optimized-map/*.ppm
+            build/optimized-map/generated/optimized_renderer_map_data.inc
+          if-no-files-found: warn
+          retention-days: 30
