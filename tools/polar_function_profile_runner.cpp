@@ -31,6 +31,25 @@ struct OwnershipProbe {
     uint64_t rejected=0;
 };
 
+/* Zero-ROM-overhead source-line profiling. SDCC -debug emits C$file$line$
+ * labels for statements; use those labels only in the host profiler, rather
+ * than planting timing stores in the Z80 hot path. This is especially useful
+ * for project_envelope_span(), whose exclusive body is currently large enough
+ * that function-level totals hide whether FOV clipping, coarse-column mapping,
+ * or endpoint/depth setup is responsible. */
+struct SourceLineRange {
+    u16 lo=0,hi=0;
+    unsigned line=0;
+    uint64_t cycles=0;
+    uint64_t instructions=0;
+    uint64_t entries=0;
+};
+struct SourceProfile {
+    std::string function;
+    u16 lo=0,hi=0;
+    std::vector<SourceLineRange> lines;
+};
+
 static bool find_symbol(const char* path,const char* wanted,u16& addr) {
     std::ifstream f(path); std::string line;
     if(!f) return false;
@@ -68,6 +87,58 @@ static std::vector<std::pair<u16,std::string>> load_fixed_symbols(const char* pa
     }
     std::sort(out.begin(),out.end(),[](const auto&a,const auto&b){return a.first<b.first;});
     return out;
+}
+
+static std::vector<SourceLineRange> load_source_lines(const char* noi,u16 fn_lo,u16 fn_hi) {
+    std::ifstream f(noi);
+    std::string line;
+    std::vector<std::pair<u16,unsigned>> starts;
+    /* Typical SDCC NoICE form:
+       DEF C$tilesector_polar_renderer.c$830$... 0x00014ABC */
+    std::regex re("^DEF C\\$[^$]+\\$([0-9]+)\\$.* 0x([0-9A-Fa-f]+)");
+    std::smatch m;
+    while(std::getline(f,line)) {
+        if(!std::regex_search(line,m,re)) continue;
+        const unsigned src_line=(unsigned)std::strtoul(m[1].str().c_str(),nullptr,10);
+        const unsigned long raw=std::strtoul(m[2].str().c_str(),nullptr,16);
+        const u16 a=(u16)raw;
+        if(a>=fn_lo && a<fn_hi) starts.push_back({a,src_line});
+    }
+    std::sort(starts.begin(),starts.end(),[](const auto&a,const auto&b){
+        if(a.first!=b.first) return a.first<b.first;
+        return a.second<b.second;
+    });
+    /* Several debug labels may share an address. One range per address is
+       sufficient; choose the lowest source line as its stable display label. */
+    std::vector<std::pair<u16,unsigned>> uniq;
+    for(const auto &p:starts) {
+        if(uniq.empty() || uniq.back().first!=p.first) uniq.push_back(p);
+        else if(p.second<uniq.back().second) uniq.back().second=p.second;
+    }
+    std::vector<SourceLineRange> out;
+    for(size_t i=0;i<uniq.size();++i) {
+        const u16 lo=uniq[i].first;
+        const u16 hi=(i+1<uniq.size())?uniq[i+1].first:fn_hi;
+        if(hi>lo) out.push_back({lo,hi,uniq[i].second,0,0,0});
+    }
+    return out;
+}
+
+static bool source_profile_tick(SourceProfile& sp,u16 pc,uint64_t dt) {
+    if(pc<sp.lo || pc>=sp.hi || sp.lines.empty()) return false;
+    size_t lo=0,hi=sp.lines.size();
+    while(lo<hi) {
+        const size_t m=(lo+hi)>>1;
+        if(pc<sp.lines[m].lo) hi=m;
+        else if(pc>=sp.lines[m].hi) lo=m+1;
+        else {
+            sp.lines[m].cycles+=dt;
+            ++sp.lines[m].instructions;
+            if(pc==sp.lines[m].lo) ++sp.lines[m].entries;
+            return true;
+        }
+    }
+    return false;
 }
 
 static std::vector<Range> load_polar_ranges(const char* noi,const char* sym) {
@@ -142,6 +213,21 @@ int main(int argc,char**argv) {
         std::fprintf(stderr,"phase symbol missing\n"); return 3;
     }
     auto ranges=load_polar_ranges(noi,sym);
+    std::vector<SourceProfile> source_profiles;
+    const char* source_targets[] = {
+        "project_envelope_span", "envelope_focus_span", "envelope_add_span", "draw_run"
+    };
+    for(const char* wanted:source_targets) {
+        for(const auto &r:ranges) {
+            if(r.name==wanted) {
+                SourceProfile sp;
+                sp.function=wanted; sp.lo=r.lo; sp.hi=r.hi;
+                sp.lines=load_source_lines(noi,r.lo,r.hi);
+                if(!sp.lines.empty()) source_profiles.push_back(std::move(sp));
+                break;
+            }
+        }
+    }
     std::vector<OwnershipProbe> ownership = {
         {"_tsp_polar_p_span","whole-span"},
         {"_tsp_polar_p_edge","generic-edge-row"},
@@ -199,6 +285,7 @@ int main(int argc,char**argv) {
                     hit=true; break;
                 }
             }
+            for(auto &sp:source_profiles) source_profile_tick(sp,pc,dt);
             if(!hit) { unassigned_cycles+=dt; ++unassigned_ins; }
         }
 
@@ -227,6 +314,26 @@ int main(int argc,char**argv) {
                 (double)unassigned_cycles/measured,
                 100.0*(double)unassigned_cycles/total_render_cycles,
                 (unsigned long long)unassigned_ins);
+    for(const auto &sp:source_profiles) {
+        uint64_t fn_cycles=0;
+        for(const auto &lr:sp.lines) fn_cycles+=lr.cycles;
+        if(!fn_cycles) continue;
+        auto ranked=sp.lines;
+        std::sort(ranked.begin(),ranked.end(),[](const SourceLineRange&a,const SourceLineRange&b){
+            return a.cycles>b.cycles;
+        });
+        std::printf("Source-line profile: %s (zero ROM instrumentation)\n",sp.function.c_str());
+        unsigned shown=0;
+        for(const auto &lr:ranked) {
+            if(!lr.cycles) continue;
+            std::printf("  line %-5u avg/update=%10.1f T share(fn)=%6.2f%% entries/update=%7.2f ins=%llu\n",
+                        lr.line,(double)lr.cycles/measured,
+                        100.0*(double)lr.cycles/(double)fn_cycles,
+                        (double)lr.entries/measured,
+                        (unsigned long long)lr.instructions);
+            if(++shown>=16u) break;
+        }
+    }
     std::printf("Polar ownership-mask probes (zero ROM instructions; sampled at exported labels):\n");
     for(const auto &p:ownership) if(p.found) {
         const double pct=p.checks?100.0*(double)p.rejected/(double)p.checks:0.0;
