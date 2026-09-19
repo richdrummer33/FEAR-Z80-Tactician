@@ -828,7 +828,10 @@ static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
     while(cend<TSP_COLS &&
           (k_e1env_col_center_q12[cend] < hi ||
            (hi==512 && k_e1env_col_center_q12[cend]<=hi))) ++cend;
-    if(cend==c0) return 0u;
+    /* The angular span can intersect the FOV yet be narrower than one
+     * coarse-column centre. Report that separately so the FOV walker keeps
+     * walking; only a genuine FOV miss may terminate one side. */
+    if(cend==c0) return 2u;
     c1=(uint8_t)(cend-1u);
 
     rel0=k_e1env_col_edge_q12[c0];
@@ -902,9 +905,13 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *
     uint8_t noff=(uint8_t)(1u+(uint8_t)(ni<<1));
     uint8_t sid=g_e1env_program[(uint8_t)(off+1u)];
     uint8_t idx=*count;
-    if(sid==0xffu || idx>=TSPF_MAX_ACTIVE) return 0u;
-    if(!project_envelope_span(sid,g_e1env_program[off],g_e1env_program[noff],s,&g_runs[idx]))
-        return 0u;
+    uint8_t q;
+    if(idx>=TSPF_MAX_ACTIVE) return 0u;
+    /* NO_WALL does not occur in the closed FULL E1M1 course. Treat it as a
+     * transparent zero-column interval if future open envelopes introduce it. */
+    if(sid==0xffu) return 2u;
+    q=project_envelope_span(sid,g_e1env_program[off],g_e1env_program[noff],s,&g_runs[idx]);
+    if(q!=1u) return q;
     g_run_order[idx]=idx;
     *count=(uint8_t)(idx+1u);
     return 1u;
@@ -1207,7 +1214,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i+1u<n?i+1u:0u);
-                if(!envelope_add_span(i,n,s,&count)) break;
+                if(envelope_add_span(i,n,s,&count)==0u) break;
             }
 
             i=focus;
