@@ -126,7 +126,7 @@ static Group classify(const std::string& raw) {
      * comparable, which is exactly the trap the per-function shares fell into. */
     if (has("p_fill") || has("p_span") || has("p_edge") || has("p_cap") ||
         has("p_symbot") || has("p_symtop") || has("surface_column_fast") ||
-        has("mark_span_fast") || has("row_unclaimed_fast") || has("mark_dirty_fast") ||
+        has("mark_span_fast") || has("set_span_owned_fast") || has("row_unclaimed_fast") || has("mark_dirty_fast") ||
         has("map_ptr_row_col") || has("full_tile_low") || has("row_floor_hl") ||
         has("prepare_edge") || has("prepare_symfull_edges") ||
         has("draw_symfull_edge_pair")) return G_MAT;
@@ -135,7 +135,7 @@ static Group classify(const std::string& raw) {
         has("draw_full") || has("put_cell") || has("edge_entry") || has("row_floor")) return G_GEOM;
     if (has("polar_nt") || has("upload") || has("map_init") || has("restore_touched")) return G_NT;
     if (has("mul") || has("div") || has("memset") || has("memcpy")) return G_HELP;
-    if (has("project_key") || has("bearing") || has("angle_x") || has("inv_for_dq4") ||
+    if (has("project_key") || has("project_envelope_span") || has("bearing") || has("angle_x") || has("inv_for_dq4") ||
         has("wall_d_q4") || has("add_key") || has("ratio_q8") || has("signed_q12") ||
         has("screen_depth_plane") || has("insert_run") || has("selector_pass") ||
         has("projection_") || has("inv_at_invd") || has("shade_for") || has("ao_class") ||
