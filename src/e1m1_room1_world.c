@@ -61,7 +61,11 @@ static uint8_t floor_world(int16_t xq,int16_t yq,int8_t *z) {
     for(i=a;i<b;++i) {
         const E1XFloorRun *r=&k_e1x_floor_runs[i];
         if(x>=r->x0&&x<=r->x1) {
+#if defined(E1M1_FLAT)
+            if(z)*z=0;
+#else
             if(z)*z=r->z;
+#endif
             return 1u;
         }
     }
