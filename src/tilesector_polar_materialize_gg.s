@@ -18,6 +18,7 @@
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
         .globl  _g_polar_run_sid
+        .globl  _g_polar_run_owned
         .globl  _g_polar_nt_cov_cur
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
@@ -46,6 +47,7 @@
         .globl  _tsp_probe_end_fill
         .globl  _tsp_probe_end_fill_open
         .globl  _tsp_h_polar_mark_span_fast
+        .globl  _tsp_h_polar_set_span_owned_fast
         .globl  _tsp_h_polar_row_unclaimed_fast
         .globl  _tsp_h_polar_mark_dirty_fast
         .globl  _tsp_h_map_ptr_row_col
@@ -409,7 +411,16 @@ ret_kill_cov_done$:
         call    ret_column_kill$
         jr      polar_cov_done$
 polar_cov_emit$:
+        ld      a, (#_g_polar_run_owned)
+        or      a
+        jr      z, polar_cov_generic_mark$
+        ld      a, e
+        call    polar_set_span_owned_fast$
+        jr      polar_cov_mark_done$
+polar_cov_generic_mark$:
+        ld      a, e
         call    polar_mark_span_fast$   ; returns A=OR of previously-unclaimed rows
+polar_cov_mark_done$:
 _tsp_polar_p_span::
         or      a
         jr      nz, ret_gate_live$
@@ -1064,6 +1075,98 @@ polar_dirty_min_done$:
         jr      z, polar_dirty_done$
         ld      (hl), b
 polar_dirty_done$:
+        ret
+
+; Baked front-envelope owner path. A=first row, C=last row, B=column.
+; The ROM program already proved this is the one first-hit wall for the coarse
+; screen column. Build the same three-byte span mask, but install it directly:
+; no old-coverage loads, no AND/~old, no occlusion branches. r_unclaimed is the
+; span itself so retained-key semantics remain unchanged.
+polar_set_span_owned_fast$:
+_tsp_h_polar_set_span_owned_fast::
+        ld      (#r_cov_first$), a
+        ld      a, c
+        inc     a
+        ld      (#r_cov_after$), a
+
+        ld      a, (#r_cov_first$)
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_prefix$
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_cov_p0$), a
+        inc     hl
+        ld      a, (hl)
+        ld      (#r_cov_p1$), a
+        inc     hl
+        ld      a, (hl)
+        ld      (#r_cov_p2$), a
+
+        ld      a, (#r_cov_after$)
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_prefix$
+        add     hl, de
+
+        ; DE = cov_cur + column*3.
+        push    hl
+        ld      a, b
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_polar_nt_cov_cur
+        add     hl, de
+        ex      de, hl
+        pop     hl
+
+        ld      a, (hl)
+        ld      c, a
+        ld      a, (#r_cov_p0$)
+        xor     c
+        ld      (#r_unclaimed0$), a
+        ex      de, hl
+        ld      (hl), a
+        inc     hl
+        ex      de, hl
+
+        inc     hl
+        ld      a, (hl)
+        ld      c, a
+        ld      a, (#r_cov_p1$)
+        xor     c
+        ld      (#r_unclaimed1$), a
+        ex      de, hl
+        ld      (hl), a
+        inc     hl
+        ex      de, hl
+
+        inc     hl
+        ld      a, (hl)
+        ld      c, a
+        ld      a, (#r_cov_p2$)
+        xor     c
+        ld      (#r_unclaimed2$), a
+        ex      de, hl
+        ld      (hl), a
+
+        xor     a
+        ld      (#r_occluded$), a
+        ld      a, (#r_unclaimed0$)
+        ld      c, a
+        ld      a, (#r_unclaimed1$)
+        or      c
+        ld      c, a
+        ld      a, (#r_unclaimed2$)
+        or      c
         ret
 
 ; A=first owned row, C=last owned row, B=column. No register-save ceremony:
