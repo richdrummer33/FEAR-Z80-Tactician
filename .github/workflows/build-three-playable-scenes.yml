@@ -1,0 +1,164 @@
+name: Build three playable GG scenes
+
+on:
+  push:
+    branches:
+      - build/playable-three-scenes-20260918
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latest-baseline:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/z80-tactician-handoff-validation-kt85y0
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain build/three-scenes/latest
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+      - name: Build latest retained-boundary baseline ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o             build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o             build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o             build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk"             POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=1             POLAR_ROM_BANKS=8             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_DEFAULT_APPEARANCE=0u"             gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/three-scenes/latest/GG-Latest-Baseline-RetainedBoundary.gg
+          cp build/gg-tilesector-polar.sym build/three-scenes/latest/GG-Latest-Baseline-RetainedBoundary.sym
+          git rev-parse HEAD > build/three-scenes/latest/SOURCE_COMMIT.txt
+          sha256sum build/three-scenes/latest/GG-Latest-Baseline-RetainedBoundary.gg > build/three-scenes/latest/SHA256.txt
+          cat > build/three-scenes/latest/README.txt <<'EOF'
+          Current baseline Polar-field scene on Claude's latest retained-boundary head.
+          Default appearance mode is 0 (geometry-only fast path), so Rung 27 boundary patching is exercised.
+          START cycles appearance 0/1/2; B+START jumps to 0; A+START jumps to 2.
+          D-pad: forward/back + turn; B/A: strafe left/right.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GG-Latest-Baseline-RetainedBoundary
+          path: build/three-scenes/latest/
+          retention-days: 30
+
+  e1m1-room1:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/gg-e1m1-room1-polar-transplant
+      - name: Bake E1M1 Room 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/three-scenes/e1m1
+          PROD="$OUT/generated"
+          mkdir -p "$PROD"
+          python3 tools/e1m1_room1_polar_bake.py --out-dir "$PROD"
+          python3 tools/e1m1_room1_polar_tiles_gen.py --out-dir "$PROD" --bank 18
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+      - name: Build E1M1 Room 1 mature Polar ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          OUT="$PWD/build/three-scenes/e1m1"
+          PROD="$OUT/generated"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo32                  -Isrc -I"$PROD" -Wf--opt-code-speed                  -DTSPF_E1M1_ROOM1=1 -DTSPF_LOCAL_PROJECTION=0                  -DTSPF_SCREEN_DEPTH_PLANE=0 -DTSPF_PROFILE_HOOKS=0)
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_e1m1_room1_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/world.o" src/e1m1_room1_world.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/renderer.o" src/tilesector_polar_renderer.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/pvs.o" "$PROD/e1m1_room1_polar_pvs.c"
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/tiles.o" "$PROD/e1m1_room1_polar_tiles.c"
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntstate.o" src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/materialize.o" src/tilesector_polar_materialize_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-E1M1-Room1-Polar.gg"             "$OUT/main.o" "$OUT/world.o" "$OUT/renderer.o" "$OUT/pvs.o" "$OUT/tiles.o"             "$OUT/ntstate.o" "$OUT/materialize.o" "$OUT/ntupload.o"
+          git rev-parse HEAD > "$OUT/SOURCE_COMMIT.txt"
+          sha256sum "$OUT/GG-E1M1-Room1-Polar.gg" > "$OUT/SHA256.txt"
+          cat > "$OUT/README.txt" <<'EOF'
+          DOOM E1M1 Room 1 mature Polar transplant.
+          D-pad up/down: forward/back; left/right: turn.
+          B: strafe left; A: strafe right; Start: movement speed scale.
+          Room-2 doorway intentionally terminates at the unloaded next room.
+          Historical E1M1 branch build; it does not contain the new Rung 27 retained-boundary patcher.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GG-E1M1-Room1-Polar
+          path: build/three-scenes/e1m1/
+          retention-days: 30
+
+  kleiner-lab:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: experiment/gg-kleiner-lab-playable
+      - name: Bake open lab random-access scene
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/three-scenes/kleiner/host build/three-scenes/kleiner/generated
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror             -DROOM_BUNDLE_KLEINER -Isrc -Itools             tools/polar_baked_composite.c tools/room_mesh_bake.c             tools/room_bundle_poc_gen.c -lm -o build/three-scenes/kleiner/kleiner-play-bake
+          ROOM_BUNDLE_KLEINER_PLAYABLE=1             build/three-scenes/kleiner/kleiner-play-bake build/three-scenes/kleiner/host             > build/three-scenes/kleiner/bake.txt
+          python3 tools/kleiner_playable_pack_to_c.py             build/three-scenes/kleiner/host/kleiner_playable.pack             build/three-scenes/kleiner/generated > build/three-scenes/kleiner/c-gen.txt
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+      - name: Build Kleiner Lab playable ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          GEN="$PWD/build/three-scenes/kleiner/generated"
+          OUT="$PWD/build/three-scenes/kleiner"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo256 -Isrc -I"$GEN")
+          OBJS=()
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_kleiner_playable_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntstate.o" src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/dispatch.o" "$GEN/kleiner_playable_dispatch.c"
+          OBJS+=("$OUT/main.o" "$OUT/ntstate.o" "$OUT/ntupload.o" "$OUT/dispatch.o")
+          for src in "$GEN"/kleiner_playable_dispatch_group*.c; do
+            base="$(basename "${src%.c}")"
+            "$LCC" "${FLAGS[@]}" -c -o "$OUT/${base}.o" "$src"
+            OBJS+=("$OUT/${base}.o")
+          done
+          for src in "$GEN"/kleiner_playable_bank*.c; do
+            base="$(basename "${src%.c}")"
+            "$LCC" "${FLAGS[@]}" -c -o "$OUT/${base}.o" "$src"
+            OBJS+=("$OUT/${base}.o")
+          done
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-Kleiners-Lab-Playable.gg" "${OBJS[@]}"
+          git rev-parse HEAD > "$OUT/SOURCE_COMMIT.txt"
+          sha256sum "$OUT/GG-Kleiners-Lab-Playable.gg" > "$OUT/SHA256.txt"
+          cat > "$OUT/README.txt" <<'EOF'
+          Kleiner Lab playable random-access baked scene: 37 positions x 16 headings = 592 states.
+          Historical playable scene branch; this is a different pre-baked renderer path, not the new Rung 27 live materializer.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GG-Kleiners-Lab-Playable
+          path: build/three-scenes/kleiner/
+          retention-days: 30
