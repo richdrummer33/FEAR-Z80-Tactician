@@ -141,6 +141,9 @@ typedef struct PolarRun
     uint8_t c0;
     uint8_t c1;
     uint8_t depth_plane;
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+    uint8_t right_connected;
+#endif
     int16_t iq;
     int16_t step;
 } PolarRun;
@@ -904,7 +907,8 @@ static uint8_t project_envelope_span(uint8_t owner, uint8_t bv0, uint8_t bv1,
     r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+rel1)&4095u,rel1);
     r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
     r->left_real=(uint8_t)((lo==st) && (owner&0x20u));
-    r->right_real=(uint8_t)((hi==en) && (owner&0x40u) && !(owner&0x80u));
+    r->right_real=(uint8_t)((hi==en) && (owner&0x40u));
+    r->right_connected=(uint8_t)((owner&0x80u)!=0u);
     r->depth_plane=0u;
     r->c0=c0; r->c1=c1;
     return 1u;
@@ -969,6 +973,19 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *
     g_run_order[idx]=idx;
     *count=(uint8_t)(idx+1u);
     return 1u;
+}
+
+/* Program adjacency already proves that these runs meet at the same envelope
+ * boundary. Bit7 says that boundary is also a physical endpoint shared by both
+ * authored walls. Suppress one of the two black borders only when BOTH spans
+ * actually own adjacent coarse columns; a sub-column neighbor must not steal
+ * the sole visible corner line. */
+static void envelope_join_connected(uint8_t li,uint8_t ri)
+{
+    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
+       g_runs[li].right_real && g_runs[ri].left_real &&
+       g_runs[li].right_connected)
+        g_runs[li].right_real=0u;
 }
 #endif
 
@@ -1262,30 +1279,47 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
-            uint8_t focus,step,i;
+            uint8_t focus,step,i,q,last,focus_run;
 #ifdef __SDCC
             g_polar_run_owned=1u;
 #endif
             /* Do NOT project the complete 360-degree envelope. Find the span
              * under the camera centre ray, then walk outward only while spans
-             * intersect the 90-degree FOV. Physical-endpoint and connected
-             * corner semantics are already packed into each owner byte. */
+             * intersect the 90-degree FOV. Endpoint/connected facts are baked;
+             * runtime only checks whether both connected spans actually landed
+             * on adjacent coarse columns before collapsing their double line. */
             if(!n) goto e1full_candidates_ready;
             TSPF_ENV_PHASE(2u);
             focus=envelope_focus_span(n,s);
             TSPF_ENV_PHASE(3u);
-            (void)envelope_add_span(focus,n,s,&count);
+            q=envelope_add_span(focus,n,s,&count);
+            if(q!=1u) goto e1full_candidates_ready;
+            focus_run=(uint8_t)(count-1u);
 
+            last=focus_run;
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i+1u<n?i+1u:0u);
-                if(envelope_add_span(i,n,s,&count)==0u) break;
+                q=envelope_add_span(i,n,s,&count);
+                if(q==0u) break;
+                if(q==1u){
+                    uint8_t cur=(uint8_t)(count-1u);
+                    envelope_join_connected(last,cur);
+                    last=cur;
+                }
             }
 
+            last=focus_run;
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i?i-1u:n-1u);
-                if(!envelope_add_span(i,n,s,&count)) break;
+                q=envelope_add_span(i,n,s,&count);
+                if(q==0u) break;
+                if(q==1u){
+                    uint8_t cur=(uint8_t)(count-1u);
+                    envelope_join_connected(cur,last);
+                    last=cur;
+                }
             }
             goto e1full_candidates_ready;
         }
