@@ -106,8 +106,8 @@ jobs:
             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
             build/frame_trace_gg.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" \
-            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=1 \
-            POLAR_PROJ_GEN_DIR="$GEN" POLAR_DEPTHPLANE_MAP_INC="$GEN/optimized_renderer_map_data.inc" POLAR_DEPTHPLANE_BANK=243 POLAR_ROM_BANKS=256 \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
             POLAR_EXTRA_OBJS="build/frame_trace_gg.o $ENVOBJS" \
             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/build.txt"
@@ -232,7 +232,7 @@ jobs:
             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
             build/frame_trace_gg.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" \
-            POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=1 \
+            POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
             POLAR_PROJ_GEN_DIR="$GEN" POLAR_DEPTHPLANE_MAP_INC="$GEN/optimized_renderer_map_data.inc" POLAR_DEPTHPLANE_BANK=243 POLAR_ROM_BANKS=256 \
             POLAR_EXTRA_OBJS="$ENVOBJS" \
             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
