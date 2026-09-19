@@ -1475,19 +1475,19 @@ _tsp_polar_ret_invalidate::
         push    bc
         push    hl
         ld      hl, #polar_ret_valid$
-        ld      b, #3
+        ld      b, #4
 ret_inval_loop$:
         ld      (hl), #0
         inc     hl
         djnz    ret_inval_loop$
         ld      hl, #polar_ret_pc0$
-        ld      b, #24
+        ld      b, #30
 ret_inval_r0$:
         ld      (hl), #1
         inc     hl
         djnz    ret_inval_r0$
         ld      hl, #polar_ret_pc1$
-        ld      b, #24
+        ld      b, #30
 ret_inval_r1$:
         ld      (hl), #0
         inc     hl
@@ -1501,9 +1501,11 @@ _tsp_polar_ret_begin_frame::
         ld      (#polar_ret_live$+0), a
         ld      (#polar_ret_live$+1), a
         ld      (#polar_ret_live$+2), a
+        ld      (#polar_ret_live$+3), a
         ld      (#polar_ret_poison$+0), a
         ld      (#polar_ret_poison$+1), a
         ld      (#polar_ret_poison$+2), a
+        ld      (#polar_ret_poison$+3), a
         ld      (#r_ret_fresh$), a
         ld      hl, #0
         ld      (#r_ret_base$), hl      ; direct column calls bypass retention
@@ -1511,8 +1513,8 @@ _tsp_polar_ret_begin_frame::
         ret
 
 ; valid[sid] <- drawn exactly once this frame.
-; valid <- drawn exactly once this frame. Three bytes of bitmask, not
-; twenty-four bytes of expansion: the per-run path already has the bit index
+; valid <- drawn exactly once this frame. Four bytes of bitmask, not
+; thirty bytes of expansion: the per-run path already has the bit index
 ; in hand, so expanding it here was work nobody needed.
 _tsp_polar_ret_end_frame::
         push    bc
@@ -1532,7 +1534,7 @@ ret_end_group$:
         inc     hl
         inc     de
         ld      a, l
-        sub     #<(polar_ret_live$ + 3)
+        sub     #<(polar_ret_live$ + 4)
         jr      nz, ret_end_group$
         pop     hl
         pop     de
@@ -1543,7 +1545,7 @@ ret_end_group$:
 ret_run_begin$:
 _tsp_h_ret_run_begin::
         ld      a, (#_g_polar_run_sid)
-        cp      #17
+        cp      #30
         jp      nc, ret_run_disable$
         call    ret_bitmask$            ; HL=&live[group], C=mask
         ld      a, (hl)
@@ -2133,20 +2135,33 @@ polar_ret_index$:
         .dw polar_ret_store$+2240
         .dw polar_ret_store$+2400
         .dw polar_ret_store$+2560
+        .dw polar_ret_store$+2720
+        .dw polar_ret_store$+2880
+        .dw polar_ret_store$+3040
+        .dw polar_ret_store$+3200
+        .dw polar_ret_store$+3360
+        .dw polar_ret_store$+3520
+        .dw polar_ret_store$+3680
+        .dw polar_ret_store$+3840
+        .dw polar_ret_store$+4000
+        .dw polar_ret_store$+4160
+        .dw polar_ret_store$+4320
+        .dw polar_ret_store$+4480
+        .dw polar_ret_store$+4640
 
         .area _DATA
 polar_ret_valid$:
-        .ds     3
+        .ds     4
 polar_ret_live$:
-        .ds     3
+        .ds     4
 polar_ret_poison$:
-        .ds     3
+        .ds     4
 ; Which coarse columns this surface actually visited last frame. A column it
 ; did not visit has no key worth trusting, whatever the slot still holds.
 polar_ret_pc0$:
-        .ds     24
+        .ds     30
 polar_ret_pc1$:
-        .ds     24
+        .ds     30
 r_ret_pc0$:
         .ds     1
 r_ret_pc1$:
@@ -2169,10 +2184,10 @@ r_ret_base$:
         .ds     2
 r_ret_ptr$:
         .ds     2
-; 17 surfaces x 20 coarse columns x 8 bytes. Six bytes carry the key; the
+; 30 surfaces x 20 coarse columns x 8 bytes. Six bytes carry the key; the
 ; eighth-byte stride keeps the column index a shift rather than a multiply.
 polar_ret_store$:
-        .ds     2720
+        .ds     4800
 r_run_col$:
         .ds     1
 r_run_invl$:
