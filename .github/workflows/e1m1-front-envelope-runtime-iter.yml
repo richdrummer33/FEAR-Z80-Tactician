@@ -119,9 +119,9 @@ jobs:
         run: |
           set -euo pipefail
           ROOT=build/e1env-iter
-          ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 \
+          ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 "$ROOT/pvs-map.bin" \
             | tee "$ROOT/pvs-timeline.txt"
-          ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 \
+          ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 "$ROOT/focused-map.bin" \
             | tee "$ROOT/focused-timeline.txt"
 
       - name: Update-aligned parity and T-state comparison
@@ -149,6 +149,51 @@ jobs:
           print("E1ENV_FOCUS_AB")
           print(f"updates={n} state_equal={state_same}/{n} map_equal={map_same}/{n} mismatches={n-map_same}")
           print("first_mismatch_updates="+",".join(map(str,bad[:30])))
+          # Cell-level parity autopsy. Each logical update contributes the raw
+          # 20x18 name table (little-endian 16-bit words). This tells us whether
+          # a hash mismatch is a one/two-cell corner-border convention or a
+          # genuine missing/incorrect wall region.
+          from collections import Counter
+          cols,rows=20,18
+          frame_bytes=cols*rows*2
+          pa=(root/"pvs-map.bin").read_bytes()
+          pb=(root/"focused-map.bin").read_bytes()
+          assert len(pa)>=n*frame_bytes and len(pb)>=n*frame_bytes
+          FULL_BASE=3
+          FULL_END=3+3*3*4
+          TILE_MASK=0x01ff
+          def rd(buf,fi,ci):
+              o=fi*frame_bytes+ci*2
+              return buf[o] | (buf[o+1]<<8)
+          def border_only(wa,wb):
+              ta,tb=wa&TILE_MASK,wb&TILE_MASK
+              if not (FULL_BASE<=ta<FULL_END and FULL_BASE<=tb<FULL_END): return False
+              if (wa&~TILE_MASK)!=(wb&~TILE_MASK): return False
+              return ((ta-FULL_BASE)//4)==((tb-FULL_BASE)//4)
+          heat=[0]*(cols*rows)
+          pairs=Counter()
+          total_diff=total_border=0
+          detail=[]
+          for fi in bad:
+              ds=[]; bo=0
+              for ci in range(cols*rows):
+                  wa,wb=rd(pa,fi,ci),rd(pb,fi,ci)
+                  if wa==wb: continue
+                  ds.append(ci); heat[ci]+=1; pairs[(wa,wb)]+=1
+                  if border_only(wa,wb): bo+=1
+              total_diff+=len(ds); total_border+=bo
+              if ds:
+                  rs=[ci//cols for ci in ds]; cs=[ci%cols for ci in ds]
+                  detail.append((fi,len(ds),bo,min(cs),max(cs),min(rs),max(rs)))
+          print(f"map_diff_cells_total={total_diff} border_variant_only={total_border} "
+                f"border_share={(100*total_border/total_diff if total_diff else 0):.1f}%")
+          for fi,cells,bo,c0,c1,r0,r1 in detail[:16]:
+              print(f"mismatch_detail update={fi} cells={cells} border_only={bo} "
+                    f"bbox=col{c0}..{c1},row{r0}..{r1}")
+          topheat=sorted(((v,i) for i,v in enumerate(heat) if v),reverse=True)[:20]
+          print("mismatch_hot_cells="+",".join(f"r{i//cols}c{i%cols}:{v}" for v,i in topheat))
+          print("top_word_pairs="+",".join(
+              f"{a:04x}->{b:04x}:{cnt}" for (a,b),cnt in pairs.most_common(20)))
           print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
           print(f"FOCUS total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
           print(f"delta total={mean(bt)-mean(at):+.0f} ({100*(mean(bt)/mean(at)-1):+.1f}%)")
@@ -172,10 +217,28 @@ jobs:
             "$ROOT/focused.gg" "$ROOT/focused.sym" "$ROOT/focused.noi" 60 8 \
             | tee "$ROOT/focused-functions.txt"
 
-      - name: Package playable
+      - name: Build zero-hook interactive playable
         shell: bash
         run: |
-          cp build/e1env-iter/focused.gg build/e1env-iter/GG-E1M1-Exact-Q4-Focused-Envelope.gg
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          ENVOBJS="$(cat "$ROOT/env-objs.txt")"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
+            POLAR_EXTRA_OBJS="$ENVOBJS" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar 2>&1 | tee "$ROOT/clean-build.txt"
+          cp build/gg-tilesector-polar.gg "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.gg"
+          cp build/gg-tilesector-polar.sym "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.sym"
+          cp build/gg-tilesector-polar.map "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.map"
+          cp "$ROOT/focused.gg" "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope-PROFILED.gg"
+          stat -c 'clean_rom_bytes=%s' "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.gg" | tee "$ROOT/clean-ROM-size.txt"
 
       - uses: actions/upload-artifact@v4
         if: always()
