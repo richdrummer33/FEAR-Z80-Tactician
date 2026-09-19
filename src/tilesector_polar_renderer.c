@@ -138,6 +138,14 @@ typedef struct PolarRun
     uint8_t c0;
     uint8_t c1;
     uint8_t depth_plane;
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+    /* Exact-envelope boundary witnesses. A coarse run can have a physical
+     * endpoint on both sides of a shared connected corner; keep the actual
+     * envelope vertex so a later correctness pass can collapse the two
+     * adjacent hardware borders to one rather than drawing a 2-pixel crack. */
+    uint8_t env_left_vid;
+    uint8_t env_right_vid;
+#endif
     int16_t iq;
     int16_t step;
 } PolarRun;
@@ -859,6 +867,8 @@ static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
     r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
     r->left_real=(uint8_t)((lo==st) && (bv0==sv0 || bv0==sv1));
     r->right_real=(uint8_t)((hi==en) && (bv1==sv0 || bv1==sv1));
+    r->env_left_vid=bv0;
+    r->env_right_vid=bv1;
     r->depth_plane=0u;
     r->c0=c0; r->c1=c1;
     return 1u;
@@ -923,6 +933,37 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *
     g_run_order[idx]=idx;
     *count=(uint8_t)(idx+1u);
     return 1u;
+}
+/* Collapse a connected physical corner to ONE hardware border.
+
+ * Exact-envelope ownership is one wall per 8-pixel coarse column. If two
+ * adjacent owned runs meet at the same authored vertex and both surfaces have
+ * that vertex as a real endpoint, the naive path marks the left run's right
+ * edge AND the right run's left edge. On hardware that becomes a two-pixel
+ * black slit even though the geometry is connected.
+
+ * This pass is intentionally small and correctness-first: visible owned runs
+ * are disjoint, so at most 20 columns are populated. It records which run owns
+ * each coarse column, then removes the duplicate right-hand border when the
+ * neighboring run already carries the same connected vertex on its left.
+ * Occlusion boundaries where only one wall physically terminates are left
+ * untouched. Once parity is proven this policy can move into the bake. */
+static void envelope_dedup_connected_borders(uint8_t count)
+{
+    uint8_t owner[TSP_COLS];
+    uint8_t i,c;
+    for(c=0u;c<TSP_COLS;++c) owner[c]=0xffu;
+    for(i=0u;i<count;++i){
+        for(c=g_runs[i].c0;c<=g_runs[i].c1 && c<TSP_COLS;++c)
+            owner[c]=i;
+    }
+    for(c=0u;c+1u<TSP_COLS;++c){
+        uint8_t li=owner[c],ri=owner[(uint8_t)(c+1u)];
+        if(li==0xffu || ri==0xffu || li==ri) continue;
+        if(g_runs[li].right_real && g_runs[ri].left_real &&
+           g_runs[li].env_right_vid==g_runs[ri].env_left_vid)
+            g_runs[li].right_real=0u;
+    }
 }
 #endif
 
@@ -1272,6 +1313,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 e1full_candidates_ready:
+    envelope_dedup_connected_borders(count);
     TSPF_ENV_PHASE(0u);
 #endif
 #else
