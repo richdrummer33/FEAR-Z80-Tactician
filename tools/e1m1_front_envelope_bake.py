@@ -37,9 +37,22 @@ def walkable(px, py, offs, runs):
             return False
     return True
 
+def surface_faces_camera(px,py,seg,verts):
+    # Match project_key's directed-span acceptance exactly at topology level:
+    # len=(bearing(v1)-bearing(v0)) mod turn must be strictly between 0 and pi.
+    _sid,_src,a,b,_bias,_profile=seg
+    ax,ay=verts[a]; bx,by=verts[b]
+    a0=math.atan2(ay-py,ax-px) % TAU
+    a1=math.atan2(by-py,bx-px) % TAU
+    d=(a1-a0) % TAU
+    return d > 1e-12 and d < math.pi
+
 def ray_first(px, py, ang, verts, segs):
     hits = base.intersections(px, py, ang, verts, segs)
-    return hits[0][1] if hits else NO_WALL
+    for _t,sid in hits:
+        if surface_faces_camera(px,py,segs[sid],verts):
+            return sid
+    return NO_WALL
 
 def event_groups(px, py, verts):
     """Return unique vertex-ray events sorted around the camera.
