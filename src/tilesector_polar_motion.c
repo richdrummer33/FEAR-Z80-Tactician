@@ -1,4 +1,7 @@
 #include "tilesector_polar.h"
+#if defined(TSPF_E1M1_FULL_ONLY)
+#include "generated/e1m1_room1_exact_floor.h"
+#endif
 
 #define RUN_SPEED_Q4 192
 #define ACCEL_Q4 6
@@ -40,9 +43,33 @@ static int16_t scale_small(int16_t v,uint8_t s){
 }
 static int8_t yaw_error(uint8_t target,uint8_t yaw){return (int8_t)(target-yaw);}
 
+#if defined(TSPF_E1M1_FULL_ONLY)
+static uint8_t e1full_floor_world(int16_t xq,int16_t yq){
+    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
+    uint16_t a,b,i;
+    if(x<E1X_WORLD_MIN_X||x>E1X_WORLD_MAX_X||
+       y<E1X_WORLD_MIN_Y||y>E1X_WORLD_MAX_Y)return 0u;
+    a=k_e1x_floor_row_off[(uint8_t)(y-E1X_WORLD_MIN_Y)];
+    b=k_e1x_floor_row_off[(uint8_t)(y-E1X_WORLD_MIN_Y+1)];
+    for(i=a;i<b;++i){
+        const E1XFloorRun *r=&k_e1x_floor_runs[i];
+        if(x>=r->x0&&x<=r->x1)return 1u;
+    }
+    return 0u;
+}
+#endif
+
 uint8_t tsp_is_walkable_q4(int16_t xq,int16_t yq){
     int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
-#if defined(TSPF_OPTIMIZED_MAP)
+#if defined(TSPF_E1M1_FULL_ONLY)
+    (void)x;(void)y;
+    if(!e1full_floor_world(xq,yq))return 0u;
+    if(!e1full_floor_world((int16_t)(xq-E1X_PLAYER_RADIUS_Q4),yq))return 0u;
+    if(!e1full_floor_world((int16_t)(xq+E1X_PLAYER_RADIUS_Q4),yq))return 0u;
+    if(!e1full_floor_world(xq,(int16_t)(yq-E1X_PLAYER_RADIUS_Q4)))return 0u;
+    if(!e1full_floor_world(xq,(int16_t)(yq+E1X_PLAYER_RADIUS_Q4)))return 0u;
+    return 1u;
+#elif defined(TSPF_OPTIMIZED_MAP)
     /* Four large rooms separated by divider walls. Only the central doorway
      * throat connects each pair, which keeps busy vertex sets occluded from
      * one another and bounds the visible candidate list. */
@@ -63,15 +90,24 @@ uint8_t tsp_is_walkable_q4(int16_t xq,int16_t yq){
 }
 #if defined(TSPF_OPTIMIZED_MAP)
 static int16_t opt_floor_z_q4(int16_t xq,int16_t yq){
+#if defined(TSPF_E1M1_FULL_ONLY)
+    (void)xq;(void)yq;
+    return 0;
+#else
     int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
     (void)y;
     /* One deliberate step up into Room C and one step down into Room D.
      * Four world units is visually obvious without becoming a staircase. */
     return (x>=96&&x<136)?(int16_t)(4<<4):0;
+#endif
 }
 #endif
 void tsp_reset(TSPState *s){
+#if defined(TSPF_E1M1_FULL_ONLY)
+    s->x_q4=(int16_t)(22<<4);s->y_q4=(int16_t)(52<<4);
+#else
     s->x_q4=(int16_t)(32<<4);s->y_q4=(int16_t)(48<<4);
+#endif
 #if defined(TSPF_OPTIMIZED_MAP)
     s->z_q4=(int16_t)(TSP_OPT_EYE_Q4+opt_floor_z_q4(s->x_q4,s->y_q4));
 #endif
