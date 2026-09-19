@@ -229,7 +229,7 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
     # facts the runtime otherwise has to rediscover from segment keys.
     # bit5 = left boundary is a physical endpoint of owner
     # bit6 = right boundary is a physical endpoint of owner
-    # bit7 = right endpoint is shared with next owner; suppress duplicate line
+    # bit7 = right endpoint is physically shared with next owner
     segs=result["segs"]
     recs=[]
     for p in programs:
