@@ -4348,3 +4348,117 @@ Two directions follow from that, both now cheap to try:
   the whole loop went up. The gate is now its own timeline group, `retained
   gate`, precisely because folding it into the materializer would hide the one
   number that decides whether to keep it.
+
+## Rung 27 — the stupid FULL-wall boundary patcher, and what it uncovered
+
+Rung 26's gate helps only columns that are *identical*. A spinning camera has
+almost none of those, which is why spin was the one trace it made worse. This
+rung attacks the columns that actually changed.
+
+### The idea, and why it is allowed to be stupid
+
+A tall FULL wall that nothing occludes is an extremely constrained picture: a
+partial edge tile at one tile row, solid wall inward from it, and the exact
+VFLIP mirror of both at the bottom. Nothing else. So if that wall is still
+there and its top edge has moved a row or two, the correct new column is the old
+one with the edge tile rewritten and a guard band of at most two solid cells
+painted in at each end. The deep interior is already right.
+
+Shrinking needs no erase at all. The rows the wall no longer covers are simply
+absent from this frame's coverage mask, and the end-of-frame reconciliation
+already restores exactly those to ceiling/floor. The asymmetry is free.
+
+Guards, all cheap, all falling back to the existing materializer: FULL profile;
+the surface drawn exactly once last frame with this column inside its span; the
+edge on a single tile row both frames, on screen and high enough that the two
+guard bands cannot meet (top row 0-6); the edge moved at most two rows; border
+bits unchanged, since they are baked into the fill tile; and **nothing nearer
+has touched this column at all this frame**, which is what makes ownership
+knowable without building the mask.
+
+That last guard is the important one. It means the patch path never calls
+`polar_mark_span_fast`, which rung 18 measured at 807 T a column on its own.
+
+### The static case moved too, and that mattered
+
+The first build handled only *moved* boundaries and came out a wash: spin
+improved, the other three got worse. The reason was that a column where nothing
+moved now paid the patch machinery instead of the gate's cheap skip.
+
+But the patcher can serve that case far better than the gate can. If the wall
+owns the column outright and its two half-depths are unchanged, the content is
+identical *and the coverage it owes is already recorded in the retained slot* --
+so it can be copied out in three bytes. The gate cannot do this: it has to build
+the ownership mask before it is allowed to decide. Static foreground column:
+about 440 T here against about 1,100 T through the gate.
+
+### Results
+
+Render-stage mean T-states a frame, 100 frames, against the pre-retention
+baseline. `rung 26` is the exact-key gate alone.
+
+| trace | baseline | rung 26 | + patcher | patch rate | gate rate (of the rest) |
+| --- | --- | --- | --- | --- | --- |
+| cruise | 335,249 | 310,118 (-7.5%) | 310,174 (**-7.5%**) | 13.2% | 49.2% |
+| spin | 265,178 | 268,603 (+1.3%) | 264,843 (**-0.1%**) | **25.5%** | 7.7% |
+| corners | 308,589 | 293,617 (-4.9%) | 294,288 (**-4.6%**) | 13.9% | 40.3% |
+| stress | 270,244 | 258,417 (-4.4%) | 260,649 (**-3.6%**) | 10.5% | 35.8% |
+
+**Spin stops being the pathological case.** Columns that avoid a full raster go
+from 11.5% to 30.8%, nearly three times, and the regression is gone. That is the
+predicted signature: continuous rotation gives terrible exact-key reuse and
+plenty of cheap "same wall, boundary moved" updates.
+
+It is a smaller win in T-states than in hit rate, because the geometry that
+produces the new edge row still runs in full before the patcher is allowed to
+look at it. The raster half of the column collapsed; the generation half did
+not.
+
+Byte-identical name table over 150 frames on all four traces at 84, 253 and
+562 deg/s.
+
+### The guard band is what binds at speed
+
+At 253 deg/s the patch rate *rises* on cruise (13.2 -> 20.7%) and corners
+(13.9 -> 16.2%) but *falls* on spin (25.5 -> 14.8%). Harsher rotation moves more
+boundaries, which is what the patcher wants, until the movement exceeds the
+two-row guard and it falls back. A generic N-row sweep behind the two-row fast
+path -- which rung 24's histograms already argued for -- is the obvious next
+increment, and it is now measurable rather than speculative.
+
+### What this rung actually uncovered
+
+Chasing the patcher's cost exposed a measurement bug that has distorted every
+subsystem breakdown in this log. SDCC's `-debug` emits a statement label
+`A$module$NNNN` and a source label `C$file$line$...` for every C statement. They
+share an address with the function entry and **sort ahead of it**, so the
+de-duplication kept the line label and dropped the function. Every C function in
+the renderer was therefore represented by a symbol with no function name in it,
+and fell into "other render".
+
+With the labels filtered out, "other render" drops from 91,795 to 6,715 T a
+frame on spin, and the composition of render changes completely:
+
+| group | cruise | spin | corners | stress |
+| --- | --- | --- | --- | --- |
+| **projection/setup** | **26.9%** | **25.7%** | **27.2%** | **27.2%** |
+| materializer | 27.3% | 30.6% | 27.5% | 29.4% |
+| geometry walk | 14.2% | 9.9% | 13.1% | 11.1% |
+| nametable/VRAM | 4.5% | 5.2% | 4.6% | 4.7% |
+| arith helpers | 4.9% | 3.5% | 4.8% | 3.8% |
+| retained gate | 3.7% | 2.4% | 3.4% | 3.0% |
+| boundary patch | 2.8% | 4.4% | 3.0% | 3.3% |
+| other | 2.2% | 2.1% | 2.2% | 2.2% |
+
+**Projection and setup is co-equal with the materializer**, at a quarter of
+render on every trace, and nothing in rungs 26 or 27 touches it. It is
+`project_key`, the vertex bearings, `inv_at_invd`, the depth plane and the run
+sort -- work done once a *run*, before any column exists.
+
+That is the new dominant cost centre, and it is the honest answer to "what
+next". The materializer has now been cut twice and is down to roughly the same
+share as the projection front end that feeds it; continuing to squeeze the back
+end without touching the front is optimising the smaller half.
+
+The timeline tool now prints the largest unclassified ranges by name after every
+run, so a group that is a third of render can never again have no owner.

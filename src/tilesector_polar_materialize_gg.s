@@ -61,6 +61,10 @@
         .globl  _tsp_polar_ret_end_frame
         .globl  _tsp_polar_ret_invalidate
         .globl  _tsp_h_ret_column_gate
+        .globl  _tsp_h_ret_try_patch
+        .globl  _tsp_h_ret_patch_fill_run
+        .globl  _tsp_h_ret_record_clean
+        .globl  _tsp_probe_patch_hit
         .globl  _tsp_h_ret_column_kill
         .globl  _tsp_h_ret_run_begin
         .globl  _tsp_h_ret_bitmask
@@ -307,6 +311,13 @@ _tsp_polar_surface_column_fast::
         ld      (#r_bot_r_row$), a
 polar_endpoint_rows_ready$:
 
+        ; A foreground FULL wall whose top edge moved a row or two needs a few
+        ; tile writes, not a column rebuild. Try that before paying for the
+        ; ownership mask and the generic raster.
+        call    ret_try_patch$
+_tsp_probe_patch_hit::
+        jp      z, raster_done$
+
         ; Signed min/max for top endpoints.
         ld      a, (#r_top_l_row$)
         ld      e, a
@@ -427,11 +438,13 @@ polar_cov_done$:
         ld      a, #1
         call    prepare_edge$          ; bottom
         call    draw_plain_interior$
+        call    ret_record_clean$
         jr      raster_done$
 
 polar_draw_symfull$:
         call    prepare_symfull_edges$
         call    draw_plain_interior$
+        call    ret_record_clean$
         jr      raster_done$
 
 raster_done$:
@@ -1657,6 +1670,8 @@ _tsp_h_ret_column_kill::
         ld      (hl), #0
         inc     hl
         ld      (hl), #0
+        inc     hl
+        ld      (hl), #0xff             ; and no patchable previous form
 ret_kill_out$:
         pop     hl
         ret
@@ -1744,6 +1759,359 @@ ret_put5$:
         or      #1                      ; NZ: the column must be rasterized
         ret
 
+
+; ---------------------------------------------------------------------------
+; Foreground FULL-wall boundary patch (rung 27).
+;
+; A tall FULL wall that nothing occludes is an extremely constrained picture: a
+; partial edge tile at one tile row, solid wall inward from it, and the exact
+; VFLIP mirror of both at the bottom. Nothing else. So when such a wall is still
+; there and its top edge has only moved a row or two, the correct new column is
+; the old one with the edge tile rewritten and a guard band of at most two solid
+; cells painted in on each end. The deep interior is already right.
+;
+; That is the case the exact-key gate cannot help with, because the key changes
+; the moment anything moves. This path helps precisely the columns that changed.
+;
+; Guards, all cheap, all rejecting to the existing materializer:
+;   - FULL profile, and the surface was drawn exactly once last frame with this
+;     column inside its span (the retained trusted range)
+;   - the edge occupies a single tile row this frame and did last frame, both
+;     on screen and high enough that the top and bottom guard bands cannot meet
+;   - the edge moved at most two tile rows
+;   - the border bits are unchanged, since they are baked into the fill tile
+;   - nothing nearer has touched this column at all this frame, which is what
+;     makes ownership knowable without building the mask
+;
+; Shrinking needs no erase: the rows this wall no longer covers are absent from
+; the coverage mask, and the end-of-frame reconciliation already restores
+; exactly those.
+;
+; Returns Z when it handled the column completely.
+; ---------------------------------------------------------------------------
+ret_try_patch$:
+_tsp_h_ret_try_patch::
+        ld      a, (#_g_polar_run_profile)
+        or      a
+        jp      nz, ret_patch_no$
+        ld      hl, (#r_ret_base$)
+        ld      a, h
+        or      l
+        jp      z, ret_patch_no$
+
+        ld      a, (#_g_polar_mat_col)
+        ld      c, a
+        ld      a, (#r_ret_t0$)
+        cp      c
+        jr      z, ret_patch_t1$
+        jp      nc, ret_patch_no$
+ret_patch_t1$:
+        ld      a, (#r_ret_t1$)
+        cp      c
+        jp      c, ret_patch_no$
+
+        ; One edge tile row this column, on screen, and tall enough that the
+        ; top and bottom guard bands stay apart. cp #7 rejects negatives too.
+        ld      a, (#r_top_l_row$)
+        ld      c, a
+        ld      a, (#r_top_r_row$)
+        cp      c
+        jp      nz, ret_patch_no$
+        cp      #7
+        jp      nc, ret_patch_no$
+        ld      (#r_patch_n$), a
+
+        ld      hl, (#r_ret_ptr$)
+        ld      de, #6
+        add     hl, de
+        ld      a, (hl)
+        cp      #7
+        jp      nc, ret_patch_no$       ; 0xff: no clean previous form
+        ld      (#r_patch_o$), a
+
+        ld      c, a
+        ld      a, (#r_patch_n$)
+        sub     c
+        jr      nc, ret_patch_abs$
+        neg
+ret_patch_abs$:
+        cp      #3
+        jp      nc, ret_patch_no$       ; moved further than the guard band
+
+        ld      hl, (#r_ret_ptr$)
+        inc     hl
+        inc     hl
+        ld      a, (#_g_polar_mat_border)
+        cp      (hl)
+        jp      nz, ret_patch_no$
+
+        ; Nothing nearer in this column, so every row of it is this wall's.
+        ld      a, b
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_polar_nt_cov_cur
+        add     hl, de
+        ld      a, (hl)
+        inc     hl
+        or      (hl)
+        inc     hl
+        or      (hl)
+        jp      nz, ret_patch_no$
+
+        ; --- committed: this column is this wall's, and nothing else's ---
+
+        ; Boundary did not move at all. Then the column is identical and the
+        ; only thing owed is its coverage, which the slot already records --
+        ; so this case never builds the ownership mask either. That makes a
+        ; static foreground wall cheaper here than through the exact-key gate,
+        ; which has to pay polar_mark_span_fast before it is allowed to decide.
+        ld      hl, (#r_ret_ptr$)
+        ld      a, (#r_run_halfl$)
+        cp      (hl)
+        jr      nz, ret_patch_moved$
+        inc     hl
+        ld      a, (#r_run_halfr$)
+        cp      (hl)
+        jr      nz, ret_patch_moved$
+        ld      hl, (#r_ret_ptr$)
+        ld      de, #3
+        add     hl, de                  ; -> the recorded coverage triple
+        ld      a, b
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      e, a
+        ld      d, #0
+        push    hl
+        ld      hl, #_g_polar_nt_cov_cur
+        add     hl, de
+        ex      de, hl
+        pop     hl
+        ld      a, (hl)
+        ld      (de), a
+        inc     hl
+        inc     de
+        ld      a, (hl)
+        ld      (de), a
+        inc     hl
+        inc     de
+        ld      a, (hl)
+        ld      (de), a
+        xor     a
+        ret                             ; Z: handled, nothing to draw
+
+ret_patch_moved$:
+
+        ; Coverage is rows n..17-n, all of them ours.
+        ld      a, (#r_patch_n$)
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      e, a
+        ld      d, #0
+        ld      hl, #polar_prefix$
+        add     hl, de
+        ld      (#r_patch_pp$), hl      ; &prefix[n]
+        ld      a, (#r_patch_n$)
+        neg
+        add     a, #18
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      e, a
+        ld      d, #0
+        ld      hl, #polar_prefix$
+        add     hl, de                  ; &prefix[18-n]
+        ld      de, (#r_patch_pp$)
+        ld      a, (de)
+        xor     (hl)
+        ld      (#r_unclaimed0$), a
+        inc     de
+        inc     hl
+        ld      a, (de)
+        xor     (hl)
+        ld      (#r_unclaimed1$), a
+        inc     de
+        inc     hl
+        ld      a, (de)
+        xor     (hl)
+        ld      (#r_unclaimed2$), a
+
+        ld      a, b
+        ld      e, a
+        add     a, a
+        add     a, e
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_polar_nt_cov_cur
+        add     hl, de
+        ld      a, (#r_unclaimed0$)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#r_unclaimed1$)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#r_unclaimed2$)
+        ld      (hl), a
+
+        xor     a
+        ld      (#r_occluded$), a
+
+        ; Edge tile and its mirror, through the existing LUT emitter. The LUT
+        ; is where sub-cell precision lives, so nothing here needs to know
+        ; about pixels beyond handing it the same two endpoints.
+        ld      hl, (#_g_polar_mat_top_l)
+        ld      (#r_edge_left$), hl
+        ld      de, (#_g_polar_mat_top_r)
+        ex      de, hl
+        or      a
+        sbc     hl, de
+        ld      a, l
+        bit     7, a
+        jr      nz, ret_patch_sneg$
+        cp      #8
+        jr      c, ret_patch_sst$
+        ld      a, #7
+        jr      ret_patch_sst$
+ret_patch_sneg$:
+        cp      #0xF9
+        jr      nc, ret_patch_sst$
+        ld      a, #0xF9
+ret_patch_sst$:
+        ld      (#r_edge_slope$), a
+        ld      a, (#r_patch_n$)
+        call    draw_symfull_edge_pair$
+
+        ; Growing upward sweeps (o-n) rows into solid wall at each end. The old
+        ; edge cell is one of them, so it is overwritten rather than erased.
+        ld      a, (#r_patch_o$)
+        ld      c, a
+        ld      a, (#r_patch_n$)
+        cp      c
+        jr      nc, ret_patch_store$
+        ld      a, (#r_patch_n$)
+        neg
+        add     a, c
+        ld      (#r_patch_cnt$), a
+        call    full_tile_low$
+        ld      (#r_full_tile$), a
+        ld      a, (#r_patch_n$)
+        inc     a
+        ld      (#r_row$), a
+        ld      a, (#r_patch_cnt$)
+        call    ret_patch_fill_run$     ; rows n+1 .. o
+        ld      a, (#r_patch_o$)
+        neg
+        add     a, #17
+        ld      (#r_row$), a
+        ld      a, (#r_patch_cnt$)
+        call    ret_patch_fill_run$     ; rows 17-o .. 16-n
+
+ret_patch_store$:
+        ; Keep the exact-key slot coherent: a column this path handled must
+        ; still answer correctly for the gate next frame.
+        ld      hl, (#r_ret_ptr$)
+        ld      a, (#r_run_halfl$)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#r_run_halfr$)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#_g_polar_mat_border)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#r_unclaimed0$)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#r_unclaimed1$)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#r_unclaimed2$)
+        ld      (hl), a
+        inc     hl
+        ld      a, (#r_patch_n$)
+        ld      (hl), a
+        xor     a
+        ret                             ; Z: handled
+
+ret_patch_no$:
+        ld      a, #1
+        or      a
+        ret                             ; NZ: fall through to the full path
+
+; A=row count, r_row$=first row, B=column, r_full_tile$=low byte of the tile.
+ret_patch_fill_run$:
+_tsp_h_ret_patch_fill_run::
+        ld      c, a
+        ld      a, (#r_row$)
+        call    map_ptr_row_col$
+ret_patch_fill_loop$:
+        ld      a, (#r_full_tile$)
+        ld      e, a
+        ld      a, (hl)
+        cp      e
+        jr      nz, ret_patch_fill_wr$
+        inc     hl
+        ld      a, (hl)
+        or      a
+        dec     hl
+        jr      z, ret_patch_fill_nx$
+ret_patch_fill_wr$:
+        ld      (hl), e
+        inc     hl
+        ld      (hl), #0
+        dec     hl
+        push    hl
+        ld      a, (#r_row$)
+        call    polar_mark_dirty_fast$
+        pop     hl
+ret_patch_fill_nx$:
+        ld      de, #40
+        add     hl, de
+        ld      a, (#r_row$)
+        inc     a
+        ld      (#r_row$), a
+        dec     c
+        jr      nz, ret_patch_fill_loop$
+        ret
+
+; After a full raster, record whether this column ended in the clean patchable
+; form: a FULL wall this surface owns outright, with its edge on a single tile
+; row high enough for the guard bands. Anything else stores 0xff.
+ret_record_clean$:
+_tsp_h_ret_record_clean::
+        push    bc
+        push    hl
+        ld      hl, (#r_ret_base$)
+        ld      a, h
+        or      l
+        jr      z, ret_rc_out$
+        ld      hl, (#r_ret_ptr$)
+        ld      bc, #6
+        add     hl, bc
+        ld      (hl), #0xff
+        ld      a, (#_g_polar_run_profile)
+        or      a
+        jr      nz, ret_rc_out$
+        ld      a, (#r_occluded$)
+        or      a
+        jr      nz, ret_rc_out$
+        ld      a, (#r_top_min$)
+        ld      c, a
+        ld      a, (#r_top_max$)
+        cp      c
+        jr      nz, ret_rc_out$
+        cp      #7
+        jr      nc, ret_rc_out$
+        ld      (hl), a
+ret_rc_out$:
+        pop     hl
+        pop     bc
+        ret
+
 ret_mask8$:
         .db 0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80
 
@@ -1787,6 +2155,14 @@ r_ret_t0$:
         .ds     1
 r_ret_t1$:
         .ds     1
+r_patch_n$:
+        .ds     1
+r_patch_o$:
+        .ds     1
+r_patch_cnt$:
+        .ds     1
+r_patch_pp$:
+        .ds     2
 r_ret_fresh$:
         .ds     1
 r_ret_base$:

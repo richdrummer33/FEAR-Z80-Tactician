@@ -74,6 +74,13 @@ static std::vector<std::pair<u16, std::string>> all_symbols(const char* path, un
             if (a < 0x0100u || a >= 0xC000u) continue;
             const std::string n(sym);
             if (n.rfind("b_", 0) == 0 || n.rfind("___bank", 0) == 0 || n.rfind("l_", 0) == 0) continue;
+            /* SDCC -debug emits a statement label A$module$NNNN and a source
+             * label C$file$line$... for every C statement. They share an
+             * address with the function entry and sort ahead of it, so keeping
+             * them meant every C function was represented by a line label with
+             * no function name in it -- and landed in "other". Dropping them
+             * lets each function's own range cover its whole body. */
+            if (n.rfind("A$", 0) == 0 || n.rfind("C$", 0) == 0 || n.rfind("G$", 0) == 0) continue;
             v.push_back({(u16)a, n});
         }
     }
@@ -85,10 +92,10 @@ static std::vector<std::pair<u16, std::string>> all_symbols(const char* path, un
 
 /* Which subsystem a renderer symbol belongs to. The groups are chosen so that
  * each one is a thing you could go and optimise independently. */
-enum Group { G_PROJ = 0, G_GEOM, G_MAT, G_RET, G_NT, G_HELP, G_OTHER, G_NGROUP };
+enum Group { G_PROJ = 0, G_GEOM, G_MAT, G_RET, G_PATCH, G_NT, G_HELP, G_OTHER, G_NGROUP };
 static const char* GNAME[G_NGROUP] = {
     "projection/setup", "geometry walk", "materializer", "retained gate",
-    "nametable/VRAM", "arith helpers", "other render"
+    "boundary patch", "nametable/VRAM", "arith helpers", "other render"
 };
 static Group classify(const std::string& raw) {
     /* SDCC writes C statics as Fmodule$name$0_0$0, so match on the bare name;
@@ -104,6 +111,12 @@ static Group classify(const std::string& raw) {
      * is pure overhead on a column it fails to skip, so folding it into the
      * materializer would hide exactly the number that decides whether it is
      * worth keeping. */
+    /* These two are probe labels planted inside surface_column_fast, so the
+     * range they open is ordinary materializer body, not a new subsystem.
+     * Leaving them unclassified quietly drained the materializer into "other". */
+    if (has("probe_ret_skip") || has("probe_patch_hit")) return G_MAT;
+    if (has("ret_try_patch") || has("ret_patch_fill_run") || has("ret_record_clean"))
+        return G_PATCH;
     if (has("ret_column_gate") || has("ret_column_kill") || has("ret_key_cmp") ||
         has("ret_key_put") || has("ret_run_begin") || has("ret_bitmask") ||
         has("ret_begin_frame") || has("ret_end_frame") || has("ret_invalidate"))
@@ -165,14 +178,25 @@ int main(int argc, char** argv) {
     std::printf("renderer code bank: %u\n", rbank);
     auto syms = all_symbols(noi, rbank);
     std::vector<Range> ranges;
+    std::vector<std::string> rname;
+    /* SDCC -debug emits a line label A$module$NNNN for every C statement, which
+     * chops each C function into ranges whose names carry no function at all.
+     * Left alone they all fall into "other", which is how a third of render
+     * came to have no owner. A line label belongs to the function it sits in,
+     * so it inherits the group of the nearest preceding real symbol. */
     for (size_t i = 0; i + 1 < syms.size(); ++i) {
-        Group g = classify(syms[i].second);
-        ranges.push_back({syms[i].first, syms[i + 1].first, g});
+        ranges.push_back({syms[i].first, syms[i + 1].first, classify(syms[i].second)});
+        rname.push_back(syms[i].second);
     }
-    auto group_of = [&](u16 pc) -> Group {
+    /* A group that is a third of render and has no owner is a blind spot, not
+     * a category. Keep a per-range total so "other" can always be named. */
+    std::vector<double> rcost(ranges.size(), 0.0);
+    auto group_of_t = [&](u16 pc, unsigned t) -> Group {
         size_t lo = 0, hi = ranges.size();
         while (lo < hi) { size_t m = (lo + hi) / 2;
-            if (pc < ranges[m].lo) hi = m; else if (pc >= ranges[m].hi) lo = m + 1; else return ranges[m].g; }
+            if (pc < ranges[m].lo) hi = m;
+            else if (pc >= ranges[m].hi) lo = m + 1;
+            else { rcost[m] += t; return ranges[m].g; } }
         return G_OTHER;
     };
 
@@ -205,7 +229,7 @@ int main(int argc, char** argv) {
         const uint8_t ph = mem->DebugRetrieve(s_phase);
         const u16 pc = cpu->GetState()->PC->GetValue();
         if (ph < 6) cur.ph[ph] += dt;
-        if (ph == 2) cur.grp[group_of(pc)] += dt;
+        if (ph == 2) cur.grp[group_of_t(pc, seen_loops >= warmup ? dt : 0u)] += dt;
         cur.total += dt;
 
         const unsigned lc = mem->DebugRetrieve(s_loop);
@@ -276,6 +300,19 @@ int main(int argc, char** argv) {
         if (m < 1.0) continue;
         std::printf("  %-17s %10.0f %10.0f %10.0f %10.0f  %5.2f%%\n", GNAME[g], m,
                     pct(v, .50), pct(v, .95), pct(v, 1.0), 100.0 * m / mean);
+    }
+    {
+        std::vector<size_t> idx;
+        for (size_t i = 0; i < ranges.size(); ++i)
+            if (ranges[i].g == G_OTHER && rcost[i] > 0.0) idx.push_back(i);
+        std::sort(idx.begin(), idx.end(),
+                  [&](size_t a, size_t b){ return rcost[a] > rcost[b]; });
+        if (!idx.empty()) {
+            std::printf("\n  largest unclassified ranges, T-states a frame\n");
+            const double n = (double)(frames.empty() ? 1u : frames.size());
+            for (size_t k = 0; k < idx.size() && k < 12; ++k)
+                std::printf("    %-40s %9.0f\n", rname[idx[k]].c_str(), rcost[idx[k]] / n);
+        }
     }
     std::printf("\n  wrote %s\n", csvp);
     return 0;

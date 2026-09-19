@@ -81,6 +81,10 @@ int main(int argc, char** argv) {
     const bool have_ret = find_symbol(noi, "_tsp_probe_ret_skip", p_ret_raw);
     const u16 P_RET = (u16)p_ret_raw;
     long ret_total = 0, ret_skip = 0;
+    unsigned p_pat_raw = 0;
+    const bool have_pat = find_symbol(noi, "_tsp_probe_patch_hit", p_pat_raw);
+    const u16 P_PAT = (u16)p_pat_raw;
+    long pat_total = 0, pat_hit = 0;
     const u16 S_ROW  = (u16)need(noi, "_tsp_probe_row");
     const u16 S_TILE = (u16)need(noi, "_tsp_probe_full_tile");
     const u16 S_U0   = (u16)need(noi, "_tsp_probe_unclaimed0");
@@ -187,6 +191,10 @@ int main(int argc, char** argv) {
                     p.tmax == d.tmax && p.bmin == d.bmin && p.bmax == d.bmax && p.tile == d.tile)
                     ++desc_same_q;
             }
+        }
+        if (counting && have_pat && pc == P_PAT) {
+            ++pat_total;
+            if ((cpu->GetState()->AF->GetLow() & 0x40) != 0) ++pat_hit;
         }
         if (counting && have_ret && pc == P_RET) {
             /* The gate returns Z when this column's retained key is unchanged,
@@ -367,6 +375,9 @@ int main(int argc, char** argv) {
     std::printf("    %llu runs over %llu cells, mean length %.2f\n",
                 (unsigned long long)hruns, (unsigned long long)hcells,
                 hruns ? (double)hcells / hruns : 0.0);
+    if (have_pat)
+        std::printf("\n  boundary patch: %ld column visits, %ld handled (%.2f%%)\n",
+                    pat_total, pat_hit, pat_total ? 100.0 * pat_hit / pat_total : 0.0);
     if (have_ret)
         std::printf("\n  retained gate: %ld column visits, %ld skipped (%.2f%%)\n",
                     ret_total, ret_skip, ret_total ? 100.0 * ret_skip / ret_total : 0.0);
