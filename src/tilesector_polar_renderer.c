@@ -1042,8 +1042,8 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         uint16_t cell, pvs_off;
         if (wx < (int16_t)FULLMAZE_WORLD_MIN_X || wy < (int16_t)FULLMAZE_WORLD_MIN_Y)
             goto done;
-        pgx = (uint8_t)((wx - (int16_t)FULLMAZE_WORLD_MIN_X) >> 3);
-        pgy = (uint8_t)((wy - (int16_t)FULLMAZE_WORLD_MIN_Y) >> 3);
+        pgx = (uint8_t)((wx - (int16_t)FULLMAZE_WORLD_MIN_X) >> FULLMAZE_PVS_CELL_SHIFT);
+        pgy = (uint8_t)((wy - (int16_t)FULLMAZE_WORLD_MIN_Y) >> FULLMAZE_PVS_CELL_SHIFT);
         if (pgx >= FULLMAZE_PVS_COLS || pgy >= FULLMAZE_PVS_ROWS)
             goto done;
         cell = (uint16_t)((uint16_t)pgy * FULLMAZE_PVS_COLS + pgx);
