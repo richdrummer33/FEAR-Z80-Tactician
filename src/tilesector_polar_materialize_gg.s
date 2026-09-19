@@ -144,9 +144,9 @@ _tsp_polar_run_zspan_fast::
 
         ld      a, (#_g_polar_run_c0)
         ld      (#r_run_col$), a
-        ; C selects the quantized fog shade once per connected run.
-        ld      a, #0xff
-        ld      (#_g_polar_run_profile), a
+        ; C supplies the run profile. Ordinary E1M1 uses 0xff (generic
+        ; arbitrary-height z-span); the flat benchmark can supply FULL=0 so
+        ; the existing mirrored/VFLIP materializer is used for structural walls.
 
 zrun_loop$:
         ; Top left/right from one affine Q6 accumulator.
