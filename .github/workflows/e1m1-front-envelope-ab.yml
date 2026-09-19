@@ -1,9 +1,6 @@
 name: E1M1 PVS vs front-envelope traversal A-B
 
 on:
-  push:
-    branches:
-      - experiment/e1m1-front-envelope-rom
   workflow_dispatch:
 
 concurrency:
