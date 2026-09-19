@@ -83,7 +83,7 @@ static int vblank_sequence(int argc,char**argv) {
     const std::string prefix=argv[7]; const char* csv_path=argv[8];
     if(!frames) return 2;
 
-    u16 state=0,phase=0,map=0,loops=0,dirty=0;
+    u16 state=0,phase=0,map=0,loops=0,dirty=0,opt_layout=0,opt_loops=0;
     if(!any_symbol(sym,"_g_state","g_state",state)) {
         std::fprintf(stderr,"state symbol missing\n"); return 3;
     }
@@ -91,6 +91,8 @@ static int vblank_sequence(int argc,char**argv) {
     const bool have_map=any_symbol(sym,"_g_map","g_map",map);
     const bool have_loops=any_symbol(sym,"_g_ts_loop_count","g_ts_loop_count",loops);
     const bool have_dirty=any_symbol(sym,"_g_ts_dirty_words","g_ts_dirty_words",dirty);
+    const bool opt_state=any_symbol(sym,"_g_opt_state_layout","g_opt_state_layout",opt_layout);
+    const bool have_opt_loops=any_symbol(sym,"_g_opt_loop_count","g_opt_loop_count",opt_loops);
 
     GearsystemCore core; core.Init(GS_PIXEL_RGBA8888);
     if(!core.LoadROM(rom)){std::fprintf(stderr,"LoadROM failed\n");return 4;}
@@ -106,7 +108,8 @@ static int vblank_sequence(int argc,char**argv) {
     bool booted=false;
     while(boot_vblanks<boot_limit) {
         samples=0; core.RunToVBlank(fb.data(),audio.data(),&samples,nullptr,true); ++boot_vblanks;
-        if(have_loops) booted=(rd16(mem,loops)>=2u);
+        if(opt_state && have_opt_loops) booted=(rd16(mem,opt_loops)>=2u);
+        else if(have_loops) booted=(rd16(mem,loops)>=2u);
         else booted=(rd16(mem,state)!=0u || rd16(mem,(u16)(state+2u))!=0u);
         if(booted) break;
     }
@@ -125,7 +128,7 @@ static int vblank_sequence(int argc,char**argv) {
 
     std::ofstream csv(csv_path,std::ios::trunc);
     if(!csv){std::fprintf(stderr,"cannot open csv: %s\n",csv_path);return 6;}
-    csv << "frame,vblank,x_q4,y_q4,x,y,yaw,speed_q4,turn_q4,phase,loop_count,dirty_words,map_fnv64\n";
+    csv << "frame,vblank,x_q4,y_q4,z_q4,x,y,z,yaw,speed_q4,turn_q4,phase,loop_count,dirty_words,map_fnv64\n";
 
     GS_RuntimeInfo ri{}; core.GetRuntimeInfo(ri);
     int16_t first_x=0,first_y=0,last_x=0,last_y=0; uint8_t first_yaw=0,last_yaw=0;
@@ -136,17 +139,18 @@ static int vblank_sequence(int argc,char**argv) {
 
         const int16_t xq=(int16_t)rd16(mem,state+0u);
         const int16_t yq=(int16_t)rd16(mem,(u16)(state+2u));
-        const uint8_t yaw=mem->DebugRetrieve((u16)(state+4u));
-        const int16_t speed=(int16_t)rd16(mem,(u16)(state+5u));
-        const int16_t turn=(int16_t)rd16(mem,(u16)(state+9u));
+        const int16_t zq=opt_state?(int16_t)rd16(mem,(u16)(state+4u)):0;
+        const uint8_t yaw=mem->DebugRetrieve((u16)(state+(opt_state?6u:4u)));
+        const int16_t speed=(int16_t)rd16(mem,(u16)(state+(opt_state?7u:5u)));
+        const int16_t turn=(int16_t)rd16(mem,(u16)(state+(opt_state?11u:9u)));
         const unsigned p=have_phase?mem->DebugRetrieve(phase):0u;
         const unsigned lc=have_loops?rd16(mem,loops):0u;
         const unsigned dw=have_dirty?rd16(mem,dirty):0u;
         const uint64_t mh=map_hash(mem,map,have_map);
         if(i==0u){first_x=xq;first_y=yq;first_yaw=yaw;}
         last_x=xq;last_y=yq;last_yaw=yaw;
-        csv << i << ',' << (boot_vblanks+settle+i+1u) << ',' << xq << ',' << yq << ','
-            << (xq/16.0) << ',' << (yq/16.0) << ',' << (unsigned)yaw << ','
+        csv << i << ',' << (boot_vblanks+settle+i+1u) << ',' << xq << ',' << yq << ',' << zq << ','
+            << (xq/16.0) << ',' << (yq/16.0) << ',' << (zq/16.0) << ',' << (unsigned)yaw << ','
             << speed << ',' << turn << ',' << p << ',' << lc << ',' << dw << ',';
         char hs[32]; std::snprintf(hs,sizeof(hs),"%016llX",(unsigned long long)mh); csv << hs << '\n';
     }
