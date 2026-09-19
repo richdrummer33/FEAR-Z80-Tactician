@@ -25,7 +25,8 @@ jobs:
           mkdir -p "$GEN"
           python3 tools/e1m1_latest_full_bake.py             --repo-root .             --geometry src/generated/e1m1_room1_exact_geometry.h             --floor src/generated/e1m1_room1_exact_floor.h             --out "$GEN/optimized_renderer_map_data.inc"             | tee "$OUT/full-bake.txt"
           python3 tools/e1m1_front_envelope_bake.py             --cell 0.25             --emit-banked-dir "$GEN"             --bank-base 32             | tee "$OUT/envelope-bake.txt"
-          grep -q 'stable_pct=88.56' "$OUT/envelope-bake.txt"
+          grep -q 'E1ENV_BAKE_PASS cell=0.25' "$OUT/envelope-bake.txt"
+          grep -q 'stability_proof=exhaustive_Q4_positions_per_cell' "$OUT/envelope-bake.txt"
           cat "$GEN/manifest.txt" | tee "$OUT/envelope-manifest.txt"
 
       - name: Install GBDK 4.5.0
