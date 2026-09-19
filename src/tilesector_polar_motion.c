@@ -2,7 +2,12 @@
 
 #define RUN_SPEED_Q4 192
 #define ACCEL_Q4 6
+/* Overridable so a measurement build can sweep the turn rate. One yaw unit
+ * is 360/256 = 1.40625 degrees and tsp_step applies (turn_q4+8)>>4 units an
+ * update, so at 20 Hz: 48 -> 84 deg/s, 64 -> 112, 144 -> 253. */
+#ifndef MANUAL_TURN_Q4
 #define MANUAL_TURN_Q4 48
+#endif
 #define MANUAL_TURN_ACCEL_Q4 16
 #define AUTO_TURN_Q4 40
 #define AUTO_TURN_ACCEL_Q4 4

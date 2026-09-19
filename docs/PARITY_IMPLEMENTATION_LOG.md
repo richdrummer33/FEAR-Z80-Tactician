@@ -4173,3 +4173,63 @@ And rung 23's headline is withdrawn: "boundaries move one row or none" holds onl
 below about 100°/s. The safe statement is that **most boundaries move zero or one
 row, so optimise those, but arbitrary displacement must be represented as a swept
 span** — which the formulation already does for free.
+
+## Rung 25 — what turning actually costs, and why it saturates
+
+Turn rate and update rate are coupled, so the choice of control envelope is
+partly a renderer decision. `MANUAL_TURN_Q4` is now overridable and
+`tools/frame/turn_rate_sweep.sh` rebuilds the traced ROM at several rates and
+times the same `spin` trace on each.
+
+| deg/s at 20 Hz | mean T | p95 T | mean Hz | p95 Hz | vs 84°/s mean | vs 84°/s p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **84** (current) | 306,473 | 364,545 | 11.68 | 9.82 | — | — |
+| 112 | 330,341 | 478,537 | 10.84 | 7.48 | +7.8% | +31.3% |
+| **253** | 397,849 | 538,381 | 9.00 | 6.65 | **+29.8%** | **+47.7%** |
+| 394 | 380,562 | 538,967 | 9.41 | 6.64 | +24.2% | +47.8% |
+| 562 | 362,629 | 539,136 | 9.87 | 6.64 | +18.3% | +47.9% |
+
+### It saturates, and the reason matters
+
+Cost stops rising past about 250°/s and the mean even falls slightly. p95 and
+worst pin to roughly 539,000 T at every rate above that.
+
+**The current renderer redraws everything every update.** Its cost is set by how
+much geometry is visible, not by how much of it changed, so there is a ceiling —
+539,000 T is this scene's full-redraw cost — and once every frame is a full
+redraw, turning faster cannot cost more. That also kills the runaway feedback I
+expected, where a slower update rate would mean a larger angular step which would
+mean a slower update still. It cannot run away against a ceiling.
+
+The corollary is the interesting part. An event-driven renderer has the opposite
+cost shape: cheap when little moves, approaching the full-redraw cost when
+everything does. So its advantage is largest exactly where a player spends most
+of their time and decays gracefully to parity at maximum turn — which is the
+right way round, but it does mean **the event renderer's worst case is roughly
+today's average case**, and that should be designed for rather than discovered.
+
+### The call on turn rate
+
+Staying at ~84°/s buys **18% on the mean and 32% on p95** against 253°/s. Worth
+having, and free. But it is second order:
+
+| deg/s | mean, as a multiple of the 20 Hz budget | p95 |
+| --- | --- | --- |
+| 84 | 1.71x | 2.04x |
+| 253 | 2.22x | 3.01x |
+
+**The renderer misses 20 Hz by 1.7x at the gentlest turn rate and 2.2x at the
+harshest.** Turn rate moves it between "about two times too slow" and "about
+three times too slow at the tail". No control-envelope choice closes that gap;
+only the renderer does. So: keep 84°/s because it is free, do not treat 253°/s as
+disqualifying, and do not let the envelope decision stand in for the architecture
+one.
+
+### A confound to keep in view
+
+Each rate was run for the same number of frames, so a faster turn sweeps through
+more of the map and samples different geometry. Part of the +29.8% at 253°/s is
+therefore scene content rather than motion cost, and the saturation above 250°/s
+is partly the trace revisiting the same orientations. The direction and rough
+magnitude are sound; the precise percentages are not, and a fairer version would
+match the swept angle rather than the frame count.
