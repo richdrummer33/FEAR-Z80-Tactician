@@ -31,6 +31,16 @@ jobs:
           python3 tools/e1m1_front_envelope_bake.py             --cell 0.5             --out build/e1env/e1m1_front_envelope_half.inc             | tee build/e1env/census-half.txt
           grep -q E1ENV_BAKE_PASS build/e1env/census-half.txt
 
+      - name: Bake 0.25-world visibility cells
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/e1m1_front_envelope_bake.py \
+            --cell 0.25 \
+            --out build/e1env/e1m1_front_envelope_quarter.inc \
+            | tee build/e1env/census-quarter.txt
+          grep -q E1ENV_BAKE_PASS build/e1env/census-quarter.txt
+
       - name: Summarize
         shell: bash
         run: |
@@ -41,6 +51,9 @@ jobs:
             echo
             echo "=== 0.5 world-unit cells ==="
             cat build/e1env/census-half.txt
+            echo
+            echo "=== 0.25 world-unit cells ==="
+            cat build/e1env/census-quarter.txt
             echo
             echo "Current branch's conservative PVS: 8x8 cells x 16 yaw bins x 4 bytes = 5,376 bytes."
             echo "The envelope bake is 360-degree and yaw-independent; yaw chooses a slice at runtime."
