@@ -166,6 +166,7 @@ def bake(cell, verts, segs, offs, runs):
             grid.append(pid)
     return {
         "cell":cell,"cols":cols,"rows":rows,"grid":grid,"programs":programs,
+        "segs":segs,
         "stable":stable_cells,"unstable":unstable_cells,"walk":walk_cells,
         "empty":empty_cells,"spans_per":spans_per,"sample_counts":sample_counts,
     }
@@ -223,11 +224,32 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         idx_banks.append((row0,row1,bank,fn,len(vals)))
         bank += 1
 
-    # Encode each program as count,(boundary_vertex,surface)*.
+    # Encode each program as count,(boundary_vertex,packed_owner)*.
+    # Surface IDs use only five bits. Spend the spare high bits on endpoint
+    # facts the runtime otherwise has to rediscover from segment keys.
+    # bit5 = left boundary is a physical endpoint of owner
+    # bit6 = right boundary is a physical endpoint of owner
+    # bit7 = right endpoint is shared with next owner; suppress duplicate line
+    segs=result["segs"]
     recs=[]
     for p in programs:
         b=[len(p)]
-        for v,sid in p: b.extend((v,sid))
+        n=len(p)
+        for i,(v0,sid) in enumerate(p):
+            if sid==NO_WALL:
+                owner=NO_WALL
+            else:
+                v1=p[(i+1)%n][0]
+                next_sid=p[(i+1)%n][1]
+                _sid,_src,a,bv,_bias,_profile=segs[sid]
+                left_phys=(v0==a or v0==bv)
+                right_phys=(v1==a or v1==bv)
+                suppress=False
+                if right_phys and next_sid!=NO_WALL:
+                    _ns,_src2,na,nb,_bias2,_profile2=segs[next_sid]
+                    suppress=(v1==na or v1==nb)
+                owner=sid | (0x20 if left_phys else 0) | (0x40 if right_phys else 0) | (0x80 if suppress else 0)
+            b.extend((v0,owner))
         recs.append(b)
 
     prog_banks=[]; cur=[]; cur_bytes=0; base_pid=0
@@ -280,6 +302,7 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         f"#define E1ENV_PROGRAM_COUNT {len(programs)}u",
         "#define E1ENV_FALLBACK 65535u",
         "#define E1ENV_MAX_PROGRAM_BYTES 64u",
+        "#define E1ENV_PACKED_OWNER_FLAGS 1u",
     ]
     for _r0,_r1,_bank,fn,_n in idx_banks:
         hdr.append(f"uint16_t {fn}(uint16_t i) BANKED;")
@@ -321,6 +344,8 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         "#include <gbdk/platform.h>",
         '#include "e1env_generated.h"',
         "",
+        "static uint16_t g_e1env_last_pid=E1ENV_FALLBACK;",
+        "",
         "uint8_t e1env_fetch_program_q4(int16_t xq, int16_t yq, uint8_t *dst) BANKED {",
         "    int16_t rx=(int16_t)(xq-(E1ENV_WORLD_MIN_X<<4));",
         "    int16_t ry=(int16_t)(yq-(E1ENV_WORLD_MIN_Y<<4));",
@@ -339,6 +364,8 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         "    default: return 0xffu;",
         "    }",
         "    if(pid==E1ENV_FALLBACK) return 0xffu;",
+        "    if(pid==g_e1env_last_pid) return dst[0];",
+        "    g_e1env_last_pid=pid;",
     ]
     for bi,(base_pid,count,_bank,fn) in enumerate(prog_meta):
         end_pid=base_pid+count
