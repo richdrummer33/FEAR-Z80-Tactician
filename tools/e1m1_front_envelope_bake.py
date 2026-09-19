@@ -96,10 +96,18 @@ def envelope_program(px, py, verts, segs):
     return canonical_cycle(out)
 
 def sample_points(x0,y0,cell,offs,runs):
-    # Centre + four inset corners. Never sample exactly on a topology boundary.
-    f=(0.18,0.82)
-    cand=[(x0+cell*0.5,y0+cell*0.5)]
-    cand += [(x0+cell*fx,y0+cell*fy) for fy in f for fx in f]
+    # At quarter-world cells the runtime position lattice is FINITE: Q4 means
+    # exactly four representable x values by four y values inside a 0.25 cell.
+    # Enumerate every one rather than sampling. A cell called stable is then
+    # exact for every player x_q4/y_q4 state the ROM can actually occupy.
+    if cell <= 0.2500001:
+        n=max(1,int(round(cell*16.0)))
+        cand=[(x0+ix/16.0,y0+iy/16.0) for iy in range(n) for ix in range(n)]
+    else:
+        # Coarser rungs are census-only: centre + four inset corners.
+        f=(0.18,0.82)
+        cand=[(x0+cell*0.5,y0+cell*0.5)]
+        cand += [(x0+cell*fx,y0+cell*fy) for fy in f for fx in f]
     return [(x,y) for x,y in cand if walkable(x,y,offs,runs)]
 
 def emit_arr(ctype,name,vals,per=16):
@@ -344,6 +352,8 @@ def main():
         print(f"banked_index_banks={len(banked[0])} banked_program_banks={len(banked[1])} "
               f"bank_range={args.bank_base}..{args.bank_base+len(banked[0])+len(banked[1])-1}")
     print(f"fallback_cells={unstable} empty_or_unwalkable={result['empty']}")
+    if args.cell <= 0.2500001:
+        print("stability_proof=exhaustive_Q4_positions_per_cell")
     print("runtime_contract=cell->program; program=(boundary_vertex,first_hit_surface)*; "
           "ordinary FULL ownership/sort are bake-time facts")
 
