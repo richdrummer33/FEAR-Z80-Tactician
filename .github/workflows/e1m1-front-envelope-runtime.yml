@@ -1,9 +1,6 @@
 name: E1M1 baked front-envelope playable
 
 on:
-  push:
-    branches:
-      - experiment/e1m1-front-envelope-rom
   workflow_dispatch:
 
 concurrency:
