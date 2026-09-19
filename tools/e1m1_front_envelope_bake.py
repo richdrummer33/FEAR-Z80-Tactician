@@ -173,12 +173,136 @@ def write_include(path, result):
     path.write_text("\n\n".join(text)+"\n")
     return len(grid)*2 + len(off)*2 + len(stream),len(stream)
 
+def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_payload=10500):
+    """Emit deliberately simple banked ROM tables for the quarter-cell runtime.
+
+    Cell indices are split by row bands so lookup needs one banked call/frame.
+    Program records are greedily split into banks so load needs one more banked
+    call/frame.  No dictionary/entropy compression yet.
+    """
+    outdir=Path(outdir)
+    outdir.mkdir(parents=True,exist_ok=True)
+    grid=result["grid"]; cols=result["cols"]; rows=result["rows"]; programs=result["programs"]
+
+    idx_banks=[]
+    bank=bank_base
+    for row0 in range(0,rows,rows_per_bank):
+        row1=min(rows,row0+rows_per_bank)
+        vals=grid[row0*cols:row1*cols]
+        fn=f"e1env_idx_{len(idx_banks):02d}"
+        src=[
+            f"#pragma bank {bank}",
+            "#include <stdint.h>",
+            "#include <gbdk/platform.h>",
+            emit_arr("uint16_t","k_idx",vals,12),
+            f"uint16_t {fn}(uint16_t i) BANKED {{ return k_idx[i]; }}",
+            "",
+        ]
+        (outdir/f"e1env_idx_{len(idx_banks):02d}.c").write_text("\n\n".join(src))
+        idx_banks.append((row0,row1,bank,fn,len(vals)))
+        bank += 1
+
+    # Encode each program as count,(boundary_vertex,surface)*.
+    recs=[]
+    for p in programs:
+        b=[len(p)]
+        for v,sid in p: b.extend((v,sid))
+        recs.append(b)
+
+    prog_banks=[]; cur=[]; cur_bytes=0; base_pid=0
+    for pid,rec in enumerate(recs):
+        need=len(rec)+2  # conservative offset-table cost
+        if cur and cur_bytes+need>prog_payload:
+            prog_banks.append((base_pid,cur))
+            base_pid=pid; cur=[]; cur_bytes=0
+        cur.append(rec); cur_bytes += need
+    if cur: prog_banks.append((base_pid,cur))
+
+    prog_meta=[]
+    for bi,(base_pid,reclist) in enumerate(prog_banks):
+        offsets=[]; stream=[]
+        for rec in reclist:
+            offsets.append(len(stream)); stream.extend(rec)
+        fn=f"e1env_prog_{bi:02d}"
+        src=[
+            f"#pragma bank {bank}",
+            "#include <stdint.h>",
+            "#include <gbdk/platform.h>",
+            emit_arr("uint16_t","k_off",offsets,12),
+            emit_arr("uint8_t","k_stream",stream,20),
+            f"""uint8_t {fn}(uint16_t local, uint8_t *dst) BANKED {{
+    uint16_t off=k_off[local];
+    uint8_t n=k_stream[off], bytes=(uint8_t)(1u+(uint8_t)(n<<1)), i;
+    for(i=0u;i<bytes;++i) dst[i]=k_stream[off+i];
+    return n;
+}}""",
+            "",
+        ]
+        (outdir/f"e1env_prog_{bi:02d}.c").write_text("\n\n".join(src))
+        prog_meta.append((base_pid,len(reclist),bank,fn))
+        bank += 1
+
+    hdr=[
+        "#ifndef E1ENV_GENERATED_H",
+        "#define E1ENV_GENERATED_H",
+        "#include <stdint.h>",
+        "#include <gbdk/platform.h>",
+        f"#define E1ENV_WORLD_MIN_X {base.WORLD_MIN_X}",
+        f"#define E1ENV_WORLD_MIN_Y {base.WORLD_MIN_Y}",
+        f"#define E1ENV_CELL_Q4 {int(round(result['cell']*16))}u",
+        f"#define E1ENV_COLS {cols}u",
+        f"#define E1ENV_ROWS {rows}u",
+        f"#define E1ENV_ROWS_PER_INDEX_BANK {rows_per_bank}u",
+        f"#define E1ENV_PROGRAM_COUNT {len(programs)}u",
+        "#define E1ENV_FALLBACK 65535u",
+        "#define E1ENV_MAX_PROGRAM_BYTES 64u",
+    ]
+    for _r0,_r1,_bank,fn,_n in idx_banks:
+        hdr.append(f"uint16_t {fn}(uint16_t i) BANKED;")
+    for _base,_count,_bank,fn in prog_meta:
+        hdr.append(f"uint8_t {fn}(uint16_t local, uint8_t *dst) BANKED;")
+
+    hdr += [
+        "",
+        "static uint16_t e1env_lookup_program_q4(int16_t xq, int16_t yq) {",
+        "    int16_t rx=(int16_t)(xq-(E1ENV_WORLD_MIN_X<<4));",
+        "    int16_t ry=(int16_t)(yq-(E1ENV_WORLD_MIN_Y<<4));",
+        "    uint16_t gx,gy,local;",
+        "    if(rx<0||ry<0) return E1ENV_FALLBACK;",
+        "    gx=(uint16_t)rx/E1ENV_CELL_Q4; gy=(uint16_t)ry/E1ENV_CELL_Q4;",
+        "    if(gx>=E1ENV_COLS||gy>=E1ENV_ROWS) return E1ENV_FALLBACK;",
+        "    local=(uint16_t)((gy%E1ENV_ROWS_PER_INDEX_BANK)*E1ENV_COLS+gx);",
+        "    switch((uint8_t)(gy/E1ENV_ROWS_PER_INDEX_BANK)) {",
+    ]
+    for bi,(_r0,_r1,_bank,fn,_n) in enumerate(idx_banks):
+        hdr.append(f"    case {bi}u: return {fn}(local);")
+    hdr += ["    default: return E1ENV_FALLBACK;","    }","}","",
+            "static uint8_t e1env_load_program(uint16_t pid, uint8_t *dst) {"]
+    for bi,(base_pid,count,_bank,fn) in enumerate(prog_meta):
+        end=base_pid+count
+        prefix="if" if bi==0 else "else if"
+        hdr.append(f"    {prefix}(pid<{end}u) return {fn}((uint16_t)(pid-{base_pid}u),dst);")
+    hdr += ["    return 0u;","}","","#endif",""]
+    (outdir/"e1env_generated.h").write_text("\n".join(hdr))
+
+    manifest=[
+        f"index_banks={len(idx_banks)}",
+        f"program_banks={len(prog_meta)}",
+        f"bank_first={bank_base}",
+        f"bank_last={bank-1}",
+        f"generated_c_files={len(idx_banks)+len(prog_meta)}",
+    ]
+    (outdir/"manifest.txt").write_text("\n".join(manifest)+"\n")
+    return idx_banks,prog_meta
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--geometry",default="src/generated/e1m1_room1_exact_geometry.h")
     ap.add_argument("--floor",default="src/generated/e1m1_room1_exact_floor.h")
     ap.add_argument("--cell",type=float,default=1.0,choices=(1.0,0.5,0.25))
     ap.add_argument("--out")
+    ap.add_argument("--emit-banked-dir")
+    ap.add_argument("--bank-base",type=int,default=32)
     args=ap.parse_args()
 
     verts0,segs0=base.parse_geometry(Path(args.geometry))
@@ -196,6 +320,9 @@ def main():
     rom_bytes=stream_bytes=0
     if args.out:
         rom_bytes,stream_bytes=write_include(Path(args.out),result)
+    banked=None
+    if args.emit_banked_dir:
+        banked=write_banked_sources(args.emit_banked_dir,result,args.bank_base)
 
     # Geometry-grid alignment census.  Integer vertices are naturally aligned
     # to both 1.0 and 0.5 grids; report it explicitly because future authored
@@ -213,6 +340,9 @@ def main():
     if args.out:
         print(f"rom_uncompressed_bytes={rom_bytes} program_stream_bytes={stream_bytes} "
               f"index_bytes={len(result['grid'])*2} offsets_bytes={len(result['programs'])*2}")
+    if banked:
+        print(f"banked_index_banks={len(banked[0])} banked_program_banks={len(banked[1])} "
+              f"bank_range={args.bank_base}..{args.bank_base+len(banked[0])+len(banked[1])-1}")
     print(f"fallback_cells={unstable} empty_or_unwalkable={result['empty']}")
     print("runtime_contract=cell->program; program=(boundary_vertex,first_hit_surface)*; "
           "ordinary FULL ownership/sort are bake-time facts")
