@@ -285,26 +285,43 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
 
     hdr += [
         "",
-        "static uint16_t e1env_lookup_program_q4(int16_t xq, int16_t yq) {",
+        "uint8_t e1env_fetch_program_q4(int16_t xq, int16_t yq, uint8_t *dst) BANKED;",
+        "",
+        "#endif",
+        "",
+    ]
+    (outdir/"e1env_generated.h").write_text("\n".join(hdr))
+
+    # Keep the row-bank/program-bank dispatch out of the already-full renderer
+    # translation unit. One BANKED call from the renderer performs both ROM
+    # lookups; nested banked calls restore the caller bank on return.
+    dsp=[
+        "/* GENERATED envelope ROM dispatcher. */",
+        "#pragma bank 255",
+        "#include <stdint.h>",
+        "#include <gbdk/platform.h>",
+        "#include \"e1env_generated.h\"",
+        "BANKREF(e1env_dispatch)",
+        "",
+        "uint8_t e1env_fetch_program_q4(int16_t xq, int16_t yq, uint8_t *dst) BANKED {",
         "    int16_t rx=(int16_t)(xq-(E1ENV_WORLD_MIN_X<<4));",
         "    int16_t ry=(int16_t)(yq-(E1ENV_WORLD_MIN_Y<<4));",
-        "    uint16_t gx,gy,local;",
-        "    if(rx<0||ry<0) return E1ENV_FALLBACK;",
+        "    uint16_t gx,gy,local,pid=E1ENV_FALLBACK;",
+        "    if(rx<0||ry<0) return 0xffu;",
         "    gx=(uint16_t)rx/E1ENV_CELL_Q4; gy=(uint16_t)ry/E1ENV_CELL_Q4;",
-        "    if(gx>=E1ENV_COLS||gy>=E1ENV_ROWS) return E1ENV_FALLBACK;",
+        "    if(gx>=E1ENV_COLS||gy>=E1ENV_ROWS) return 0xffu;",
         "    local=(uint16_t)((gy%E1ENV_ROWS_PER_INDEX_BANK)*E1ENV_COLS+gx);",
         "    switch((uint8_t)(gy/E1ENV_ROWS_PER_INDEX_BANK)) {",
     ]
     for bi,(_r0,_r1,_bank,fn,_n) in enumerate(idx_banks):
-        hdr.append(f"    case {bi}u: return {fn}(local);")
-    hdr += ["    default: return E1ENV_FALLBACK;","    }","}","",
-            "static uint8_t e1env_load_program(uint16_t pid, uint8_t *dst) {"]
+        dsp.append(f"    case {bi}u: pid={fn}(local); break;")
+    dsp += ["    default: return 0xffu;","    }","    if(pid==E1ENV_FALLBACK) return 0xffu;"]
     for bi,(base_pid,count,_bank,fn) in enumerate(prog_meta):
         end=base_pid+count
         prefix="if" if bi==0 else "else if"
-        hdr.append(f"    {prefix}(pid<{end}u) return {fn}((uint16_t)(pid-{base_pid}u),dst);")
-    hdr += ["    return 0u;","}","","#endif",""]
-    (outdir/"e1env_generated.h").write_text("\n".join(hdr))
+        dsp.append(f"    {prefix}(pid<{end}u) return {fn}((uint16_t)(pid-{base_pid}u),dst);")
+    dsp += ["    return 0xffu;","}",""]
+    (outdir/"e1env_dispatch.c").write_text("\n".join(dsp))
 
     manifest=[
         f"index_banks={len(idx_banks)}",
