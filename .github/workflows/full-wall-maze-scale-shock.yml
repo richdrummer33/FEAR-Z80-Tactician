@@ -30,7 +30,7 @@ jobs:
             --preview-out "$OUT/full-maze.svg" \
             | tee "$OUT/bake.txt"
           grep -q 'FULL_MAZE_BAKE_PASS vertices=32 surfaces=28 FULL=28 diagonals=2' "$OUT/bake.txt"
-          grep -q 'candidate_mean=9.91 p95=21' "$OUT/bake.txt"
+          grep -q 'pvs cells=54 yaw_bins=16 bytes=3456 candidate_mean=11.13 p95=22 min=1 max=27 empty=0' "$OUT/bake.txt"
 
       - name: Install GBDK 4.5.0
         shell: bash
