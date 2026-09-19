@@ -1,0 +1,53 @@
+name: E1M1 front-envelope ROM bake
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bake-envelope:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake 1.0-world visibility cells
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/e1env
+          python3 tools/e1m1_front_envelope_bake.py             --cell 1.0             --out build/e1env/e1m1_front_envelope_1u.inc             | tee build/e1env/census-1u.txt
+          grep -q E1ENV_BAKE_PASS build/e1env/census-1u.txt
+
+      - name: Bake 0.5-world visibility cells
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/e1m1_front_envelope_bake.py             --cell 0.5             --out build/e1env/e1m1_front_envelope_half.inc             | tee build/e1env/census-half.txt
+          grep -q E1ENV_BAKE_PASS build/e1env/census-half.txt
+
+      - name: Summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "=== 1.0 world-unit cells ==="
+            cat build/e1env/census-1u.txt
+            echo
+            echo "=== 0.5 world-unit cells ==="
+            cat build/e1env/census-half.txt
+            echo
+            echo "Current branch's conservative PVS: 8x8 cells x 16 yaw bins x 4 bytes = 5,376 bytes."
+            echo "The envelope bake is 360-degree and yaw-independent; yaw chooses a slice at runtime."
+          } | tee build/e1env/summary.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: E1M1-Front-Envelope-ROM-Bake
+          path: build/e1env/
+          retention-days: 30
