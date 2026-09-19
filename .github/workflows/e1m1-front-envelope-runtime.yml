@@ -46,7 +46,7 @@ jobs:
           GEN="$OUT/generated"
           LCC="$PWD/.toolchain/gbdk/bin/lcc"
           : > "$OUT/extra-objs.txt"
-          for src in "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c; do
+          for src in "$GEN"/e1env_dispatch.c "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c; do
             base="$(basename "${src%.c}")"
             obj="$OUT/${base}.o"
             "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
