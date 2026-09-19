@@ -1143,6 +1143,10 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                     for(c=c0;c<=c1;++c) mask|=((uint32_t)1u<<c);
                     if(used_cols&mask){ envelope_active=0u; break; }
                     used_cols|=mask;
+                    /* Envelope spans are already a disjoint front-visibility
+                     * partition. No runtime depth sort is needed, but draw_run
+                     * still consumes the shared order array. Keep identity order. */
+                    g_run_order[count]=count;
                     ++count;
                 }
             }
