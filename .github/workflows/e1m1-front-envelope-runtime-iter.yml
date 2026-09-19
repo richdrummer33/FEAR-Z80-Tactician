@@ -10,6 +10,7 @@ on:
       - .github/workflows/e1m1-front-envelope-runtime-iter.yml
       - Makefile
       - experiments/adaptive_polar_field/screen_depth_plane_lut.py
+      - tools/e1env_runtime_pack.py
   workflow_dispatch:
 
 concurrency:
@@ -51,6 +52,8 @@ jobs:
           cp "$PRE/envelope-bake.txt" "$ROOT/envelope-bake.txt"
           test -f "$GEN/e1env_dispatch.c"
           grep -q 'stable_pct=100.00' "$ROOT/envelope-bake.txt"
+          python3 tools/e1env_runtime_pack.py --generated-dir "$GEN" | tee "$ROOT/runtime-pack.txt"
+          grep -q 'E1ENV_RUNTIME_PACK' "$ROOT/runtime-pack.txt"
 
       - name: Install GBDK 4.5.0
         shell: bash
