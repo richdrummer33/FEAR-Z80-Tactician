@@ -57,40 +57,46 @@ jobs:
           bash tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
           cp build/libretro_runner build/optimized-map/libretro_runner
 
-      - name: Prove boot, movement, turning and step height
+      - name: Prove boot, traversal, turning and both step transitions
         shell: bash
         run: |
           set -euo pipefail
           OUT=build/optimized-map
           ROM="$OUT/GG-Renderer-Optimized-Course.gg"
           SYM="$OUT/GG-Renderer-Optimized-Course.sym"
-          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
-          STATE_ADDR="$(awk '$2=="_g_state"{split($1,a,":"); print a[2]; exit}' "$SYM")"
-          test -n "$STATE_ADDR"
+          mkdir -p /tmp/opt-forward /tmp/opt-turn
 
-          "$OUT/libretro_runner" "$CORE" "$ROM" 120 "$OUT/boot.ppm" "$STATE_ADDR" 7 | tee "$OUT/boot.txt"
-          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=20             "$OUT/libretro_runner" "$CORE" "$ROM" 900 "$OUT/forward.ppm" "$STATE_ADDR" 7 | tee "$OUT/forward.txt"
-          LIBRETRO_JOYPAD_MASK=128 LIBRETRO_JOYPAD_AFTER_FRAME=20             "$OUT/libretro_runner" "$CORE" "$ROM" 240 "$OUT/turn.ppm" "$STATE_ADDR" 7 | tee "$OUT/turn.txt"
+          ./build/tilesector_state_capture "$ROM" "$SYM"             --vblank-sequence roomA-forward 1200 20 /tmp/opt-forward/frame "$OUT/forward.csv"             | tee "$OUT/forward-proof.txt"
+          ./build/tilesector_state_capture "$ROM" "$SYM"             --vblank-sequence roomA-turn 300 20 /tmp/opt-turn/frame "$OUT/turn.csv"             | tee "$OUT/turn-proof.txt"
+
+          cp /tmp/opt-forward/frame-0000.ppm "$OUT/start.ppm"
+          cp /tmp/opt-forward/frame-0599.ppm "$OUT/mid.ppm"
+          cp /tmp/opt-forward/frame-1199.ppm "$OUT/end.ppm"
 
           python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
+          import csv
           from pathlib import Path
-          import re,struct
           root=Path("build/optimized-map")
-          def st(name):
-              m=re.search(r"data=([0-9A-Fa-f]{14})",(root/name).read_text())
-              if not m: raise SystemExit("missing state "+name)
-              b=bytes.fromhex(m.group(1))
-              x,y,z=struct.unpack("<hhh",b[:6])
-              return x,y,z,b[6]
-          boot=st("boot.txt"); fwd=st("forward.txt"); turn=st("turn.txt")
-          if fwd[:2]==boot[:2]: raise SystemExit(f"forward did not move: {boot} {fwd}")
-          if turn[3]==boot[3]: raise SystemExit(f"turn did not turn: {boot} {turn}")
-          if boot[2] != (16<<4): raise SystemExit(f"bad initial eye height: {boot}")
+          fw=list(csv.DictReader((root/"forward.csv").open()))
+          tr=list(csv.DictReader((root/"turn.csv").open()))
+          if not fw or not tr: raise SystemExit("missing capture rows")
+          sx,sy=int(fw[0]["x_q4"]),int(fw[0]["y_q4"])
+          ex,ey=int(fw[-1]["x_q4"]),int(fw[-1]["y_q4"])
+          zs=[int(r["z_q4"]) for r in fw]
+          if ex<=sx+160: raise SystemExit(f"forward traversal too short: {sx}->{ex}")
+          if abs(ey-sy)>32: raise SystemExit(f"forward drifted out of doorway line: {sy}->{ey}")
+          if max(zs)<(20<<4): raise SystemExit(f"step-up never reached elevated eye: max={max(zs)}")
+          peak=zs.index(max(zs))
+          if not any(z<=(16<<4) for z in zs[peak+1:]):
+              raise SystemExit("step-down never returned to baseline eye")
+          if int(tr[-1]["yaw"])==int(tr[0]["yaw"]):
+              raise SystemExit("turn scenario did not change yaw")
           print("OPT_MAP_EMULATOR_PASS")
-          print("boot",boot)
-          print("forward",fwd)
-          print("turn",turn)
+          print(f"forward_q4=({sx},{sy})->({ex},{ey})")
+          print(f"z_q4 min={min(zs)} max={max(zs)} final={zs[-1]}")
+          print(f"turn_yaw={tr[0]['yaw']}->{tr[-1]['yaw']}")
           PY
+          grep -q OPT_MAP_EMULATOR_PASS "$OUT/emulator-proof.txt"
 
       - name: Write map README
         if: always()
