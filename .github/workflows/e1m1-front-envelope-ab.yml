@@ -96,6 +96,7 @@ jobs:
             gg-tilesector-polar >/dev/null
           cp build/gg-tilesector-polar.gg "$ROOT/pvs.gg"
           cp build/gg-tilesector-polar.noi "$ROOT/pvs.noi"
+          cp build/gg-tilesector-polar.sym "$ROOT/pvs.sym"
           ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 \
             | tee "$ROOT/pvs-timeline.txt"
 
@@ -118,8 +119,34 @@ jobs:
             gg-tilesector-polar >/dev/null
           cp build/gg-tilesector-polar.gg "$ROOT/envelope.gg"
           cp build/gg-tilesector-polar.noi "$ROOT/envelope.noi"
+          cp build/gg-tilesector-polar.sym "$ROOT/envelope.sym"
           ./build/frame_timeline "$ROOT/envelope.gg" "$ROOT/envelope.noi" "$ROOT/envelope.csv" 180 8 \
             | tee "$ROOT/envelope-timeline.txt"
+
+      - name: Compare rendered name-table hashes on the same trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-ab
+          mkdir -p /tmp/e1env-pvs /tmp/e1env-env
+          ./build/tilesector_state_capture "$ROOT/pvs.gg" "$ROOT/pvs.sym" \
+            --vblank-sequence roomA-forward 180 20 /tmp/e1env-pvs/frame "$ROOT/pvs-state.csv" >/dev/null
+          ./build/tilesector_state_capture "$ROOT/envelope.gg" "$ROOT/envelope.sym" \
+            --vblank-sequence roomA-forward 180 20 /tmp/e1env-env/frame "$ROOT/envelope-state.csv" >/dev/null
+          python3 - <<'PY' | tee "$ROOT/parity-summary.txt"
+          import csv
+          from pathlib import Path
+          root=Path("build/e1env-ab")
+          a=list(csv.DictReader((root/"pvs-state.csv").open()))
+          b=list(csv.DictReader((root/"envelope-state.csv").open()))
+          n=min(len(a),len(b))
+          same=sum(x["map_fnv64"]==y["map_fnv64"] for x,y in zip(a[:n],b[:n]))
+          state_same=sum((x["x_q4"],x["y_q4"],x["yaw"])==(y["x_q4"],y["y_q4"],y["yaw"]) for x,y in zip(a[:n],b[:n]))
+          bad=[i for i,(x,y) in enumerate(zip(a[:n],b[:n])) if x["map_fnv64"]!=y["map_fnv64"]]
+          print("E1ENV_PARITY_CENSUS")
+          print(f"frames={n} state_equal={state_same}/{n} map_equal={same}/{n} mismatches={n-same}")
+          print("first_mismatch_frames="+",".join(map(str,bad[:20])))
+          PY
 
       - name: Compare frame-aligned traversal
         shell: bash
@@ -169,6 +196,9 @@ jobs:
             build/e1env-ab/envelope-timeline.txt
             build/e1env-ab/pvs.csv
             build/e1env-ab/envelope.csv
+            build/e1env-ab/pvs-state.csv
+            build/e1env-ab/envelope-state.csv
+            build/e1env-ab/parity-summary.txt
             build/e1env-ab/full-bake.txt
             build/e1env-ab/envelope-bake.txt
             build/e1env-ab/generated/manifest.txt
