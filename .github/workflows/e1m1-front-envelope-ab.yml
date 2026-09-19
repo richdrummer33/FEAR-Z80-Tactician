@@ -32,7 +32,8 @@ jobs:
           python3 tools/e1m1_front_envelope_bake.py \
             --cell 0.25 --emit-banked-dir "$GEN" --bank-base 32 \
             | tee "$ROOT/envelope-bake.txt"
-          grep -q 'stable_pct=88.56' "$ROOT/envelope-bake.txt"
+          grep -q 'E1ENV_BAKE_PASS cell=0.25' "$ROOT/envelope-bake.txt"
+          grep -q 'stability_proof=exhaustive_Q4_positions_per_cell' "$ROOT/envelope-bake.txt"
 
       - name: Install GBDK 4.5.0
         shell: bash
