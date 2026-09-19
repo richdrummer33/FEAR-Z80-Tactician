@@ -35,8 +35,11 @@ def shr0(v,n):
 def round_div_signed(n,d):
     return (n+d//2)//d if n>=0 else -(((-n)+d//2)//d)
 
-def emit(outdir):
-    text="\n".join(p.read_text() for p in sorted(GEN.glob("tilesector_polar_data_part*.inc")))
+def emit(outdir, map_inc=None, bank=255):
+    if map_inc:
+        text=pathlib.Path(map_inc).read_text()
+    else:
+        text="\n".join(p.read_text() for p in sorted(GEN.glob("tilesector_polar_data_part*.inc")))
     nx=arr(text,"k_tspf_nx_q5"); ny=arr(text,"k_tspf_ny_q5"); sin=arr(text,"k_tspf_sin_q7")
     normals=[]; cls=[]
     for pair in zip(nx,ny):
@@ -91,7 +94,7 @@ void tsp_polar_depthplane_load(uint8_t yaw, int8_t *nf, int8_t *sf) BANKED;
 // Conditional for compiling with SDCC (for setting correct ROM bank)
 // Else, if z80 desktop validation/simulation, not supported as native-C and also N/A
 #ifdef __SDCC
-#pragma bank 255
+#pragma bank {bank}
 #endif
 BANKREF(tilesector_polar_depthplane)
 
@@ -117,6 +120,8 @@ void tsp_polar_depthplane_load(uint8_t yaw, int8_t *nf, int8_t *sf) BANKED {{
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--emit-dir",required=True)
-    a=ap.parse_args();emit(a.emit_dir)
+    ap.add_argument("--map-inc", help="renderer map include whose normals/segment IDs must match this ROM")
+    ap.add_argument("--bank", type=int, default=255, help="fixed ROM bank for the coefficient table")
+    a=ap.parse_args();emit(a.emit_dir, a.map_inc, a.bank)
 
 if __name__=="__main__":main()
