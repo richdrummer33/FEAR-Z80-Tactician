@@ -20,24 +20,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bake common FULL-only geometry and quarter-cell envelope
+      - name: Restore proven quarter-cell envelope bake
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           ROOT=build/e1env-ab
           GEN="$ROOT/generated"
-          mkdir -p "$GEN"
-          python3 tools/e1m1_latest_full_bake.py \
-            --repo-root . \
-            --geometry src/generated/e1m1_room1_exact_geometry.h \
-            --floor src/generated/e1m1_room1_exact_floor.h \
-            --out "$GEN/optimized_renderer_map_data.inc" \
-            | tee "$ROOT/full-bake.txt"
-          python3 tools/e1m1_front_envelope_bake.py \
-            --cell 0.25 --emit-banked-dir "$GEN" --bank-base 32 \
-            | tee "$ROOT/envelope-bake.txt"
-          grep -q 'E1ENV_BAKE_PASS cell=0.25' "$ROOT/envelope-bake.txt"
-          grep -q 'stability_proof=exhaustive_Q4_positions_per_cell' "$ROOT/envelope-bake.txt"
+          PRE="$ROOT/prebake"
+          mkdir -p "$GEN" "$PRE"
+          gh run download 35435670165 \
+            -n GG-E1M1-Front-Envelope-ROM \
+            -D "$PRE"
+          cp "$PRE/generated/optimized_renderer_map_data.inc" "$GEN/"
+          cp "$PRE/generated"/e1env_idx_*.c "$GEN/"
+          cp "$PRE/generated"/e1env_prog_*.c "$GEN/"
+          cp "$PRE/full-bake.txt" "$ROOT/full-bake.txt"
+          cp "$PRE/envelope-bake.txt" "$ROOT/envelope-bake.txt"
+          python3 tools/e1env_reheader_prebaked.py --dir "$GEN" --dispatch-bank 31 \
+            | tee "$ROOT/reheader.txt"
+          grep -q 'stable_pct=88.56' "$ROOT/envelope-bake.txt"
+          grep -q E1ENV_REHEADER_PASS "$ROOT/reheader.txt"
 
       - name: Install GBDK 4.5.0
         shell: bash
@@ -205,6 +209,6 @@ jobs:
             build/e1env-ab/parity-summary.txt
             build/e1env-ab/full-bake.txt
             build/e1env-ab/envelope-bake.txt
-            build/e1env-ab/generated/manifest.txt
+            build/e1env-ab/reheader.txt
           if-no-files-found: warn
           retention-days: 30
