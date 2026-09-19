@@ -109,3 +109,50 @@ z=16..18.4 duct bands become coarse overhead masses.
 
 `tools/hl2_lab_obj_trace.py` regenerates slice-plane measurements from the
 extracted OBJ before future wall changes.
+
+
+## Dense half-room contrast experiment
+
+Temporary branch: `experiment/gg-kleiner-dense-contrast`.
+
+This branch keeps the random-access double-buffer architecture but spends the
+4 MiB cartridge budget on denser movement around the visually useful
+teleporter / Kleiner / desk half of the room:
+
+- 8 x 5 candidate grid,
+- 7 world-unit translation step instead of 10,
+- 24 yaw states instead of 16 (15-degree visual increments),
+- 28 legal positions after traced floor-plan and obstacle rejection,
+- 672 independently addressable camera states.
+
+The runtime no longer assumes a power-of-two yaw count. Turning wraps explicitly
+over 24 headings and movement maps those headings to the nearest of eight grid
+directions. Held controls also accelerate after the initial repeat delay; this
+changes input cadence only, not the correctness rule that a complete destination
+state must be staged before publication.
+
+The phone-emulator review showed large furniture masses swallowing the middle of
+several views while Kleiner could become visually small. The experiment therefore
+shrinks the desk / console / locker masses, enlarges and thickens the Kleiner
+primitive figure, adds silhouette definition to large props, keeps stronger
+silhouette + crease treatment on Kleiner, and introduces mild axis-dependent wall
+value bias so architectural corners do not depend on point-light distance alone.
+The GG palette spaces the warm value ramp more aggressively while preserving the
+orange authored accent and the mixed-light aliases.
+
+Validated GitHub Actions build:
+
+- host warning-clean build: PASS,
+- bake: 28 positions / 672 states,
+- peak dynamic patterns: 195,
+- mean dynamic patterns: 81.60,
+- packed state payload: 2,239,936 bytes,
+- state data banks: 224,
+- dispatch groups: 10,
+- final ROM: 4,194,304 bytes,
+- fixed-bank symbol checks: PASS,
+- Gearsystem boot / turn / forward traversal: PASS.
+
+The 224-bank state-data limit is exactly saturated. Further scene-detail growth
+should therefore first recover tile entropy or reduce state payload rather than
+silently increasing the lattice.
