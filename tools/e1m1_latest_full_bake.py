@@ -33,6 +33,9 @@ DEPTH_LAYERS=2
 NEAR_ALWAYS=4.0
 EYE_HEIGHT=5.0
 FULL=0
+LINTEL=1
+RISER=3
+WINDOW_SOURCE_IDS=(19,46)
 
 def parse_geometry(path: Path):
     text=path.read_text()
@@ -76,20 +79,25 @@ def floor_at(x: float,y: float,offs,runs):
             return 0
     return None
 
-def flatten_compact(verts,segs):
+def flatten_compact(verts,segs,windows=False):
     keep=[]
     used=[]
     for source_sid,(a,b,_z0,_z1,occ,bias) in enumerate(segs):
         if not occ:
             continue
-        keep.append((source_sid,a,b,bias))
+        if windows and source_sid in WINDOW_SOURCE_IDS:
+            keep.append((source_sid,a,b,bias,LINTEL))
+            keep.append((source_sid,a,b,bias,RISER))
+        else:
+            keep.append((source_sid,a,b,bias,FULL))
         if a not in used: used.append(a)
         if b not in used: used.append(b)
     remap={old:new for new,old in enumerate(used)}
     cv=[verts[i] for i in used]
-    cs=[(sid,src,remap[a],remap[b],bias) for sid,(src,a,b,bias) in enumerate(keep)]
-    if len(cv)!=30 or len(cs)!=30:
-        raise SystemExit(f"FULL-only geometry drift: verts={len(cv)} surfaces={len(cs)}")
+    cs=[(sid,src,remap[a],remap[b],bias,profile) for sid,(src,a,b,bias,profile) in enumerate(keep)]
+    want=32 if windows else 30
+    if len(cv)!=30 or len(cs)!=want:
+        raise SystemExit(f"geometry drift: verts={len(cv)} surfaces={len(cs)} expected={want}")
     return cv,cs,used
 
 def angle_delta(a,b):
@@ -107,7 +115,7 @@ def point_segment_dist(px,py,ax,ay,bx,by):
 def intersections(px,py,ang,verts,segs):
     dx,dy=math.cos(ang),math.sin(ang)
     out=[]
-    for sid,_src,a,b,_bias in segs:
+    for sid,_src,a,b,_bias,_profile in segs:
         ax,ay=verts[a]; bx,by=verts[b]
         sx,sy=bx-ax,by-ay
         den=dx*sy-dy*sx
@@ -123,7 +131,7 @@ def intersections(px,py,ang,verts,segs):
 
 def directed_angles(px,py,yaw,verts,segs):
     angles=[]
-    for _sid,_src,a,b,_bias in segs:
+    for _sid,_src,a,b,_bias,_profile in segs:
         ax,ay=verts[a]; bx,by=verts[b]
         for sx,sy in ((ax,ay),(bx,by),((ax+bx)*0.5,(ay+by)*0.5)):
             ang=math.atan2(sy-py,sx-px)
@@ -131,7 +139,7 @@ def directed_angles(px,py,yaw,verts,segs):
                 angles.append(ang)
     return angles
 
-def camera_candidates(px,py,yaw,verts,segs):
+def camera_candidates(px,py,yaw,verts,segs,depth_layers):
     mask=0
     angles=[
         yaw-CONE_HALF+(2.0*CONE_HALF)*(i+0.5)/UNIFORM_RAYS
@@ -143,15 +151,15 @@ def camera_candidates(px,py,yaw,verts,segs):
         uniq[int(round((a%(2.0*math.pi))*65536.0/(2.0*math.pi)))]=a
     for ang in uniq.values():
         hits=intersections(px,py,ang,verts,segs)
-        for _t,sid in hits[:DEPTH_LAYERS]:
+        for _t,sid in hits[:depth_layers]:
             mask|=1<<sid
-    for sid,_src,a,b,_bias in segs:
+    for sid,_src,a,b,_bias,_profile in segs:
         ax,ay=verts[a]; bx,by=verts[b]
         if point_segment_dist(px,py,ax,ay,bx,by)<=NEAR_ALWAYS:
             mask|=1<<sid
     return mask
 
-def bake_masks(verts,segs,offs,runs):
+def bake_masks(verts,segs,offs,runs,depth_layers):
     masks=[]; counts=[]; empty=0
     for gy in range(ROWS):
         for gx in range(COLS):
@@ -165,7 +173,7 @@ def bake_masks(verts,segs,offs,runs):
                 yaw=2.0*math.pi*yb/YAW_BINS
                 mask=0
                 for px,py in cameras:
-                    mask|=camera_candidates(px,py,yaw,verts,segs)
+                    mask|=camera_candidates(px,py,yaw,verts,segs,depth_layers)
                 if not cameras:
                     empty+=1
                 masks.append(mask)
@@ -198,20 +206,23 @@ def main():
     ap.add_argument("--geometry",default="src/generated/e1m1_room1_exact_geometry.h")
     ap.add_argument("--floor",default="src/generated/e1m1_room1_exact_floor.h")
     ap.add_argument("--out",required=True)
+    ap.add_argument("--windows",action="store_true",
+                    help="A/B variant: split source walls 19 and 46 into LINTEL+RISER windows")
     args=ap.parse_args()
     root=Path(args.repo_root)
     verts0,segs0=parse_geometry(Path(args.geometry))
     offs,runs=parse_floor(Path(args.floor))
-    verts,segs,source_vertices=flatten_compact(verts0,segs0)
-    masks,counts,empty=bake_masks(verts,segs,offs,runs)
+    verts,segs,source_vertices=flatten_compact(verts0,segs0,args.windows)
+    depth_layers=3 if args.windows else DEPTH_LAYERS
+    masks,counts,empty=bake_masks(verts,segs,offs,runs,depth_layers)
 
     baseline="\n".join((root/f"src/generated/tilesector_polar_data_part0{i}.inc").read_text() for i in range(5))
     keys=[]; anchors=[]; nx=[]; ny=[]; prof=[]; shade=[]; source_sids=[]
-    for sid,src,a,b,bias in segs:
+    for sid,src,a,b,bias,profile in segs:
         keys.append(sid | (a<<5) | (b<<10))
         anchors.append(a)
         qx,qy=q5_normal(a,b,verts); nx.append(qx); ny.append(qy)
-        prof.append(FULL); shade.append(bias); source_sids.append(src)
+        prof.append(profile); shade.append(bias); source_sids.append(src)
 
     pvs=[]
     for m in masks:
@@ -258,14 +269,20 @@ def main():
     out=Path(args.out); out.parent.mkdir(parents=True,exist_ok=True)
     out.write_text("\n\n".join(sections)+"\n")
 
-    print(f"E1FULL_BAKE_PASS source_vertices={len(verts0)} source_segments={len(segs0)} full_vertices={len(verts)} full_surfaces={len(segs)}")
-    print("profiles FULL=30 LINTEL=0 RAISED=0 RISER=0 windows=0 stairs=0 floor_insets=0")
+    full_count=sum(1 for p in prof if p==FULL)
+    lintel_count=sum(1 for p in prof if p==LINTEL)
+    riser_count=sum(1 for p in prof if p==RISER)
+    windows=2 if args.windows else 0
+    mode="WINDOW_AB" if args.windows else "FULL_ONLY"
+    print(f"E1FULL_BAKE_PASS mode={mode} source_vertices={len(verts0)} source_segments={len(segs0)} full_vertices={len(verts)} surfaces={len(segs)}")
+    print(f"profiles FULL={full_count} LINTEL={lintel_count} RAISED=0 RISER={riser_count} windows={windows} stairs=0 floor_insets=0")
     print(f"pvs cells={COLS*ROWS} yaw_bins={YAW_BINS} bytes={len(pvs)} candidate_mean={sum(counts)/len(counts):.2f} min={min(counts)} max={max(counts)}")
-    print(f"empty_unwalkable_masks={empty} depth_layers={DEPTH_LAYERS} uniform_rays={UNIFORM_RAYS}")
+    print(f"empty_unwalkable_masks={empty} depth_layers={depth_layers} uniform_rays={UNIFORM_RAYS}")
     print("source_sids="+",".join(map(str,source_sids)))
     print("source_vertices="+",".join(map(str,source_vertices)))
-    for sid,src,a,b,bias in segs:
-        print(f"surface {sid:02d} source_sid={src:02d} v{a}->v{b} xy={verts[a]}->{verts[b]} FULL shade={bias}")
+    pname={FULL:"FULL",LINTEL:"LINTEL",RISER:"RISER"}
+    for sid,src,a,b,bias,profile in segs:
+        print(f"surface {sid:02d} source_sid={src:02d} v{a}->v{b} xy={verts[a]}->{verts[b]} {pname[profile]} shade={bias}")
 
 if __name__=="__main__":
     main()
