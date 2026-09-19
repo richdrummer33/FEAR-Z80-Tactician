@@ -55,7 +55,6 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
           bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
-          cp build/libretro_runner build/optimized-map/libretro_runner
 
       - name: Prove boot, traversal, turning and both step transitions
         shell: bash
