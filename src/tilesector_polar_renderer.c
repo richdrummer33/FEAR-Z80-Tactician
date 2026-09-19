@@ -19,6 +19,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #else
 #include "generated/tilesector_polar_data.inc"
 #endif
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+#include "e1env_generated.h"
+#endif
 
 #ifndef TSPF_LOCAL_PROJECTION
 #define TSPF_LOCAL_PROJECTION 0
@@ -78,6 +81,10 @@ int16_t g_polar_run_step;
 /* Identity of the surface this run projects. The retained swept-boundary
  * path keys last frame's per-column result on it. */
 uint8_t g_polar_run_sid;
+/* Set only by the baked front-envelope path. Each coarse screen column has
+ * exactly one first-hit owner, so the assembly can install the FULL span mask
+ * directly instead of re-solving occlusion with polar_mark_span_fast(). */
+uint8_t g_polar_run_owned;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
@@ -130,6 +137,20 @@ typedef struct PolarRun
 
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
 static uint8_t g_run_order[TSPF_MAX_ACTIVE];
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+static uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
+/* Q12 camera-relative angles whose projection lands nearest each coarse
+ * 8-pixel column centre / boundary. The envelope assigns ownership by centre
+ * ray, then evaluates wall depth at the snapped column edges. */
+static const int16_t k_e1env_col_center_q12[20] = {
+    -497,-461,-422,-378,-330,-279,-223,-163,-101,-36,
+      29,  94, 156, 216, 273, 325, 373, 417, 457,494
+};
+static const int16_t k_e1env_col_edge_q12[21] = {
+    -512,-479,-442,-400,-355,-305,-251,-193,-132,-69,-4,
+      61, 125, 187, 245, 299, 350, 396, 438, 476,506
+};
+#endif
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
 static int8_t g_depth_nf_q7[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static int8_t g_depth_stepfac_q4[TSPF_DEPTH_NORMAL_CLASS_COUNT];
@@ -762,6 +783,67 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
     return 1u;
 }
 
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+/* Project one already-solved first-hit angular span.
+
+ * The baker tells us which FULL wall owns the interval between boundary
+ * vertices bv0..bv1. Runtime only projects those two boundary rays and the
+ * owner wall's depth. Coarse columns are assigned by their centre ray, so
+ * neighbouring envelope spans cannot compete for one column and no runtime
+ * depth sort / ownership arbitration is required.
+ */
+static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
+                                     const TSPState *s, PolarRun *r)
+{
+    uint16_t a0=bearing_vertex_q12(bv0,s), a1=bearing_vertex_q12(bv1,s);
+    uint16_t len=(uint16_t)((a1-a0)&4095u), yawq=(uint16_t)s->yaw<<4;
+    uint16_t w;
+    int16_t st,en,lo,hi;
+    uint8_t c0,cend,c1,invd,sv0,sv1;
+    int16_t rel0,rel1;
+
+    if(len==0u || len>=2048u) return 0u;
+    st=signed_q12((uint16_t)(a0-yawq));
+    en=(int16_t)(st+(int16_t)len);
+    while(en < -512){ st=(int16_t)(st+4096); en=(int16_t)(en+4096); }
+    while(st > 512){ st=(int16_t)(st-4096); en=(int16_t)(en-4096); }
+    lo=st < -512 ? -512 : st;
+    hi=en > 512 ? 512 : en;
+    if(hi<=lo) return 0u;
+
+    /* Half-open ownership intervals evaluated at each 8-pixel column centre. */
+    c0=0u;
+    while(c0<TSP_COLS && k_e1env_col_center_q12[c0] < lo) ++c0;
+    cend=c0;
+    while(cend<TSP_COLS &&
+          (k_e1env_col_center_q12[cend] < hi ||
+           (hi==512 && k_e1env_col_center_q12[cend]<=hi))) ++cend;
+    if(cend==c0) return 0u;
+    c1=(uint8_t)(cend-1u);
+
+    rel0=k_e1env_col_edge_q12[c0];
+    rel1=k_e1env_col_edge_q12[(uint8_t)(c1+1u)];
+    invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
+
+    w=k_tspf_keys[sid];
+    sv0=(uint8_t)((w>>5)&31u);
+    sv1=(uint8_t)((w>>10)&31u);
+
+    r->sid=sid;
+    r->v0=sv0; r->v1=sv1;
+    r->x0=(uint8_t)(c0<<3);
+    r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
+    r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+rel0)&4095u,rel0);
+    r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+rel1)&4095u,rel1);
+    r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
+    r->left_real=(uint8_t)((lo==st) && (bv0==sv0 || bv0==sv1));
+    r->right_real=(uint8_t)((hi==en) && (bv1==sv0 || bv1==sv1));
+    r->depth_plane=0u;
+    r->c0=c0; r->c1=c1;
+    return 1u;
+}
+#endif
+
 static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom)
 {
     uint16_t attr = 0;
@@ -1009,6 +1091,9 @@ static void add_key(uint8_t key, const TSPState *s, uint8_t *count)
 void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPColumn cols[TSP_COLS]) BANKED
 {
     uint8_t gx, gy, lx, ly, recipe, base_id, cond_count, count = 0, i;
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+    uint8_t envelope_active=0u;
+#endif
     uint16_t gi, off;
     const uint8_t *p, *b;
 #if defined(TSPF_E1M1_FULL_ONLY)
@@ -1035,6 +1120,40 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     g_tspf_selector_tests = 0u;
 #endif
 #if defined(TSPF_E1M1_FULL_ONLY)
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+    {
+        uint16_t pid=e1env_lookup_program_q4(s->x_q4,s->y_q4);
+        if(pid!=E1ENV_FALLBACK){
+            uint8_t n=e1env_load_program(pid,g_e1env_program), j;
+            uint32_t used_cols=0u;
+            envelope_active=1u;
+#ifdef __SDCC
+            g_polar_run_owned=1u;
+#endif
+            for(j=0u;j<n && count<TSPF_MAX_ACTIVE;++j){
+                uint8_t off=(uint8_t)(1u+(uint8_t)(j<<1));
+                uint8_t noff=(uint8_t)(1u+(uint8_t)(((j+1u<n)?(j+1u):0u)<<1));
+                uint8_t bv0=g_e1env_program[off];
+                uint8_t sid=g_e1env_program[(uint8_t)(off+1u)];
+                uint8_t bv1=g_e1env_program[noff];
+                if(sid!=0xffu && project_envelope_span(sid,bv0,bv1,s,&g_runs[count])){
+                    uint8_t c0=(uint8_t)(g_runs[count].x0>>3);
+                    uint8_t c1=(uint8_t)(g_runs[count].x1>>3), c;
+                    uint32_t mask=0u;
+                    for(c=c0;c<=c1;++c) mask|=((uint32_t)1u<<c);
+                    if(used_cols&mask){ envelope_active=0u; break; }
+                    used_cols|=mask;
+                    ++count;
+                }
+            }
+            if(envelope_active) goto e1full_candidates_ready;
+            count=0u; /* safety fallback: never trust an overlapping envelope */
+        }
+    }
+#endif
+#ifdef __SDCC
+    g_polar_run_owned=0u;
+#endif
     {
         int16_t wx = (int16_t)(s->x_q4 >> 4);
         int16_t wy = (int16_t)(s->y_q4 >> 4);
@@ -1056,6 +1175,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                     add_key(sid, s, &count);
         }
     }
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+e1full_candidates_ready:
+#endif
 #else
     gx = (uint8_t)((uint16_t)s->x_q4 >> 6);
     gy = (uint8_t)((uint16_t)s->y_q4 >> 6);
