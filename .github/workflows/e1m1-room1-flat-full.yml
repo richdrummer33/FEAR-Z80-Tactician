@@ -1,0 +1,169 @@
+name: Flat E1M1 FULL-wall playable build
+
+on:
+  push:
+    branches:
+      - feature/e1m1-room1-flat-full-windows
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flat-e1m1:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake flat E1M1 topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-flat
+          GEN="$OUT/generated"
+          mkdir -p "$GEN"
+          python3 tools/e1m1_room1_polar_bake.py --flat --out-dir "$GEN" | tee "$OUT/bake.txt"
+          grep -q 'E1PF_FLAT_PASS segments=32 full=28 window_bands=4 windows=2 floor_z=0 wall_z=0..10 window_open_z=3..7' "$OUT/bake.txt"
+          python3 tools/e1m1_room1_polar_tiles_gen.py --out-dir "$GEN" --bank 18 | tee "$OUT/tiles.txt"
+
+      - name: Validate flattened generated metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/e1m1-flat/flat-geometry-check.txt
+          import re
+          from pathlib import Path
+          p=Path("build/e1m1-flat/generated/e1m1_room1_polar_meta.h")
+          t=p.read_text()
+          def vals(name):
+              m=re.search(rf"{name}\[[^\]]+\]\s*=\s*\{{(.*?)\}};",t,re.S)
+              if not m: raise SystemExit(f"missing {name}")
+              return [int(x) for x in re.findall(r"-?\d+",m.group(1))]
+          z0,z1,full,src=map(vals,("k_e1pf_z0","k_e1pf_z1","k_e1pf_flat_full","k_e1pf_source_sid"))
+          assert len(z0)==len(z1)==len(full)==len(src)==32
+          assert sum(full)==28
+          assert all((a,b)==(0,10) for a,b,f in zip(z0,z1,full) if f)
+          bands=[(a,b,s) for a,b,f,s in zip(z0,z1,full,src) if not f]
+          assert bands==[(0,3,19),(7,10,19),(0,3,46),(7,10,46)], bands
+          print("FLAT_GEOMETRY_CHECK_PASS full=28 windows=2 bands=4 pillars=8")
+          PY
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build flat playable ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          OUT="$PWD/build/e1m1-flat"
+          GEN="$OUT/generated"
+          FLAGS=(-mz80:gg -debug -autobank -Wb-ext=.rel -Wl-j -Wm-yo32                  -Isrc -I"$GEN" -Wf--opt-code-speed                  -DTSPF_E1M1_ROOM1=1 -DE1M1_FLAT=1                  -DTSPF_LOCAL_PROJECTION=0 -DTSPF_SCREEN_DEPTH_PLANE=0                  -DTSPF_PROFILE_HOOKS=0)
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/main.o" src/main_e1m1_room1_gg.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/world.o" src/e1m1_room1_world.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/renderer.o" src/tilesector_polar_renderer.c
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/pvs.o" "$GEN/e1m1_room1_polar_pvs.c"
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/tiles.o" "$GEN/e1m1_room1_polar_tiles.c"
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntstate.o" src/tilesector_polar_ntstate_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/materialize.o" src/tilesector_polar_materialize_gg.s
+          "$LCC" "${FLAGS[@]}" -c -o "$OUT/ntupload.o" src/tilesector_polar_ntupload_raw_gg.s
+          "$LCC" "${FLAGS[@]}" -Wm-yS -o "$OUT/GG-E1M1-Room1-Flat-FULL-Windows.gg"             "$OUT/main.o" "$OUT/world.o" "$OUT/renderer.o" "$OUT/pvs.o" "$OUT/tiles.o"             "$OUT/ntstate.o" "$OUT/materialize.o" "$OUT/ntupload.o"
+          sha256sum "$OUT/GG-E1M1-Room1-Flat-FULL-Windows.gg" | tee "$OUT/SHA256.txt"
+          wc -c "$OUT/GG-E1M1-Room1-Flat-FULL-Windows.gg" | tee "$OUT/ROM-size.txt"
+          git rev-parse HEAD > "$OUT/SOURCE_COMMIT.txt"
+
+      - name: Build Gearsystem verification runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_e1m1_profile_tools.sh "$PWD/.toolchain/Gearsystem"
+          cp build/libretro_runner build/e1m1-flat/libretro_runner
+
+      - name: Prove boot, movement and turning
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-flat
+          CORE=.toolchain/Gearsystem/platforms/libretro/gearsystem_libretro.so
+          ROM="$OUT/GG-E1M1-Room1-Flat-FULL-Windows.gg"
+          SYM="$OUT/GG-E1M1-Room1-Flat-FULL-Windows.sym"
+          STATE_ADDR="$(awk '$2=="_g_e1m1_state"{split($1,a,":"); print a[2]; exit}' "$SYM")"
+          test -n "$STATE_ADDR"
+          "$OUT/libretro_runner" "$CORE" "$ROM" 120 "$OUT/boot.ppm" "$STATE_ADDR" 7 | tee "$OUT/boot.txt"
+          LIBRETRO_JOYPAD_MASK=16 LIBRETRO_JOYPAD_AFTER_FRAME=30             "$OUT/libretro_runner" "$CORE" "$ROM" 360 "$OUT/forward.ppm" "$STATE_ADDR" 7 | tee "$OUT/forward.txt"
+          LIBRETRO_JOYPAD_MASK=128 LIBRETRO_JOYPAD_AFTER_FRAME=30             "$OUT/libretro_runner" "$CORE" "$ROM" 240 "$OUT/turn-right.ppm" "$STATE_ADDR" 7 | tee "$OUT/turn-right.txt"
+          python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
+          from pathlib import Path
+          import re,struct
+          root=Path("build/e1m1-flat")
+          def st(n):
+              m=re.search(r"data=([0-9A-Fa-f]{14})",(root/n).read_text())
+              if not m: raise SystemExit("missing state "+n)
+              b=bytes.fromhex(m.group(1)); x,y,z=struct.unpack("<hhh",b[:6])
+              return x,y,z,b[6]
+          boot=st("boot.txt"); fwd=st("forward.txt"); turn=st("turn-right.txt")
+          assert fwd[:2]!=boot[:2], (boot,fwd)
+          assert turn[3]!=boot[3], (boot,turn)
+          assert boot[2]==80 and fwd[2]==80 and turn[2]==80, (boot,fwd,turn)
+          print("E1M1_FLAT_EMULATOR_PASS")
+          print("boot",boot)
+          print("forward",fwd)
+          print("turn",turn)
+          PY
+
+      - name: Write README
+        if: always()
+        shell: bash
+        run: |
+          cat > build/e1m1-flat/README.txt <<'EOF'
+          E1M1 Room 1 - flattened FULL-wall benchmark/playable build
+
+          Geometry:
+          - Same original XY floor footprint and outer-room layout.
+          - All floor heights forced to z=0 at runtime and in the PVS bake.
+          - Every stair/floor/ceiling transition surface removed.
+          - 28 structural wall spans use symmetric FULL materialization, z=0..10 around eye z=5.
+          - Both original square pillars remain: 8 pillar wall faces total.
+          - Two centered windows are cut into the long north/south walls (original segment IDs 19 and 46).
+            Each window is open from z=3..7, exactly centred around eye z=5; lower/upper wall bands remain.
+          - No risers, stair faces, or floor insets.
+
+          Controls:
+          D-pad up/down = forward/back
+          D-pad left/right = turn
+          B/A = strafe left/right
+          Start = movement speed scale
+
+          Note: this branch is based on the mature E1M1 Polar transplant. It uses the existing
+          E1M1 z-span projector, but structural surfaces explicitly select the FULL mirrored/VFLIP
+          materializer path. The four window bands use generic z-span edges so the aperture can remain open.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GG-E1M1-Room1-Flat-FULL-Windows
+          path: |
+            build/e1m1-flat/GG-E1M1-Room1-Flat-FULL-Windows.gg
+            build/e1m1-flat/GG-E1M1-Room1-Flat-FULL-Windows.sym
+            build/e1m1-flat/GG-E1M1-Room1-Flat-FULL-Windows.map
+            build/e1m1-flat/README.txt
+            build/e1m1-flat/SHA256.txt
+            build/e1m1-flat/ROM-size.txt
+            build/e1m1-flat/SOURCE_COMMIT.txt
+            build/e1m1-flat/bake.txt
+            build/e1m1-flat/tiles.txt
+            build/e1m1-flat/flat-geometry-check.txt
+            build/e1m1-flat/emulator-proof.txt
+            build/e1m1-flat/*.ppm
+            build/e1m1-flat/generated/
+          if-no-files-found: warn
+          retention-days: 30
