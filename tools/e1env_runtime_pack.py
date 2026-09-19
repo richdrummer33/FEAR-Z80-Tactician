@@ -7,8 +7,8 @@ owner byte (surface IDs are <= 29) for facts the Z80 otherwise rediscovers:
 
   bit 5: left envelope boundary is a physical endpoint of this wall
   bit 6: right envelope boundary is a physical endpoint of this wall
-  bit 7: right endpoint is shared by the next wall; suppress this duplicate
-         border and let the next wall own the single connected-corner line
+  bit 7: right endpoint is physically shared by the next wall. Runtime
+         suppresses the duplicate only if both spans own adjacent coarse cols.
 
 NO_WALL remains 0xff.
 
@@ -164,7 +164,7 @@ def main():
     packed, joined = pack_program_sources(gen)
     cache_dispatch(gen)
     print(
-        f"E1ENV_RUNTIME_PACK spans={packed} connected_right_suppressed={joined} "
+        f"E1ENV_RUNTIME_PACK spans={packed} connected_right_shared={joined} "
         "pid_cache=1")
 
 
