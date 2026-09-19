@@ -46,16 +46,18 @@ void tsp_polar_nt_upload_dirty(void);
 static uint8_t g_tile[32u];
 
 static const palette_color_t k_palettes[32] = {
-    /* Game Gear channels are 4-bit: keep every component in 0..15. */
-    RGB(0,0,0), RGB(4,5,5), RGB(6,6,5), RGB(5,4,3),
-    RGB(8,7,5), RGB(13,12,9), RGB(6,5,4), RGB(10,9,7),
+    /* Game Gear channels are 4-bit. Push the architectural values farther
+     * apart than the original beige ramp so corners, props and silhouettes
+     * survive the LCD / emulator scaling seen in the phone captures. */
+    RGB(0,0,0), RGB(3,5,5), RGB(8,7,5), RGB(4,3,2),
+    RGB(7,6,4), RGB(13,12,8), RGB(5,4,3), RGB(10,8,5),
     RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(0,0,0),
     RGB(0,0,0), RGB(0,0,0), RGB(0,0,0), RGB(15,4,1),
-    /* Palette 1: lit transform + mixed-tile ambient aliases. */
-    RGB(0,0,0), RGB(8,9,9), RGB(9,8,6), RGB(10,9,7),
-    RGB(12,11,8), RGB(15,14,10), RGB(11,10,7), RGB(14,13,9),
-    RGB(4,5,5), RGB(6,6,5), RGB(5,4,3), RGB(8,7,5),
-    RGB(13,12,9), RGB(6,5,4), RGB(10,9,7), RGB(15,6,2)
+    /* Palette 1: lit transform + exact ambient aliases in 8..14. */
+    RGB(0,0,0), RGB(7,9,9), RGB(11,10,7), RGB(8,7,5),
+    RGB(11,9,6), RGB(15,14,10), RGB(9,8,5), RGB(13,11,7),
+    RGB(3,5,5), RGB(8,7,5), RGB(4,3,2), RGB(7,6,4),
+    RGB(13,12,8), RGB(5,4,3), RGB(10,8,5), RGB(15,6,2)
 };
 
 static const int8_t k_move_dx[8]={ 1, 1, 0,-1,-1,-1, 0, 1};
@@ -93,7 +95,8 @@ static void init_base_tiles(void){
 static uint16_t state_for(uint8_t ix,uint8_t iy,uint8_t yaw){
     uint8_t p=kleiner_play_position_ordinal(ix,iy);
     if(p==0xffu)return 0xffffu;
-    return (uint16_t)p*KLEINER_PLAY_YAWS+(uint16_t)(yaw&(KLEINER_PLAY_YAWS-1u));
+    if(yaw>=KLEINER_PLAY_YAWS)yaw=(uint8_t)(yaw%KLEINER_PLAY_YAWS);
+    return (uint16_t)p*KLEINER_PLAY_YAWS+(uint16_t)yaw;
 }
 
 /* Load one complete random-access pose into the invisible pattern pool, then
@@ -129,11 +132,12 @@ static void present_state(uint16_t state,uint8_t boot){
     g_kleiner_play_phases=phases;
 }
 
-/* Quantize sixteen look directions to the nearest of eight grid movement
- * directions. This affects movement only; the rendered view still uses all
- * sixteen 22.5-degree yaw states. */
+/* Quantize the rendered heading lattice to the nearest of eight movement
+ * directions. With 24 visual headings this maps three adjacent 15-degree
+ * views to each 45-degree grid-motion direction. */
 static uint8_t move_dir8(uint8_t yaw){
-    return (uint8_t)(((yaw+1u)>>1)&7u);
+    uint16_t q=(uint16_t)yaw*8u+(KLEINER_PLAY_YAWS/2u);
+    return (uint8_t)((q/KLEINER_PLAY_YAWS)&7u);
 }
 
 static int8_t clamp_step(int8_t v){
@@ -203,14 +207,15 @@ static uint8_t apply_controls(uint8_t keys){
     if(keys&J_START){
         g_kleiner_play_ix=4u;
         g_kleiner_play_iy=1u;
-        g_kleiner_play_yaw=7u;
+        g_kleiner_play_yaw=10u;
     }else{
-        if((keys&J_LEFT)&&!(keys&J_RIGHT))
-            g_kleiner_play_yaw=(uint8_t)((g_kleiner_play_yaw+KLEINER_PLAY_YAWS-1u)&
-                                      (KLEINER_PLAY_YAWS-1u));
-        else if((keys&J_RIGHT)&&!(keys&J_LEFT))
-            g_kleiner_play_yaw=(uint8_t)((g_kleiner_play_yaw+1u)&
-                                      (KLEINER_PLAY_YAWS-1u));
+        if((keys&J_LEFT)&&!(keys&J_RIGHT)){
+            if(g_kleiner_play_yaw==0u)g_kleiner_play_yaw=KLEINER_PLAY_YAWS-1u;
+            else --g_kleiner_play_yaw;
+        }else if((keys&J_RIGHT)&&!(keys&J_LEFT)){
+            ++g_kleiner_play_yaw;
+            if(g_kleiner_play_yaw>=KLEINER_PLAY_YAWS)g_kleiner_play_yaw=0u;
+        }
 
         dir=move_dir8(g_kleiner_play_yaw);
         if((keys&J_UP)&&!(keys&J_DOWN)){
@@ -258,7 +263,7 @@ static uint8_t apply_controls(uint8_t keys){
 }
 
 void main(void){
-    uint8_t prev=0u,repeat=0u;
+    uint8_t prev=0u,repeat=0u,held_actions=0u;
     uint16_t start;
 
     DISPLAY_OFF;
@@ -272,7 +277,7 @@ void main(void){
     g_kleiner_play_actions=0u;
     g_kleiner_play_ix=4u;
     g_kleiner_play_iy=1u;
-    g_kleiner_play_yaw=7u;
+    g_kleiner_play_yaw=10u;
     g_kleiner_play_pool=1u;
     g_kleiner_play_phases=0u;
 
@@ -294,19 +299,25 @@ void main(void){
         keys=joypad();
 
         if(!keys){
-            prev=0u;repeat=0u;
+            prev=0u;repeat=0u;held_actions=0u;
             continue;
         }
 
-        /* Immediate first response. Holding a control repeats after two idle
-         * polls; the expensive state publication itself naturally limits the
-         * sustained movement rate, so this does not need a timer interrupt. */
+        /* Immediate response, then a short deliberate repeat delay. After
+         * three successful held repeats, issue a new state request on every
+         * input poll. present_state() still supplies the hard upper speed
+         * limit because each destination must be completely staged before
+         * publication. This gives the dense lattice a simple acceleration
+         * feel without adding any runtime interpolation. */
         if(keys!=prev){
-            repeat=0u;
-            apply_controls(keys);
-        }else if(++repeat>=2u){
-            repeat=0u;
-            apply_controls(keys);
+            repeat=0u;held_actions=0u;
+            if(apply_controls(keys))held_actions=1u;
+        }else{
+            uint8_t threshold=held_actions>=4u?1u:2u;
+            if(++repeat>=threshold){
+                repeat=0u;
+                if(apply_controls(keys)&&held_actions<255u)++held_actions;
+            }
         }
         prev=keys;
     }
