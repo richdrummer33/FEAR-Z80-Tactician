@@ -38,6 +38,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
 #include "tilesector_polar_depthplane_lut.h"
 #endif
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_BEARING_LUT
+#include "e1env_bearing_lut.h"
+#endif
 
 #if defined(TSPF_E1M1_FULL_ONLY)
 #define TSPF_MAX_ACTIVE 32u
@@ -554,6 +557,39 @@ static uint16_t bearing_q12(int16_t dxq4, int16_t dyq4)
     }
     ax8 = (uint8_t)ax;
     ay8 = (uint8_t)ay;
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_BEARING_LUT
+    {
+        uint8_t local=(uint8_t)(ax8&31u);
+        if(local!=31u)
+        {
+            uint16_t idx=(uint16_t)(((uint16_t)local<<8)|ay8);
+            switch(ax8>>5)
+            {
+            case 0u: a=e1env_bearing_0(idx); break;
+            case 1u: a=e1env_bearing_1(idx); break;
+            case 2u: a=e1env_bearing_2(idx); break;
+            case 3u: a=e1env_bearing_3(idx); break;
+            case 4u: a=e1env_bearing_4(idx); break;
+            case 5u: a=e1env_bearing_5(idx); break;
+            case 6u: a=e1env_bearing_6(idx); break;
+            default: a=e1env_bearing_7(idx); break;
+            }
+        }
+        else
+        {
+            if (ax8 >= ay8)
+            {
+                ratio = ratio_q8_sat(ay8, ax8);
+                a = k_tspf_atan_q12[ratio];
+            }
+            else
+            {
+                ratio = ratio_q8_sat(ax8, ay8);
+                a = (uint16_t)(1024u - k_tspf_atan_q12[ratio]);
+            }
+        }
+    }
+#else
     if (ax8 >= ay8)
     {
         ratio = ratio_q8_sat(ay8, ax8);
@@ -564,6 +600,7 @@ static uint16_t bearing_q12(int16_t dxq4, int16_t dyq4)
         ratio = ratio_q8_sat(ax8, ay8);
         a = (uint16_t)(1024u - k_tspf_atan_q12[ratio]);
     }
+#endif
     if (sx)
         a = (uint16_t)(2048u - a);
     if (sy)
