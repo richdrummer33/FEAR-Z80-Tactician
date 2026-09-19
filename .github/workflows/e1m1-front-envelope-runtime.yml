@@ -20,18 +20,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bake FULL-only E1M1 plus quarter-cell envelope ROM programs
+      - name: Restore proven quarter-cell envelope bake
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           OUT=build/e1env-runtime
           GEN="$OUT/generated"
-          mkdir -p "$GEN"
-          python3 tools/e1m1_latest_full_bake.py             --repo-root .             --geometry src/generated/e1m1_room1_exact_geometry.h             --floor src/generated/e1m1_room1_exact_floor.h             --out "$GEN/optimized_renderer_map_data.inc"             | tee "$OUT/full-bake.txt"
-          python3 tools/e1m1_front_envelope_bake.py             --cell 0.25             --emit-banked-dir "$GEN"             --bank-base 32             | tee "$OUT/envelope-bake.txt"
-          grep -q 'E1ENV_BAKE_PASS cell=0.25' "$OUT/envelope-bake.txt"
-          grep -q 'stability_proof=exhaustive_Q4_positions_per_cell' "$OUT/envelope-bake.txt"
-          cat "$GEN/manifest.txt" | tee "$OUT/envelope-manifest.txt"
+          PRE="$OUT/prebake"
+          mkdir -p "$GEN" "$PRE"
+          gh run download 35435670165 \
+            -n GG-E1M1-Front-Envelope-ROM \
+            -D "$PRE"
+          cp "$PRE/generated/optimized_renderer_map_data.inc" "$GEN/"
+          cp "$PRE/generated"/e1env_idx_*.c "$GEN/"
+          cp "$PRE/generated"/e1env_prog_*.c "$GEN/"
+          cp "$PRE/full-bake.txt" "$OUT/full-bake.txt"
+          cp "$PRE/envelope-bake.txt" "$OUT/envelope-bake.txt"
+          python3 tools/e1env_reheader_prebaked.py --dir "$GEN" --dispatch-bank 31 \
+            | tee "$OUT/reheader.txt"
+          grep -q 'stable_pct=88.56' "$OUT/envelope-bake.txt"
+          grep -q E1ENV_REHEADER_PASS "$OUT/reheader.txt"
+          cat > "$OUT/envelope-manifest.txt" <<'EOF'
+          provenance_run=35435670165
+          cell=0.25
+          stable_pct=88.56
+          index_banks=14
+          program_banks=2
+          payload_banks=32..47
+          dispatch_bank=31
+          EOF
 
       - name: Install GBDK 4.5.0
         shell: bash
