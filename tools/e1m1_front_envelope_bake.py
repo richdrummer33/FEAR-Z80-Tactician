@@ -398,6 +398,13 @@ def main():
         print(f"banked_index_banks={len(banked[0])} banked_program_banks={len(banked[1])} "
               f"bank_range={args.bank_base}..{args.bank_base+len(banked[0])+len(banked[1])-1}")
     print(f"fallback_cells={unstable} empty_or_unwalkable={result['empty']}")
+    rgx=int((22-base.WORLD_MIN_X)/result["cell"])
+    rgy=int((52-base.WORLD_MIN_Y)/result["cell"])
+    rpid=result["grid"][rgy*result["cols"]+rgx]
+    if rpid==FALLBACK:
+        print("reset_22_52=FALLBACK")
+    else:
+        print(f"reset_22_52=program_{rpid} spans={len(result['programs'][rpid])}")
     if args.cell <= 0.2500001:
         print("stability_proof=exhaustive_Q4_positions_per_cell")
     print("runtime_contract=cell->program; program=(boundary_vertex,first_hit_surface)*; "
