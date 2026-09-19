@@ -264,6 +264,8 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         bank += 1
 
     dispatch_bank=bank_base-1
+    if bank > 255:
+        raise SystemExit(f"front-envelope tables need bank {bank-1}, beyond 4 MiB bank 255")
     hdr=[
         "#ifndef E1ENV_GENERATED_H",
         "#define E1ENV_GENERATED_H",
@@ -293,13 +295,20 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
     cell_q4=int(round(result['cell']*16))
     # Current runtime intentionally uses quarter-unit cells and 16-row bands;
     # emit shifts/masks instead of asking SDCC for integer division helpers.
-    if cell_q4==4:
+    if cell_q4==1:
+        gx_expr="(uint16_t)rx"
+        gy_expr="(uint16_t)ry"
+    elif cell_q4==4:
         gx_expr="((uint16_t)rx >> 2)"
         gy_expr="((uint16_t)ry >> 2)"
     else:
         gx_expr=f"((uint16_t)rx / {cell_q4}u)"
         gy_expr=f"((uint16_t)ry / {cell_q4}u)"
-    if rows_per_bank==16:
+    if rows_per_bank==4 and cols==1536:
+        # 1536 = 1024+512. Local stays below 6144.
+        local_expr="(uint16_t)((((gy & 3u)<<10)+((gy & 3u)<<9))+gx)"
+        band_expr="(uint8_t)(gy >> 2)"
+    elif rows_per_bank==16:
         local_expr="(uint16_t)(((gy & 15u) * E1ENV_COLS) + gx)"
         band_expr="(uint8_t)(gy >> 4)"
     else:
@@ -345,6 +354,7 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         f"bank_last={bank-1}",
         f"dispatch_bank={dispatch_bank}",
         f"generated_c_files={1+len(idx_banks)+len(prog_meta)}",
+        f"rows_per_index_bank={rows_per_bank}",
     ]
     (outdir/"manifest.txt").write_text("\n".join(manifest)+"\n")
     return idx_banks,prog_meta
@@ -353,10 +363,11 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--geometry",default="src/generated/e1m1_room1_exact_geometry.h")
     ap.add_argument("--floor",default="src/generated/e1m1_room1_exact_floor.h")
-    ap.add_argument("--cell",type=float,default=1.0,choices=(1.0,0.5,0.25))
+    ap.add_argument("--cell",type=float,default=1.0,choices=(1.0,0.5,0.25,0.0625))
     ap.add_argument("--out")
     ap.add_argument("--emit-banked-dir")
     ap.add_argument("--bank-base",type=int,default=32)
+    ap.add_argument("--rows-per-bank",type=int,default=16)
     args=ap.parse_args()
 
     verts0,segs0=base.parse_geometry(Path(args.geometry))
@@ -376,7 +387,7 @@ def main():
         rom_bytes,stream_bytes=write_include(Path(args.out),result)
     banked=None
     if args.emit_banked_dir:
-        banked=write_banked_sources(args.emit_banked_dir,result,args.bank_base)
+        banked=write_banked_sources(args.emit_banked_dir,result,args.bank_base,args.rows_per_bank)
 
     # Geometry-grid alignment census.  Integer vertices are naturally aligned
     # to both 1.0 and 0.5 grids; report it explicitly because future authored
@@ -405,7 +416,9 @@ def main():
         print("reset_22_52=FALLBACK")
     else:
         print(f"reset_22_52=program_{rpid} spans={len(result['programs'][rpid])}")
-    if args.cell <= 0.2500001:
+    if args.cell <= 0.0625001:
+        print("stability_proof=one_baked_record_per_exact_Q4_player_position")
+    elif args.cell <= 0.2500001:
         print("stability_proof=exhaustive_Q4_positions_per_cell")
     print("runtime_contract=cell->program; program=(boundary_vertex,first_hit_surface)*; "
           "ordinary FULL ownership/sort are bake-time facts")
