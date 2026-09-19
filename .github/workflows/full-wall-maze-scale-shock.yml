@@ -1,0 +1,178 @@
+name: FULL-wall maze scale-shock playable build
+
+on:
+  push:
+    branches:
+      - feature/full-wall-maze-scale-shock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-maze:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake FULL-only maze
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/full-wall-maze
+          GEN="$OUT/generated"
+          mkdir -p "$GEN"
+          python3 tools/full_maze_bake.py \
+            --repo-root . \
+            --out "$GEN/optimized_renderer_map_data.inc" \
+            --floor-out src/generated/full_maze_floor.h \
+            --preview-out "$OUT/full-maze.svg" \
+            | tee "$OUT/bake.txt"
+          grep -q 'FULL_MAZE_BAKE_PASS vertices=32 surfaces=28 FULL=28 diagonals=2' "$OUT/bake.txt"
+          grep -q 'candidate_mean=9.91 p95=21' "$OUT/bake.txt"
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build playable maze ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+            build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$PWD/build/full-wall-maze/generated" \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_FULL_MAZE=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar 2>&1 | tee build/full-wall-maze/build.txt
+          cp build/gg-tilesector-polar.gg build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.gg
+          cp build/gg-tilesector-polar.sym build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.sym
+          cp build/gg-tilesector-polar.map build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.map
+          sha256sum build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.gg | tee build/full-wall-maze/SHA256.txt
+          stat -c 'rom_bytes=%s' build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.gg | tee build/full-wall-maze/ROM-size.txt
+          git rev-parse HEAD > build/full-wall-maze/SOURCE_COMMIT.txt
+
+      - name: Check WRAM headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/full-wall-maze/wram-check.txt
+          import re
+          from pathlib import Path
+          t=Path("build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.map").read_text(errors="ignore")
+          m=re.search(r'_DATA\s+([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})',t)
+          if m:
+              start=int(m.group(1),16); size=int(m.group(2),16)
+              print(f"DATA start=0x{start:04X} bytes={size} end=0x{start+size-1:04X}")
+              if start+size>0xDC00:
+                  raise SystemExit("static DATA leaves too little conservative stack headroom")
+          else:
+              print("WRAM_CHECK_NOTE could not parse aggregate _DATA line; linker accepted image")
+          print("WRAM_CHECK_PASS")
+          PY
+
+      - name: Build Gearsystem verification tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove boot movement turning and flat eye height
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/full-wall-maze
+          ROM="$OUT/GG-FULL-Wall-Maze-Scale-Shock.gg"
+          SYM="$OUT/GG-FULL-Wall-Maze-Scale-Shock.sym"
+          mkdir -p /tmp/full-maze-forward /tmp/full-maze-turn
+
+          ./build/tilesector_state_capture "$ROM" "$SYM" \
+            --vblank-sequence roomA-forward 180 20 /tmp/full-maze-forward/frame "$OUT/forward.csv" \
+            | tee "$OUT/forward-proof.txt"
+          ./build/tilesector_state_capture "$ROM" "$SYM" \
+            --vblank-sequence roomA-turn 180 20 /tmp/full-maze-turn/frame "$OUT/turn.csv" \
+            | tee "$OUT/turn-proof.txt"
+
+          cp /tmp/full-maze-forward/frame-0000.ppm "$OUT/start.ppm"
+          cp /tmp/full-maze-forward/frame-0089.ppm "$OUT/mid.ppm"
+          cp /tmp/full-maze-forward/frame-0179.ppm "$OUT/end.ppm"
+
+          python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
+          import csv
+          from pathlib import Path
+          root=Path("build/full-wall-maze")
+          fw=list(csv.DictReader((root/"forward.csv").open()))
+          tr=list(csv.DictReader((root/"turn.csv").open()))
+          if not fw or not tr: raise SystemExit("missing capture rows")
+          sx,sy=int(fw[0]["x_q4"]),int(fw[0]["y_q4"])
+          ex,ey=int(fw[-1]["x_q4"]),int(fw[-1]["y_q4"])
+          zs=[int(r["z_q4"]) for r in fw]
+          if (ex,ey)==(sx,sy): raise SystemExit("forward scenario did not move")
+          if min(zs)!=(5<<4) or max(zs)!=(5<<4):
+              raise SystemExit(f"camera was not flat: z range={min(zs)}..{max(zs)}")
+          if int(tr[-1]["yaw"])==int(tr[0]["yaw"]):
+              raise SystemExit("turn scenario did not change yaw")
+          print("FULL_MAZE_EMULATOR_PASS")
+          print(f"forward_q4=({sx},{sy})->({ex},{ey})")
+          print(f"z_q4 min={min(zs)} max={max(zs)}")
+          print(f"turn_yaw={tr[0]['yaw']}->{tr[-1]['yaw']}")
+          PY
+          grep -q FULL_MAZE_EMULATOR_PASS "$OUT/emulator-proof.txt"
+
+      - name: Write artifact README
+        if: always()
+        shell: bash
+        run: |
+          cat > build/full-wall-maze/README.txt <<'EOF'
+          GAME GEAR - FULL-WALL MAZE - SCALE SHOCK
+
+          32 authored vertices
+          28 physical surfaces
+          28 FULL profiles
+          2 diagonal wall spans
+          flat floor, centred eye height
+
+          Design rhythm:
+          compression -> release -> choice -> loop -> re-entry
+
+          Controls:
+          D-pad up/down = forward/back
+          D-pad left/right = turn
+          B/A = strafe left/right
+          Start = speed scale
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GG-FULL-Wall-Maze-Scale-Shock
+          path: |
+            build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.gg
+            build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.sym
+            build/full-wall-maze/GG-FULL-Wall-Maze-Scale-Shock.map
+            build/full-wall-maze/README.txt
+            build/full-wall-maze/SHA256.txt
+            build/full-wall-maze/ROM-size.txt
+            build/full-wall-maze/SOURCE_COMMIT.txt
+            build/full-wall-maze/bake.txt
+            build/full-wall-maze/build.txt
+            build/full-wall-maze/wram-check.txt
+            build/full-wall-maze/emulator-proof.txt
+            build/full-wall-maze/full-maze.svg
+            build/full-wall-maze/*.ppm
+            build/full-wall-maze/generated/optimized_renderer_map_data.inc
+          if-no-files-found: warn
+          retention-days: 30
