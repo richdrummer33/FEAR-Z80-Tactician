@@ -4233,3 +4233,118 @@ therefore scene content rather than motion cost, and the saturation above 250°/
 is partly the trace revisiting the same orientations. The direction and rough
 magnitude are sound; the precise percentages are not, and a fairer version would
 match the swept angle rather than the frame count.
+
+## Rung 26 — the retained swept-boundary gate, built and priced
+
+The event-census line said the promising architecture was to retain the
+projected surface and let boundary movement generate the raster updates. This
+is that, built on device and gated on byte-identical output.
+
+### What it is
+
+Per (surface, coarse column) the materializer now keeps the six bytes that
+*completely* determine what `surface_column_fast` writes:
+
+| bytes | what | why it is exact |
+| --- | --- | --- |
+| 2 | `inv>>1` at the column's left and right edge | the only quantity `profile_half` consumes; with the surface's profile (constant per sid) it generates all four pixel endpoints |
+| 1 | border bits | first/last column of a physically-real chain |
+| 3 | the 18-bit unclaimed coverage mask | the exact set of rows this surface writes |
+
+Shade is constant 1 on this path and the clip window is the whole viewport, so
+nothing else is an input. If the key is bit-identical to the one this surface
+produced for this column last frame, every cell it would write already holds the
+answer, and the entire raster below it — both edges and the interior fill — is
+dead work. Coverage is still marked before the gate, so the end-of-frame
+reconciliation still sees the column as owned and does not restore it.
+
+Keying on `inv>>1` rather than `inv` matters and is free: the renderer never
+looks at the low bit, so keying on it made the gate twice as sensitive as the
+geometry it guards. That change alone took the materializer from 111,087 to
+104,353 T on cruise.
+
+### The equivalence harness earned its keep
+
+The first version closed two of the four ways a retained key can lie and was
+caught on `spin` inside four frames of sixty: one column drifting left one per
+update, holding an older frame's wall. The two missing cases were the paths
+where a column is *visited but not rasterized* — wholly occluded, or clipped out
+of view — which leave the slot holding an older key while the surface looks
+current, and columns outside last frame's column range. Both are now closed by
+zeroing the slot's coverage triple, which a live key can never be. All four
+cases are written up as rule 14 of the architecture contract.
+
+### Equivalence, under an explicit motion envelope
+
+`tools/frame/verify_envelope.sh` rebuilds *both* the reference and the current
+tree at each turn rate and compares them against each other, rather than against
+a baseline captured at one rate. Name table byte-identical over **150 frames on
+all four traces at 84, 253 and 562 deg/s** — twelve combinations.
+
+### What it costs and what it saves
+
+Render-stage mean T-states a frame, 100 frames. Whole-loop numbers are not used
+here because the loop is quantized to VBlank, so a few thousand T of render can
+show up as a whole extra 60 Hz frame of vsync wait.
+
+| trace | render before | render after | delta | materializer | gate | skip rate |
+| --- | --- | --- | --- | --- | --- | --- |
+| cruise | 335,249 | 310,118 | **-7.5%** | 149,390 -> 104,354 | 14,533 | 49.0% |
+| corners | 308,589 | 293,617 | **-4.9%** | 133,404 -> 100,493 | 12,962 | 41.5% |
+| stress | 270,244 | 258,417 | **-4.4%** | 121,841 -> 95,556 | 10,138 | 33.3% |
+| spin | 265,178 | 268,603 | **+1.3%** | 120,621 -> 110,326 | 9,348 | 11.5% |
+
+**A skipped column saves about 3,240 T-states.** That is an independent
+confirmation of rung 17's 3,114 T of materialization a column, arrived at by a
+completely different route. A visit costs 380-475 T after three rounds of
+slimming (a per-run column cursor instead of a per-column multiply, the trusted
+range hoisted to the run, the compare inlined and falling straight into a
+partial store from the first byte that differed, and the validity map kept as
+three bytes of bitmask instead of twenty-four of expansion).
+
+So the gate pays above a **~12% skip rate**. Spin sits at 11.5%.
+
+### Spin is the honest case, not the anomaly
+
+Spin is continuous yaw with nothing else moving, and it loses 1.3%. That is not
+the gate misbehaving: it is the case where there is genuinely nothing to reuse,
+and the gate correctly discovers that at a cost of one-eighth of what it would
+have spent rasterizing. The saturation result from rung 25 predicted exactly this
+shape — an event-driven renderer's worst case is roughly today's average case —
+and here it is, measured, at 1.3% rather than something that has to be designed
+around.
+
+The more interesting result is that **the skip rate barely degrades with turn
+rate**. At 253 deg/s: cruise 47.3% (from 49.0), corners 45.3% (*up* from 41.5),
+stress 33.4%, spin 9.2%. Mixed motion keeps roughly half its columns reusable
+even under harsh turning, which is not what the pure-spin number alone suggests.
+
+### Where the remaining cost is
+
+The gate skips the raster but still pays the full ~1,500 T a column of geometry
+generation, because the key is only known *after* the geometry is computed.
+Two directions follow from that, both now cheap to try:
+
+- **Run-level retention.** If a run's whole tuple (c0, c1, iq, step, profile,
+  borders) is bit-identical, every column of it is, and the generation can be
+  skipped too. This fails under continuous turning, where iq changes every
+  update, and is exactly right for standing still and for translation that
+  leaves a wall's projection unchanged.
+- **A two-tier gate.** The interior fill depends only on the tile rows and the
+  fill word, not on the exact pixel endpoints, so an interior-only skip keyed on
+  the quantized rows would hit considerably more often than the whole-column
+  skip. It saves less a hit — the interior, not the edges — but the interior is
+  where rung 18 measured 142.6 T a row going to cells that mostly do not change.
+
+### Two measurement bugs fixed on the way
+
+- `measure_all.sh` and `verify_and_measure.sh` deleted the main and trace
+  objects but not the motion object, so the turn-rate sweep's last build
+  (562 deg/s) leaked into what was labelled a default-rate baseline. Caught
+  because `spin` came back at exactly the sweep's 562 deg/s row. Both scripts now
+  delete it.
+- The new gate helpers were unexported at first, which reproduced the rung-18
+  PC-range attribution trap exactly: the materializer appeared to drop 25% while
+  the whole loop went up. The gate is now its own timeline group, `retained
+  gate`, precisely because folding it into the materializer would hide the one
+  number that decides whether to keep it.

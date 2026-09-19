@@ -39,6 +39,9 @@ void tsp_polar_nt_begin_frame(void);
 void tsp_polar_nt_end_frame(void);
 void tsp_polar_surface_column_fast(void);
 void tsp_polar_run_geometry_fast(void);
+void tsp_polar_ret_begin_frame(void);
+void tsp_polar_ret_end_frame(void);
+void tsp_polar_ret_invalidate(void);
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
 #endif
@@ -64,6 +67,9 @@ uint8_t g_polar_run_left_real;
 uint8_t g_polar_run_right_real;
 int16_t g_polar_run_iq;
 int16_t g_polar_run_step;
+/* Identity of the surface this run projects. The retained swept-boundary
+ * path keys last frame's per-column result on it. */
+uint8_t g_polar_run_sid;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
@@ -240,6 +246,9 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     g_depth_yaw_cache = 0xffu;
+#endif
+#ifdef __SDCC
+    tsp_polar_ret_invalidate();
 #endif
 #ifndef __SDCC
     g_map_ready = 0u;
@@ -800,6 +809,7 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r)
         g_polar_run_profile = profile;
     if (g_tspf_appearance_mode == 0u)
     {
+        g_polar_run_sid = r->sid;
         g_polar_run_c0 = c0;
         g_polar_run_c1 = c1;
         g_polar_run_left_real = r->left_real;
@@ -946,6 +956,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
     tsp_polar_nt_begin_frame();
+    tsp_polar_ret_begin_frame();
     (void)cols;
 #else
     if (!g_map_ready)
@@ -1008,6 +1019,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         draw_run(out_map, cols, &g_runs[g_run_order[i]]);
 done:
 #ifdef __SDCC
+    /* Retained keys are only trusted one frame deep; settle which surfaces
+     * earned that trust before the restore pass can move any cell. */
+    tsp_polar_ret_end_frame();
     /* Restore only geometry-owned cells that disappeared this frame. */
     tsp_polar_nt_end_frame();
 #endif

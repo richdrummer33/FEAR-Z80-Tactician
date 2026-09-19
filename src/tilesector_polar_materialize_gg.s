@@ -17,6 +17,7 @@
         .globl  _g_polar_run_right_real
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
+        .globl  _g_polar_run_sid
         .globl  _g_polar_nt_cov_cur
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
@@ -55,6 +56,15 @@
         .globl  _tsp_h_prepare_edge
         .globl  _tsp_h_prepare_symfull_edges
         .globl  _tsp_h_draw_symfull_edge_pair
+; Retained swept-boundary path (rung 26).
+        .globl  _tsp_polar_ret_begin_frame
+        .globl  _tsp_polar_ret_end_frame
+        .globl  _tsp_polar_ret_invalidate
+        .globl  _tsp_h_ret_column_gate
+        .globl  _tsp_h_ret_column_kill
+        .globl  _tsp_h_ret_run_begin
+        .globl  _tsp_h_ret_bitmask
+        .globl  _tsp_probe_ret_skip
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
@@ -73,6 +83,7 @@ _tsp_polar_run_geometry_fast::
         ld      (#r_run_col$), a
         ld      a, #1
         ld      (#_g_polar_mat_shade), a
+        call    ret_run_begin$
 
 run_geom_loop$:
         ; inv_left = clamp_u8(((iq + 32) arithmetic>>6), 0..255)
@@ -94,6 +105,7 @@ run_geom_loop$:
         ; Left profile endpoints from half=invl>>1.
         ld      a, (#r_run_invl$)
         srl     a
+        ld      (#r_run_halfl$), a
         call    profile_half$
         ld      (#_g_polar_mat_top_l), hl
         ld      (#_g_polar_mat_bot_l), de
@@ -101,6 +113,7 @@ run_geom_loop$:
         ; Right profile endpoints from half=invr>>1.
         ld      a, (#r_run_invr$)
         srl     a
+        ld      (#r_run_halfr$), a
         call    profile_half$
         ld      (#_g_polar_mat_top_r), hl
         ld      (#_g_polar_mat_bot_r), de
@@ -139,6 +152,10 @@ run_border_done$:
         ld      de, (#_g_polar_run_step)
         add     hl, de
         ld      (#_g_polar_run_iq), hl
+        ld      hl, (#r_ret_ptr$)
+        ld      de, #8
+        add     hl, de
+        ld      (#r_ret_ptr$), hl
 
         ld      a, (#r_run_col$)
         ld      c, a
@@ -360,12 +377,12 @@ bot_minmax_done$:
         xor     a
 polar_cov_first_nonneg$:
         cp      #18
-        jr      nc, polar_cov_done$
+        jr      nc, ret_kill_cov_done$
         ld      e, a                   ; E=first visible owned row
 
         ld      a, (#r_bot_max$)
         bit     7, a
-        jr      nz, polar_cov_done$
+        jr      nz, ret_kill_cov_done$
         cp      #18
         jr      c, polar_cov_last_ready$
         ld      a, #17
@@ -375,12 +392,28 @@ polar_cov_last_ready$:
         cp      c
         jr      c, polar_cov_emit$
         jr      z, polar_cov_emit$
+ret_kill_cov_done$:
+        ; Nothing of this surface lands in this column, so the retained slot
+        ; must not be able to answer for it next frame.
+        call    ret_column_kill$
         jr      polar_cov_done$
 polar_cov_emit$:
         call    polar_mark_span_fast$   ; returns A=OR of previously-unclaimed rows
 _tsp_polar_p_span::
         or      a
-        jp      z, raster_done$         ; nearer geometry already owns whole span
+        jr      nz, ret_gate_live$
+        call    ret_column_kill$        ; wholly occluded: nothing written here
+        jp      raster_done$
+ret_gate_live$:
+        ; Retained swept boundary: this surface's contribution to this coarse
+        ; column is fully determined by (invl, invr, border, unclaimed[3]).
+        ; If that key is bit-identical to the one it produced last frame, the
+        ; cells it would write already hold the answer, so the whole raster
+        ; is dead work. Coverage is already marked above, so nt_end_frame
+        ; still sees this column as owned and will not restore it.
+        call    ret_column_gate$
+_tsp_probe_ret_skip::
+        jp      z, raster_done$
 polar_cov_done$:
 
         ; FULL is exact hardware symmetry: calculate each top edge word once
@@ -1385,7 +1418,385 @@ edge_lut$:
         .dw 0x0E5E, 0x0E56, 0x0E4E, 0x0E46, 0x0E3E, 0x0E36, 0x0E2E, 0x0E2E
         .dw 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E
 
+
+; ---------------------------------------------------------------------------
+; Retained swept-boundary state (rung 26).
+;
+; Per (surface, coarse column) this keeps the six bytes that completely
+; determine what surface_column_fast writes: the two Q8 inverse depths that
+; generate every pixel endpoint through the (per-surface constant) profile,
+; the border bits, and the three coverage bytes naming the rows this surface
+; actually owns. Shade is constant 1 on this path and the clip window is the
+; full viewport, so nothing else is an input.
+;
+; An entry is only trusted when the surface was drawn in the immediately
+; preceding frame exactly once. A surface that vanished for a frame may have
+; had its cells restored to background by nt_end_frame, and a surface drawn
+; twice in one frame would have its own two runs overwrite each other's key,
+; so both cases are invalidated rather than reasoned about.
+; ---------------------------------------------------------------------------
+
+; A = sid -> HL = &polar_ret_live$[sid>>3], C = bit mask for that sid.
+ret_bitmask$:
+_tsp_h_ret_bitmask::
+        push    af
+        and     #7
+        ld      l, a
+        ld      h, #0
+        ld      de, #ret_mask8$
+        add     hl, de
+        ld      c, (hl)
+        pop     af
+        srl     a
+        srl     a
+        srl     a
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_ret_live$
+        add     hl, de
+        ret
+
+; Drop every retained key. Called on renderer reset, where nothing about the
+; previous name table can be assumed.
+_tsp_polar_ret_invalidate::
+        push    bc
+        push    hl
+        ld      hl, #polar_ret_valid$
+        ld      b, #3
+ret_inval_loop$:
+        ld      (hl), #0
+        inc     hl
+        djnz    ret_inval_loop$
+        ld      hl, #polar_ret_pc0$
+        ld      b, #24
+ret_inval_r0$:
+        ld      (hl), #1
+        inc     hl
+        djnz    ret_inval_r0$
+        ld      hl, #polar_ret_pc1$
+        ld      b, #24
+ret_inval_r1$:
+        ld      (hl), #0
+        inc     hl
+        djnz    ret_inval_r1$
+        pop     hl
+        pop     bc
+        ; fall through to clear live/poison and disable the direct path
+_tsp_polar_ret_begin_frame::
+        push    hl
+        xor     a
+        ld      (#polar_ret_live$+0), a
+        ld      (#polar_ret_live$+1), a
+        ld      (#polar_ret_live$+2), a
+        ld      (#polar_ret_poison$+0), a
+        ld      (#polar_ret_poison$+1), a
+        ld      (#polar_ret_poison$+2), a
+        ld      (#r_ret_fresh$), a
+        ld      hl, #0
+        ld      (#r_ret_base$), hl      ; direct column calls bypass retention
+        pop     hl
+        ret
+
+; valid[sid] <- drawn exactly once this frame.
+; valid <- drawn exactly once this frame. Three bytes of bitmask, not
+; twenty-four bytes of expansion: the per-run path already has the bit index
+; in hand, so expanding it here was work nobody needed.
+_tsp_polar_ret_end_frame::
+        push    bc
+        push    de
+        push    hl
+        ld      hl, #polar_ret_live$
+        ld      de, #polar_ret_poison$
+        ld      bc, #(polar_ret_valid$ - polar_ret_live$)
+ret_end_group$:
+        ld      a, (de)
+        cpl
+        and     (hl)
+        push    hl
+        add     hl, bc
+        ld      (hl), a
+        pop     hl
+        inc     hl
+        inc     de
+        ld      a, l
+        sub     #<(polar_ret_live$ + 3)
+        jr      nz, ret_end_group$
+        pop     hl
+        pop     de
+        pop     bc
+        ret
+
+; Called once per run, from run_geometry_fast, with _g_polar_run_sid live.
+ret_run_begin$:
+_tsp_h_ret_run_begin::
+        ld      a, (#_g_polar_run_sid)
+        cp      #17
+        jp      nc, ret_run_disable$
+        call    ret_bitmask$            ; HL=&live[group], C=mask
+        ld      a, (hl)
+        and     c
+        jr      z, ret_run_first$
+
+        ; Same surface already drawn this frame: the two runs would share one
+        ; key slot, so neither this frame nor the next may trust it.
+        ld      de, #(polar_ret_poison$ - polar_ret_live$)
+        add     hl, de
+        ld      a, (hl)
+        or      c
+        ld      (hl), a
+        xor     a
+        ld      (#r_ret_fresh$), a
+        jr      ret_run_base$
+
+ret_run_first$:
+        ld      a, (hl)
+        or      c
+        ld      (hl), a
+        ld      de, #(polar_ret_valid$ - polar_ret_live$)
+        add     hl, de
+        ld      a, (hl)
+        and     c
+        ld      (#r_ret_fresh$), a
+
+ret_run_base$:
+        ; Swap in last frame's visited range and record this frame's.
+        ld      a, (#_g_polar_run_sid)
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_ret_pc0$
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_ret_pc0$), a
+        ld      a, (#_g_polar_run_c0)
+        ld      (hl), a
+        ld      de, #(polar_ret_pc1$ - polar_ret_pc0$)
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_ret_pc1$), a
+        ld      a, (#_g_polar_run_c1)
+        ld      (hl), a
+
+        ld      a, (#_g_polar_run_sid)
+        add     a, a
+        ld      l, a
+        ld      h, #0
+        ld      de, #polar_ret_index$
+        add     hl, de
+        ld      a, (hl)
+        inc     hl
+        ld      h, (hl)
+        ld      l, a
+        ld      (#r_ret_base$), hl
+        ; Column cursor: the run walks c0..c1 in order, so the slot address is
+        ; an add of eight per column rather than a multiply per column.
+        ld      a, (#_g_polar_run_c0)
+        add     a, a
+        add     a, a
+        add     a, a
+        ld      e, a
+        ld      d, #0
+        add     hl, de
+        ld      (#r_ret_ptr$), hl
+        ; Trusted column range: columns this run covers that this surface also
+        ; visited last frame. Everything else has no key worth comparing, so
+        ; the per-column path needs two bounds checks and nothing else.
+        ld      a, (#r_ret_fresh$)
+        or      a
+        jr      z, ret_run_untrusted$
+        ld      a, (#_g_polar_run_c0)
+        ld      c, a
+        ld      a, (#r_ret_pc0$)
+        cp      c
+        jr      nc, ret_run_t0$
+        ld      a, c
+ret_run_t0$:
+        ld      (#r_ret_t0$), a
+        ld      a, (#_g_polar_run_c1)
+        ld      c, a
+        ld      a, (#r_ret_pc1$)
+        cp      c
+        jr      c, ret_run_t1$
+        ld      a, c
+ret_run_t1$:
+        ld      (#r_ret_t1$), a
+        ret
+ret_run_untrusted$:
+        ld      a, #1
+        ld      (#r_ret_t0$), a
+        xor     a
+        ld      (#r_ret_t1$), a
+        ret
+
+ret_run_disable$:
+        xor     a
+        ld      (#r_ret_fresh$), a
+        ld      a, #1
+        ld      (#r_ret_t0$), a
+        xor     a
+        ld      (#r_ret_t1$), a
+        ld      hl, #0
+        ld      (#r_ret_base$), hl
+        ret
+
+; Mark this column's slot as answering for nothing. A rasterized column always
+; has at least one unclaimed row, so an all-zero coverage triple can never be
+; mistaken for a live key.
+ret_column_kill$:
+_tsp_h_ret_column_kill::
+        push    hl
+        ld      hl, (#r_ret_base$)
+        ld      a, h
+        or      l
+        jr      z, ret_kill_out$
+        ld      hl, (#r_ret_ptr$)
+        inc     hl
+        inc     hl
+        inc     hl                      ; -> unclaimed0 of this column's slot
+        ld      (hl), #0
+        inc     hl
+        ld      (hl), #0
+        inc     hl
+        ld      (hl), #0
+ret_kill_out$:
+        pop     hl
+        ret
+
+; Returns Z when this column's key is unchanged since last frame, NZ otherwise,
+; and always leaves the slot holding this frame's key. The compare runs inline
+; and falls straight into a partial store from the first byte that differed:
+; the bytes before it already match, so rewriting them is pure cost.
+ret_column_gate$:
+_tsp_h_ret_column_gate::
+        push    bc
+        ld      hl, (#r_ret_base$)
+        ld      a, h
+        or      l
+        jr      z, ret_gate_off$
+        ld      hl, (#r_ret_ptr$)
+        ld      a, (#_g_polar_mat_col)
+        ld      c, a
+        ld      a, (#r_ret_t0$)
+        cp      c
+        jr      z, ret_gate_try$
+        jr      nc, ret_put0$           ; before the trusted range
+ret_gate_try$:
+        ld      a, (#r_ret_t1$)
+        cp      c
+        jr      c, ret_put0$            ; after the trusted range
+
+        ld      a, (#r_run_halfl$)
+        cp      (hl)
+        jr      nz, ret_put0$
+        inc     hl
+        ld      a, (#r_run_halfr$)
+        cp      (hl)
+        jr      nz, ret_put1$
+        inc     hl
+        ld      a, (#_g_polar_mat_border)
+        cp      (hl)
+        jr      nz, ret_put2$
+        inc     hl
+        ld      a, (#r_unclaimed0$)
+        cp      (hl)
+        jr      nz, ret_put3$
+        inc     hl
+        ld      a, (#r_unclaimed1$)
+        cp      (hl)
+        jr      nz, ret_put4$
+        inc     hl
+        ld      a, (#r_unclaimed2$)
+        cp      (hl)
+        jr      nz, ret_put5$
+        pop     bc
+        xor     a                       ; Z: identical, skip the raster
+        ret
+
+ret_gate_off$:
+        pop     bc
+        ld      a, #1
+        or      a
+        ret
+
+ret_put0$:
+        ld      a, (#r_run_halfl$)
+        ld      (hl), a
+        inc     hl
+ret_put1$:
+        ld      a, (#r_run_halfr$)
+        ld      (hl), a
+        inc     hl
+ret_put2$:
+        ld      a, (#_g_polar_mat_border)
+        ld      (hl), a
+        inc     hl
+ret_put3$:
+        ld      a, (#r_unclaimed0$)
+        ld      (hl), a
+        inc     hl
+ret_put4$:
+        ld      a, (#r_unclaimed1$)
+        ld      (hl), a
+        inc     hl
+ret_put5$:
+        ld      a, (#r_unclaimed2$)
+        ld      (hl), a
+        pop     bc
+        or      #1                      ; NZ: the column must be rasterized
+        ret
+
+ret_mask8$:
+        .db 0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80
+
+polar_ret_index$:
+        .dw polar_ret_store$+0
+        .dw polar_ret_store$+160
+        .dw polar_ret_store$+320
+        .dw polar_ret_store$+480
+        .dw polar_ret_store$+640
+        .dw polar_ret_store$+800
+        .dw polar_ret_store$+960
+        .dw polar_ret_store$+1120
+        .dw polar_ret_store$+1280
+        .dw polar_ret_store$+1440
+        .dw polar_ret_store$+1600
+        .dw polar_ret_store$+1760
+        .dw polar_ret_store$+1920
+        .dw polar_ret_store$+2080
+        .dw polar_ret_store$+2240
+        .dw polar_ret_store$+2400
+        .dw polar_ret_store$+2560
+
         .area _DATA
+polar_ret_valid$:
+        .ds     3
+polar_ret_live$:
+        .ds     3
+polar_ret_poison$:
+        .ds     3
+; Which coarse columns this surface actually visited last frame. A column it
+; did not visit has no key worth trusting, whatever the slot still holds.
+polar_ret_pc0$:
+        .ds     24
+polar_ret_pc1$:
+        .ds     24
+r_ret_pc0$:
+        .ds     1
+r_ret_pc1$:
+        .ds     1
+r_ret_t0$:
+        .ds     1
+r_ret_t1$:
+        .ds     1
+r_ret_fresh$:
+        .ds     1
+r_ret_base$:
+        .ds     2
+r_ret_ptr$:
+        .ds     2
+; 17 surfaces x 20 coarse columns x 8 bytes. Six bytes carry the key; the
+; eighth-byte stride keeps the column index a shift rather than a multiply.
+polar_ret_store$:
+        .ds     2720
 r_run_col$:
         .ds     1
 r_run_invl$:
@@ -1393,6 +1804,14 @@ r_run_invl$:
 r_run_invr$:
         .ds     1
 r_run_half$:
+        .ds     1
+; The half-depths are what profile_half actually consumes, so they are the
+; coarsest quantity that still determines every pixel endpoint exactly.
+; Keying the retained slot on inv rather than inv>>1 made the key twice as
+; sensitive as the geometry it guards, for nothing.
+r_run_halfl$:
+        .ds     1
+r_run_halfr$:
         .ds     1
 r_clip_first$:
         .ds     1

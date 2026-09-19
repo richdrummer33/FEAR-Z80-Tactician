@@ -236,3 +236,40 @@ cheap residual decision trees — is priced only in bound, not in cycles, and is
 **not** claimed dead. Its purpose was to shrink the 73 KB; with the interval
 selector measured and working, that is a smaller prize, and the ceiling above
 caps what it could win on speed.
+
+
+## Resolved by the retained swept-boundary gate (rung 26)
+
+**Rule 14 — retained state is only as trustworthy as the frame it was written
+in, and there are four separate ways for it to lie.** A per-(surface, column)
+key that predicts "this column is unchanged, skip it" is sound only if every one
+of these is closed, and the first shipped version of the gate closed two of four
+and was caught by the equivalence harness within four frames:
+
+1. **The surface was absent last frame.** Its cells may have been restored to
+   background by the end-of-frame reconciliation, so a matching key predicts
+   content that is no longer there. Closed by a per-surface validity bit that is
+   exactly one frame deep.
+2. **The surface was drawn twice last frame.** Two runs sharing one key slot
+   overwrite each other, so neither's key describes what is on screen. Closed by
+   a poison bit that invalidates the surface for the following frame.
+3. **The column was visited but not rasterized** — wholly occluded by nearer
+   geometry, or clipped entirely out of view. The slot then still holds a key
+   from an *older* frame while the surface itself looks current. Closed by
+   zeroing the slot's coverage triple on every such path; a rasterized column
+   always owns at least one row, so a dead slot can never match a live key.
+4. **The column was outside last frame's column range.** Closed by trusting only
+   the intersection of this frame's covered range with last frame's.
+
+Failure modes 3 and 4 are the ones that do not announce themselves: they produce
+a single stale column that drifts with the geometry, in a handful of frames out
+of sixty, under motion the default trace barely reaches. **Any retained-state
+optimisation must be gated on byte-identical output across a motion envelope,
+not just at the shipping turn rate.**
+
+**Rule 15 — price a retained gate as its own subsystem, never inside the thing
+it guards.** The gate is pure overhead on every column it fails to skip, so
+folding its cost into the materializer's total hides exactly the number that
+decides whether to keep it. Measured: a skipped column saves about 3,240
+T-states, a visit costs about 380-475, so the gate pays for itself above roughly
+a **12% skip rate** and not below it.

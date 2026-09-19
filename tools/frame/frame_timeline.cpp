@@ -85,10 +85,10 @@ static std::vector<std::pair<u16, std::string>> all_symbols(const char* path, un
 
 /* Which subsystem a renderer symbol belongs to. The groups are chosen so that
  * each one is a thing you could go and optimise independently. */
-enum Group { G_PROJ = 0, G_GEOM, G_MAT, G_NT, G_HELP, G_OTHER, G_NGROUP };
+enum Group { G_PROJ = 0, G_GEOM, G_MAT, G_RET, G_NT, G_HELP, G_OTHER, G_NGROUP };
 static const char* GNAME[G_NGROUP] = {
-    "projection/setup", "geometry walk", "materializer", "nametable/VRAM",
-    "arith helpers", "other render"
+    "projection/setup", "geometry walk", "materializer", "retained gate",
+    "nametable/VRAM", "arith helpers", "other render"
 };
 static Group classify(const std::string& raw) {
     /* SDCC writes C statics as Fmodule$name$0_0$0, so match on the bare name;
@@ -100,6 +100,14 @@ static Group classify(const std::string& raw) {
         s = s.substr(d1 + 1, d2 == std::string::npos ? std::string::npos : d2 - d1 - 1);
     }
     auto has = [&](const char* k){ return s.find(k) != std::string::npos; };
+    /* The retained swept-boundary bookkeeping is priced as its own group: it
+     * is pure overhead on a column it fails to skip, so folding it into the
+     * materializer would hide exactly the number that decides whether it is
+     * worth keeping. */
+    if (has("ret_column_gate") || has("ret_column_kill") || has("ret_key_cmp") ||
+        has("ret_key_put") || has("ret_run_begin") || has("ret_bitmask") ||
+        has("ret_begin_frame") || has("ret_end_frame") || has("ret_invalidate"))
+        return G_RET;
     /* The tsp_h_ aliases added in rung 18 are materializer helpers. Without
      * them here the group total silently shrinks and two runs stop being
      * comparable, which is exactly the trap the per-function shares fell into. */
