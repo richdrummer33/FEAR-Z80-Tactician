@@ -723,7 +723,11 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
     bot0=e1_screen_y_q6(z0,r->inv0);
     bot1=e1_screen_y_q6(z0,r->inv1);
 
+#if defined(E1M1_FLAT)
+    g_polar_run_profile=k_e1pf_flat_full[r->sid]?TSP_PROFILE_FULL:0xffu;
+#else
     g_polar_run_profile=0xffu;
+#endif
     g_polar_mat_shade=(r->inv_mid<E1PF_FOG_SHADE_INV)?0u:1u;
     g_polar_run_c0=c0;g_polar_run_c1=c1;
     g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
@@ -735,7 +739,11 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
 #else
     uint8_t c0=(uint8_t)(r->x0>>3),c1=(uint8_t)(r->x1>>3),n,c;
 #ifdef TSPF_E1M1_ROOM1
+#if defined(E1M1_FLAT)
+    uint8_t profile=k_e1pf_flat_full[r->sid]?TSP_PROFILE_FULL:0xffu;
+#else
     uint8_t profile=0xffu;
+#endif
 #else
     uint8_t profile=k_tspf_profile[r->sid];
 #endif
@@ -757,7 +765,7 @@ static void draw_run(uint16_t *out,TSPColumn *cols,const PolarRun *r,const TSPSt
     if(g_tspf_appearance_mode<2u) g_polar_run_profile=profile;
 #ifdef TSPF_E1M1_ROOM1
     if(g_tspf_appearance_mode==0u){
-        g_polar_run_profile=0xffu;
+        g_polar_run_profile=profile;
         g_polar_mat_shade=(r->inv_mid<E1PF_FOG_SHADE_INV)?0u:1u;
         g_polar_run_c0=c0;g_polar_run_c1=c1;
         g_polar_run_left_real=r->left_real;g_polar_run_right_real=r->right_real;
