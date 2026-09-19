@@ -1,0 +1,165 @@
+name: E1M1 FULL-vs-window T-state A-B
+
+on:
+  push:
+    branches:
+      - feature/e1m1-room1-full-only-latest
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake identical E1M1 geometry, FULL and window variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/e1ab/full build/e1ab/window
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --out build/e1ab/full/optimized_renderer_map_data.inc \
+            | tee build/e1ab/full-bake.txt
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --windows \
+            --out build/e1ab/window/optimized_renderer_map_data.inc \
+            | tee build/e1ab/window-bake.txt
+          grep -q 'mode=FULL_ONLY.*surfaces=30' build/e1ab/full-bake.txt
+          grep -q 'profiles FULL=30 LINTEL=0 RAISED=0 RISER=0 windows=0' build/e1ab/full-bake.txt
+          grep -q 'mode=WINDOW_AB.*surfaces=32' build/e1ab/window-bake.txt
+          grep -q 'profiles FULL=28 LINTEL=2 RAISED=0 RISER=2 windows=2' build/e1ab/window-bake.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build Gearsystem cycle-timeline tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
+            tools/frame/frame_timeline.cpp \
+            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
+
+      - name: Generate deterministic spin trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/frame/gen_traces.py spin build/frame_trace.c
+
+      - name: Build and measure FULL baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$PWD/build/e1ab/full" \
+            POLAR_ROM_BANKS=8 POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar >/dev/null
+          cp build/gg-tilesector-polar.gg build/e1ab/full.gg
+          cp build/gg-tilesector-polar.noi build/e1ab/full.noi
+          ./build/frame_timeline build/e1ab/full.gg build/e1ab/full.noi \
+            build/e1ab/full.csv 180 8 | tee build/e1ab/full-timeline.txt
+
+      - name: Build and measure two-window variant
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$PWD/build/e1ab/window" \
+            POLAR_ROM_BANKS=8 POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar >/dev/null
+          cp build/gg-tilesector-polar.gg build/e1ab/window.gg
+          cp build/gg-tilesector-polar.noi build/e1ab/window.noi
+          ./build/frame_timeline build/e1ab/window.gg build/e1ab/window.noi \
+            build/e1ab/window.csv 180 8 | tee build/e1ab/window-timeline.txt
+
+      - name: Compare aligned T-state timelines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/e1ab/AB-summary.txt
+          import csv, statistics
+          from pathlib import Path
+          root=Path("build/e1ab")
+          a=list(csv.DictReader((root/"full.csv").open()))
+          b=list(csv.DictReader((root/"window.csv").open()))
+          n=min(len(a),len(b))
+          if n<100: raise SystemExit(f"too few aligned frames: {n}")
+          def vals(rows,k): return [int(r[k]) for r in rows[:n]]
+          def pct(v,p):
+              q=sorted(v)
+              return q[min(len(q)-1,max(0,int(round((len(q)-1)*p))))]
+          af,aw=vals(a,"total"),vals(b,"total")
+          rf,rw=vals(a,"render"),vals(b,"render")
+          dtotal=[y-x for x,y in zip(af,aw)]
+          drender=[y-x for x,y in zip(rf,rw)]
+          positive=[x for x in drender if x>0]
+          def mean(v): return statistics.fmean(v)
+          clock=3579545.0
+          print("E1M1_WINDOW_AB_PASS")
+          print(f"frames={n} trace=spin")
+          print(f"FULL total mean={mean(af):.0f} p95={pct(af,.95)} fps_equiv={clock/mean(af):.2f}")
+          print(f"WINDOW total mean={mean(aw):.0f} p95={pct(aw,.95)} fps_equiv={clock/mean(aw):.2f}")
+          print(f"delta total mean={mean(dtotal):+.0f} p50={pct(dtotal,.50):+d} p95={pct(dtotal,.95):+d} max={max(dtotal):+d}")
+          print(f"FULL render mean={mean(rf):.0f} p95={pct(rf,.95)}")
+          print(f"WINDOW render mean={mean(rw):.0f} p95={pct(rw,.95)}")
+          print(f"delta render mean={mean(drender):+.0f} p50={pct(drender,.50):+d} p95={pct(drender,.95):+d} max={max(drender):+d}")
+          if positive:
+              print(f"delta render positive_frames={len(positive)}/{n} positive_mean={mean(positive):.0f} positive_p95={pct(positive,.95)}")
+          # Breakdown deltas averaged frame-aligned.
+          for k in ("projection/setup","geometry walk","materializer","retained gate","boundary patch"):
+              if k in a[0] and k in b[0]:
+                  av=vals(a,k); bv=vals(b,k)
+                  print(f"group {k}: FULL={mean(av):.0f} WINDOW={mean(bv):.0f} delta={mean([y-x for x,y in zip(av,bv)]):+.0f}")
+          # Largest window penalties, useful because spin sees the windows only part of the trace.
+          top=sorted(range(n),key=lambda i:drender[i],reverse=True)[:12]
+          print("largest_render_delta_frames="+",".join(f"{i}:{drender[i]:+d}" for i in top))
+          PY
+          grep -q E1M1_WINDOW_AB_PASS build/e1ab/AB-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: E1M1-FULL-vs-Window-Tstate-AB
+          path: |
+            build/e1ab/AB-summary.txt
+            build/e1ab/full-bake.txt
+            build/e1ab/window-bake.txt
+            build/e1ab/full-timeline.txt
+            build/e1ab/window-timeline.txt
+            build/e1ab/full.csv
+            build/e1ab/window.csv
+          if-no-files-found: warn
+          retention-days: 30
