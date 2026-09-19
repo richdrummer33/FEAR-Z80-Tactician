@@ -1091,9 +1091,6 @@ static void add_key(uint8_t key, const TSPState *s, uint8_t *count)
 void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPColumn cols[TSP_COLS]) BANKED
 {
     uint8_t gx, gy, lx, ly, recipe, base_id, cond_count, count = 0, i;
-#if defined(TSPF_E1M1_FRONT_ENVELOPE)
-    uint8_t envelope_active=0u;
-#endif
     uint16_t gi, off;
     const uint8_t *p, *b;
 #if defined(TSPF_E1M1_FULL_ONLY)
@@ -1125,11 +1122,13 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         uint8_t n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
         if(n!=0xffu){
             uint8_t j;
-            uint32_t used_cols=0u;
-            envelope_active=1u;
 #ifdef __SDCC
             g_polar_run_owned=1u;
 #endif
+            /* The ROM program is already a cyclic first-hit partition and
+             * project_envelope_span assigns half-open coarse-column intervals
+             * by centre ray. Spans therefore cannot compete for a column:
+             * do not rebuild a runtime ownership proof for a fact we baked. */
             for(j=0u;j<n && count<TSPF_MAX_ACTIVE;++j){
                 uint8_t off=(uint8_t)(1u+(uint8_t)(j<<1));
                 uint8_t noff=(uint8_t)(1u+(uint8_t)(((j+1u<n)?(j+1u):0u)<<1));
@@ -1137,21 +1136,11 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 uint8_t sid=g_e1env_program[(uint8_t)(off+1u)];
                 uint8_t bv1=g_e1env_program[noff];
                 if(sid!=0xffu && project_envelope_span(sid,bv0,bv1,s,&g_runs[count])){
-                    uint8_t c0=(uint8_t)(g_runs[count].x0>>3);
-                    uint8_t c1=(uint8_t)(g_runs[count].x1>>3), c;
-                    uint32_t mask=0u;
-                    for(c=c0;c<=c1;++c) mask|=((uint32_t)1u<<c);
-                    if(used_cols&mask){ envelope_active=0u; break; }
-                    used_cols|=mask;
-                    /* Envelope spans are already a disjoint front-visibility
-                     * partition. No runtime depth sort is needed, but draw_run
-                     * still consumes the shared order array. Keep identity order. */
                     g_run_order[count]=count;
                     ++count;
                 }
             }
-            if(envelope_active) goto e1full_candidates_ready;
-            count=0u; /* safety fallback: never trust an overlapping envelope */
+            goto e1full_candidates_ready;
         }
     }
 #endif
