@@ -1,0 +1,102 @@
+name: E1M1 front-envelope focused analysis
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+    paths:
+      - .github/workflows/e1m1-front-envelope-analysis.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore successful exact-Q4 A-B artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/e1env-analysis
+          gh run download 35436773164 \
+            -n GG-E1M1-Exact-Q4-FrontEnvelope \
+            -D build/e1env-analysis
+          test -f build/e1env-analysis/pvs.gg
+          test -f build/e1env-analysis/envelope.gg
+          test -f build/e1env-analysis/pvs.noi
+          test -f build/e1env-analysis/envelope.noi
+
+      - name: Build Gearsystem analysis tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
+            tools/frame/frame_timeline.cpp \
+            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
+
+      - name: Re-run update-aligned timelines with state hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-analysis
+          ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs-update.csv" 180 8 \
+            | tee "$ROOT/pvs-update-timeline.txt"
+          ./build/frame_timeline "$ROOT/envelope.gg" "$ROOT/envelope.noi" "$ROOT/envelope-update.csv" 180 8 \
+            | tee "$ROOT/envelope-update-timeline.txt"
+          python3 - <<'PY' | tee "$ROOT/update-parity.txt"
+          import csv
+          from pathlib import Path
+          root=Path("build/e1env-analysis")
+          a=list(csv.DictReader((root/"pvs-update.csv").open()))
+          b=list(csv.DictReader((root/"envelope-update.csv").open()))
+          n=min(len(a),len(b))
+          state=lambda r:(r["x_q4"],r["y_q4"],r["z_q4"],r["yaw"])
+          state_same=sum(state(x)==state(y) for x,y in zip(a[:n],b[:n]))
+          map_same=sum(x["map_fnv64"]==y["map_fnv64"] for x,y in zip(a[:n],b[:n]))
+          bad=[i for i,(x,y) in enumerate(zip(a[:n],b[:n])) if x["map_fnv64"]!=y["map_fnv64"]]
+          print("E1ENV_UPDATE_PARITY")
+          print(f"updates={n} state_equal={state_same}/{n} map_equal={map_same}/{n} mismatches={n-map_same}")
+          print("first_mismatch_updates="+",".join(map(str,bad[:40])))
+          if bad:
+              for i in bad[:8]:
+                  print(f"mismatch {i}: state={state(a[i])} pvs={a[i]['map_fnv64']} env={b[i]['map_fnv64']}")
+          PY
+
+      - name: Bottom-up function profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-analysis
+          ./build/polar_function_profile_runner \
+            "$ROOT/pvs.gg" "$ROOT/pvs.sym" "$ROOT/pvs.noi" 60 8 \
+            | tee "$ROOT/pvs-functions.txt"
+          ./build/polar_function_profile_runner \
+            "$ROOT/envelope.gg" "$ROOT/envelope.sym" "$ROOT/envelope.noi" 60 8 \
+            | tee "$ROOT/envelope-functions.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: E1M1-FrontEnvelope-Focused-Analysis
+          path: |
+            build/e1env-analysis/update-parity.txt
+            build/e1env-analysis/pvs-update-timeline.txt
+            build/e1env-analysis/envelope-update-timeline.txt
+            build/e1env-analysis/pvs-update.csv
+            build/e1env-analysis/envelope-update.csv
+            build/e1env-analysis/pvs-functions.txt
+            build/e1env-analysis/envelope-functions.txt
+          if-no-files-found: warn
+          retention-days: 30
