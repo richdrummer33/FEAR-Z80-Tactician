@@ -41,6 +41,15 @@ jobs:
             | tee build/e1env/census-quarter.txt
           grep -q E1ENV_BAKE_PASS build/e1env/census-quarter.txt
 
+      - name: Emit uncompressed banked runtime records
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/e1m1_front_envelope_bankgen.py \
+            --out-dir build/e1env/banked \
+            | tee build/e1env/bankgen.txt
+          grep -q E1ENV_BANKGEN_PASS build/e1env/bankgen.txt
+
       - name: Summarize
         shell: bash
         run: |
