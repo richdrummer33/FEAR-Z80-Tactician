@@ -4080,3 +4080,96 @@ sources are not yet closed. Before an implementation: extend it to track the
 bottom edge for non-FULL profiles, and apply the coverage mask so hidden surfaces
 stop being charged. Those two changes will move the ratio in opposite directions
 and the result is the number worth designing against.
+
+## Rung 24 — the one-row assumption fails at the real control envelope
+
+Rung 23 said multi-row boundary crossings essentially do not happen. That was a
+property of the traces, not of the renderer, and the objection was quantitatively
+right. Those traces turn at `MANUAL_TURN_Q4 = 48` — three yaw units an update,
+**4.22°**, which is only **84°/s at 20 Hz**. The intended envelope is 120–250°/s,
+one and a half to three times faster.
+
+`tools/frame/event_census2.c` fixes both modelling errors and takes the motion
+envelope as a parameter:
+
+- **bottom edge tracked independently** for LINTEL, RAISED and RISER, with FULL
+  still using the mirror;
+- **occlusion applied** — runs walked near to far with a per-column 18-bit
+  coverage mask, so a surface-column with no visible row raises no event (970 to
+  1,259 suppressed a run).
+
+Motion is now an explicit yaw increment plus a forward step rather than whatever
+the slew settles at, so the envelope is the experiment's variable. These runs are
+a constant turn-and-walk, harsher than rung 23's scripted traces with their
+straight segments, so the two are not directly comparable.
+
+### Vertical boundary movement, |Δ tile row|
+
+| envelope | 0 | 1 | 2 | 3 | 4 | 5+ |
+| --- | --- | --- | --- | --- | --- | --- |
+| pure translation | 89.0% | 11.0% | — | — | — | — |
+| 84°/s (rung 23's rate) | 70.8% | 27.2% | 2.0% | — | — | — |
+| 120°/s | 66.6% | 27.6% | 5.7% | 0.1% | — | — |
+| 170°/s | 58.4% | 26.9% | 11.9% | 2.7% | 0.0% | — |
+| **250°/s** | **48.7%** | **28.3%** | **10.6%** | **8.9%** | **3.4%** | 0.2% |
+| doubled-dt hitch | 27.9% | 29.5% | 13.9% | 7.6% | 6.7% | 10.4% |
+
+Zero-or-one covers 98.0% at 84°/s and only **77.0% at 250°/s**. At the hitch it is
+57.4%, with 3.47% moving **seven rows or more**.
+
+### Horizontal is worse, and it inverts
+
+| envelope | 0 | 1 | 2 | 3 | 4 | 5+ |
+| --- | --- | --- | --- | --- | --- | --- |
+| pure translation | 93.1% | 6.9% | — | — | — | — |
+| 84°/s | 40.3% | 56.7% | 3.0% | — | — | — |
+| 120°/s | 30.4% | 54.0% | 15.5% | — | — | — |
+| 170°/s | 28.7% | 20.6% | 46.0% | 4.7% | — | — |
+| **250°/s** | **26.0%** | **3.3%** | **29.4%** | **37.8%** | **3.5%** | — |
+| doubled-dt hitch | 21.5% | 1.2% | 2.1% | 3.0% | 14.8% | 56.8% |
+
+**At 250°/s a one-column step is the rarest outcome at 3.3%**, behind zero, two
+and three. The mode is three columns. At the hitch the mode is five. A "one
+column entered or left" fast path would almost never fire under real turning; the
+generic multi-column swept range is the *common* case horizontally, not the
+exception.
+
+### The event mix shifts with speed, and reveals more than double
+
+| envelope | no event | edge word only | row moved | entered | left |
+| --- | --- | --- | --- | --- | --- |
+| pure translation | 53.0% | 28.2% | 15.5% | 1.6% | 1.8% |
+| 84°/s | 17.5% | 39.8% | 24.1% | 9.2% | 9.3% |
+| 120°/s | 14.6% | 35.7% | 25.6% | 12.0% | 12.1% |
+| **250°/s** | 7.5% | 20.0% | 29.3% | **21.6%** | **21.6%** |
+
+Reveals go from 1.8% under pure translation to **21.6% at 250°/s**. That is the
+event class that needs ownership consulted, so the faster the player turns the
+more the architecture leans on exactly the part that is not a simple sweep.
+Ownership resolution does not become less important at speed; it becomes the
+dominant cost.
+
+Translation alone is gentle — 53% of transitions raise no event at all and
+boundaries essentially never move more than one row or column. **Rotation is what
+makes this hard**, which is worth knowing because it says where to spend the
+optimisation and where a control-design choice (clamping angular delta, or a
+fixed simulation timestep) would buy renderer performance directly.
+
+### What this changes about the design
+
+The architecture survives unchanged — a swept span is a swept span whether it is
+one row or six — but the *emphasis* inverts from what rung 23 implied:
+
+- **Vertical**: zero and one are worth a fast path (77–98% of cases), with a
+  generic N-row sweep behind them that is reached 2% of the time when walking and
+  23% when turning hard.
+- **Horizontal**: there is no point optimising for a single-column step. Build
+  the N-column entered/exited range as the primary path and let one column fall
+  out of it as a special case of N.
+- **Reveals are not a rare fallback.** At the top of the envelope they are a
+  fifth of all events, so the reveal path has to be efficient, not merely correct.
+
+And rung 23's headline is withdrawn: "boundaries move one row or none" holds only
+below about 100°/s. The safe statement is that **most boundaries move zero or one
+row, so optimise those, but arbitrary displacement must be represented as a swept
+span** — which the formulation already does for free.
