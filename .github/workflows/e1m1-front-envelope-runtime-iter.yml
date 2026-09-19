@@ -11,6 +11,7 @@ on:
       - Makefile
       - experiments/adaptive_polar_field/screen_depth_plane_lut.py
       - tools/e1env_runtime_pack.py
+      - tools/e1env_bearing_lut.py
   workflow_dispatch:
 
 concurrency:
@@ -54,6 +55,10 @@ jobs:
           grep -q 'stable_pct=100.00' "$ROOT/envelope-bake.txt"
           python3 tools/e1env_runtime_pack.py --generated-dir "$GEN" | tee "$ROOT/runtime-pack.txt"
           grep -q 'E1ENV_RUNTIME_PACK' "$ROOT/runtime-pack.txt"
+          python3 tools/e1env_bearing_lut.py \
+            --map-inc "$GEN/optimized_renderer_map_data.inc" \
+            --out-dir "$GEN" --bank-base 243 | tee "$ROOT/bearing-lut.txt"
+          grep -q 'E1ENV_BEARING_LUT' "$ROOT/bearing-lut.txt"
 
       - name: Install GBDK 4.5.0
         shell: bash
@@ -85,7 +90,7 @@ jobs:
           GEN="$ROOT/generated"
           LCC="$PWD/.toolchain/gbdk/bin/lcc"
           : > "$ROOT/env-objs.txt"
-          for src in "$GEN"/e1env_dispatch.c "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c; do
+          for src in "$GEN"/e1env_dispatch.c "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c "$GEN"/e1env_bearing_*.c; do
             base="$(basename "${src%.c}")"
             obj="$ROOT/${base}.o"
             "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
@@ -112,7 +117,7 @@ jobs:
             POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
             POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
             POLAR_EXTRA_OBJS="build/frame_trace_gg.o $ENVOBJS" \
-            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/build.txt"
           cp build/gg-tilesector-polar.gg "$ROOT/focused.gg"
           cp build/gg-tilesector-polar.noi "$ROOT/focused.noi"
@@ -238,7 +243,7 @@ jobs:
             POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
             POLAR_PROJ_GEN_DIR="$GEN" POLAR_DEPTHPLANE_MAP_INC="$GEN/optimized_renderer_map_data.inc" POLAR_DEPTHPLANE_BANK=243 POLAR_ROM_BANKS=256 \
             POLAR_EXTRA_OBJS="$ENVOBJS" \
-            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/clean-build.txt"
           cp build/gg-tilesector-polar.gg "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.gg"
           cp build/gg-tilesector-polar.sym "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.sym"
