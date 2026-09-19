@@ -66,17 +66,17 @@ python3 tools/full_maze_bake.py \
 ```
 
 The baker flood-fills the spawn-connected walkable component, emits a compact row-run
-collision oracle, and bakes conservative 8x8-cell x 16-yaw PVS masks.
+collision oracle, and bakes conservative 16x16-cell x 16-yaw PVS masks.
 
 Local pre-commit bake validation:
 
 - walkable cells: 11,742
 - floor runs: 274
-- PVS cells: 204
-- PVS bytes: 13,056
-- mean candidate surfaces: 9.91
-- p95 candidate surfaces: 21
-- maximum candidate surfaces: 28
+- PVS cells: 54
+- PVS bytes: 3,456
+- mean candidate surfaces: 11.13
+- p95 candidate surfaces: 22
+- maximum candidate surfaces: 27
 
 CI builds the playable Game Gear ROM with `TSPF_FULL_MAZE=1`, then runs the existing
 Gearsystem movement/turn verification and asserts the eye height remains exactly flat.
