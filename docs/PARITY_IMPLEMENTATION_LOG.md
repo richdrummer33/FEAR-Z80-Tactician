@@ -3986,3 +3986,97 @@ than grown from the current loop.
 - Rung 20's rung-3 figures are unaffected in arithmetic but inherit the same
   question: they assume a delta emitter can tell what changed, which needs the
   same sound descriptor and therefore the same restructuring.
+
+## Rung 23 — the scene as boundary events
+
+The argument for retaining the *surface* rather than the finished column is that
+the old and new projected boundaries already say what changed, so nothing needs
+to be compared or scanned. `tools/frame/event_census.c` tests that by replaying
+each scripted trajectory on the host, projecting every key exactly as the
+renderer does, tracking surfaces across frames by wall id, and classifying every
+surface-column transition.
+
+### What the scene actually does
+
+Share of surface-column transitions, 150 frames a trace:
+
+| event | cruise | corners | stress | spin |
+| --- | --- | --- | --- | --- |
+| no boundary event at all | 57.1% | 50.1% | 34.3% | 28.3% |
+| **edge word changed, same tile row** | **29.6%** | **32.3%** | **37.7%** | **41.5%** |
+| top edge crossed one tile row | 8.3% | 10.7% | 20.7% | 17.0% |
+| **top edge crossed several rows** | **0.06%** | **0.03%** | **0.38%** | **0.05%** |
+| column entered the span | 2.2% | 3.1% | 3.2% | 6.6% |
+| column left the span (a reveal) | 2.8% | 3.8% | 3.8% | 6.6% |
+
+Two results matter more than the ratios.
+
+**Multi-row crossings essentially do not happen** — 0.01 to 0.09 a frame across
+every trace, including the one built to be adversarial. The "paint the swept
+strip" case that the design was worrying about is a rounding error. A boundary
+that moves at all almost always moves exactly one tile row, so the updater's fill
+path can be a single-row special case with a loop behind it for the rare rest.
+
+**The largest single event is an edge-tile update with no fill at all** — 30% to
+42% of transitions are a column whose tile row did not change but whose edge
+*word* did. That is the same pixel sensitivity that made per-invocation caching
+unsound in rung 22, and here it is the thing being updated rather than the thing
+defeating the cache. The property is unchanged; only its usefulness flips with
+the architecture.
+
+### The work, with its error bars
+
+Cell operations a frame, swept-edge model against the current path:
+
+| trace | swept-edge | current | ratio |
+| --- | --- | --- | --- |
+| cruise | 29.9 | 264.8 | 8.84x |
+| corners | 36.7 | 249.7 | 6.80x |
+| stress | 54.8 | 324.7 | 5.93x |
+| spin | 80.2 | 333.2 | 4.16x |
+
+**These carry errors in both directions and should not be quoted as a speedup.**
+Checked against the rung 15 ground truth of cells that actually change a frame:
+
+| trace | model | cells that truly change | model as share |
+| --- | --- | --- | --- |
+| cruise | 29.9 | 39.51 | 76% — **undercounts** |
+| corners | 36.7 | 38.75 | 95% |
+| stress | 54.8 | 31.38 | 175% — overcounts |
+| spin | 80.2 | 52.40 | 153% — overcounts |
+
+Two known causes, pulling opposite ways:
+
+- **Undercount**: the model tracks only the top edge. FULL walls are fine because
+  the bottom is the exact mirror, but LINTEL, RAISED and RISER move their bottom
+  edge independently and the model does not follow it. FULL is 54.8% of surfaces
+  on cruise and 77.1% on stress — a majority, not a monopoly.
+- **Overcount**: the model ignores occlusion, so a surface hidden behind a nearer
+  one is still charged for its columns.
+
+The undercount matters more, because a swept-edge updater that misses a moving
+bottom edge renders the wrong picture. Extending the model — and any
+implementation — to the generic dual-edge case is not optional; it is 23% to 45%
+of surfaces.
+
+### What this says about the design
+
+The proposal survives, with its shape sharpened by the data rather than by
+argument:
+
+- **One row, or none.** The fill path needs a single-row case and little else.
+- **The edge tile is the primitive**, not the fill. A third to a half of all
+  events are one edge word changing in place.
+- **FULL earns a fast path but cannot be the whole path.** The mirror halves the
+  work for 55–77% of surfaces; the rest need both edges tracked.
+- **Reveals are 3–7% of events** and are the only place ownership has to be
+  consulted, which is what makes "maintain persistent ownership, re-resolve only
+  where a boundary vacated" worth testing against `polar_mark_span_fast`.
+
+### What is still missing before building
+
+The census models work as cell operations, not T-states, and its two error
+sources are not yet closed. Before an implementation: extend it to track the
+bottom edge for non-FULL profiles, and apply the coverage mask so hidden surfaces
+stop being charged. Those two changes will move the ratio in opposite directions
+and the result is the number worth designing against.
