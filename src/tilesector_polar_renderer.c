@@ -134,6 +134,9 @@ static uint8_t g_depth_yaw_cache = 0xffu;
 /* Connected spans share authored corners. Packed keys allow 16 vertices. */
 uint16_t g_corner_bearing_q12[16];
 static uint16_t g_corner_bearing_valid;
+#if defined(TSPF_OPTIMIZED_MAP)
+static uint8_t g_opt_prev_recipe=0xffu;
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 /* Cell-local ROM projection field. The selected cell block is copied once on
  * cell transition; ordinary render updates consume only WRAM thereafter.
@@ -256,6 +259,9 @@ void tsp_polar_renderer_reset(void) BANKED
     g_map_ready = 0u;
     g_touched_count = 0u;
     memset(g_touched_bits, 0, sizeof(g_touched_bits));
+#endif
+#if defined(TSPF_OPTIMIZED_MAP)
+    g_opt_prev_recipe=0xffu;
 #endif
     TSPF_SET_STAGE(0u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
@@ -1003,6 +1009,16 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     recipe = k_tspf_recipe_grid[gi];
     if (recipe == 0xffu)
         goto done;
+#if defined(TSPF_OPTIMIZED_MAP) && defined(__SDCC)
+    /* Divider surfaces are intentionally re-keyed with reversed endpoint
+     * order from the neighbouring room.  Never trust retained per-surface
+     * state across a visibility-region transition; the transition is rare and
+     * a one-frame cold start is cheaper than duplicating physical surface IDs. */
+    if(recipe!=g_opt_prev_recipe){
+        tsp_polar_ret_invalidate();
+        g_opt_prev_recipe=recipe;
+    }
+#endif
     lx = (uint8_t)((uint16_t)s->x_q4 & 63u);
     ly = (uint8_t)((uint16_t)s->y_q4 & 63u);
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
