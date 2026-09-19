@@ -21,6 +21,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #endif
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 #include "e1env_generated.h"
+#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && !defined(E1ENV_PACKED_OWNER_FLAGS)
+#error "exact front-envelope runtime requires packed owner flags"
+#endif
 #endif
 
 #ifndef TSPF_LOCAL_PROJECTION
@@ -138,14 +141,6 @@ typedef struct PolarRun
     uint8_t c0;
     uint8_t c1;
     uint8_t depth_plane;
-#if defined(TSPF_E1M1_FRONT_ENVELOPE)
-    /* Exact-envelope boundary witnesses. A coarse run can have a physical
-     * endpoint on both sides of a shared connected corner; keep the actual
-     * envelope vertex so a later correctness pass can collapse the two
-     * adjacent hardware borders to one rather than drawing a 2-pixel crack. */
-    uint8_t env_left_vid;
-    uint8_t env_right_vid;
-#endif
     int16_t iq;
     int16_t step;
 } PolarRun;
@@ -860,14 +855,14 @@ static uint8_t envelope_center_col(int16_t rel)
  * neighbouring envelope spans cannot compete for one column and no runtime
  * depth sort / ownership arbitration is required.
  */
-static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
+static uint8_t project_envelope_span(uint8_t owner, uint8_t bv0, uint8_t bv1,
                                      const TSPState *s, PolarRun *r)
 {
+    uint8_t sid=(uint8_t)(owner&31u);
     uint16_t a0=bearing_vertex_q12(bv0,s), a1=bearing_vertex_q12(bv1,s);
     uint16_t len=(uint16_t)((a1-a0)&4095u), yawq=(uint16_t)s->yaw<<4;
-    uint16_t w;
     int16_t st,en,lo,hi;
-    uint8_t c0,cend,c1,invd,sv0,sv1;
+    uint8_t c0,cend,c1,invd;
     int16_t rel0,rel1;
 
     if(len==0u || len>=2048u) return 0u;
@@ -898,21 +893,18 @@ static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
     rel1=k_e1env_col_edge_q12[(uint8_t)(c1+1u)];
     invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
 
-    w=k_tspf_keys[sid];
-    sv0=(uint8_t)((w>>5)&31u);
-    sv1=(uint8_t)((w>>10)&31u);
-
     r->sid=sid;
-    r->v0=sv0; r->v1=sv1;
+    /* AO only reads an endpoint when its corresponding real-border flag is
+     * set. Packed owner flags prove that the envelope witness is then the
+     * authored endpoint, so no runtime segment-key unpack is needed. */
+    r->v0=bv0; r->v1=bv1;
     r->x0=(uint8_t)(c0<<3);
     r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
     r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+rel0)&4095u,rel0);
     r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+rel1)&4095u,rel1);
     r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
-    r->left_real=(uint8_t)((lo==st) && (bv0==sv0 || bv0==sv1));
-    r->right_real=(uint8_t)((hi==en) && (bv1==sv0 || bv1==sv1));
-    r->env_left_vid=bv0;
-    r->env_right_vid=bv1;
+    r->left_real=(uint8_t)((lo==st) && (owner&0x20u));
+    r->right_real=(uint8_t)((hi==en) && (owner&0x40u) && !(owner&0x80u));
     r->depth_plane=0u;
     r->c0=c0; r->c1=c1;
     return 1u;
@@ -965,30 +957,18 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *
     uint8_t ni=(uint8_t)(i+1u<n?i+1u:0u);
     uint8_t off=(uint8_t)(1u+(uint8_t)(i<<1));
     uint8_t noff=(uint8_t)(1u+(uint8_t)(ni<<1));
-    uint8_t sid=g_e1env_program[(uint8_t)(off+1u)];
+    uint8_t owner=g_e1env_program[(uint8_t)(off+1u)];
     uint8_t idx=*count;
     uint8_t q;
     if(idx>=TSPF_MAX_ACTIVE) return 0u;
-    /* NO_WALL does not occur in the closed FULL E1M1 course. Treat it as a
-     * transparent zero-column interval if future open envelopes introduce it. */
-    if(sid==0xffu) return 2u;
-    q=project_envelope_span(sid,g_e1env_program[off],g_e1env_program[noff],s,&g_runs[idx]);
+    /* 0xff remains the unambiguous NO_WALL record; real surface IDs occupy
+     * only the low five bits and high bits carry baked endpoint semantics. */
+    if(owner==0xffu) return 2u;
+    q=project_envelope_span(owner,g_e1env_program[off],g_e1env_program[noff],s,&g_runs[idx]);
     if(q!=1u) return q;
     g_run_order[idx]=idx;
     *count=(uint8_t)(idx+1u);
     return 1u;
-}
-/* Runs are discovered in angular order on each side of the focus span.
- * Collapse a duplicate connected-corner border immediately when two
- * successful (non-sub-column) runs become screen-adjacent. This is the same
- * policy as the earlier 20-column correctness pass, but costs only one cheap
- * check per visible run instead of rebuilding a column-owner map each frame. */
-static void envelope_join_connected(uint8_t li,uint8_t ri)
-{
-    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
-       g_runs[li].right_real && g_runs[ri].left_real &&
-       g_runs[li].env_right_vid==g_runs[ri].env_left_vid)
-        g_runs[li].right_real=0u;
 }
 #endif
 
@@ -1282,47 +1262,30 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
-            uint8_t focus,step,i,q,last,focus_run;
+            uint8_t focus,step,i;
 #ifdef __SDCC
             g_polar_run_owned=1u;
 #endif
             /* Do NOT project the complete 360-degree envelope. Find the span
              * under the camera centre ray, then walk outward only while spans
-             * intersect the 90-degree FOV. The visible set is contiguous in a
-             * cyclic first-hit envelope, so the first miss on each side ends
-             * that side of the walk. */
+             * intersect the 90-degree FOV. Physical-endpoint and connected
+             * corner semantics are already packed into each owner byte. */
             if(!n) goto e1full_candidates_ready;
             TSPF_ENV_PHASE(2u);
             focus=envelope_focus_span(n,s);
             TSPF_ENV_PHASE(3u);
-            q=envelope_add_span(focus,n,s,&count);
-            if(q!=1u) goto e1full_candidates_ready;
-            focus_run=(uint8_t)(count-1u);
+            (void)envelope_add_span(focus,n,s,&count);
 
-            last=focus_run;
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i+1u<n?i+1u:0u);
-                q=envelope_add_span(i,n,s,&count);
-                if(q==0u) break;
-                if(q==1u){
-                    uint8_t cur=(uint8_t)(count-1u);
-                    envelope_join_connected(last,cur);
-                    last=cur;
-                }
+                if(envelope_add_span(i,n,s,&count)==0u) break;
             }
 
-            last=focus_run;
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i?i-1u:n-1u);
-                q=envelope_add_span(i,n,s,&count);
-                if(q==0u) break;
-                if(q==1u){
-                    uint8_t cur=(uint8_t)(count-1u);
-                    envelope_join_connected(cur,last);
-                    last=cur;
-                }
+                if(!envelope_add_span(i,n,s,&count)) break;
             }
             goto e1full_candidates_ready;
         }
