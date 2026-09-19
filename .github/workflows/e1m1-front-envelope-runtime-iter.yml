@@ -1,0 +1,186 @@
+name: E1M1 exact-Q4 envelope runtime iteration
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+    paths:
+      - src/tilesector_polar_renderer.c
+      - src/tilesector_polar_materialize_gg.s
+      - .github/workflows/e1m1-front-envelope-runtime-iter.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  iterate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore proven exact-Q4 ROM tables and baseline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-iter
+          PRE="$ROOT/prebake"
+          GEN="$ROOT/generated"
+          mkdir -p "$PRE" "$GEN"
+          gh run download 35436773164 \
+            -n GG-E1M1-Exact-Q4-FrontEnvelope \
+            -D "$PRE"
+          cp "$PRE/generated/optimized_renderer_map_data.inc" "$GEN/"
+          cp "$PRE/generated"/e1env_idx_*.c "$GEN/"
+          cp "$PRE/generated"/e1env_prog_*.c "$GEN/"
+          cp "$PRE/generated/e1env_generated.h" "$GEN/"
+          cp "$PRE/generated/e1env_dispatch.c" "$GEN/"
+          cp "$PRE/pvs.gg" "$ROOT/pvs.gg"
+          cp "$PRE/pvs.noi" "$ROOT/pvs.noi"
+          cp "$PRE/pvs.sym" "$ROOT/pvs.sym"
+          cp "$PRE/envelope-bake.txt" "$ROOT/envelope-bake.txt"
+          test -f "$GEN/e1env_dispatch.c"
+          grep -q 'stable_pct=100.00' "$ROOT/envelope-bake.txt"
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build Gearsystem tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
+            tools/frame/frame_timeline.cpp \
+            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
+
+      - name: Compile exact-Q4 table objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          : > "$ROOT/env-objs.txt"
+          for src in "$GEN"/e1env_dispatch.c "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c; do
+            base="$(basename "${src%.c}")"
+            obj="$ROOT/${base}.o"
+            "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
+            printf '%s ' "$obj" >> "$ROOT/env-objs.txt"
+          done
+
+      - name: Generate identical deterministic trace
+        shell: bash
+        run: |
+          python3 tools/frame/gen_traces.py cruise build/frame_trace.c
+
+      - name: Build focused-envelope ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          ENVOBJS="$(cat "$ROOT/env-objs.txt")"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
+            POLAR_EXTRA_OBJS="build/frame_trace_gg.o $ENVOBJS" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar 2>&1 | tee "$ROOT/build.txt"
+          cp build/gg-tilesector-polar.gg "$ROOT/focused.gg"
+          cp build/gg-tilesector-polar.noi "$ROOT/focused.noi"
+          cp build/gg-tilesector-polar.sym "$ROOT/focused.sym"
+          cp build/gg-tilesector-polar.map "$ROOT/focused.map"
+
+      - name: Measure PVS baseline and focused envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-iter
+          ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 \
+            | tee "$ROOT/pvs-timeline.txt"
+          ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 \
+            | tee "$ROOT/focused-timeline.txt"
+
+      - name: Update-aligned parity and T-state comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/e1env-iter/summary.txt
+          import csv,statistics
+          from pathlib import Path
+          root=Path("build/e1env-iter")
+          a=list(csv.DictReader((root/"pvs.csv").open()))
+          b=list(csv.DictReader((root/"focused.csv").open()))
+          n=min(len(a),len(b))
+          def vals(rows,k): return [int(r[k]) for r in rows[:n]]
+          def mean(x): return statistics.fmean(x)
+          def pct(x,p):
+              q=sorted(x); return q[int((len(q)-1)*p)]
+          state=lambda r:(r["x_q4"],r["y_q4"],r["z_q4"],r["yaw"])
+          state_same=sum(state(x)==state(y) for x,y in zip(a[:n],b[:n]))
+          map_same=sum(x["map_fnv64"]==y["map_fnv64"] for x,y in zip(a[:n],b[:n]))
+          bad=[i for i,(x,y) in enumerate(zip(a[:n],b[:n])) if x["map_fnv64"]!=y["map_fnv64"]]
+          at,bt=vals(a,"total"),vals(b,"total")
+          ar,br=vals(a,"render"),vals(b,"render")
+          clock=3579545.0
+          print("E1ENV_FOCUS_AB")
+          print(f"updates={n} state_equal={state_same}/{n} map_equal={map_same}/{n} mismatches={n-map_same}")
+          print("first_mismatch_updates="+",".join(map(str,bad[:30])))
+          print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
+          print(f"FOCUS total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
+          print(f"delta total={mean(bt)-mean(at):+.0f} ({100*(mean(bt)/mean(at)-1):+.1f}%)")
+          print(f"PVS render mean={mean(ar):.0f} p95={pct(ar,.95)}")
+          print(f"FOCUS render mean={mean(br):.0f} p95={pct(br,.95)}")
+          print(f"delta render={mean(br)-mean(ar):+.0f} ({100*(mean(br)/mean(ar)-1):+.1f}%)")
+          for k in ("projection/setup","geometry walk","materializer","retained gate","boundary patch","nametable/VRAM","arith helpers","other render"):
+              if k in a[0] and k in b[0]:
+                  av,bv=vals(a,k),vals(b,k)
+                  print(f"group {k}: PVS={mean(av):.0f} FOCUS={mean(bv):.0f} delta={mean(bv)-mean(av):+.0f}")
+          top=sorted(range(n),key=lambda i:at[i],reverse=True)[:12]
+          print("baseline_heavy_updates="+",".join(f"{i}:{at[i]}->{bt[i]}({bt[i]-at[i]:+d})" for i in top))
+          PY
+
+      - name: Bottom-up focused-envelope profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-iter
+          ./build/polar_function_profile_runner \
+            "$ROOT/focused.gg" "$ROOT/focused.sym" "$ROOT/focused.noi" 60 8 \
+            | tee "$ROOT/focused-functions.txt"
+
+      - name: Package playable
+        shell: bash
+        run: |
+          cp build/e1env-iter/focused.gg build/e1env-iter/GG-E1M1-Exact-Q4-Focused-Envelope.gg
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GG-E1M1-Exact-Q4-FocusedEnvelope
+          path: build/e1env-iter/
+          if-no-files-found: warn
+          retention-days: 30
