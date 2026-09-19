@@ -2197,12 +2197,12 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
  * to one small authoring room. Recognisable props become boxes/cylinders and
  * the original material noise becomes a tiny semantic vocabulary.
  */
-#define KLEINER_PLAY_GRID_W 9u
+#define KLEINER_PLAY_GRID_W 8u
 #define KLEINER_PLAY_GRID_H 6u
-#define KLEINER_PLAY_YAWS 16u
-#define KLEINER_PLAY_STEP 10
-#define KLEINER_PLAY_ORIGIN_X 46
-#define KLEINER_PLAY_ORIGIN_Y (-8)
+#define KLEINER_PLAY_YAWS 24u
+#define KLEINER_PLAY_STEP 7
+#define KLEINER_PLAY_ORIGIN_X 44
+#define KLEINER_PLAY_ORIGIN_Y (-5)
 #define KLEINER_PLAY_EYE_Z 8u
 #define KLEINER_PLAY_POOL_A_BASE 3u
 #define KLEINER_PLAY_POOL_SIZE 222u
@@ -2242,12 +2242,17 @@ static void kleiner_add_banded_wall(World *w,
                                     double ax,double ay,double bx,double by,
                                     double top){
     const double split=12.8;
+    /* Cheap architectural readability: faces on the Y axis are one value
+     * darker than faces on the X axis. This is deliberately authored
+     * orientation contrast, independent of point-light distance, so room
+     * corners remain visible at Game Gear resolution. */
+    const int8_t orient=(fabs(by-ay)>fabs(bx-ax))?-1:0;
     if(top<=split){
-        add_seg(w,ax,ay,bx,by,0,top,-1);
+        add_seg(w,ax,ay,bx,by,0,top,(int8_t)(-1+orient));
         return;
     }
-    add_seg(w,ax,ay,bx,by,0,split,-1);
-    add_seg(w,ax,ay,bx,by,split,top,0);
+    add_seg(w,ax,ay,bx,by,0,split,(int8_t)(-1+orient));
+    add_seg(w,ax,ay,bx,by,split,top,orient);
 }
 
 static void kleiner_add_lintel(World *w,
@@ -2340,48 +2345,52 @@ static void make_kleiner_lab_world(World *w){
     t=rmb_transform(49,28,25.0,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,rings,&t,7.0,11.0,2.5,-2);
 
-    metal=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(57,15,4.0,0,0,-18,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,5.0,3.0,3.0,-1);
-    t=rmb_transform(72,16,7.5,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,5.0,4.0,7.5,-1);
-    t=rmb_transform(73,16,15.7,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,5.4,4.4,0.6,0);
+    metal=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    rmb_set_object_ramp_shading(&w->mesh,metal,5u,0u);
+    t=rmb_transform(57,15,3.6,0,0,-18,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,4.1,2.5,2.5,-1);
+    t=rmb_transform(72,16,6.7,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,4.2,3.4,6.3,-1);
+    t=rmb_transform(72,16,13.4,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,4.6,3.7,0.5,0);
 
     /* HEV case / locker masses are now inside the actual sub-room. */
-    t=rmb_transform(119,-11,6.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,3.2,2.0,6.0,0);
-    t=rmb_transform(119,-8.8,7.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,1.8,0.4,3.8,1);
-    t=rmb_transform(128,-10,6.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,metal,&t,2.4,1.8,6.0,-1);
+    t=rmb_transform(119,-11,5.4,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,2.8,1.7,5.4,0);
+    t=rmb_transform(119,-9.1,6.3,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,1.5,0.35,3.3,1);
+    t=rmb_transform(128,-10,5.4,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,metal,&t,2.1,1.55,5.4,-1);
 
-    desk=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(106,6,4.5,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,desk,&t,14.0,5.0,0.6,0);
-    t=rmb_transform(97,3,2.2,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,desk,&t,1.0,1.0,2.2,-1);
-    t=rmb_transform(115,9,2.2,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,desk,&t,1.0,1.0,2.2,-1);
-    t=rmb_transform(102,6,8.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,desk,&t,3.2,1.0,2.4,1);
-    t=rmb_transform(113,5,7.0,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,desk,&t,4.0,2.0,1.8,0);
+    desk=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    rmb_set_object_ramp_shading(&w->mesh,desk,5u,0u);
+    t=rmb_transform(106,6,4.2,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,11.0,4.0,0.5,0);
+    t=rmb_transform(99,3.5,2.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,0.8,0.8,2.0,-1);
+    t=rmb_transform(113,8.5,2.0,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,0.8,0.8,2.0,-1);
+    t=rmb_transform(102,6,7.3,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,2.6,0.8,2.0,1);
+    t=rmb_transform(112,5,6.6,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,desk,&t,3.2,1.5,1.5,0);
 
-    human=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(86,13,8.6,0,0,0,1,1,1);
-    rmb_add_box(&w->mesh,human,&t,1.8,1.2,3.1,1);
-    t=rmb_transform(86,13,12.6,0,0,0,1,1,1);
-    rmb_add_uv_sphere(&w->mesh,human,&t,1.45,4u,8u,1);
-    legs=rmb_new_object(&w->mesh,RMB_OUTLINE_NONE);
-    t=rmb_transform(84.9,13,3.7,0,0,0,1,1,1);
-    rmb_add_cylinder(&w->mesh,legs,&t,0.65,4.7,6u,-1,1u);
-    t=rmb_transform(87.1,13,3.7,0,0,0,1,1,1);
-    rmb_add_cylinder(&w->mesh,legs,&t,0.65,4.7,6u,-1,1u);
-    t=rmb_transform(83.8,13,8.8,0,22,0,1,1,1);
-    rmb_add_cylinder(&w->mesh,human,&t,0.5,4.0,6u,1,1u);
-    t=rmb_transform(88.2,13,8.8,0,-22,0,1,1,1);
-    rmb_add_cylinder(&w->mesh,human,&t,0.5,4.0,6u,1,1u);
+    human=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    rmb_set_object_ramp_shading(&w->mesh,human,5u,1u);
+    t=rmb_transform(86,13,8.9,0,0,0,1,1,1);
+    rmb_add_box(&w->mesh,human,&t,2.2,1.5,3.4,1);
+    t=rmb_transform(86,13,13.3,0,0,0,1,1,1);
+    rmb_add_uv_sphere(&w->mesh,human,&t,1.7,4u,8u,1);
+    legs=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    rmb_set_object_ramp_shading(&w->mesh,legs,5u,1u);
+    t=rmb_transform(84.8,13,3.9,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,legs,&t,0.85,5.2,6u,-1,1u);
+    t=rmb_transform(87.2,13,3.9,0,0,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,legs,&t,0.85,5.2,6u,-1,1u);
+    t=rmb_transform(83.5,13,9.0,0,22,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,human,&t,0.7,4.5,6u,1,1u);
+    t=rmb_transform(88.5,13,9.0,0,-22,0,1,1,1);
+    rmb_add_cylinder(&w->mesh,human,&t,0.7,4.5,6u,1,1u);
 
     /* Coarse versions of repeated z=25.6..28.8 truss and z=16..18.4 duct
      * bands measured from the OBJ. */
@@ -2445,8 +2454,8 @@ static void bake_kleiner_playable(const char *outdir){
         if(kleiner_play_position_valid(ix,iy))
             lut[(uint16_t)iy*KLEINER_PLAY_GRID_W+ix]=pos_count++;
     state_count=(uint16_t)pos_count*KLEINER_PLAY_YAWS;
-    if(pos_count!=37u||state_count!=592u)
-        die("Kleiner playable traced-grid cardinality changed unexpectedly");
+    if(pos_count!=34u||state_count!=816u)
+        die("Kleiner playable dense-grid cardinality changed unexpectedly");
     if(KLEINER_PLAY_POOL_B_BASE+KLEINER_PLAY_POOL_SIZE>dict_base)
         die("Kleiner playable VRAM pools overlap hardware limit");
 
@@ -2480,7 +2489,7 @@ static void bake_kleiner_playable(const char *outdir){
             "anchors=teleporter(49,28) kleiner(86,13) hev(119,-11)\n"
             "trace_planes=teleporter_x61.6 hev_north_y-3.2 hev_west_x104.8 north_step_x105.6\n"
             "trace_doors=teleporter_y3.6..20.4 hev_x114.0..124.4 eye_z=%u\n"
-            "palette_model=warm-industrial-ramp+orange-accent semantic_texture=PASS\n"
+            "palette_model=directional-contrast-5stop+orange-accent semantic_texture=PASS\n"
             "movement_obstacles=teleporter,server-rack,desk,lockers\n",
             (unsigned)KLEINER_PLAY_GRID_W,(unsigned)KLEINER_PLAY_GRID_H,
             (unsigned)KLEINER_PLAY_STEP,KLEINER_PLAY_ORIGIN_X,KLEINER_PLAY_ORIGIN_Y,
@@ -2501,7 +2510,10 @@ static void bake_kleiner_playable(const char *outdir){
             p.x=(double)(KLEINER_PLAY_ORIGIN_X+(int)ix*KLEINER_PLAY_STEP);
             p.y=(double)(KLEINER_PLAY_ORIGIN_Y+(int)iy*KLEINER_PLAY_STEP);
             p.z=(double)KLEINER_PLAY_EYE_Z;
-            p.yaw=(uint8_t)(yaw_i*16u);
+            /* Evenly distribute arbitrary heading counts around the 8-bit
+             * angle circle. 24 headings => 15-degree visual increments. */
+            p.yaw=(uint8_t)(((uint16_t)yaw_i*256u+
+                            (KLEINER_PLAY_YAWS/2u))/KLEINER_PLAY_YAWS);
 
             memset(present,0,sizeof(present));
             tsp_host_composite_reset_cache();
@@ -2539,7 +2551,7 @@ static void bake_kleiner_playable(const char *outdir){
             sum_patterns+=dyn_count;
             if(dyn_count>peak_patterns)peak_patterns=dyn_count;
 
-            if(ix==4u&&iy==1u&&(yaw_i==5u||yaw_i==7u||yaw_i==9u)){
+            if(ix==4u&&iy==1u&&(yaw_i==8u||yaw_i==10u||yaw_i==12u)){
                 snprintf(path,sizeof(path),"%s/kleiner-start-yaw%02u.ppm",
                          outdir,(unsigned)yaw_i);
                 if(!tsp_host_composite_write_ppm(path))
