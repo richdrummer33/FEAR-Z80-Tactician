@@ -2198,7 +2198,7 @@ static void bake_route(const char *outdir,FILE *pack,FILE *manifest,
  * the original material noise becomes a tiny semantic vocabulary.
  */
 #define KLEINER_PLAY_GRID_W 8u
-#define KLEINER_PLAY_GRID_H 6u
+#define KLEINER_PLAY_GRID_H 5u
 #define KLEINER_PLAY_YAWS 24u
 #define KLEINER_PLAY_STEP 7
 #define KLEINER_PLAY_ORIGIN_X 44
@@ -2345,7 +2345,7 @@ static void make_kleiner_lab_world(World *w){
     t=rmb_transform(49,28,25.0,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,rings,&t,7.0,11.0,2.5,-2);
 
-    metal=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    metal=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
     rmb_set_object_ramp_shading(&w->mesh,metal,5u,0u);
     t=rmb_transform(57,15,3.6,0,0,-18,1,1,1);
     rmb_add_box(&w->mesh,metal,&t,4.1,2.5,2.5,-1);
@@ -2362,7 +2362,7 @@ static void make_kleiner_lab_world(World *w){
     t=rmb_transform(128,-10,5.4,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,metal,&t,2.1,1.55,5.4,-1);
 
-    desk=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    desk=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
     rmb_set_object_ramp_shading(&w->mesh,desk,5u,0u);
     t=rmb_transform(106,6,4.2,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,desk,&t,11.0,4.0,0.5,0);
@@ -2381,7 +2381,7 @@ static void make_kleiner_lab_world(World *w){
     rmb_add_box(&w->mesh,human,&t,2.2,1.5,3.4,1);
     t=rmb_transform(86,13,13.3,0,0,0,1,1,1);
     rmb_add_uv_sphere(&w->mesh,human,&t,1.7,4u,8u,1);
-    legs=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE_CREASE);
+    legs=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
     rmb_set_object_ramp_shading(&w->mesh,legs,5u,1u);
     t=rmb_transform(84.8,13,3.9,0,0,0,1,1,1);
     rmb_add_cylinder(&w->mesh,legs,&t,0.85,5.2,6u,-1,1u);
@@ -2454,7 +2454,7 @@ static void bake_kleiner_playable(const char *outdir){
         if(kleiner_play_position_valid(ix,iy))
             lut[(uint16_t)iy*KLEINER_PLAY_GRID_W+ix]=pos_count++;
     state_count=(uint16_t)pos_count*KLEINER_PLAY_YAWS;
-    if(pos_count!=34u||state_count!=816u)
+    if(pos_count!=28u||state_count!=672u)
         die("Kleiner playable dense-grid cardinality changed unexpectedly");
     if(KLEINER_PLAY_POOL_B_BASE+KLEINER_PLAY_POOL_SIZE>dict_base)
         die("Kleiner playable VRAM pools overlap hardware limit");
