@@ -64,6 +64,8 @@ POLAR_DEPTHPLANE_GEN_DIR := build/generated/polar_depthplane
 POLAR_DEPTHPLANE_HDR := $(POLAR_DEPTHPLANE_GEN_DIR)/tilesector_polar_depthplane_lut.h
 POLAR_DEPTHPLANE_SRC := $(POLAR_DEPTHPLANE_GEN_DIR)/tilesector_polar_depthplane.c
 POLAR_DEPTHPLANE_OBJ := build/tilesector_polar_depthplane_gg.o
+POLAR_DEPTHPLANE_MAP_INC ?=
+POLAR_DEPTHPLANE_BANK ?= 255
 POLAR_PROJ_BANKS_6 := 0 1 2 3 4 5
 POLAR_PROJ_BANKS_24 := 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
 POLAR_PROJ_BANKS := $(POLAR_PROJ_BANKS_$(POLAR_PROJ_BANK_COUNT))
@@ -394,7 +396,7 @@ $(POLAR_PROJ_META) $(POLAR_PROJ_SRCS): $(POLAR_PROJ_STAMP)
 
 $(POLAR_DEPTHPLANE_HDR) $(POLAR_DEPTHPLANE_SRC): experiments/adaptive_polar_field/screen_depth_plane_lut.py src/generated/tilesector_polar_data_part00.inc src/generated/tilesector_polar_data_part01.inc src/generated/tilesector_polar_data_part02.inc src/generated/tilesector_polar_data_part03.inc src/generated/tilesector_polar_data_part04.inc | build
 	mkdir -p $(POLAR_DEPTHPLANE_GEN_DIR)
-	python3 experiments/adaptive_polar_field/screen_depth_plane_lut.py --emit-dir $(POLAR_DEPTHPLANE_GEN_DIR)
+	python3 experiments/adaptive_polar_field/screen_depth_plane_lut.py --emit-dir $(POLAR_DEPTHPLANE_GEN_DIR) $(if $(POLAR_DEPTHPLANE_MAP_INC),--map-inc $(POLAR_DEPTHPLANE_MAP_INC),) --bank $(POLAR_DEPTHPLANE_BANK)
 
 $(POLAR_DEPTHPLANE_OBJ): $(POLAR_DEPTHPLANE_SRC) $(POLAR_DEPTHPLANE_HDR) | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $(POLAR_DEPTHPLANE_SRC)
