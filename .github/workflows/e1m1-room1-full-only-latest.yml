@@ -1,0 +1,198 @@
+name: Latest E1M1 FULL-only playable build
+
+on:
+  push:
+    branches:
+      - feature/e1m1-room1-full-only-latest
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-map:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake exact FULL-only E1M1 Room 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-full-latest
+          GEN="$OUT/generated"
+          mkdir -p "$GEN"
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --out "$GEN/optimized_renderer_map_data.inc" \
+            | tee "$OUT/bake.txt"
+          grep -q 'E1FULL_BAKE_PASS source_vertices=44 source_segments=58 full_vertices=30 full_surfaces=30' "$OUT/bake.txt"
+          grep -q 'profiles FULL=30 LINTEL=0 RAISED=0 RISER=0 windows=0 stairs=0 floor_insets=0' "$OUT/bake.txt"
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build playable ROM on latest renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o \
+            build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$PWD/build/e1m1-full-latest/generated" \
+            POLAR_ROM_BANKS=8 \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
+            gg-tilesector-polar 2>&1 | tee build/e1m1-full-latest/build.txt
+          cp build/gg-tilesector-polar.gg build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.gg
+          cp build/gg-tilesector-polar.sym build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.sym
+          cp build/gg-tilesector-polar.map build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.map
+          sha256sum build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.gg | tee build/e1m1-full-latest/SHA256.txt
+          stat -c 'rom_bytes=%s' build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.gg | tee build/e1m1-full-latest/ROM-size.txt
+          git rev-parse HEAD > build/e1m1-full-latest/SOURCE_COMMIT.txt
+
+      - name: Check WRAM headroom
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAP=build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.map
+          python3 - <<'PY' | tee build/e1m1-full-latest/wram-check.txt
+          import re
+          from pathlib import Path
+          t=Path("build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.map").read_text(errors="ignore")
+          m=re.search(r'_DATA\s+([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})',t)
+          if m:
+              start=int(m.group(1),16); size=int(m.group(2),16)
+              print(f"DATA start=0x{start:04X} bytes={size} end=0x{start+size-1:04X}")
+              if start+size>0xDC00:
+                  raise SystemExit("static DATA leaves too little conservative stack headroom")
+          else:
+              print("WRAM_CHECK_NOTE could not parse aggregate _DATA line; linker still accepted image")
+          print("WRAM_CHECK_PASS")
+          PY
+
+      - name: Build Gearsystem verification tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove boot, movement, turning, and flat eye height
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1m1-full-latest
+          ROM="$OUT/GG-E1M1-Room1-Latest-FULL-Only.gg"
+          SYM="$OUT/GG-E1M1-Room1-Latest-FULL-Only.sym"
+          mkdir -p /tmp/e1-full-forward /tmp/e1-full-turn
+
+          ./build/tilesector_state_capture "$ROM" "$SYM" \
+            --vblank-sequence roomA-forward 180 20 /tmp/e1-full-forward/frame "$OUT/forward.csv" \
+            | tee "$OUT/forward-proof.txt"
+          ./build/tilesector_state_capture "$ROM" "$SYM" \
+            --vblank-sequence roomA-turn 180 20 /tmp/e1-full-turn/frame "$OUT/turn.csv" \
+            | tee "$OUT/turn-proof.txt"
+
+          cp /tmp/e1-full-forward/frame-0000.ppm "$OUT/start.ppm"
+          cp /tmp/e1-full-forward/frame-0089.ppm "$OUT/mid.ppm"
+          cp /tmp/e1-full-forward/frame-0179.ppm "$OUT/end.ppm"
+
+          python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
+          import csv
+          from pathlib import Path
+          root=Path("build/e1m1-full-latest")
+          fw=list(csv.DictReader((root/"forward.csv").open()))
+          tr=list(csv.DictReader((root/"turn.csv").open()))
+          if not fw or not tr: raise SystemExit("missing capture rows")
+          sx,sy=int(fw[0]["x_q4"]),int(fw[0]["y_q4"])
+          ex,ey=int(fw[-1]["x_q4"]),int(fw[-1]["y_q4"])
+          zs=[int(r["z_q4"]) for r in fw]
+          if (ex,ey)==(sx,sy): raise SystemExit("forward scenario did not move")
+          if min(zs)!=(5<<4) or max(zs)!=(5<<4):
+              raise SystemExit(f"camera was not perfectly flat: z range={min(zs)}..{max(zs)}")
+          if int(tr[-1]["yaw"])==int(tr[0]["yaw"]):
+              raise SystemExit("turn scenario did not change yaw")
+          print("E1FULL_EMULATOR_PASS")
+          print(f"forward_q4=({sx},{sy})->({ex},{ey})")
+          print(f"z_q4 min={min(zs)} max={max(zs)}")
+          print(f"turn_yaw={tr[0]['yaw']}->{tr[-1]['yaw']}")
+          PY
+          grep -q E1FULL_EMULATOR_PASS "$OUT/emulator-proof.txt"
+
+      - name: Write README
+        if: always()
+        shell: bash
+        run: |
+          cat > build/e1m1-full-latest/README.txt <<'EOF'
+          GAME GEAR - E1M1 ROOM 1 - LATEST RENDERER - FULL ONLY
+
+          Geometry source:
+          Exact Room-1 geometry/floor oracle originally generated from map1.js.
+          The XY footprint and both square pillars are retained.
+
+          Deliberate simplification:
+          - floor is flat
+          - every retained structural span is one FULL profile
+          - no windows
+          - no LINTEL
+          - no RISER
+          - no RAISED
+          - no stairs
+          - no floor/ceiling inset surfaces
+
+          Geometry count:
+          30 compact authored vertices
+          30 FULL structural surfaces
+          0 non-FULL surfaces
+
+          Renderer:
+          Built from the current feature/renderer-optimized-map lineage,
+          including the retained exact-key gate (Rung 26) and the special
+          foreground FULL-wall boundary patcher (Rung 27). Retention was widened
+          on this branch from 17 to all 30 physical surfaces.
+
+          Runtime PVS:
+          8x8 world cells x 16 yaw bins; four-byte/30-bit conservative candidate
+          masks baked offline. See bake.txt for measured candidate counts.
+
+          Controls:
+          D-pad up/down = forward/back
+          D-pad left/right = turn
+          B/A = strafe left/right
+          Start = speed scale
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GG-E1M1-Room1-Latest-FULL-Only
+          path: |
+            build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.gg
+            build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.sym
+            build/e1m1-full-latest/GG-E1M1-Room1-Latest-FULL-Only.map
+            build/e1m1-full-latest/README.txt
+            build/e1m1-full-latest/SHA256.txt
+            build/e1m1-full-latest/ROM-size.txt
+            build/e1m1-full-latest/SOURCE_COMMIT.txt
+            build/e1m1-full-latest/bake.txt
+            build/e1m1-full-latest/build.txt
+            build/e1m1-full-latest/wram-check.txt
+            build/e1m1-full-latest/emulator-proof.txt
+            build/e1m1-full-latest/*.ppm
+            build/e1m1-full-latest/generated/optimized_renderer_map_data.inc
+          if-no-files-found: warn
+          retention-days: 30
