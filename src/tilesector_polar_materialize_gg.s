@@ -1481,13 +1481,13 @@ ret_inval_loop$:
         inc     hl
         djnz    ret_inval_loop$
         ld      hl, #polar_ret_pc0$
-        ld      b, #30
+        ld      b, #32
 ret_inval_r0$:
         ld      (hl), #1
         inc     hl
         djnz    ret_inval_r0$
         ld      hl, #polar_ret_pc1$
-        ld      b, #30
+        ld      b, #32
 ret_inval_r1$:
         ld      (hl), #0
         inc     hl
@@ -1545,7 +1545,7 @@ ret_end_group$:
 ret_run_begin$:
 _tsp_h_ret_run_begin::
         ld      a, (#_g_polar_run_sid)
-        cp      #30
+        cp      #32
         jp      nc, ret_run_disable$
         call    ret_bitmask$            ; HL=&live[group], C=mask
         ld      a, (hl)
@@ -2148,6 +2148,8 @@ polar_ret_index$:
         .dw polar_ret_store$+4320
         .dw polar_ret_store$+4480
         .dw polar_ret_store$+4640
+        .dw polar_ret_store$+4800
+        .dw polar_ret_store$+4960
 
         .area _DATA
 polar_ret_valid$:
@@ -2159,9 +2161,9 @@ polar_ret_poison$:
 ; Which coarse columns this surface actually visited last frame. A column it
 ; did not visit has no key worth trusting, whatever the slot still holds.
 polar_ret_pc0$:
-        .ds     30
+        .ds     32
 polar_ret_pc1$:
-        .ds     30
+        .ds     32
 r_ret_pc0$:
         .ds     1
 r_ret_pc1$:
@@ -2184,10 +2186,10 @@ r_ret_base$:
         .ds     2
 r_ret_ptr$:
         .ds     2
-; 30 surfaces x 20 coarse columns x 8 bytes. Six bytes carry the key; the
+; 32 surfaces x 20 coarse columns x 8 bytes. Six bytes carry the key; the
 ; eighth-byte stride keeps the column index a shift rather than a multiply.
 polar_ret_store$:
-        .ds     4800
+        .ds     5120
 r_run_col$:
         .ds     1
 r_run_invl$:
