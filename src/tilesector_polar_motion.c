@@ -42,13 +42,40 @@ static int8_t yaw_error(uint8_t target,uint8_t yaw){return (int8_t)(target-yaw);
 
 uint8_t tsp_is_walkable_q4(int16_t xq,int16_t yq){
     int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
+#if defined(TSPF_OPTIMIZED_MAP)
+    /* Four large rooms separated by divider walls. Only the central doorway
+     * throat connects each pair, which keeps busy vertex sets occluded from
+     * one another and bounds the visible candidate list. */
+    if(x>=20&&x<=52&&y>=20&&y<=76)return 1u;
+    if(x>=60&&x<=92&&y>=20&&y<=76)return 1u;
+    if(x>=100&&x<=132&&y>=20&&y<=76)return 1u;
+    if(x>=140&&x<=172&&y>=20&&y<=76)return 1u;
+    if(x>=52&&x<=60&&y>=44&&y<=52)return 1u;
+    if(x>=92&&x<=100&&y>=44&&y<=52)return 1u;
+    if(x>=132&&x<=140&&y>=44&&y<=52)return 1u;
+    return 0u;
+#else
     if(x>=20&&x<=76&&y>=20&&y<=76)return 1u;
     if(x>=74&&x<=116&&y>=40&&y<=60)return 1u;
     if(x>=112&&x<=172&&y>=20&&y<=78)return 1u;
     return 0u;
+#endif
 }
+#if defined(TSPF_OPTIMIZED_MAP)
+static int16_t opt_floor_z_q4(int16_t xq,int16_t yq){
+    int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
+    (void)y;
+    /* One deliberate step up into Room C and one step down into Room D.
+     * Four world units is visually obvious without becoming a staircase. */
+    return (x>=96&&x<136)?(int16_t)(4<<4):0;
+}
+#endif
 void tsp_reset(TSPState *s){
-    s->x_q4=(int16_t)(32<<4);s->y_q4=(int16_t)(48<<4);s->yaw=0u;
+    s->x_q4=(int16_t)(32<<4);s->y_q4=(int16_t)(48<<4);
+#if defined(TSPF_OPTIMIZED_MAP)
+    s->z_q4=(int16_t)(TSP_OPT_EYE_Q4+opt_floor_z_q4(s->x_q4,s->y_q4));
+#endif
+    s->yaw=0u;
     s->speed_q4=0;s->strafe_q4=0;s->turn_q4=0;s->speed_scale=1u;s->manual=0u;s->demo_phase=0u;s->demo_ticks=0u;
 }
 static void apply_motion(TSPState *s,int8_t throttle,int8_t strafe,uint8_t target_yaw,uint8_t manual_turn){
@@ -65,6 +92,14 @@ static void apply_motion(TSPState *s,int8_t throttle,int8_t strafe,uint8_t targe
     dxq=scale_small((int16_t)(fdx+sdx),scale);dyq=scale_small((int16_t)(fdy+sdy),scale);
     if(tsp_is_walkable_q4((int16_t)(s->x_q4+dxq),s->y_q4))s->x_q4=(int16_t)(s->x_q4+dxq);
     if(tsp_is_walkable_q4(s->x_q4,(int16_t)(s->y_q4+dyq)))s->y_q4=(int16_t)(s->y_q4+dyq);
+#if defined(TSPF_OPTIMIZED_MAP)
+    {
+        int16_t target=(int16_t)(TSP_OPT_EYE_Q4+opt_floor_z_q4(s->x_q4,s->y_q4));
+        /* A single step is traversed over a few updates rather than snapping
+         * the camera. This is intentionally not a general staircase system. */
+        s->z_q4=slew(s->z_q4,target,16);
+    }
+#endif
 }
 void tsp_step(TSPState *s,uint8_t input){
     uint8_t takeover=(uint8_t)(input&(TSP_INPUT_UP|TSP_INPUT_DOWN|TSP_INPUT_LEFT|TSP_INPUT_RIGHT|TSP_INPUT_STRAFE_LEFT|TSP_INPUT_STRAFE_RIGHT));
