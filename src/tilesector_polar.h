@@ -62,7 +62,11 @@ typedef enum TSPProfile {
 } TSPProfile;
 
 #if defined(TSPF_OPTIMIZED_MAP)
+#if defined(TSPF_E1M1_FULL_ONLY)
+#define TSP_OPT_EYE_Q4 (5<<4)
+#else
 #define TSP_OPT_EYE_Q4 (16<<4)
+#endif
 #endif
 
 typedef struct TSPState {
