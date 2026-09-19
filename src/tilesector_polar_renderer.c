@@ -708,6 +708,7 @@ static uint8_t screen_depth_plane(uint8_t sid, uint8_t invd, uint8_t c0, uint8_t
 }
 #endif
 
+#if !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
 static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
 {
     uint16_t w = k_tspf_keys[keyid];
@@ -782,6 +783,8 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
     r->inv_mid = (uint8_t)(((uint16_t)r->inv0 + r->inv1) >> 1);
     return 1u;
 }
+
+#endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 /* Project one already-solved first-hit angular span.
@@ -1051,6 +1054,7 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
     }
 }
 
+#if !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
 static void insert_run(uint8_t idx, uint8_t *count)
 {
     uint8_t i = *count;
@@ -1087,6 +1091,8 @@ static void add_key(uint8_t key, const TSPState *s, uint8_t *count)
     if (idx < TSPF_MAX_ACTIVE && project_key(key, s, &g_runs[idx]))
         insert_run(idx, count);
 }
+
+#endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 
 void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPColumn cols[TSP_COLS]) BANKED
 {
@@ -1142,8 +1148,14 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             }
             goto e1full_candidates_ready;
         }
+#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
+        /* One ROM record exists for every legal Q4 player position. A miss is
+         * therefore out-of-bounds/unwalkable, not a request for the old PVS. */
+        goto done;
+#endif
     }
 #endif
+#if !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
 #ifdef __SDCC
     g_polar_run_owned=0u;
 #endif
@@ -1168,6 +1180,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                     add_key(sid, s, &count);
         }
     }
+#endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 e1full_candidates_ready:
 #endif
