@@ -139,6 +139,10 @@ static PolarRun g_runs[TSPF_MAX_ACTIVE];
 static uint8_t g_run_order[TSPF_MAX_ACTIVE];
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 static uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
+/* Retain the boundary vertex of the span containing camera yaw. Program IDs
+ * can change every Q4 step, but this vertex usually survives into the next
+ * cyclic envelope, giving the FOV walker a near-zero-cost starting point. */
+static uint8_t g_e1env_focus_bv=0xffu;
 /* Q12 camera-relative angles whose projection lands nearest each coarse
  * 8-pixel column centre / boundary. The envelope assigns ownership by centre
  * ray, then evaluates wall depth at the snapped column edges. */
@@ -295,6 +299,9 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #if defined(TSPF_OPTIMIZED_MAP)
     g_opt_prev_recipe=0xffu;
+#endif
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+    g_e1env_focus_bv=0xffu;
 #endif
     TSPF_SET_STAGE(0u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
@@ -845,6 +852,63 @@ static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
     r->c0=c0; r->c1=c1;
     return 1u;
 }
+
+/* Find the one cyclic envelope span containing the camera centre ray.
+ * We retain its boundary vertex across frames. When the exact-Q4 position
+ * selects a different deduplicated program, a cheap byte scan recovers that
+ * boundary in the new program before doing any bearing arithmetic. */
+static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
+{
+    uint8_t i=0u,k;
+    uint16_t yawq=(uint16_t)s->yaw<<4;
+    if(!n) return 0u;
+
+    if(g_e1env_focus_bv!=0xffu){
+        for(k=0u;k<n;++k){
+            if(g_e1env_program[(uint8_t)(1u+(uint8_t)(k<<1))]==g_e1env_focus_bv){
+                i=k; break;
+            }
+        }
+    }
+
+    for(k=0u;k<n;++k){
+        uint8_t ni=(uint8_t)(i+1u<n?i+1u:0u);
+        uint8_t v0=g_e1env_program[(uint8_t)(1u+(uint8_t)(i<<1))];
+        uint8_t v1=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
+        uint16_t a0=bearing_vertex_q12(v0,s);
+        uint16_t a1=bearing_vertex_q12(v1,s);
+        uint16_t len=(uint16_t)((a1-a0)&4095u);
+        uint16_t d=(uint16_t)((yawq-a0)&4095u);
+        if(len && len<2048u && d<len){
+            g_e1env_focus_bv=v0;
+            return i;
+        }
+        /* d<pi means yaw lies forward of this directed interval; otherwise
+         * it lies behind. Walk the cyclic envelope in the corresponding
+         * direction. Normal motion changes this by zero or one spans. */
+        if(d<2048u) i=ni;
+        else i=(uint8_t)(i?i-1u:n-1u);
+    }
+
+    g_e1env_focus_bv=g_e1env_program[1u];
+    return 0u;
+}
+
+/* Project exactly one baked envelope entry into the next run slot. */
+static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *count)
+{
+    uint8_t ni=(uint8_t)(i+1u<n?i+1u:0u);
+    uint8_t off=(uint8_t)(1u+(uint8_t)(i<<1));
+    uint8_t noff=(uint8_t)(1u+(uint8_t)(ni<<1));
+    uint8_t sid=g_e1env_program[(uint8_t)(off+1u)];
+    uint8_t idx=*count;
+    if(sid==0xffu || idx>=TSPF_MAX_ACTIVE) return 0u;
+    if(!project_envelope_span(sid,g_e1env_program[off],g_e1env_program[noff],s,&g_runs[idx]))
+        return 0u;
+    g_run_order[idx]=idx;
+    *count=(uint8_t)(idx+1u);
+    return 1u;
+}
 #endif
 
 static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom)
@@ -1127,24 +1191,29 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     {
         uint8_t n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
         if(n!=0xffu){
-            uint8_t j;
+            uint8_t focus,step,i;
 #ifdef __SDCC
             g_polar_run_owned=1u;
 #endif
-            /* The ROM program is already a cyclic first-hit partition and
-             * project_envelope_span assigns half-open coarse-column intervals
-             * by centre ray. Spans therefore cannot compete for a column:
-             * do not rebuild a runtime ownership proof for a fact we baked. */
-            for(j=0u;j<n && count<TSPF_MAX_ACTIVE;++j){
-                uint8_t off=(uint8_t)(1u+(uint8_t)(j<<1));
-                uint8_t noff=(uint8_t)(1u+(uint8_t)(((j+1u<n)?(j+1u):0u)<<1));
-                uint8_t bv0=g_e1env_program[off];
-                uint8_t sid=g_e1env_program[(uint8_t)(off+1u)];
-                uint8_t bv1=g_e1env_program[noff];
-                if(sid!=0xffu && project_envelope_span(sid,bv0,bv1,s,&g_runs[count])){
-                    g_run_order[count]=count;
-                    ++count;
-                }
+            /* Do NOT project the complete 360-degree envelope. Find the span
+             * under the camera centre ray, then walk outward only while spans
+             * intersect the 90-degree FOV. The visible set is contiguous in a
+             * cyclic first-hit envelope, so the first miss on each side ends
+             * that side of the walk. */
+            if(!n) goto e1full_candidates_ready;
+            focus=envelope_focus_span(n,s);
+            (void)envelope_add_span(focus,n,s,&count);
+
+            i=focus;
+            for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
+                i=(uint8_t)(i+1u<n?i+1u:0u);
+                if(!envelope_add_span(i,n,s,&count)) break;
+            }
+
+            i=focus;
+            for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
+                i=(uint8_t)(i?i-1u:n-1u);
+                if(!envelope_add_span(i,n,s,&count)) break;
             }
             goto e1full_candidates_ready;
         }
