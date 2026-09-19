@@ -166,6 +166,7 @@ int main(int argc, char** argv) {
     const char* csvp = argv[3];
     const unsigned target = argc > 4 ? (unsigned)std::strtoul(argv[4], nullptr, 0) : 180u;
     const unsigned warmup = argc > 5 ? (unsigned)std::strtoul(argv[5], nullptr, 0) : 8u;
+    const char* map_dump_path = argc > 6 ? argv[6] : nullptr;
 
     u16 s_phase = 0, s_loop = 0;
     if (!find_symbol(noi, "_g_ts_prof_phase", s_phase) && !find_symbol(noi, "g_ts_prof_phase", s_phase)) {
@@ -231,6 +232,7 @@ int main(int argc, char** argv) {
         uint64_t map_fnv64;
     };
     std::vector<Frame> frames;
+    std::vector<std::vector<uint8_t>> map_snaps;
     Frame cur{}; std::memset(&cur, 0, sizeof cur);
     uint64_t prev = core.GetMasterClockCycles();
     unsigned seen_loops = 0, last_loop = 0xFFFFu;
@@ -264,7 +266,15 @@ int main(int argc, char** argv) {
                     cur.yaw = mem->DebugRetrieve((u16)(s_state + 6u));
                 }
                 if (have_map) cur.map_fnv64 = fnv1a64(mem, s_map, 20u * 18u * 2u);
-                if (seen_loops >= warmup) frames.push_back(cur);
+                if (seen_loops >= warmup) {
+                    frames.push_back(cur);
+                    if (map_dump_path && have_map) {
+                        std::vector<uint8_t> snap(20u * 18u * 2u);
+                        for (unsigned mi = 0; mi < snap.size(); ++mi)
+                            snap[mi] = mem->DebugRetrieve((u16)(s_map + mi));
+                        map_snaps.push_back(std::move(snap));
+                    }
+                }
                 ++seen_loops;
             }
             std::memset(&cur, 0, sizeof cur);
@@ -290,6 +300,14 @@ int main(int argc, char** argv) {
                 (unsigned long long)f.map_fnv64);
         }
         std::fclose(csv);
+    }
+    if (map_dump_path && !map_snaps.empty()) {
+        FILE* mf = std::fopen(map_dump_path, "wb");
+        if (mf) {
+            for (const auto& snap : map_snaps)
+                std::fwrite(snap.data(), 1, snap.size(), mf);
+            std::fclose(mf);
+        }
     }
 
     auto pct = [&](std::vector<uint64_t> v, double q) {
