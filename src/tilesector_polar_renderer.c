@@ -33,7 +33,11 @@ BANKREF(tilesector_polar_renderer_bank)
 #include "tilesector_polar_depthplane_lut.h"
 #endif
 
+#if defined(TSPF_E1M1_FULL_ONLY)
+#define TSPF_MAX_ACTIVE 32u
+#else
 #define TSPF_MAX_ACTIVE 20u
+#endif
 #define TSPF_HORIZON 72
 #define TSPF_NEAR_Z_Q4 (10 << 4)
 #define TSPF_FAR_Z_Q4 (127 << 4)
@@ -131,9 +135,17 @@ static int8_t g_depth_nf_q7[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static int8_t g_depth_stepfac_q4[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static uint8_t g_depth_yaw_cache = 0xffu;
 #endif
-/* Connected spans share authored corners. Packed keys allow 16 vertices. */
+/* Connected spans share authored corners. The normal packed format has 4-bit
+ * vertex IDs. The exact E1M1 FULL-only course widens the same 16-bit key to
+ * 5-bit vertex IDs (sid5 + v0_5 + v1_5 = 15 bits) for its 30 authored corners. */
+#if defined(TSPF_E1M1_FULL_ONLY)
+uint16_t g_corner_bearing_q12[32];
+static uint16_t g_corner_bearing_valid_lo;
+static uint16_t g_corner_bearing_valid_hi;
+#else
 uint16_t g_corner_bearing_q12[16];
 static uint16_t g_corner_bearing_valid;
+#endif
 #if defined(TSPF_OPTIMIZED_MAP)
 static uint8_t g_opt_prev_recipe=0xffu;
 #endif
@@ -508,6 +520,17 @@ static uint16_t bearing_q12(int16_t dxq4, int16_t dyq4)
 #if !defined(__SDCC) || !TSPF_LOCAL_PROJECTION
 static uint16_t bearing_vertex_q12(uint8_t vid, const TSPState *s)
 {
+#if defined(TSPF_E1M1_FULL_ONLY)
+    uint16_t mask = k_corner_mask[vid & 15u];
+    uint16_t *valid = (vid < 16u) ? &g_corner_bearing_valid_lo : &g_corner_bearing_valid_hi;
+    if (!(*valid & mask))
+    {
+        g_corner_bearing_q12[vid] = bearing_q12(
+            (int16_t)((int16_t)k_tspf_vx[vid] << 4) - s->x_q4,
+            (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
+        *valid |= mask;
+    }
+#else
     uint16_t mask = k_corner_mask[vid];
     if (!(g_corner_bearing_valid & mask))
     {
@@ -522,6 +545,7 @@ static uint16_t bearing_vertex_q12(uint8_t vid, const TSPState *s)
                 (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
         g_corner_bearing_valid |= mask;
     }
+#endif
     return g_corner_bearing_q12[vid];
 }
 #endif
@@ -666,7 +690,11 @@ static uint8_t screen_depth_plane(uint8_t sid, uint8_t invd, uint8_t c0, uint8_t
 static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
 {
     uint16_t w = k_tspf_keys[keyid];
+#if defined(TSPF_E1M1_FULL_ONLY)
+    uint8_t sid = (uint8_t)(w & 31u), v0 = (uint8_t)((w >> 5) & 31u), v1 = (uint8_t)((w >> 10) & 31u);
+#else
     uint8_t sid = (uint8_t)(w & 31u), v0 = (uint8_t)((w >> 5) & 15u), v1 = (uint8_t)((w >> 9) & 15u);
+#endif
     uint16_t a0, a1, len, yawq;
     int16_t st, en, lo, hi;
     uint8_t x0, x1, invd;
@@ -983,7 +1011,12 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     uint8_t gx, gy, lx, ly, recipe, base_id, cond_count, count = 0, i;
     uint16_t gi, off;
     const uint8_t *p, *b;
+#if defined(TSPF_E1M1_FULL_ONLY)
+    g_corner_bearing_valid_lo = 0u;
+    g_corner_bearing_valid_hi = 0u;
+#else
     g_corner_bearing_valid = 0u;
+#endif
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
     tsp_polar_nt_begin_frame();
@@ -1001,6 +1034,29 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_selector_tests = 0u;
 #endif
+#if defined(TSPF_E1M1_FULL_ONLY)
+    {
+        int16_t wx = (int16_t)(s->x_q4 >> 4);
+        int16_t wy = (int16_t)(s->y_q4 >> 4);
+        uint8_t pgx, pgy, byte_i, bit, sid = 0u;
+        uint16_t cell, pvs_off;
+        if (wx < (int16_t)E1FULL_WORLD_MIN_X || wy < (int16_t)E1FULL_WORLD_MIN_Y)
+            goto done;
+        pgx = (uint8_t)((wx - (int16_t)E1FULL_WORLD_MIN_X) >> 3);
+        pgy = (uint8_t)((wy - (int16_t)E1FULL_WORLD_MIN_Y) >> 3);
+        if (pgx >= E1FULL_PVS_COLS || pgy >= E1FULL_PVS_ROWS)
+            goto done;
+        cell = (uint16_t)((uint16_t)pgy * E1FULL_PVS_COLS + pgx);
+        pvs_off = (uint16_t)((cell << 6) + ((uint16_t)(s->yaw >> 4) << 2));
+        for (byte_i = 0u; byte_i < E1FULL_PVS_MASK_BYTES; ++byte_i)
+        {
+            uint8_t m = k_e1full_pvs[pvs_off + byte_i];
+            for (bit = 1u; bit; bit <<= 1, ++sid)
+                if (m & bit)
+                    add_key(sid, s, &count);
+        }
+    }
+#else
     gx = (uint8_t)((uint16_t)s->x_q4 >> 6);
     gy = (uint8_t)((uint16_t)s->y_q4 >> 6);
     if (gx >= 48u || gy >= 24u)
@@ -1051,6 +1107,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         if (selector_pass(sel, lx, ly))
             add_key(key, s, &count);
     }
+#endif
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_active_runs = count;
 #endif
