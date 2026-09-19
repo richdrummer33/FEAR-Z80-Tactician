@@ -1,0 +1,228 @@
+name: E1M1 exact-Q4 front-envelope A-B
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  exact-q4:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake FULL-only E1M1 and exact-Q4 visibility ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-q4
+          GEN="$ROOT/generated"
+          mkdir -p "$GEN"
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --out "$GEN/optimized_renderer_map_data.inc" \
+            | tee "$ROOT/full-bake.txt"
+          python3 tools/e1m1_front_envelope_bake.py \
+            --cell 0.0625 \
+            --emit-banked-dir "$GEN" \
+            --bank-base 16 \
+            --rows-per-bank 4 \
+            | tee "$ROOT/envelope-bake.txt"
+          grep -q 'stability_proof=one_baked_record_per_exact_Q4_player_position' "$ROOT/envelope-bake.txt"
+          grep -q 'unstable=0' "$ROOT/envelope-bake.txt"
+          cat "$GEN/manifest.txt" | tee "$ROOT/envelope-manifest.txt"
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build Gearsystem state and cycle tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
+            tools/frame/frame_timeline.cpp \
+            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
+
+      - name: Generate deterministic forward traversal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/frame/gen_traces.py cruise build/frame_trace.c
+
+      - name: Compile exact-Q4 ROM tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-q4"
+          GEN="$ROOT/generated"
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          : > "$ROOT/env-objs.txt"
+          for src in "$GEN"/e1env_dispatch.c "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c; do
+            base="$(basename "${src%.c}")"
+            obj="$ROOT/${base}.o"
+            "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
+            printf '%s ' "$obj" >> "$ROOT/env-objs.txt"
+          done
+          echo "objects=$(wc -w < "$ROOT/env-objs.txt")" | tee "$ROOT/env-object-count.txt"
+
+      - name: Build and measure conservative-PVS baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-q4"
+          GEN="$ROOT/generated"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=8 \
+            POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar >/dev/null
+          cp build/gg-tilesector-polar.gg "$ROOT/pvs.gg"
+          cp build/gg-tilesector-polar.noi "$ROOT/pvs.noi"
+          cp build/gg-tilesector-polar.sym "$ROOT/pvs.sym"
+          ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 \
+            | tee "$ROOT/pvs-timeline.txt"
+
+      - name: Build and measure exact-Q4 front envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-q4"
+          GEN="$ROOT/generated"
+          ENVOBJS="$(cat "$ROOT/env-objs.txt")"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
+            POLAR_EXTRA_OBJS="build/frame_trace_gg.o $ENVOBJS" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar 2>&1 | tee "$ROOT/envelope-build.txt"
+          cp build/gg-tilesector-polar.gg "$ROOT/envelope.gg"
+          cp build/gg-tilesector-polar.noi "$ROOT/envelope.noi"
+          cp build/gg-tilesector-polar.sym "$ROOT/envelope.sym"
+          cp build/gg-tilesector-polar.map "$ROOT/envelope.map"
+          stat -c 'rom_bytes=%s' "$ROOT/envelope.gg" | tee "$ROOT/ROM-size.txt"
+          ./build/frame_timeline "$ROOT/envelope.gg" "$ROOT/envelope.noi" "$ROOT/envelope.csv" 180 8 \
+            | tee "$ROOT/envelope-timeline.txt"
+
+      - name: Compare deterministic rendered state
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-q4
+          mkdir -p /tmp/e1q4-pvs /tmp/e1q4-env
+          ./build/tilesector_state_capture "$ROOT/pvs.gg" "$ROOT/pvs.sym" \
+            --vblank-sequence roomA-forward 180 20 /tmp/e1q4-pvs/frame "$ROOT/pvs-state.csv" >/dev/null
+          ./build/tilesector_state_capture "$ROOT/envelope.gg" "$ROOT/envelope.sym" \
+            --vblank-sequence roomA-forward 180 20 /tmp/e1q4-env/frame "$ROOT/envelope-state.csv" >/dev/null
+          python3 - <<'PY' | tee "$ROOT/parity-summary.txt"
+          import csv
+          from pathlib import Path
+          root=Path("build/e1env-q4")
+          a=list(csv.DictReader((root/"pvs-state.csv").open()))
+          b=list(csv.DictReader((root/"envelope-state.csv").open()))
+          n=min(len(a),len(b))
+          state_same=sum((x["x_q4"],x["y_q4"],x["yaw"])==(y["x_q4"],y["y_q4"],y["yaw"]) for x,y in zip(a[:n],b[:n]))
+          same=sum(x["map_fnv64"]==y["map_fnv64"] for x,y in zip(a[:n],b[:n]))
+          bad=[i for i,(x,y) in enumerate(zip(a[:n],b[:n])) if x["map_fnv64"]!=y["map_fnv64"]]
+          print("E1Q4_PARITY_CENSUS")
+          print(f"frames={n} state_equal={state_same}/{n} map_equal={same}/{n} mismatches={n-same}")
+          print("first_mismatch_frames="+",".join(map(str,bad[:30])))
+          PY
+
+      - name: Compare frame-aligned T-state timelines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/e1env-q4/AB-summary.txt
+          import csv,statistics
+          from pathlib import Path
+          root=Path("build/e1env-q4")
+          a=list(csv.DictReader((root/"pvs.csv").open()))
+          b=list(csv.DictReader((root/"envelope.csv").open()))
+          n=min(len(a),len(b))
+          if n<100: raise SystemExit(f"too few frames {n}")
+          def v(rows,k): return [int(r[k]) for r in rows[:n]]
+          def mean(x): return statistics.fmean(x)
+          def pct(x,p):
+              q=sorted(x); return q[int((len(q)-1)*p)]
+          clock=3579545.0
+          at,bt=v(a,"total"),v(b,"total")
+          ar,br=v(a,"render"),v(b,"render")
+          dt=[y-x for x,y in zip(at,bt)]
+          dr=[y-x for x,y in zip(ar,br)]
+          print("E1Q4_AB_PASS")
+          print(f"frames={n} trace=cruise start=(22,52,yaw0)")
+          print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
+          print(f"Q4ENV total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
+          print(f"delta total mean={mean(dt):+.0f} ({100*mean(dt)/mean(at):+.1f}%) p95_delta={pct(dt,.95):+d}")
+          print(f"PVS render mean={mean(ar):.0f} p95={pct(ar,.95)}")
+          print(f"Q4ENV render mean={mean(br):.0f} p95={pct(br,.95)}")
+          print(f"delta render mean={mean(dr):+.0f} ({100*mean(dr)/mean(ar):+.1f}%) p95_delta={pct(dr,.95):+d}")
+          for k in ("projection/setup","envelope projection","geometry walk","materializer","owned span","retained gate","boundary patch","nametable/VRAM","arith helpers","other render"):
+              if k in a[0] and k in b[0]:
+                  av,bv=v(a,k),v(b,k)
+                  print(f"group {k}: PVS={mean(av):.0f} Q4ENV={mean(bv):.0f} delta={mean([y-x for x,y in zip(av,bv)]):+.0f}")
+          top=sorted(range(n),key=lambda i:at[i],reverse=True)[:12]
+          print("baseline_heavy_frames="+",".join(f"{i}:{at[i]}->{bt[i]}({bt[i]-at[i]:+d})" for i in top))
+          PY
+          grep -q E1Q4_AB_PASS build/e1env-q4/AB-summary.txt
+
+      - name: Package playable and evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-q4
+          if [ -f "$ROOT/envelope.gg" ]; then
+            cp "$ROOT/envelope.gg" "$ROOT/GG-E1M1-Exact-Q4-Front-Envelope.gg"
+          fi
+          cat > "$ROOT/README.txt" <<'EOF'
+          Exact-Q4 front-visibility-envelope experiment.
+
+          Every legal Q4 player x/y position gets a direct ROM program ID.
+          There is no topology selector and no conservative PVS fallback for
+          legal positions. The Z80 receives the first-hit cyclic wall envelope,
+          projects only those foreground boundaries, skips run depth sorting,
+          and installs FULL-wall ownership directly.
+
+          Data is deliberately uncompressed. This rung spends cartridge ROM to
+          remove runtime visibility reasoning; compression comes later.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GG-E1M1-Exact-Q4-FrontEnvelope
+          path: build/e1env-q4/
+          if-no-files-found: warn
+          retention-days: 30
