@@ -175,9 +175,11 @@ int main(int argc, char** argv) {
     if (!find_symbol(noi, "_g_ts_loop_count", s_loop) && !find_symbol(noi, "g_ts_loop_count", s_loop)) {
         std::fprintf(stderr, "no _g_ts_loop_count\n"); return 3;
     }
-    u16 s_state = 0, s_map = 0;
+    u16 s_state = 0, s_map = 0, s_env_phase = 0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
     const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
+    const bool have_env_phase =
+        find_symbol(noi, "_g_tspf_env_phase", s_env_phase) || find_symbol(noi, "g_tspf_env_phase", s_env_phase);
 
     /* PC ranges from the current link, one per fixed-bank symbol */
     unsigned rbank = 0;
@@ -226,8 +228,13 @@ int main(int argc, char** argv) {
     Processor* cpu = core.GetProcessor();
 
     /* phase 1 input+motion, 2 render, 3 vsync, 4 VRAM upload, 5 loop tail */
+    static const unsigned ENV_PHASE_COUNT = 7;
+    static const char* ENV_PHASE_NAME[ENV_PHASE_COUNT] = {
+        "env_idle", "env_fetch", "env_focus", "env_walk",
+        "env_draw", "env_ret_end", "env_nt_end"
+    };
     struct Frame {
-        uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t total;
+        uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t envph[ENV_PHASE_COUNT]; uint64_t total;
         int16_t x_q4, y_q4, z_q4; uint8_t yaw;
         uint64_t map_fnv64;
     };
@@ -249,7 +256,13 @@ int main(int argc, char** argv) {
         const uint8_t ph = mem->DebugRetrieve(s_phase);
         const u16 pc = cpu->GetState()->PC->GetValue();
         if (ph < 6) cur.ph[ph] += dt;
-        if (ph == 2) cur.grp[group_of_t(pc, seen_loops >= warmup ? dt : 0u)] += dt;
+        if (ph == 2) {
+            cur.grp[group_of_t(pc, seen_loops >= warmup ? dt : 0u)] += dt;
+            if (have_env_phase) {
+                const uint8_t ep=mem->DebugRetrieve(s_env_phase);
+                if (ep<ENV_PHASE_COUNT) cur.envph[ep]+=dt;
+            }
+        }
         cur.total += dt;
 
         const unsigned lc = mem->DebugRetrieve(s_loop);
@@ -287,6 +300,8 @@ int main(int argc, char** argv) {
     if (csv) {
         std::fprintf(csv, "frame,total,input_motion,render,vsync,vram");
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
+        if (have_env_phase)
+            for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%s",ENV_PHASE_NAME[e]);
         std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
@@ -295,6 +310,8 @@ int main(int argc, char** argv) {
                 (unsigned long long)f.ph[2], (unsigned long long)f.ph[3],
                 (unsigned long long)f.ph[4]);
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
+            if (have_env_phase)
+                for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%llu",(unsigned long long)f.envph[e]);
             std::fprintf(csv, ",%d,%d,%d,%u,%016llx\n",
                 (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
                 (unsigned long long)f.map_fnv64);
