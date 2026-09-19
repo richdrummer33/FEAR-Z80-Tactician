@@ -61,9 +61,16 @@ typedef enum TSPProfile {
     TSP_PROFILE_RISER=3
 } TSPProfile;
 
+#if defined(TSPF_OPTIMIZED_MAP)
+#define TSP_OPT_EYE_Q4 (16<<4)
+#endif
+
 typedef struct TSPState {
     int16_t x_q4;
     int16_t y_q4;
+#if defined(TSPF_OPTIMIZED_MAP)
+    int16_t z_q4;
+#endif
     uint8_t yaw;
     int16_t speed_q4;
     int16_t strafe_q4;
