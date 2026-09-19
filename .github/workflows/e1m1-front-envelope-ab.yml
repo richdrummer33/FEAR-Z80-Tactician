@@ -1,0 +1,175 @@
+name: E1M1 PVS vs front-envelope traversal A-B
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake common FULL-only geometry and quarter-cell envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=build/e1env-ab
+          GEN="$ROOT/generated"
+          mkdir -p "$GEN"
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --out "$GEN/optimized_renderer_map_data.inc" \
+            | tee "$ROOT/full-bake.txt"
+          python3 tools/e1m1_front_envelope_bake.py \
+            --cell 0.25 --emit-banked-dir "$GEN" --bank-base 32 \
+            | tee "$ROOT/envelope-bake.txt"
+          grep -q 'stable_pct=88.56' "$ROOT/envelope-bake.txt"
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Build Gearsystem timeline tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
+            tools/frame/frame_timeline.cpp \
+            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
+
+      - name: Generate E1M1 forward traversal trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/frame/gen_traces.py cruise build/frame_trace.c
+
+      - name: Compile banked envelope objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-ab"
+          GEN="$ROOT/generated"
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          : > "$ROOT/env-objs.txt"
+          for src in "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c; do
+            base="$(basename "${src%.c}")"
+            obj="$ROOT/${base}.o"
+            "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
+            printf '%s ' "$obj" >> "$ROOT/env-objs.txt"
+          done
+
+      - name: Build and measure conservative-PVS baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-ab"
+          GEN="$ROOT/generated"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=8 \
+            POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar >/dev/null
+          cp build/gg-tilesector-polar.gg "$ROOT/pvs.gg"
+          cp build/gg-tilesector-polar.noi "$ROOT/pvs.noi"
+          ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 \
+            | tee "$ROOT/pvs-timeline.txt"
+
+      - name: Build and measure ROM front-envelope
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-ab"
+          GEN="$ROOT/generated"
+          ENVOBJS="$(cat "$ROOT/env-objs.txt")"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=64 \
+            POLAR_EXTRA_OBJS="build/frame_trace_gg.o $ENVOBJS" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar >/dev/null
+          cp build/gg-tilesector-polar.gg "$ROOT/envelope.gg"
+          cp build/gg-tilesector-polar.noi "$ROOT/envelope.noi"
+          ./build/frame_timeline "$ROOT/envelope.gg" "$ROOT/envelope.noi" "$ROOT/envelope.csv" 180 8 \
+            | tee "$ROOT/envelope-timeline.txt"
+
+      - name: Compare frame-aligned traversal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/e1env-ab/AB-summary.txt
+          import csv,statistics
+          from pathlib import Path
+          root=Path("build/e1env-ab")
+          a=list(csv.DictReader((root/"pvs.csv").open()))
+          b=list(csv.DictReader((root/"envelope.csv").open()))
+          n=min(len(a),len(b))
+          if n<100: raise SystemExit(f"too few frames {n}")
+          def v(rows,k): return [int(r[k]) for r in rows[:n]]
+          def mean(x): return statistics.fmean(x)
+          def pct(x,p):
+              q=sorted(x); return q[int((len(q)-1)*p)]
+          clock=3579545.0
+          at,bt=v(a,"total"),v(b,"total")
+          ar,br=v(a,"render"),v(b,"render")
+          dt=[y-x for x,y in zip(at,bt)]
+          dr=[y-x for x,y in zip(ar,br)]
+          print("E1ENV_AB_PASS")
+          print(f"frames={n} trace=cruise start=(22,52,yaw0)")
+          print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
+          print(f"ENV total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
+          print(f"delta total mean={mean(dt):+.0f} ({100*mean(dt)/mean(at):+.1f}%) p95_delta={pct(dt,.95):+d}")
+          print(f"PVS render mean={mean(ar):.0f} p95={pct(ar,.95)}")
+          print(f"ENV render mean={mean(br):.0f} p95={pct(br,.95)}")
+          print(f"delta render mean={mean(dr):+.0f} ({100*mean(dr)/mean(ar):+.1f}%) p95_delta={pct(dr,.95):+d}")
+          for k in ("projection/setup","geometry walk","materializer","retained gate","boundary patch","nametable/VRAM","other render"):
+              if k in a[0] and k in b[0]:
+                  av,bv=v(a,k),v(b,k)
+                  print(f"group {k}: PVS={mean(av):.0f} ENV={mean(bv):.0f} delta={mean([y-x for x,y in zip(av,bv)]):+.0f}")
+          top=sorted(range(n),key=lambda i:at[i],reverse=True)[:10]
+          print("baseline_heavy_frames="+",".join(f"{i}:{at[i]}->{bt[i]}({bt[i]-at[i]:+d})" for i in top))
+          PY
+          grep -q E1ENV_AB_PASS build/e1env-ab/AB-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: E1M1-PVS-vs-FrontEnvelope-AB
+          path: |
+            build/e1env-ab/AB-summary.txt
+            build/e1env-ab/pvs-timeline.txt
+            build/e1env-ab/envelope-timeline.txt
+            build/e1env-ab/pvs.csv
+            build/e1env-ab/envelope.csv
+            build/e1env-ab/full-bake.txt
+            build/e1env-ab/envelope-bake.txt
+            build/e1env-ab/generated/manifest.txt
+          if-no-files-found: warn
+          retention-days: 30
