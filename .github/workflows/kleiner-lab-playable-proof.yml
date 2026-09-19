@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - experiment/gg-kleiner-lab-playable
+      - experiment/gg-kleiner-dense-contrast
     paths:
       - ".github/workflows/kleiner-lab-playable-proof.yml"
       - "tools/room_bundle_poc_gen.c"
@@ -36,7 +37,7 @@ jobs:
           ROOM_BUNDLE_KLEINER_PLAYABLE=1 \
             build/kleiner/kleiner-play-bake build/kleiner/host \
             | tee build/kleiner/bake.txt
-          grep -q '^KLEINER_PLAYABLE_PASS positions=37 states=592 ' build/kleiner/bake.txt
+          grep -q '^KLEINER_PLAYABLE_PASS positions=34 states=816 ' build/kleiner/bake.txt
           grep -q '^random_access_double_buffer=PASS$' \
             build/kleiner/host/kleiner_playable_manifest.txt
           grep -q '^movement_grid=PASS$' \
@@ -48,7 +49,7 @@ jobs:
           python3 tools/kleiner_playable_pack_to_c.py \
             build/kleiner/host/kleiner_playable.pack \
             build/kleiner/generated | tee build/kleiner/c-gen.txt
-          grep -q '^KLEINER_PLAYABLE_C_PASS states=592 ' build/kleiner/c-gen.txt
+          grep -q '^KLEINER_PLAYABLE_C_PASS states=816 ' build/kleiner/c-gen.txt
 
       - name: Install GBDK 4.5.0
         run: |
@@ -135,7 +136,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GG-kleiner-lab-playable
+          name: GG-kleiner-lab-dense-contrast
           path: |
             build/kleiner/GG-Kleiners-Lab-Playable.gg
             build/kleiner/GG-Kleiners-Lab-Playable.sym
