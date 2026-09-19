@@ -1,0 +1,135 @@
+name: E1M1 baked front-envelope playable
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-envelope-rom:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bake FULL-only E1M1 plus quarter-cell envelope ROM programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1env-runtime
+          GEN="$OUT/generated"
+          mkdir -p "$GEN"
+          python3 tools/e1m1_latest_full_bake.py             --repo-root .             --geometry src/generated/e1m1_room1_exact_geometry.h             --floor src/generated/e1m1_room1_exact_floor.h             --out "$GEN/optimized_renderer_map_data.inc"             | tee "$OUT/full-bake.txt"
+          python3 tools/e1m1_front_envelope_bake.py             --cell 0.25             --emit-banked-dir "$GEN"             --bank-base 32             | tee "$OUT/envelope-bake.txt"
+          grep -q 'stable_pct=88.56' "$OUT/envelope-bake.txt"
+          cat "$GEN/manifest.txt" | tee "$OUT/envelope-manifest.txt"
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz             https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Compile banked envelope data
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PWD/build/e1env-runtime"
+          GEN="$OUT/generated"
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          : > "$OUT/extra-objs.txt"
+          for src in "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c; do
+            base="$(basename "${src%.c}")"
+            obj="$OUT/${base}.o"
+            "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
+            printf '%s ' "$obj" >> "$OUT/extra-objs.txt"
+          done
+          echo
+          cat "$OUT/extra-objs.txt"
+
+      - name: Build 1 MiB playable envelope ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$PWD/build/e1env-runtime"
+          GEN="$OUT/generated"
+          EXTRA="$(cat "$OUT/extra-objs.txt")"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o             build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o             build/tilesector_polar_projection_gg.o build/tilesector_polar_proj_bank*.o             build/tilesector_polar_depthplane_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk"             POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0             POLAR_PROJ_GEN_DIR="$GEN"             POLAR_ROM_BANKS=64             POLAR_EXTRA_OBJS="$EXTRA"             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_DEFAULT_APPEARANCE=0u"             gg-tilesector-polar 2>&1 | tee "$OUT/build.txt"
+          cp build/gg-tilesector-polar.gg "$OUT/GG-E1M1-Front-Envelope-ROM.gg"
+          cp build/gg-tilesector-polar.sym "$OUT/GG-E1M1-Front-Envelope-ROM.sym"
+          cp build/gg-tilesector-polar.map "$OUT/GG-E1M1-Front-Envelope-ROM.map"
+          sha256sum "$OUT/GG-E1M1-Front-Envelope-ROM.gg" | tee "$OUT/SHA256.txt"
+          stat -c 'rom_bytes=%s' "$OUT/GG-E1M1-Front-Envelope-ROM.gg" | tee "$OUT/ROM-size.txt"
+
+      - name: Build state-capture verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
+
+      - name: Prove boot, motion and rotation
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=build/e1env-runtime
+          ROM="$OUT/GG-E1M1-Front-Envelope-ROM.gg"
+          SYM="$OUT/GG-E1M1-Front-Envelope-ROM.sym"
+          mkdir -p /tmp/e1env-forward /tmp/e1env-turn
+          ./build/tilesector_state_capture "$ROM" "$SYM"             --vblank-sequence roomA-forward 220 20 /tmp/e1env-forward/frame "$OUT/forward.csv"             | tee "$OUT/forward-proof.txt"
+          ./build/tilesector_state_capture "$ROM" "$SYM"             --vblank-sequence roomA-turn 220 20 /tmp/e1env-turn/frame "$OUT/turn.csv"             | tee "$OUT/turn-proof.txt"
+          cp /tmp/e1env-forward/frame-0000.ppm "$OUT/start.ppm"
+          cp /tmp/e1env-forward/frame-0109.ppm "$OUT/mid.ppm"
+          cp /tmp/e1env-forward/frame-0219.ppm "$OUT/end.ppm"
+          python3 - <<'PY' | tee "$OUT/emulator-proof.txt"
+          import csv
+          from pathlib import Path
+          root=Path("build/e1env-runtime")
+          fw=list(csv.DictReader((root/"forward.csv").open()))
+          tr=list(csv.DictReader((root/"turn.csv").open()))
+          assert fw and tr
+          assert (fw[-1]["x_q4"],fw[-1]["y_q4"]) != (fw[0]["x_q4"],fw[0]["y_q4"])
+          assert tr[-1]["yaw"] != tr[0]["yaw"]
+          zs={int(r["z_q4"]) for r in fw}
+          assert zs=={80}, zs
+          print("E1ENV_EMULATOR_PASS")
+          print("forward",fw[0]["x"],fw[0]["y"],"->",fw[-1]["x"],fw[-1]["y"])
+          print("turn",tr[0]["yaw"],"->",tr[-1]["yaw"])
+          PY
+
+      - name: Write README
+        if: always()
+        shell: bash
+        run: |
+          cat > build/e1env-runtime/README.txt <<'EOF'
+          E1M1 FULL-only front-envelope ROM experiment.
+
+          The offline baker solves the complete 360-degree first-hit wall
+          topology in quarter-world-unit visibility cells. Stable cells map to
+          a ROM program of (boundary vertex, owner surface) pairs. Runtime:
+            - does NOT consult the conservative 30-bit PVS in stable cells;
+            - does NOT project hidden candidate walls;
+            - does NOT insertion-sort envelope runs;
+            - assigns each coarse screen column to exactly one first-hit span;
+            - tells the assembly materializer ownership is already solved, so
+              polar_mark_span_fast is bypassed for those columns.
+          Unstable cells fall back to the previous PVS/sort/coverage renderer.
+
+          Current uncompressed bake deliberately favors ROM over Z80 work.
+          Compression is deferred.
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GG-E1M1-Front-Envelope-ROM
+          path: build/e1env-runtime/
+          retention-days: 30
