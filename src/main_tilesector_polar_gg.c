@@ -25,6 +25,12 @@ static const int8_t k_edge_lut[8][8] = {
 
 TSPState g_state;
 uint16_t g_map[TSP_MAP_CELLS];
+#if defined(TSPF_OPTIMIZED_MAP)
+/* Verification/layout marker and zero-hook loop counter.  The capture harness
+ * uses these to decode the custom TSPState without enabling profile hooks. */
+volatile uint8_t g_opt_state_layout=1u;
+volatile uint16_t g_opt_loop_count;
+#endif
 static uint8_t g_tile[32u];
 static uint8_t g_prev_pad;
 
@@ -92,6 +98,9 @@ void main(void){
      * targets the matching 0x38xx addresses. */
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
     tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
+#if defined(TSPF_OPTIMIZED_MAP)
+    g_opt_loop_count=0u;
+#endif
 #if TSPF_PROFILE_HOOKS
     g_ts_prof_phase=0u;g_ts_loop_count=0u;g_ts_dirty_words=0u;
 #endif
@@ -108,5 +117,8 @@ void main(void){
         (void)upload_dirty_map();
 #endif
         TSPF_PHASE(5u);TSPF_LOOP_INC();
+#if defined(TSPF_OPTIMIZED_MAP)
+        ++g_opt_loop_count;
+#endif
     }
 }
