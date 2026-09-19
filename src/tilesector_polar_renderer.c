@@ -14,7 +14,11 @@ BANKREF(tilesector_polar_renderer_bank)
 #include <stdint.h>
 #include <string.h>
 #include "tilesector_polar.h"
+#if defined(TSPF_OPTIMIZED_MAP)
+#include "optimized_renderer_map_data.inc"
+#else
 #include "generated/tilesector_polar_data.inc"
+#endif
 
 #ifndef TSPF_LOCAL_PROJECTION
 #define TSPF_LOCAL_PROJECTION 0
@@ -127,10 +131,8 @@ static int8_t g_depth_nf_q7[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static int8_t g_depth_stepfac_q4[TSPF_DEPTH_NORMAL_CLASS_COUNT];
 static uint8_t g_depth_yaw_cache = 0xffu;
 #endif
-/* Original polar-field design: connected spans share authored corners.
- * Compute each corner bearing at most once per rendered update. 14 vertices
- * need only 28 bytes plus a 16-bit validity mask. */
-uint16_t g_corner_bearing_q12[14];
+/* Connected spans share authored corners. Packed keys allow 16 vertices. */
+uint16_t g_corner_bearing_q12[16];
 static uint16_t g_corner_bearing_valid;
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 /* Cell-local ROM projection field. The selected cell block is copied once on
@@ -144,9 +146,9 @@ uint8_t g_proj_ly;
 static uint16_t g_proj_fallback_mask;
 static uint16_t g_proj_cached_gi = 0xffffu;
 #endif
-static const uint16_t k_corner_mask[14] = {
-    0x0001u, 0x0002u, 0x0004u, 0x0008u, 0x0010u, 0x0020u, 0x0040u,
-    0x0080u, 0x0100u, 0x0200u, 0x0400u, 0x0800u, 0x1000u, 0x2000u};
+static const uint16_t k_corner_mask[16] = {
+    0x0001u, 0x0002u, 0x0004u, 0x0008u, 0x0010u, 0x0020u, 0x0040u, 0x0080u,
+    0x0100u, 0x0200u, 0x0400u, 0x0800u, 0x1000u, 0x2000u, 0x4000u, 0x8000u};
 #ifndef __SDCC
 static uint8_t g_touched_bits[45];
 static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
@@ -773,7 +775,14 @@ static void draw_full(uint16_t *out, uint8_t col, int8_t first, int8_t last, uin
     for (r = first; r <= last; ++r)
         put_cell(out, (uint8_t)r, col, TSP_TILE_FULL(shade, TSP_CAP_NONE, border));
 }
-static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r)
+#if defined(TSPF_OPTIMIZED_MAP)
+static int16_t opt_camera_z_shift(uint8_t inv,const TSPState *s)
+{
+    int16_t dz=(int16_t)((s->z_q4-TSP_OPT_EYE_Q4)>>4);
+    return shr_signed((int16_t)(dz*(int16_t)inv),5u);
+}
+#endif
+static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TSPState *s)
 {
     uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c, profile = k_tspf_profile[r->sid];
     int16_t iq, step;
@@ -807,7 +816,11 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r)
      * consumed this bridge field. */
     if (g_tspf_appearance_mode < 2u)
         g_polar_run_profile = profile;
-    if (g_tspf_appearance_mode == 0u)
+    if (g_tspf_appearance_mode == 0u
+#if defined(TSPF_OPTIMIZED_MAP)
+        && s->z_q4 == TSP_OPT_EYE_Q4
+#endif
+       )
     {
         g_polar_run_sid = r->sid;
         g_polar_run_c0 = c0;
@@ -870,12 +883,24 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r)
             tl = (int16_t)(TSPF_HORIZON + hl - (hl >> 2));
             tr = (int16_t)(TSPF_HORIZON + hr - (hr >> 2));
         }
+#if defined(TSPF_OPTIMIZED_MAP)
+        {
+            int16_t zl=opt_camera_z_shift(invl,s), zr=opt_camera_z_shift(invr,s);
+            tl=(int16_t)(tl+zl); bl=(int16_t)(bl+zl);
+            tr=(int16_t)(tr+zr); br=(int16_t)(br+zr);
+        }
+#endif
 #ifdef __SDCC
         if (g_tspf_appearance_mode < 2u)
         {
             /* Fast-path geometry/shade materialization. The baked polar
              * renderer supplies final projected endpoints; this kernel only
              * turns them into the existing GG edge/full tile vocabulary. */
+#if defined(TSPF_OPTIMIZED_MAP)
+            /* FULL symmetry is valid only at the nominal eye height. Elevated
+             * step states use the exact endpoints and generic edge pair. */
+            g_polar_run_profile = (s->z_q4==TSP_OPT_EYE_Q4)?profile:0xffu;
+#endif
             g_polar_mat_col = c;
             g_polar_mat_shade = shade;
             g_polar_mat_border = border;
@@ -1016,7 +1041,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     TSPF_SET_STAGE(3u); /* one-byte indices are insertion-sorted far -> near */
     TSPF_SET_STAGE(4u);
     for (i = 0; i < count; ++i)
-        draw_run(out_map, cols, &g_runs[g_run_order[i]]);
+        draw_run(out_map, cols, &g_runs[g_run_order[i]], s);
 done:
 #ifdef __SDCC
     /* Retained keys are only trusted one frame deep; settle which surfaces
