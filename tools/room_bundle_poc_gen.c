@@ -2346,7 +2346,7 @@ static void make_kleiner_lab_world(World *w){
     rmb_add_box(&w->mesh,rings,&t,7.0,11.0,2.5,-2);
 
     metal=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
-    rmb_set_object_ramp_shading(&w->mesh,metal,5u,0u);
+    rmb_set_object_ramp_shading(&w->mesh,metal,4u,0u);
     t=rmb_transform(57,15,3.6,0,0,-18,1,1,1);
     rmb_add_box(&w->mesh,metal,&t,4.1,2.5,2.5,-1);
     t=rmb_transform(72,16,6.7,0,0,0,1,1,1);
@@ -2363,7 +2363,7 @@ static void make_kleiner_lab_world(World *w){
     rmb_add_box(&w->mesh,metal,&t,2.1,1.55,5.4,-1);
 
     desk=rmb_new_object(&w->mesh,RMB_OUTLINE_SILHOUETTE);
-    rmb_set_object_ramp_shading(&w->mesh,desk,5u,0u);
+    rmb_set_object_ramp_shading(&w->mesh,desk,4u,0u);
     t=rmb_transform(106,6,4.2,0,0,0,1,1,1);
     rmb_add_box(&w->mesh,desk,&t,11.0,4.0,0.5,0);
     t=rmb_transform(99,3.5,2.0,0,0,0,1,1,1);
