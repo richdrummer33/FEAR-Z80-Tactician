@@ -95,15 +95,22 @@ volatile uint8_t g_ts_render_stage;
 volatile uint8_t g_tspf_active_runs;
 volatile uint8_t g_tspf_selector_tests;
 volatile uint16_t g_tspf_touched_cells;
+/* Fine renderer phase marker for host-side profiling. It is deliberately just
+ * one byte and exists only in profile builds; the emulator samples it while
+ * executing banked callees, so e1env_fetch_program_q4() no longer disappears
+ * into the profiler's "unassigned / callees" bucket. */
+volatile uint8_t g_tspf_env_phase;
 #define TSPF_SET_STAGE(v)        \
     do                           \
     {                            \
         g_tspf_stage = (v);      \
         g_ts_render_stage = (v); \
     } while (0)
+#define TSPF_ENV_PHASE(v) (g_tspf_env_phase=(v))
 #define TSPF_SELECTOR_HIT() (++g_tspf_selector_tests)
 #else
 #define TSPF_SET_STAGE(v) ((void)0)
+#define TSPF_ENV_PHASE(v) ((void)0)
 #define TSPF_SELECTOR_HIT() ((void)0)
 #endif
 
@@ -308,6 +315,7 @@ void tsp_polar_renderer_reset(void) BANKED
     g_tspf_active_runs = 0u;
     g_tspf_selector_tests = 0u;
     g_tspf_touched_cells = 0u;
+    g_tspf_env_phase = 0u;
 #endif
 }
 
@@ -1196,7 +1204,10 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #if defined(TSPF_E1M1_FULL_ONLY)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
     {
-        uint8_t n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
+        uint8_t n;
+        TSPF_ENV_PHASE(1u);
+        n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
+        TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
             uint8_t focus,step,i;
 #ifdef __SDCC
@@ -1208,7 +1219,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
              * cyclic first-hit envelope, so the first miss on each side ends
              * that side of the walk. */
             if(!n) goto e1full_candidates_ready;
+            TSPF_ENV_PHASE(2u);
             focus=envelope_focus_span(n,s);
+            TSPF_ENV_PHASE(3u);
             (void)envelope_add_span(focus,n,s,&count);
 
             i=focus;
@@ -1259,6 +1272,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 e1full_candidates_ready:
+    TSPF_ENV_PHASE(0u);
 #endif
 #else
     gx = (uint8_t)((uint16_t)s->x_q4 >> 6);
@@ -1315,16 +1329,19 @@ e1full_candidates_ready:
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_active_runs = count;
 #endif
-    TSPF_SET_STAGE(3u); /* one-byte indices are insertion-sorted far -> near */
+    TSPF_SET_STAGE(3u); /* legacy stage marker; exact-envelope mode has no sort */
     TSPF_SET_STAGE(4u);
+    TSPF_ENV_PHASE(4u);
     for (i = 0; i < count; ++i)
         draw_run(out_map, cols, &g_runs[g_run_order[i]], s);
 done:
 #ifdef __SDCC
     /* Retained keys are only trusted one frame deep; settle which surfaces
      * earned that trust before the restore pass can move any cell. */
+    TSPF_ENV_PHASE(5u);
     tsp_polar_ret_end_frame();
     /* Restore only geometry-owned cells that disappeared this frame. */
+    TSPF_ENV_PHASE(6u);
     tsp_polar_nt_end_frame();
 #endif
 #if !defined(__SDCC)
@@ -1332,5 +1349,6 @@ done:
 #elif TSPF_PROFILE_HOOKS
     g_tspf_touched_cells = 0u;
 #endif
+    TSPF_ENV_PHASE(0u);
     TSPF_SET_STAGE(0u);
 }
