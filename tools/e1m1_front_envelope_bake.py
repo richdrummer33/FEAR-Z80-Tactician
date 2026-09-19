@@ -177,7 +177,7 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--geometry",default="src/generated/e1m1_room1_exact_geometry.h")
     ap.add_argument("--floor",default="src/generated/e1m1_room1_exact_floor.h")
-    ap.add_argument("--cell",type=float,default=1.0,choices=(1.0,0.5))
+    ap.add_argument("--cell",type=float,default=1.0,choices=(1.0,0.5,0.25))
     ap.add_argument("--out")
     args=ap.parse_args()
 
