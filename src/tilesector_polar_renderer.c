@@ -812,6 +812,23 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
 #endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
+/* Inverse of the existing angle->pixel projection at coarse 8-pixel column
+ * centres. The previous code linearly scanned 20 Q12 centre thresholds for
+ * every span. k_tspf_angle_x_pos already gives the projected pixel in O(1).
+ *
+ * Rounding to the nearest 8-pixel centre is (x+4)>>3. The one equality check
+ * preserves the old half-open tie convention exactly: when rel is exactly a
+ * baked centre ray, that centre belongs to the interval beginning there.
+ * Exhaustive host check over every rel in [-512,+512] matches the old scan. */
+static uint8_t envelope_center_col(int16_t rel)
+{
+    uint16_t a=(uint16_t)(rel<0 ? -rel : rel);
+    uint8_t x=(uint8_t)(rel<0 ? (uint16_t)(160u-k_tspf_angle_x_pos[a]) : k_tspf_angle_x_pos[a]);
+    uint8_t c=(uint8_t)((x+4u)>>3);
+    if(c && rel==k_e1env_col_center_q12[(uint8_t)(c-1u)]) --c;
+    return c;
+}
+
 /* Project one already-solved first-hit angular span.
 
  * The baker tells us which FULL wall owns the interval between boundary
@@ -839,13 +856,10 @@ static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
     hi=en > 512 ? 512 : en;
     if(hi<=lo) return 0u;
 
-    /* Half-open ownership intervals evaluated at each 8-pixel column centre. */
-    c0=0u;
-    while(c0<TSP_COLS && k_e1env_col_center_q12[c0] < lo) ++c0;
-    cend=c0;
-    while(cend<TSP_COLS &&
-          (k_e1env_col_center_q12[cend] < hi ||
-           (hi==512 && k_e1env_col_center_q12[cend]<=hi))) ++cend;
+    /* Same half-open centre-ray ownership as the old scan, without walking
+     * from column zero for every span. */
+    c0=envelope_center_col(lo);
+    cend=envelope_center_col(hi);
     /* The angular span can intersect the FOV yet be narrower than one
      * coarse-column centre. Report that separately so the FOV walker keeps
      * walking; only a genuine FOV miss may terminate one side. */
@@ -944,36 +958,17 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *
     *count=(uint8_t)(idx+1u);
     return 1u;
 }
-/* Collapse a connected physical corner to ONE hardware border.
-
- * Exact-envelope ownership is one wall per 8-pixel coarse column. If two
- * adjacent owned runs meet at the same authored vertex and both surfaces have
- * that vertex as a real endpoint, the naive path marks the left run's right
- * edge AND the right run's left edge. On hardware that becomes a two-pixel
- * black slit even though the geometry is connected.
-
- * This pass is intentionally small and correctness-first: visible owned runs
- * are disjoint, so at most 20 columns are populated. It records which run owns
- * each coarse column, then removes the duplicate right-hand border when the
- * neighboring run already carries the same connected vertex on its left.
- * Occlusion boundaries where only one wall physically terminates are left
- * untouched. Once parity is proven this policy can move into the bake. */
-static void envelope_dedup_connected_borders(uint8_t count)
+/* Runs are discovered in angular order on each side of the focus span.
+ * Collapse a duplicate connected-corner border immediately when two
+ * successful (non-sub-column) runs become screen-adjacent. This is the same
+ * policy as the earlier 20-column correctness pass, but costs only one cheap
+ * check per visible run instead of rebuilding a column-owner map each frame. */
+static void envelope_join_connected(uint8_t li,uint8_t ri)
 {
-    uint8_t owner[TSP_COLS];
-    uint8_t i,c;
-    for(c=0u;c<TSP_COLS;++c) owner[c]=0xffu;
-    for(i=0u;i<count;++i){
-        for(c=g_runs[i].c0;c<=g_runs[i].c1 && c<TSP_COLS;++c)
-            owner[c]=i;
-    }
-    for(c=0u;c+1u<TSP_COLS;++c){
-        uint8_t li=owner[c],ri=owner[(uint8_t)(c+1u)];
-        if(li==0xffu || ri==0xffu || li==ri) continue;
-        if(g_runs[li].right_real && g_runs[ri].left_real &&
-           g_runs[li].env_right_vid==g_runs[ri].env_left_vid)
-            g_runs[li].right_real=0u;
-    }
+    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
+       g_runs[li].right_real && g_runs[ri].left_real &&
+       g_runs[li].env_right_vid==g_runs[ri].env_left_vid)
+        g_runs[li].right_real=0u;
 }
 #endif
 
@@ -1260,7 +1255,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
-            uint8_t focus,step,i;
+            uint8_t focus,step,i,q,last,focus_run;
 #ifdef __SDCC
             g_polar_run_owned=1u;
 #endif
@@ -1273,18 +1268,34 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             TSPF_ENV_PHASE(2u);
             focus=envelope_focus_span(n,s);
             TSPF_ENV_PHASE(3u);
-            (void)envelope_add_span(focus,n,s,&count);
+            q=envelope_add_span(focus,n,s,&count);
+            if(q!=1u) goto e1full_candidates_ready;
+            focus_run=(uint8_t)(count-1u);
 
+            last=focus_run;
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i+1u<n?i+1u:0u);
-                if(envelope_add_span(i,n,s,&count)==0u) break;
+                q=envelope_add_span(i,n,s,&count);
+                if(q==0u) break;
+                if(q==1u){
+                    uint8_t cur=(uint8_t)(count-1u);
+                    envelope_join_connected(last,cur);
+                    last=cur;
+                }
             }
 
+            last=focus_run;
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i?i-1u:n-1u);
-                if(!envelope_add_span(i,n,s,&count)) break;
+                q=envelope_add_span(i,n,s,&count);
+                if(q==0u) break;
+                if(q==1u){
+                    uint8_t cur=(uint8_t)(count-1u);
+                    envelope_join_connected(cur,last);
+                    last=cur;
+                }
             }
             goto e1full_candidates_ready;
         }
@@ -1323,7 +1334,6 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 e1full_candidates_ready:
-    envelope_dedup_connected_borders(count);
     TSPF_ENV_PHASE(0u);
 #endif
 #else
