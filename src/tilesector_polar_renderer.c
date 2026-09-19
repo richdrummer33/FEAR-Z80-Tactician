@@ -180,8 +180,13 @@ static uint8_t g_depth_yaw_cache = 0xffu;
  * 5-bit vertex IDs (sid5 + v0_5 + v1_5 = 15 bits) for its 30 authored corners. */
 #if defined(TSPF_E1M1_FULL_ONLY)
 uint16_t g_corner_bearing_q12[32];
+#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
+static uint8_t g_corner_bearing_stamp[32];
+static uint8_t g_corner_bearing_epoch;
+#else
 static uint16_t g_corner_bearing_valid_lo;
 static uint16_t g_corner_bearing_valid_hi;
+#endif
 #else
 uint16_t g_corner_bearing_q12[16];
 static uint16_t g_corner_bearing_valid;
@@ -201,9 +206,11 @@ uint8_t g_proj_ly;
 static uint16_t g_proj_fallback_mask;
 static uint16_t g_proj_cached_gi = 0xffffu;
 #endif
+#if !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
 static const uint16_t k_corner_mask[16] = {
     0x0001u, 0x0002u, 0x0004u, 0x0008u, 0x0010u, 0x0020u, 0x0040u, 0x0080u,
     0x0100u, 0x0200u, 0x0400u, 0x0800u, 0x1000u, 0x2000u, 0x4000u, 0x8000u};
+#endif
 #ifndef __SDCC
 static uint8_t g_touched_bits[45];
 static uint16_t g_touched_list[TSP_MAP_CELLS]; /* host oracle lifetime tracking */
@@ -317,6 +324,10 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
     g_e1env_focus_bv=0xffu;
+#endif
+#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
+    memset(g_corner_bearing_stamp,0,sizeof(g_corner_bearing_stamp));
+    g_corner_bearing_epoch=0u;
 #endif
     TSPF_SET_STAGE(0u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
@@ -565,15 +576,27 @@ static uint16_t bearing_q12(int16_t dxq4, int16_t dyq4)
 static uint16_t bearing_vertex_q12(uint8_t vid, const TSPState *s)
 {
 #if defined(TSPF_E1M1_FULL_ONLY)
-    uint16_t mask = k_corner_mask[vid & 15u];
-    uint16_t *valid = (vid < 16u) ? &g_corner_bearing_valid_lo : &g_corner_bearing_valid_hi;
-    if (!(*valid & mask))
+#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
+    if (g_corner_bearing_stamp[vid] != g_corner_bearing_epoch)
     {
         g_corner_bearing_q12[vid] = bearing_q12(
             (int16_t)((int16_t)k_tspf_vx[vid] << 4) - s->x_q4,
             (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
-        *valid |= mask;
+        g_corner_bearing_stamp[vid] = g_corner_bearing_epoch;
     }
+#else
+    {
+        uint16_t mask = k_corner_mask[vid & 15u];
+        uint16_t *valid = (vid < 16u) ? &g_corner_bearing_valid_lo : &g_corner_bearing_valid_hi;
+        if (!(*valid & mask))
+        {
+            g_corner_bearing_q12[vid] = bearing_q12(
+                (int16_t)((int16_t)k_tspf_vx[vid] << 4) - s->x_q4,
+                (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
+            *valid |= mask;
+        }
+    }
+#endif
 #else
     uint16_t mask = k_corner_mask[vid];
     if (!(g_corner_bearing_valid & mask))
@@ -1222,8 +1245,15 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     uint16_t gi, off;
     const uint8_t *p, *b;
 #if defined(TSPF_E1M1_FULL_ONLY)
+#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
+    if(++g_corner_bearing_epoch==0u){
+        memset(g_corner_bearing_stamp,0,sizeof(g_corner_bearing_stamp));
+        g_corner_bearing_epoch=1u;
+    }
+#else
     g_corner_bearing_valid_lo = 0u;
     g_corner_bearing_valid_hi = 0u;
+#endif
 #else
     g_corner_bearing_valid = 0u;
 #endif
