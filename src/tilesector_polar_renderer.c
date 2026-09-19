@@ -1122,9 +1122,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #if defined(TSPF_E1M1_FULL_ONLY)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
     {
-        uint16_t pid=e1env_lookup_program_q4(s->x_q4,s->y_q4);
-        if(pid!=E1ENV_FALLBACK){
-            uint8_t n=e1env_load_program(pid,g_e1env_program), j;
+        uint8_t n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
+        if(n!=0xffu){
+            uint8_t j;
             uint32_t used_cols=0u;
             envelope_active=1u;
 #ifdef __SDCC
