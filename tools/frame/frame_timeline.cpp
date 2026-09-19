@@ -47,6 +47,17 @@ static bool find_symbol(const char* path, const char* want, u16& addr) {
     }
     return false;
 }
+static uint16_t rd16(Memory* mem, u16 a) {
+    return (uint16_t)mem->DebugRetrieve(a) | ((uint16_t)mem->DebugRetrieve((u16)(a + 1u)) << 8);
+}
+static uint64_t fnv1a64(Memory* mem, u16 a, unsigned n) {
+    uint64_t h = 1469598103934665603ull;
+    for (unsigned i = 0; i < n; ++i) {
+        h ^= (uint64_t)mem->DebugRetrieve((u16)(a + i));
+        h *= 1099511628211ull;
+    }
+    return h;
+}
 /* Every code symbol, address-ordered, so ranges follow the CURRENT link.
  *
  * The renderer is -autobank'd, so tsp_polar_render and its C helpers live in a
@@ -163,6 +174,9 @@ int main(int argc, char** argv) {
     if (!find_symbol(noi, "_g_ts_loop_count", s_loop) && !find_symbol(noi, "g_ts_loop_count", s_loop)) {
         std::fprintf(stderr, "no _g_ts_loop_count\n"); return 3;
     }
+    u16 s_state = 0, s_map = 0;
+    const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
+    const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
 
     /* PC ranges from the current link, one per fixed-bank symbol */
     unsigned rbank = 0;
@@ -211,7 +225,11 @@ int main(int argc, char** argv) {
     Processor* cpu = core.GetProcessor();
 
     /* phase 1 input+motion, 2 render, 3 vsync, 4 VRAM upload, 5 loop tail */
-    struct Frame { uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t total; };
+    struct Frame {
+        uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t total;
+        int16_t x_q4, y_q4, z_q4; uint8_t yaw;
+        uint64_t map_fnv64;
+    };
     std::vector<Frame> frames;
     Frame cur{}; std::memset(&cur, 0, sizeof cur);
     uint64_t prev = core.GetMasterClockCycles();
@@ -235,6 +253,17 @@ int main(int argc, char** argv) {
         const unsigned lc = mem->DebugRetrieve(s_loop);
         if (lc != last_loop) {
             if (last_loop != 0xFFFFu) {
+                /* Snapshot the completed logical UPDATE here, not a VBlank.
+                 * Two renderers with different speed then compare the same
+                 * deterministic input/update number rather than different
+                 * simulation states reached at the same display refresh. */
+                if (have_state) {
+                    cur.x_q4 = (int16_t)rd16(mem, s_state + 0u);
+                    cur.y_q4 = (int16_t)rd16(mem, s_state + 2u);
+                    cur.z_q4 = (int16_t)rd16(mem, s_state + 4u);
+                    cur.yaw = mem->DebugRetrieve((u16)(s_state + 6u));
+                }
+                if (have_map) cur.map_fnv64 = fnv1a64(mem, s_map, 20u * 18u * 2u);
                 if (seen_loops >= warmup) frames.push_back(cur);
                 ++seen_loops;
             }
@@ -248,7 +277,7 @@ int main(int argc, char** argv) {
     if (csv) {
         std::fprintf(csv, "frame,total,input_motion,render,vsync,vram");
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
-        std::fprintf(csv, "\n");
+        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -256,7 +285,9 @@ int main(int argc, char** argv) {
                 (unsigned long long)f.ph[2], (unsigned long long)f.ph[3],
                 (unsigned long long)f.ph[4]);
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
-            std::fprintf(csv, "\n");
+            std::fprintf(csv, ",%d,%d,%d,%u,%016llx\n",
+                (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
+                (unsigned long long)f.map_fnv64);
         }
         std::fclose(csv);
     }
