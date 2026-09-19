@@ -200,7 +200,8 @@ jobs:
           print(f"PVS render mean={mean(ar):.0f} p95={pct(ar,.95)}")
           print(f"FOCUS render mean={mean(br):.0f} p95={pct(br,.95)}")
           print(f"delta render={mean(br)-mean(ar):+.0f} ({100*(mean(br)/mean(ar)-1):+.1f}%)")
-          for k in ("projection/setup","geometry walk","materializer","retained gate","boundary patch","nametable/VRAM","arith helpers","other render"):
+          for k in ("projection/setup","geometry walk","materializer","retained gate","boundary patch","nametable/VRAM","arith helpers","other render",
+                    "env_fetch","env_focus","env_walk","env_draw","env_ret_end","env_nt_end"):
               if k in a[0] and k in b[0]:
                   av,bv=vals(a,k),vals(b,k)
                   print(f"group {k}: PVS={mean(av):.0f} FOCUS={mean(bv):.0f} delta={mean(bv)-mean(av):+.0f}")
