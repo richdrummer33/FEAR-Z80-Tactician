@@ -852,6 +852,14 @@ static uint8_t project_envelope_span(uint8_t sid, uint8_t bv0, uint8_t bv1,
 
     rel0=k_e1env_col_edge_q12[c0];
     rel1=k_e1env_col_edge_q12[(uint8_t)(c1+1u)];
+    /* Ownership is decided by coarse-column centre rays, but depth must not
+     * extrapolate the chosen wall beyond the angular interval where the baked
+     * envelope says it is actually first-hit. Close to a corner that old
+     * extrapolation is magnified into several vertical pixels and connected
+     * surfaces can appear to split. Clamp only the depth sample rays; coarse
+     * column ownership itself stays unchanged. */
+    if(rel0<lo) rel0=lo;
+    if(rel1>hi) rel1=hi;
     invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
 
     w=k_tspf_keys[sid];
