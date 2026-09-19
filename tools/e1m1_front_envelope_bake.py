@@ -284,8 +284,7 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
     for _base,_count,_bank,fn in prog_meta:
         hdr.append(f"uint8_t {fn}(uint16_t local, uint8_t *dst) BANKED;")
     hdr += [
-        "uint16_t e1env_lookup_program_q4(int16_t xq, int16_t yq) BANKED;",
-        "uint8_t e1env_load_program(uint16_t pid, uint8_t *dst) BANKED;",
+        "uint8_t e1env_fetch_program_q4(int16_t xq, int16_t yq, uint8_t *dst) BANKED;",
         "#endif",
         "",
     ]
@@ -313,32 +312,30 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         "#include <gbdk/platform.h>",
         '#include "e1env_generated.h"',
         "",
-        "uint16_t e1env_lookup_program_q4(int16_t xq, int16_t yq) BANKED {",
+        "uint8_t e1env_fetch_program_q4(int16_t xq, int16_t yq, uint8_t *dst) BANKED {",
         "    int16_t rx=(int16_t)(xq-(E1ENV_WORLD_MIN_X<<4));",
         "    int16_t ry=(int16_t)(yq-(E1ENV_WORLD_MIN_Y<<4));",
-        "    uint16_t gx,gy,local;",
+        "    uint16_t gx,gy,local,pid=E1ENV_FALLBACK;",
         "    uint8_t band;",
-        "    if(rx<0||ry<0) return E1ENV_FALLBACK;",
+        "    if(rx<0||ry<0) return 0xffu;",
         f"    gx={gx_expr}; gy={gy_expr};",
-        "    if(gx>=E1ENV_COLS||gy>=E1ENV_ROWS) return E1ENV_FALLBACK;",
+        "    if(gx>=E1ENV_COLS||gy>=E1ENV_ROWS) return 0xffu;",
         f"    local={local_expr};",
         f"    band={band_expr};",
         "    switch(band) {",
     ]
     for bi,(_r0,_r1,_bank,fn,_n) in enumerate(idx_banks):
-        dispatch.append(f"    case {bi}u: return {fn}(local);")
+        dispatch.append(f"    case {bi}u: pid={fn}(local); break;")
     dispatch += [
-        "    default: return E1ENV_FALLBACK;",
+        "    default: return 0xffu;",
         "    }",
-        "}",
-        "",
-        "uint8_t e1env_load_program(uint16_t pid, uint8_t *dst) BANKED {",
+        "    if(pid==E1ENV_FALLBACK) return 0xffu;",
     ]
     for bi,(base_pid,count,_bank,fn) in enumerate(prog_meta):
         end_pid=base_pid+count
         prefix="if" if bi==0 else "else if"
         dispatch.append(f"    {prefix}(pid<{end_pid}u) return {fn}((uint16_t)(pid-{base_pid}u),dst);")
-    dispatch += ["    return 0u;","}",""]
+    dispatch += ["    return 0xffu;","}",""]
     (outdir/"e1env_dispatch.c").write_text("\n".join(dispatch))
 
     manifest=[
