@@ -263,6 +263,7 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         prog_meta.append((base_pid,len(reclist),bank,fn))
         bank += 1
 
+    dispatch_bank=bank_base-1
     hdr=[
         "#ifndef E1ENV_GENERATED_H",
         "#define E1ENV_GENERATED_H",
@@ -282,53 +283,71 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         hdr.append(f"uint16_t {fn}(uint16_t i) BANKED;")
     for _base,_count,_bank,fn in prog_meta:
         hdr.append(f"uint8_t {fn}(uint16_t local, uint8_t *dst) BANKED;")
-
     hdr += [
-        "",
-        "uint8_t e1env_fetch_program_q4(int16_t xq, int16_t yq, uint8_t *dst) BANKED;",
-        "",
+        "uint16_t e1env_lookup_program_q4(int16_t xq, int16_t yq) BANKED;",
+        "uint8_t e1env_load_program(uint16_t pid, uint8_t *dst) BANKED;",
         "#endif",
         "",
     ]
     (outdir/"e1env_generated.h").write_text("\n".join(hdr))
 
-    # Keep the row-bank/program-bank dispatch out of the already-full renderer
-    # translation unit. One BANKED call from the renderer performs both ROM
-    # lookups; nested banked calls restore the caller bank on return.
-    dsp=[
-        "/* GENERATED envelope ROM dispatcher. */",
-        "#pragma bank 255",
+    cell_q4=int(round(result['cell']*16))
+    # Current runtime intentionally uses quarter-unit cells and 16-row bands;
+    # emit shifts/masks instead of asking SDCC for integer division helpers.
+    if cell_q4==4:
+        gx_expr="((uint16_t)rx >> 2)"
+        gy_expr="((uint16_t)ry >> 2)"
+    else:
+        gx_expr=f"((uint16_t)rx / {cell_q4}u)"
+        gy_expr=f"((uint16_t)ry / {cell_q4}u)"
+    if rows_per_bank==16:
+        local_expr="(uint16_t)(((gy & 15u) * E1ENV_COLS) + gx)"
+        band_expr="(uint8_t)(gy >> 4)"
+    else:
+        local_expr="(uint16_t)(((gy % E1ENV_ROWS_PER_INDEX_BANK) * E1ENV_COLS) + gx)"
+        band_expr="(uint8_t)(gy / E1ENV_ROWS_PER_INDEX_BANK)"
+
+    dispatch=[
+        f"#pragma bank {dispatch_bank}",
         "#include <stdint.h>",
         "#include <gbdk/platform.h>",
-        "#include \"e1env_generated.h\"",
-        "BANKREF(e1env_dispatch)",
+        '#include "e1env_generated.h"',
         "",
-        "uint8_t e1env_fetch_program_q4(int16_t xq, int16_t yq, uint8_t *dst) BANKED {",
+        "uint16_t e1env_lookup_program_q4(int16_t xq, int16_t yq) BANKED {",
         "    int16_t rx=(int16_t)(xq-(E1ENV_WORLD_MIN_X<<4));",
         "    int16_t ry=(int16_t)(yq-(E1ENV_WORLD_MIN_Y<<4));",
-        "    uint16_t gx,gy,local,pid=E1ENV_FALLBACK;",
-        "    if(rx<0||ry<0) return 0xffu;",
-        "    gx=(uint16_t)rx/E1ENV_CELL_Q4; gy=(uint16_t)ry/E1ENV_CELL_Q4;",
-        "    if(gx>=E1ENV_COLS||gy>=E1ENV_ROWS) return 0xffu;",
-        "    local=(uint16_t)((gy%E1ENV_ROWS_PER_INDEX_BANK)*E1ENV_COLS+gx);",
-        "    switch((uint8_t)(gy/E1ENV_ROWS_PER_INDEX_BANK)) {",
+        "    uint16_t gx,gy,local;",
+        "    uint8_t band;",
+        "    if(rx<0||ry<0) return E1ENV_FALLBACK;",
+        f"    gx={gx_expr}; gy={gy_expr};",
+        "    if(gx>=E1ENV_COLS||gy>=E1ENV_ROWS) return E1ENV_FALLBACK;",
+        f"    local={local_expr};",
+        f"    band={band_expr};",
+        "    switch(band) {",
     ]
     for bi,(_r0,_r1,_bank,fn,_n) in enumerate(idx_banks):
-        dsp.append(f"    case {bi}u: pid={fn}(local); break;")
-    dsp += ["    default: return 0xffu;","    }","    if(pid==E1ENV_FALLBACK) return 0xffu;"]
+        dispatch.append(f"    case {bi}u: return {fn}(local);")
+    dispatch += [
+        "    default: return E1ENV_FALLBACK;",
+        "    }",
+        "}",
+        "",
+        "uint8_t e1env_load_program(uint16_t pid, uint8_t *dst) BANKED {",
+    ]
     for bi,(base_pid,count,_bank,fn) in enumerate(prog_meta):
-        end=base_pid+count
+        end_pid=base_pid+count
         prefix="if" if bi==0 else "else if"
-        dsp.append(f"    {prefix}(pid<{end}u) return {fn}((uint16_t)(pid-{base_pid}u),dst);")
-    dsp += ["    return 0xffu;","}",""]
-    (outdir/"e1env_dispatch.c").write_text("\n".join(dsp))
+        dispatch.append(f"    {prefix}(pid<{end_pid}u) return {fn}((uint16_t)(pid-{base_pid}u),dst);")
+    dispatch += ["    return 0u;","}",""]
+    (outdir/"e1env_dispatch.c").write_text("\n".join(dispatch))
 
     manifest=[
         f"index_banks={len(idx_banks)}",
         f"program_banks={len(prog_meta)}",
         f"bank_first={bank_base}",
         f"bank_last={bank-1}",
-        f"generated_c_files={len(idx_banks)+len(prog_meta)}",
+        f"dispatch_bank={dispatch_bank}",
+        f"generated_c_files={1+len(idx_banks)+len(prog_meta)}",
     ]
     (outdir/"manifest.txt").write_text("\n".join(manifest)+"\n")
     return idx_banks,prog_meta
