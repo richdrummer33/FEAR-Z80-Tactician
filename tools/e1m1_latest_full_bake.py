@@ -79,13 +79,13 @@ def floor_at(x: float,y: float,offs,runs):
             return 0
     return None
 
-def flatten_compact(verts,segs,windows=False):
+def flatten_compact(verts,segs,window_ids=()):
     keep=[]
     used=[]
     for source_sid,(a,b,_z0,_z1,occ,bias) in enumerate(segs):
         if not occ:
             continue
-        if windows and source_sid in WINDOW_SOURCE_IDS:
+        if source_sid in window_ids:
             keep.append((source_sid,a,b,bias,LINTEL))
             keep.append((source_sid,a,b,bias,RISER))
         else:
@@ -95,7 +95,7 @@ def flatten_compact(verts,segs,windows=False):
     remap={old:new for new,old in enumerate(used)}
     cv=[verts[i] for i in used]
     cs=[(sid,src,remap[a],remap[b],bias,profile) for sid,(src,a,b,bias,profile) in enumerate(keep)]
-    want=32 if windows else 30
+    want=30+len(window_ids)
     if len(cv)!=30 or len(cs)!=want:
         raise SystemExit(f"geometry drift: verts={len(cv)} surfaces={len(cs)} expected={want}")
     return cv,cs,used
@@ -207,13 +207,16 @@ def main():
     ap.add_argument("--floor",default="src/generated/e1m1_room1_exact_floor.h")
     ap.add_argument("--out",required=True)
     ap.add_argument("--windows",action="store_true",
-                    help="A/B variant: split source walls 19 and 46 into LINTEL+RISER windows")
+                    help="A/B variant: split both source walls 19 and 46 into LINTEL+RISER windows")
+    ap.add_argument("--window-source",action="append",type=int,choices=WINDOW_SOURCE_IDS,default=[],
+                    help="split one selected source wall into a LINTEL+RISER window; repeat for both")
     args=ap.parse_args()
     root=Path(args.repo_root)
     verts0,segs0=parse_geometry(Path(args.geometry))
     offs,runs=parse_floor(Path(args.floor))
-    verts,segs,source_vertices=flatten_compact(verts0,segs0,args.windows)
-    depth_layers=3 if args.windows else DEPTH_LAYERS
+    window_ids=set(WINDOW_SOURCE_IDS if args.windows else args.window_source)
+    verts,segs,source_vertices=flatten_compact(verts0,segs0,window_ids)
+    depth_layers=3 if window_ids else DEPTH_LAYERS
     masks,counts,empty=bake_masks(verts,segs,offs,runs,depth_layers)
 
     baseline="\n".join((root/f"src/generated/tilesector_polar_data_part0{i}.inc").read_text() for i in range(5))
@@ -272,8 +275,8 @@ def main():
     full_count=sum(1 for p in prof if p==FULL)
     lintel_count=sum(1 for p in prof if p==LINTEL)
     riser_count=sum(1 for p in prof if p==RISER)
-    windows=2 if args.windows else 0
-    mode="WINDOW_AB" if args.windows else "FULL_ONLY"
+    windows=len(window_ids)
+    mode="WINDOW_AB" if windows else "FULL_ONLY"
     print(f"E1FULL_BAKE_PASS mode={mode} source_vertices={len(verts0)} source_segments={len(segs0)} full_vertices={len(verts)} surfaces={len(segs)}")
     print(f"profiles FULL={full_count} LINTEL={lintel_count} RAISED=0 RISER={riser_count} windows={windows} stairs=0 floor_insets=0")
     print(f"pvs cells={COLS*ROWS} yaw_bins={YAW_BINS} bytes={len(pvs)} candidate_mean={sum(counts)/len(counts):.2f} min={min(counts)} max={max(counts)}")
