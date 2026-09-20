@@ -277,6 +277,30 @@ jobs:
               f"{a:04x}->{b:04x}:{cnt}" for (a,b),cnt in attr_pairs.most_common(12)) or "none"))
           print("nonborder_heavy_updates="+",".join(
               f"{fi}:{cnt}" for fi,cnt in nonborder_by_frame.most_common(20)))
+          # Structural guard: an approximate edge/height difference is tolerable
+          # here, but a reference frame containing walls must never collapse to
+          # a completely static ceiling/horizon/floor map.
+          catastrophic=[]
+          for fi in range(n):
+              pw=fw=0
+              for ci in range(cols*rows):
+                  ta=rd(pa,fi,ci)&TILE_MASK
+                  tb=rd(pb,fi,ci)&TILE_MASK
+                  pw += int(ta>=FULL_BASE)
+                  fw += int(tb>=FULL_BASE)
+              if pw and not fw: catastrophic.append(fi)
+          print("catastrophic_blank_updates="+(",".join(map(str,catastrophic)) if catastrophic else "none"))
+          assert not catastrophic, f"focused envelope blanked wall-bearing updates: {catastrophic}"
+          # Bank 255 is emitted by this linker as _CODE_1. Keep the actual
+          # headroom visible because the next optimization rung previously
+          # missed the 16 KiB ceiling by only tens of bytes.
+          bank_bytes=None
+          for line in (root/"focused.map").read_text().splitlines():
+              if line.startswith("_CODE_1 "):
+                  bank_bytes=int(line.split()[2],16)
+                  break
+          if bank_bytes is not None:
+              print(f"RENDERER_BANK_BYTES used={bank_bytes} headroom={16384-bank_bytes}")
           print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
           print(f"FOCUS total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
           p95b=pct(bt,.95); worstb=max(bt); budget10=clock/10.0
