@@ -179,6 +179,10 @@ static uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
  * can change every Q4 step, but this vertex usually survives into the next
  * cyclic envelope, giving the FOV walker a near-zero-cost starting point. */
 static uint8_t g_e1env_focus_bv=0xffu;
+/* Most adjacent exact-Q4 programs keep the same cyclic boundary ordering.
+ * Remember the previous slot as well as the boundary vertex: when both still
+ * agree, focus recovery skips the byte scan entirely. */
+static uint8_t g_e1env_focus_i=0xffu;
 /* Bearings of the focus span found by envelope_focus_span(). Reuse them as
  * the first projected pair, then carry one shared boundary bearing while
  * walking right/left. Adjacent envelope spans share a boundary vertex, so
@@ -372,6 +376,7 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
     g_e1env_focus_bv=0xffu;
+    g_e1env_focus_i=0xffu;
 #if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
     g_e1env_lbf_cached_x=0xffu;
     g_e1env_lbf_cached_y=0xffu;
@@ -1009,9 +1014,14 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
     if(!n) return 0u;
 
     if(g_e1env_focus_bv!=0xffu){
-        for(k=0u;k<n;++k){
-            if(g_e1env_program[(uint8_t)(1u+(uint8_t)(k<<1))]==g_e1env_focus_bv){
-                i=k; break;
+        if(g_e1env_focus_i<n &&
+           g_e1env_program[(uint8_t)(1u+(uint8_t)(g_e1env_focus_i<<1))]==g_e1env_focus_bv){
+            i=g_e1env_focus_i;
+        }else{
+            for(k=0u;k<n;++k){
+                if(g_e1env_program[(uint8_t)(1u+(uint8_t)(k<<1))]==g_e1env_focus_bv){
+                    i=k; break;
+                }
             }
         }
     }
@@ -1026,6 +1036,7 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
         uint16_t d=(uint16_t)((yawq-a0)&4095u);
         if(len && len<2048u && d<len){
             g_e1env_focus_bv=v0;
+            g_e1env_focus_i=i;
             g_e1env_focus_a0=a0;
             g_e1env_focus_a1=a1;
             return i;
@@ -1038,6 +1049,7 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
     }
 
     g_e1env_focus_bv=g_e1env_program[1u];
+    g_e1env_focus_i=0u;
     g_e1env_focus_a0=bearing_vertex_q12(g_e1env_program[1u],s);
     g_e1env_focus_a1=bearing_vertex_q12(g_e1env_program[3u],s);
     return 0u;
@@ -1129,11 +1141,18 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     return 1u;
 }
 
-/* Adjacent emitted envelope runs share the carried coarse-column boundary.
- * Packed bit7 is baked only when the right physical endpoint is shared by the
- * immediately following owner. If both runs survived the coarse-centre test,
- * the old c1/c0 + endpoint rechecks are therefore tautologies. The two walk
- * loops consume bit7 directly and clear exactly the same duplicate border. */
+/* Program adjacency already proves that these runs meet at the same envelope
+ * boundary. Bit7 says that boundary is also a physical endpoint shared by both
+ * authored walls. Suppress one of the two black borders only when BOTH spans
+ * actually own adjacent coarse columns; a sub-column neighbor must not steal
+ * the sole visible corner line. */
+static void envelope_join_connected(uint8_t li,uint8_t ri)
+{
+    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
+       g_runs[li].right_real && g_runs[ri].left_real &&
+       g_runs[li].right_connected)
+        g_runs[li].right_real=0u;
+}
 #endif
 
 static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom)
@@ -1510,8 +1529,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu && g_runs[last].right_connected)
-                        g_runs[last].right_real=0u;
+                    if(last!=0xffu) envelope_join_connected(last,cur);
                     last=cur;
                 }
             }
@@ -1537,8 +1555,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu && g_runs[cur].right_connected)
-                        g_runs[cur].right_real=0u;
+                    if(last!=0xffu) envelope_join_connected(cur,last);
                     last=cur;
                 }
             }
