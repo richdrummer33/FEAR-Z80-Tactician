@@ -1480,8 +1480,12 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             a1=g_e1env_focus_a1;
             TSPF_ENV_PHASE(3u);
             q=envelope_add_span(focus,n,a0,a1,s,&count);
-            if(q!=1u) goto e1full_candidates_ready;
-            focus_run=(uint8_t)(count-1u);
+            /* The span containing the optical centre need not own an 8-pixel
+             * column-centre sample.  In that perfectly valid case add_span()
+             * returns 2: keep walking outward instead of turning the whole
+             * frame into zero runs.  0xff is only a join sentinel here. */
+            if(q==0u) goto e1full_candidates_ready;
+            focus_run=(uint8_t)(q==1u ? count-1u : 0xffu);
 
             last=focus_run;
             i=focus;
@@ -1495,7 +1499,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    envelope_join_connected(last,cur);
+                    if(last!=0xffu) envelope_join_connected(last,cur);
                     last=cur;
                 }
             }
@@ -1511,7 +1515,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    envelope_join_connected(cur,last);
+                    if(last!=0xffu) envelope_join_connected(cur,last);
                     last=cur;
                 }
             }
