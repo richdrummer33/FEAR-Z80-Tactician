@@ -422,6 +422,9 @@ build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
 build/tilesector_polar_materialize_gg.o: src/tilesector_polar_materialize_gg.s | build
 	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
+build/e1env_center_col_gg.o: src/e1env_center_col_gg.s | build
+	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
+
 build/tilesector_polar_projection_gg.o: src/tilesector_polar_projection_gg.s | build
 	$(LCC) $(POLAR_GGFLAGS) -c -o $@ $<
 
