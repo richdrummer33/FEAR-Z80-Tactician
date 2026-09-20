@@ -12,9 +12,11 @@ then reproduces the same two rounded products with an exact quarter-square
 uint8 multiply, so endpoint inverse depths stay bit-identical to the existing
 path while the Z80 trades arithmetic for ROM reads.
 
-Two normal classes fit in one 16 KiB bank; twelve classes therefore use six
-banks. This is intentionally ROM-hungry after the exact-Q4 index compression
-reclaimed roughly a hundred banks.
+One normal class now gets one 16 KiB bank. That halves the per-bank dot field
+and spends the recovered space on a 21 x 256 exact secant-result table. Runtime
+therefore keeps only the first invd*dot multiply; the second q*sec multiply is
+already baked. Twelve normal classes use twelve banks, still cheap after the
+exact-Q4 index compression reclaimed roughly a hundred banks.
 """
 from __future__ import annotations
 import argparse
@@ -82,6 +84,15 @@ def main():
         raise SystemExit(f"expected <=12 normal classes, got {len(normals)}")
 
     edge_sec=[sec[abs(r)] for r in EDGES]
+    # Exact replacement for round(q * sec(edge) / 128), including saturation.
+    # With one normal class per bank this 5.25 KiB table fits in the space
+    # reclaimed from the second class's dot field and removes two Z80 multiplies
+    # per visible run.
+    sec_eval=[]
+    for s in edge_sec:
+        for q in range(256):
+            v=(q*s+64)>>7
+            sec_eval.append(255 if v>255 else v)
     col_recip=[0,255,128,85,64,51,43,36,32,28,26,23,21,20,18,17,16,15,14,13,13]
 
     # Exact replacement for renderer inv_for_dq4() over its complete useful
@@ -117,24 +128,19 @@ def main():
         "extern int16_t g_e1env_depth_step;",
     ]
 
-    bank_count=(len(normals)+1)//2
+    bank_count=len(normals)
     for bi in range(bank_count):
-        hdr.append(f"uint8_t e1env_depth_edges_{bi}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED;")
+        hdr.append(f"uint8_t e1env_depth_edges_{bi}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED;")
     hdr += ["#endif",""]
     (outdir/"e1env_depth_edges_bank.h").write_text("\n".join(hdr))
 
     for bank_i in range(bank_count):
-        classes=list(range(bank_i*2,min(bank_i*2+2,len(normals))))
+        ci=bank_i
+        cx,cy=normals[ci]
         dots=[]
-        for ci in classes:
-            cx,cy=normals[ci]
-            for yaw in range(256):
-                for rel in EDGES:
-                    dots.append(dot_for(cx,cy,yaw,rel,sin))
-        # Pad a final singleton bank to two logical classes so index arithmetic
-        # remains identical. (Normally E1M1 has an even class count.)
-        if len(classes)==1:
-            dots.extend([0]*(256*len(EDGES)))
+        for yaw in range(256):
+            for rel in EDGES:
+                dots.append(dot_for(cx,cy,yaw,rel,sin))
 
         fn=f"e1env_depth_edges_{bank_i}"
         bridge_defs=("uint8_t g_e1env_depth_inv0;\n"
@@ -155,7 +161,7 @@ BANKREF(e1env_depth_edges_{bank_i})
 
 {emit_u8("k_dot",dots,21)}
 
-{emit_u8("k_sec",edge_sec,21)}
+{emit_u8("k_sec_eval",sec_eval,32)}
 
 {emit_u8("k_invd_q4",invd_q4,32)}
 
@@ -166,15 +172,13 @@ BANKREF(e1env_depth_edges_{bank_i})
 extern uint16_t e1env_mul8u(uint8_t a,uint8_t b);
 static uint8_t eval_one(uint8_t dot,uint8_t edge,uint8_t invd) {{
     uint16_t p=e1env_mul8u(invd,dot);
-    uint16_t q=(uint16_t)((p+64u)>>7);
-    p=e1env_mul8u((uint8_t)q,k_sec[edge]);
-    q=(uint16_t)((p+64u)>>7);
-    return (uint8_t)(q>255u ? 255u : q);
+    uint8_t q=(uint8_t)((p+64u)>>7);
+    return k_sec_eval[((uint16_t)edge<<8)|q];
 }}
 
-uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED {{
+uint8_t {fn}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED {{
     uint16_t ad=(uint16_t)(dq4<0 ? -dq4 : dq4);
-    uint16_t base=(uint16_t)(((uint16_t)local_cls<<8)+(uint16_t)yaw)*21u;
+    uint16_t base=(uint16_t)yaw*21u;
     uint8_t invd=k_invd_q4[ad>=2032u ? 2032u : ad];
     uint8_t a=eval_one(k_dot[base+c0],c0,invd);
     uint8_t e=(uint8_t)(c1+1u);
@@ -196,7 +200,7 @@ uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BA
 """
         (outdir/f"{fn}.c").write_text(src)
 
-    data_bytes=bank_count*(2*256*21 + 21 + len(invd_q4) + len(col_recip))
+    data_bytes=bank_count*(256*21 + len(sec_eval) + len(invd_q4) + len(col_recip))
     print(f"E1ENV_DEPTH_EDGES banks={bank_count} bank_range={args.bank_base}..{args.bank_base+bank_count-1} "
           f"normal_classes={len(normals)} approx_data_bytes={data_bytes}")
 
