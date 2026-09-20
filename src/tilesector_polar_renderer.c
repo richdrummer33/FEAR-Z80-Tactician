@@ -1454,7 +1454,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
-            uint8_t focus,step,i,q,last,focus_run,c0,cend;
+            uint8_t focus,step,i,q,last,focus_run,c0,cend,focus_c0;
 #if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
             e1env_local_bearing_prepare(s);
 #endif
@@ -1482,6 +1482,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             rel1=(int16_t)((int16_t)len-(int16_t)d);
             c0=(uint8_t)(rel0<=-512 ? 0u : envelope_center_col(rel0));
             cend=(uint8_t)(rel1>=512 ? TSP_COLS : envelope_center_col(rel1));
+            focus_c0=c0;
 
             TSPF_ENV_PHASE(3u);
             q=envelope_emit_span(focus,n,c0,cend,
@@ -1522,6 +1523,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             last=focus_run;
             i=focus;
             a0=g_e1env_focus_a0;
+            c0=focus_c0;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 if(rel0<=-512) break;
                 i=(uint8_t)(i?i-1u:n-1u);
