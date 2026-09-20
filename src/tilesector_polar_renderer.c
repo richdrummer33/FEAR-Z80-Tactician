@@ -780,13 +780,14 @@ static int16_t wall_d_q4(uint8_t sid, const TSPState *s)
      * subtraction.  45-degree families are also identified by the baker, but
      * retain the exact legacy arithmetic below until their scaled-depth lookup
      * is moved out of the already-full renderer bank. */
-    switch(op)
+    /* Cardinal op encoding is deliberately regular:
+     * 1/2 select X +/- and 3/4 select Y +/-.  Avoid a four-way switch on the
+     * overwhelmingly common path; one axis test and the low sign bit reproduce
+     * the exact same signed Q4 plane distance. */
+    if(op>=E1ENV_PLANE_X_POS && op<=E1ENV_PLANE_Y_NEG)
     {
-    case E1ENV_PLANE_X_POS: return (int16_t)(c-s->x_q4);
-    case E1ENV_PLANE_X_NEG: return (int16_t)(s->x_q4-c);
-    case E1ENV_PLANE_Y_POS: return (int16_t)(c-s->y_q4);
-    case E1ENV_PLANE_Y_NEG: return (int16_t)(s->y_q4-c);
-    default: break;
+        int16_t p=(op<=E1ENV_PLANE_X_NEG)?s->x_q4:s->y_q4;
+        return (op&1u)?(int16_t)(c-p):(int16_t)(p-c);
     }
 #endif
     {
