@@ -1015,7 +1015,12 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
     uint8_t noff=(uint8_t)(1u+(uint8_t)(ni<<1));
     uint8_t owner=g_e1env_program[(uint8_t)(off+1u)];
     uint8_t idx=*count;
-    uint8_t sid,c0,cend,c1,invd;
+    uint8_t sid,c0,cend,c1;
+#if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
+    int16_t dq4;
+#else
+    uint8_t invd;
+#endif
     uint16_t len,yawq;
     int16_t st,en,lo,hi;
     PolarRun *r;
@@ -1045,7 +1050,11 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
     if(cend==c0) return 2u;
     c1=(uint8_t)(cend-1u);
 
+#if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
+    dq4=wall_d_q4(sid,k_tspf_seg_anchor[sid],s);
+#else
     invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
+#endif
     r=&g_runs[idx];
 
     r->sid=sid;
@@ -1058,12 +1067,12 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
         uint8_t cls=k_e1env_depth_class[sid];
         switch(cls>>1)
         {
-        case 0u: (void)e1env_depth_edges_0((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 1u: (void)e1env_depth_edges_1((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 2u: (void)e1env_depth_edges_2((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 3u: (void)e1env_depth_edges_3((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 4u: (void)e1env_depth_edges_4((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        default: (void)e1env_depth_edges_5((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 0u: (void)e1env_depth_edges_0((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
+        case 1u: (void)e1env_depth_edges_1((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
+        case 2u: (void)e1env_depth_edges_2((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
+        case 3u: (void)e1env_depth_edges_3((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
+        case 4u: (void)e1env_depth_edges_4((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
+        default: (void)e1env_depth_edges_5((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
         }
         r->inv0=g_e1env_depth_inv0;
         r->inv1=g_e1env_depth_inv1;

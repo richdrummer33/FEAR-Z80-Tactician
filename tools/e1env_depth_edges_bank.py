@@ -73,6 +73,7 @@ def main():
     ny=arr(text,"k_tspf_ny_q5")
     sin=arr(text,"k_tspf_sin_q7")
     sec=arr(text,"k_tspf_sec_q7")
+    invz=arr(text,"k_tspf_invz")
     normals=[]; cls=[]
     for p in zip(nx,ny):
         if p not in normals: normals.append(p)
@@ -81,6 +82,23 @@ def main():
         raise SystemExit(f"expected <=12 normal classes, got {len(normals)}")
 
     edge_sec=[sec[abs(r)] for r in EDGES]
+
+    # Exact replacement for renderer inv_for_dq4() over its complete useful
+    # absolute-distance domain.  ROM is deliberately plentiful in this build:
+    # spend ~2 KiB per depth bank to remove interpolation arithmetic from every
+    # visible FULL span without introducing another bank switch.
+    def inv_for_abs_q4(a):
+        if a <= (10 << 4):
+            return 255
+        if a >= (127 << 4):
+            return invz[127]
+        z=a >> 4
+        f=a & 15
+        x0=invz[z]
+        x1=invz[z+1]
+        d=x1-x0
+        return x0 + shr0(d*f + (8 if d >= 0 else -8), 4)
+    invd_q4=[inv_for_abs_q4(a) for a in range((127 << 4)+1)]
 
     outdir=pathlib.Path(args.out_dir); outdir.mkdir(parents=True,exist_ok=True)
     hdr=[
@@ -98,7 +116,7 @@ def main():
 
     bank_count=(len(normals)+1)//2
     for bi in range(bank_count):
-        hdr.append(f"uint8_t e1env_depth_edges_{bi}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,uint8_t invd) BANKED;")
+        hdr.append(f"uint8_t e1env_depth_edges_{bi}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED;")
     hdr += ["#endif",""]
     (outdir/"e1env_depth_edges_bank.h").write_text("\n".join(hdr))
 
@@ -132,6 +150,8 @@ BANKREF(e1env_depth_edges_{bank_i})
 
 {emit_u8("k_sec",edge_sec,21)}
 
+{emit_u8("k_invd_q4",invd_q4,32)}
+
 {bridge_defs}
 
 extern uint16_t e1env_mul8u(uint8_t a,uint8_t b);
@@ -143,8 +163,10 @@ static uint8_t eval_one(uint8_t dot,uint8_t edge,uint8_t invd) {{
     return (uint8_t)(q>255u ? 255u : q);
 }}
 
-uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,uint8_t invd) BANKED {{
+uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED {{
+    uint16_t ad=(uint16_t)(dq4<0 ? -dq4 : dq4);
     uint16_t base=(uint16_t)(((uint16_t)local_cls<<8)+(uint16_t)yaw)*21u;
+    uint8_t invd=k_invd_q4[ad>=2032u ? 2032u : ad];
     uint8_t a=eval_one(k_dot[base+c0],c0,invd);
     uint8_t e=(uint8_t)(c1+1u);
     uint8_t b=eval_one(k_dot[base+e],e,invd);
@@ -156,7 +178,7 @@ uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,uint8_t invd) B
 """
         (outdir/f"{fn}.c").write_text(src)
 
-    data_bytes=bank_count*(2*256*21 + 21)
+    data_bytes=bank_count*(2*256*21 + 21 + len(invd_q4))
     print(f"E1ENV_DEPTH_EDGES banks={bank_count} bank_range={args.bank_base}..{args.bank_base+bank_count-1} "
           f"normal_classes={len(normals)} approx_data_bytes={data_bytes}")
 
