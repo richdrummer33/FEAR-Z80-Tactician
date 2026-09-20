@@ -1,4 +1,5 @@
 name: E1M1 exact-Q4 envelope runtime iteration
+# Exact-envelope parity, performance, and renderer-bank budget gate.
 
 on:
   push:
