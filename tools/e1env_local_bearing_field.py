@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
-"""Generate a 1-world-cell affine bearing field for exact E1M1 vertices.
+"""Generate a 1-world-cell local bearing field for exact E1M1 vertices.
 
 This is a performance ROM, not topology. The exact-Q4 visibility envelope still
 chooses which boundary vertices matter. For each 1x1 world cell and each map
-vertex, bake:
+vertex, first bake the cheap affine form:
 
     bearing(local_x,local_y) ~= base + sx*local_x/16 + sy*local_y/16
 
 where local_x/local_y are the player's Q4 fractional coordinates 0..15.
-Every representable Q4 point is exhaustively checked against atan2. If worst
-wrapped error exceeds --threshold Q12 units, that vertex/cell sets a fallback
-bit and the runtime uses the existing exact bearing LUT.
+Every representable Q4 point is exhaustively checked against atan2. When the
+original tangent fit misses --threshold, a second fit uses the four cell corners
+and may add a tiny signed 4-bit bilinear term:
 
-At threshold 2 Q12, worst accepted angular error is about half a screen pixel
-at the +/-45-degree FOV edge. The record is intentionally fixed-size:
-4 fallback bytes + 30 * 4-byte descriptors = 124 bytes/cell. One world row
-(96 cells) is 11,904 bytes and therefore fits comfortably in one 16 KiB ROM
-bank. Cell loads happen only when the integer player cell changes; per-frame
-visible vertex evaluation then runs entirely from WRAM plus a fixed correction
-LUT.
+    cross = trunc(trunc(sxy*local_x/16)*local_y/16)
 
-A 4,080-byte fixed-ROM table maps signed slope (-127..127) and local nibble
-(0..15) to trunc_toward_zero(slope*local/16), removing runtime multiplies.
+The signed sxy coefficient is packed into the otherwise-unused high nibble of
+base_hi, so the bilinear rescue costs ZERO extra ROM bytes and ZERO extra cell
+load bytes. sxy=0 is the normal affine fast path. Only rescued records with a
+non-zero nibble execute the extra two 8x4 multiplies. Records that still exceed
+the threshold retain their fallback bit and use the exact bearing LUT.
+
+The record remains fixed-size: 4 fallback bytes + 30 * 4-byte descriptors =
+124 bytes/cell. One world row (96 cells) is 11,904 bytes and therefore fits
+comfortably in one 16 KiB ROM bank. Cell loads happen only when the integer
+player cell changes; per-frame visible vertex evaluation then runs from WRAM.
 """
 from __future__ import annotations
 import argparse, math, pathlib, re
@@ -45,7 +47,18 @@ def bearing(vx,vy,xq,yq):
 def shr0(v,n=4):
     return v>>n if v>=0 else -((-v)>>n)
 
-def record(vx,vy,wx,wy,threshold):
+def sample_grid(vx,vy,wx,wy):
+    x0=wx*16; y0=wy*16
+    out=[]
+    for ly in range(16):
+      for lx in range(16):
+        e=bearing(vx,vy,x0+lx,y0+ly)
+        if e is None:
+            return None
+        out.append(e)
+    return out
+
+def affine_record(vx,vy,wx,wy,threshold,exact):
     x0=wx*16; y0=wy*16
     cx=x0+7.5; cy=y0+7.5
     X=vx*16.0-cx; Y=vy*16.0-cy
@@ -62,15 +75,60 @@ def record(vx,vy,wx,wy,threshold):
         return None,float("inf")
     b=int(round(base))&4095
     worst=0.0
+    i=0
     for ly in range(16):
       for lx in range(16):
-        e=bearing(vx,vy,x0+lx,y0+ly)
-        if e is None: return None,float("inf")
         p=b+shr0(sx*lx)+shr0(sy*ly)
-        worst=max(worst,abs(wrap(e-p)))
+        worst=max(worst,abs(wrap(exact[i]-p))); i+=1
     if worst>threshold:
         return None,worst
-    return (b,sx,sy),worst
+    return (b,sx,sy,0),worst
+
+def nearest(v,ref):
+    return ref+wrap(v-ref)
+
+def bilinear_record(vx,vy,wx,wy,threshold,exact):
+    """Second-chance fit matching the Z80 integer evaluator exactly."""
+    e00=exact[0]; e10=nearest(exact[15],e00); e01=nearest(exact[240],e00)
+    e11=nearest(exact[255],(e10+e01-e00))
+    sx=int(round((e10-e00)*16.0/15.0))
+    sy=int(round((e01-e00)*16.0/15.0))
+    sxy=int(round((e11-e10-e01+e00)*256.0/225.0))
+    if not(-127<=sx<=127 and -127<=sy<=127 and -8<=sxy<=7):
+        return None,float("inf")
+    b0=int(round(e00))
+    # For fixed quantised slopes, changing base adds the same integer to every
+    # prediction. Solve that one-dimensional Chebyshev adjustment directly
+    # instead of brute-forcing seven complete 16x16 passes.
+    residual=[]; i=0
+    for ly in range(16):
+      for lx in range(16):
+        cross=shr0(shr0(sxy*lx)*ly)
+        p=b0+shr0(sx*lx)+shr0(sy*ly)+cross
+        residual.append(wrap(exact[i]-p)); i+=1
+    mid=(min(residual)+max(residual))*0.5
+    c0=math.floor(mid)
+    candidates=(c0,c0+1)
+    best=None; best_worst=float("inf")
+    for db in candidates:
+        worst=max(abs(wrap(r-db)) for r in residual)
+        if worst<best_worst:
+            best_worst=worst; best=((b0+db)&4095,sx,sy,sxy)
+    if best_worst>threshold:
+        return None,best_worst
+    return best,best_worst
+
+def record(vx,vy,wx,wy,threshold):
+    exact=sample_grid(vx,vy,wx,wy)
+    if exact is None:
+        return None,float("inf"),"fallback"
+    rec,err=affine_record(vx,vy,wx,wy,threshold,exact)
+    if rec is not None:
+        return rec,err,"affine"
+    rec2,err2=bilinear_record(vx,vy,wx,wy,threshold,exact)
+    if rec2 is not None:
+        return rec2,err2,"linear-rescue" if rec2[3]==0 else "bilinear-rescue"
+    return None,min(err,err2),"fallback"
 
 def emit_u8(name,data,per=24):
     out=[f"static const uint8_t {name}[{len(data)}] = {{"]
@@ -111,7 +169,8 @@ def main():
 
     outdir=pathlib.Path(a.out_dir); outdir.mkdir(parents=True,exist_ok=True)
     cell_bytes=4+nv*4
-    fallback=accepted=0; worst_accepted=0.0; worst_all=0.0
+    fallback=affine=linear_rescue=bilinear_rescue=0
+    worst_accepted=0.0; worst_all=0.0
 
     for ry in range(height):
         wy=a.world_min_y+ry
@@ -121,14 +180,21 @@ def main():
             mask=0
             desc=[]
             for vid,(x,y) in enumerate(zip(vx,vy)):
-                rec,err=record(x,y,wx,wy,a.threshold)
+                rec,err,kind=record(x,y,wx,wy,a.threshold)
                 if math.isfinite(err): worst_all=max(worst_all,err)
                 if rec is None:
                     mask|=1<<vid; fallback+=1
                     desc.extend((0,0,0,0))
                 else:
-                    b,sx,sy=rec; accepted+=1;worst_accepted=max(worst_accepted,err)
-                    desc.extend((b&255,(b>>8)&15,sx&255,sy&255))
+                    b,sx,sy,sxy=rec
+                    if kind=="affine": affine+=1
+                    elif kind=="linear-rescue": linear_rescue+=1
+                    else: bilinear_rescue+=1
+                    worst_accepted=max(worst_accepted,err)
+                    # low nibble = base bits 8..11; high nibble = signed sxy.
+                    # The existing evaluator already masks the low nibble for
+                    # base, so old affine records remain representation-compatible.
+                    desc.extend((b&255,((b>>8)&15)|((sxy&15)<<4),sx&255,sy&255))
             cells.extend((mask&255,(mask>>8)&255,(mask>>16)&255,(mask>>24)&255))
             cells.extend(desc)
         fn=f"e1env_bearing_row_{ry}"
@@ -155,6 +221,7 @@ void {fn}(uint8_t x,uint8_t *dst) BANKED {{
       "#include <stdint.h>",
       "#include <gbdk/platform.h>",
       f"#define E1ENV_LOCAL_BEARING_FIELD 1u",
+      f"#define E1ENV_LBF_BILINEAR_NIBBLE 1u",
       f"#define E1ENV_LBF_WORLD_MIN_X {a.world_min_x}",
       f"#define E1ENV_LBF_WORLD_MIN_Y {a.world_min_y}",
       f"#define E1ENV_LBF_WIDTH {width}u",
@@ -183,27 +250,12 @@ void {fn}(uint8_t x,uint8_t *dst) BANKED {{
     dispatch += ["    default: break;","    }","}",""]
     (outdir/"e1env_local_bearing_dispatch.c").write_text("\n".join(dispatch))
 
-    # Fixed-ROM correction table used by runtime: slope index = signed+127.
-    corr=[]
-    for slope in range(-127,128):
-      for local in range(16):
-        corr.append(shr0(slope*local)&255)
-    fixed=[
-      '        .title  "Exact envelope local-bearing correction LUT"',
-      '        .module e1env_local_bearing_corr_gg',
-      '',
-      '        .area   _HOME',
-      '        .globl  _g_e1env_lbf_corr',
-      '_g_e1env_lbf_corr::'
-    ]
-    for i in range(0,len(corr),32):
-        fixed.append("        .db     "+",".join(str(v) for v in corr[i:i+32]))
-    (outdir/"e1env_local_bearing_corr_gg.s").write_text("\n".join(fixed)+"\n")
-
-    total=accepted+fallback
+    total=affine+linear_rescue+bilinear_rescue+fallback
+    rescued=linear_rescue+bilinear_rescue
     print(f"E1ENV_LOCAL_BEARING_FIELD cells={width*height} vertices={nv} cell_bytes={cell_bytes} "
           f"row_banks={height} bank_range={a.bank_base}..{a.bank_base+height-1} dispatch_bank={a.dispatch_bank}")
-    print(f"threshold_q12={a.threshold:g} accepted={accepted}/{total} fallback={fallback} "
+    print(f"threshold_q12={a.threshold:g} affine={affine}/{total} linear_rescue={linear_rescue} "
+          f"bilinear_rescue={bilinear_rescue} rescued={rescued} fallback={fallback} "
           f"fallback_pct={100.0*fallback/total:.2f} worst_accepted_q12={worst_accepted:.3f} "
           f"raw_data_bytes={width*height*cell_bytes}")
 
