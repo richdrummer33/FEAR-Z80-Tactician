@@ -1,0 +1,74 @@
+name: E1M1 local bearing field census
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+    paths:
+      - tools/e1env_local_bearing_field.py
+      - .github/workflows/e1env-local-bearing-field.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  census:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore corrected compact E1M1 map
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/lbf/pre build/lbf/generated
+          gh run download 35479470462 -n GG-E1M1-Exact-Q4-FrontEnvelope -D build/lbf/pre
+          cp build/lbf/pre/generated/optimized_renderer_map_data.inc build/lbf/generated/
+
+      - name: Generate exact-Q4 validated local bearing field
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/e1env_local_bearing_field.py \
+            --map-inc build/lbf/generated/optimized_renderer_map_data.inc \
+            --out-dir build/lbf/generated \
+            --bank-base 144 --dispatch-bank 200 --threshold 2 \
+            | tee build/lbf/census.txt
+          grep -q E1ENV_LOCAL_BEARING_FIELD build/lbf/census.txt
+          du -ch build/lbf/generated/e1env_bearing_row_*.c | tail -1 | tee build/lbf/generated-source-size.txt
+
+      - name: Install GBDK 4.5.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+
+      - name: Compile every field bank
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEN="$PWD/build/lbf/generated"
+          LCC="$PWD/.toolchain/gbdk/bin/lcc"
+          : > build/lbf/objects.txt
+          for src in "$GEN"/e1env_bearing_row_*.c "$GEN"/e1env_local_bearing_dispatch.c; do
+            obj="build/lbf/$(basename "${src%.c}").o"
+            "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
+            printf '%s ' "$obj" >> build/lbf/objects.txt
+          done
+          echo "compiled_objects=$(wc -w < build/lbf/objects.txt)" | tee build/lbf/compile-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: E1M1-Local-Bearing-Field-Census
+          path: build/lbf/
+          retention-days: 14
