@@ -1105,20 +1105,16 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
     {
         uint8_t cls=k_e1env_depth_class[sid];
+        /* Orthogonal-only benchmark: q5 normals can only be +/-X or
+         * +/-Y, so the generated exact-depth vocabulary has four directed
+         * classes.  Angled geometry is rejected by the bake before this code
+         * can exist. */
         switch(cls)
         {
-        case 0u: (void)e1env_depth_edges_0(s->yaw,c0,c1,dq4); break;
-        case 1u: (void)e1env_depth_edges_1(s->yaw,c0,c1,dq4); break;
-        case 2u: (void)e1env_depth_edges_2(s->yaw,c0,c1,dq4); break;
-        case 3u: (void)e1env_depth_edges_3(s->yaw,c0,c1,dq4); break;
-        case 4u: (void)e1env_depth_edges_4(s->yaw,c0,c1,dq4); break;
-        case 5u: (void)e1env_depth_edges_5(s->yaw,c0,c1,dq4); break;
-        case 6u: (void)e1env_depth_edges_6(s->yaw,c0,c1,dq4); break;
-        case 7u: (void)e1env_depth_edges_7(s->yaw,c0,c1,dq4); break;
-        case 8u: (void)e1env_depth_edges_8(s->yaw,c0,c1,dq4); break;
-        case 9u: (void)e1env_depth_edges_9(s->yaw,c0,c1,dq4); break;
-        case 10u: (void)e1env_depth_edges_10(s->yaw,c0,c1,dq4); break;
-        default: (void)e1env_depth_edges_11(s->yaw,c0,c1,dq4); break;
+        case 0u: e1env_depth_edges_0(s->yaw,c0,c1,dq4); break;
+        case 1u: e1env_depth_edges_1(s->yaw,c0,c1,dq4); break;
+        case 2u: e1env_depth_edges_2(s->yaw,c0,c1,dq4); break;
+        default: e1env_depth_edges_3(s->yaw,c0,c1,dq4); break;
         }
         /* Exact-envelope draw_run consumes the native Q6 start/step
          * directly.  inv0/inv1/inv_mid were legacy projection/sort fields and
