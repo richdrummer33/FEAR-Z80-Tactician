@@ -1074,6 +1074,7 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     uint8_t sid,c1;
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
     int16_t dq4;
+    uint8_t depth_axis;
 #else
     uint8_t invd;
     uint16_t yawq=(uint16_t)s->yaw<<4;
@@ -1091,7 +1092,14 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     c1=(uint8_t)(cend-1u);
 
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
-    dq4=wall_d_q4(sid,s);
+    /* Exact orthogonal depth ultimately consumes abs(distance). The wall's
+     * directed normal sign is therefore irrelevant here: select X/Y once,
+     * subtract the baked Q4 plane constant directly, and carry that same axis
+     * into the two-bank projection dispatch. This deletes wall_d_q4() from the
+     * exact-envelope hot path. */
+    depth_axis=k_e1env_depth_axis[sid];
+    dq4=(int16_t)(k_e1env_plane_c[sid] -
+                  (depth_axis ? s->y_q4 : s->x_q4));
 #else
     invd=inv_for_dq4(wall_d_q4(sid,s));
 #endif
@@ -1107,7 +1115,7 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
         /* Orthogonal-only benchmark: +/- normals share one table because
          * projection consumes abs(dot). Keep separate X/Y banks to avoid the
          * yaw-phase arithmetic/codegen regression measured by Run 72. */
-        if(k_e1env_depth_axis[sid]==0u)
+        if(depth_axis==0u)
             e1env_depth_edges_0(s->yaw,c0,c1,dq4);
         else
             e1env_depth_edges_1(s->yaw,c0,c1,dq4);
