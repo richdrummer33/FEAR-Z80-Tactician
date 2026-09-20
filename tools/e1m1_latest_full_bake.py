@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Bake the exact marked E1M1 Room-1 slice for the latest retained Polar renderer.
 
-Source geometry/floor are the exact generated Room-1 oracle originally derived
-from map1.js.  This variant deliberately deletes every vertical special case:
-all structural/occluding XY spans become one centered FULL wall, z=0..10.
-No windows, stairs, risers, raised/lintel bands, or floor-height changes remain.
+Source geometry/floor begin from the exact generated Room-1 oracle originally
+derived from map1.js.  For the renderer-optimization benchmark, eight outer-ring
+vertices are moved OUTWARD onto a Manhattan outline so every structural wall is
+strictly X- or Y-aligned.  This is intentionally no longer exact E1M1 geometry:
+it is the orthogonal-only performance course.  Every structural/occluding span
+is one centered FULL wall, z=0..10.  No angled walls, windows, stairs, risers,
+raised/lintel bands, or floor-height changes remain.
 
 The PVS is yaw-aware and conservative: for each 8x8 world cell and 16 yaw bins,
 it unions first/second ray hits from several camera samples, authored endpoint
@@ -43,6 +46,22 @@ WINDOW_SOURCE_IDS=(19,46)
 # first-hit renderer.
 INTERIOR_SOLID_SOURCE_IDS=frozenset(range(50,58))
 INTERIOR_SOLID_AABBS=((56,32,64,40),(56,64,64,72))
+
+# Orthogonal-only renderer benchmark contract. These source-vertex moves replace
+# the eight sloped/diagonal pieces of the outer ring with an OUTWARD Manhattan
+# outline while preserving the same vertex/surface counts and directed topology.
+# Source oracle data remains untouched; only the optimized benchmark bake sees
+# these coordinates.
+ORTHO_VERTEX_OVERRIDES={
+    4:(88,36),
+    6:(88,68),
+    18:(32,80),
+    19:(86,80),
+    28:(16,32),
+    31:(16,72),
+    34:(86,24),
+    35:(32,24),
+}
 
 def parse_geometry(path: Path):
     text=path.read_text()
@@ -109,11 +128,18 @@ def flatten_compact(verts,segs,window_ids=()):
         if a not in used: used.append(a)
         if b not in used: used.append(b)
     remap={old:new for new,old in enumerate(used)}
-    cv=[verts[i] for i in used]
+    cv=[ORTHO_VERTEX_OVERRIDES.get(i,verts[i]) for i in used]
     cs=[(sid,src,remap[a],remap[b],bias,profile) for sid,(src,a,b,bias,profile) in enumerate(keep)]
     want=30+len(window_ids)
     if len(cv)!=30 or len(cs)!=want:
         raise SystemExit(f"geometry drift: verts={len(cv)} surfaces={len(cs)} expected={want}")
+    bad=[]
+    for sid,_src,a,b,_bias,_profile in cs:
+        ax,ay=cv[a]; bx,by=cv[b]
+        if not all(isinstance(v,int) for v in (ax,ay,bx,by)) or (ax!=bx and ay!=by):
+            bad.append((sid,(ax,ay),(bx,by)))
+    if bad:
+        raise SystemExit(f"ORTHOGONAL_GEOMETRY_REQUIRED bad_segments={bad}")
     return cv,cs,used
 
 def angle_delta(a,b):
@@ -296,6 +322,9 @@ def main():
     print(f"E1FULL_BAKE_PASS mode={mode} source_vertices={len(verts0)} source_segments={len(segs0)} full_vertices={len(verts)} surfaces={len(segs)}")
     print(f"profiles FULL={full_count} LINTEL={lintel_count} RAISED=0 RISER={riser_count} windows={windows} stairs=0 floor_insets=0")
     print(f"pvs cells={COLS*ROWS} yaw_bins={YAW_BINS} bytes={len(pvs)} candidate_mean={sum(counts)/len(counts):.2f} min={min(counts)} max={max(counts)}")
+    orth=sum(1 for _sid,_src,a,b,_bias,_profile in segs
+             if verts[a][0]==verts[b][0] or verts[a][1]==verts[b][1])
+    print(f"orthogonal_contract grid_vertices={len(verts)}/{len(verts)} axis_aligned_segments={orth}/{len(segs)} arbitrary_angles={len(segs)-orth}")
     print(f"empty_unwalkable_masks={empty} depth_layers={depth_layers} uniform_rays={UNIFORM_RAYS}")
     print("source_sids="+",".join(map(str,source_sids)))
     print("source_vertices="+",".join(map(str,source_vertices)))
