@@ -383,26 +383,18 @@ static uint8_t selector_pass(uint8_t sid, uint8_t lx, uint8_t ly)
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_LOCAL_BEARING_FIELD
 static void e1env_local_bearing_prepare(const TSPState *s)
 {
-    int16_t wx=(int16_t)(s->x_q4>>4);
-    int16_t wy=(int16_t)(s->y_q4>>4);
+    /* Called only after e1env_fetch_program_q4() returned a legal exact-Q4
+     * program. The local-bearing field is baked over the same world rectangle,
+     * so repeating the four runtime bounds tests here is dead work. */
+    uint8_t wx=(uint8_t)((s->x_q4>>4)-E1ENV_LBF_WORLD_MIN_X);
+    uint8_t wy=(uint8_t)((s->y_q4>>4)-E1ENV_LBF_WORLD_MIN_Y);
     g_e1env_lbf_lx=(uint8_t)(s->x_q4&15);
     g_e1env_lbf_ly=(uint8_t)(s->y_q4&15);
-    if(wx<E1ENV_LBF_WORLD_MIN_X || wy<E1ENV_LBF_WORLD_MIN_Y ||
-       wx>=(int16_t)(E1ENV_LBF_WORLD_MIN_X+E1ENV_LBF_WIDTH) ||
-       wy>=(int16_t)(E1ENV_LBF_WORLD_MIN_Y+E1ENV_LBF_HEIGHT))
+    if(wx!=g_e1env_lbf_cached_x || wy!=g_e1env_lbf_cached_y)
     {
-        g_e1env_lbf_cell[0]=0xffu; g_e1env_lbf_cell[1]=0xffu;
-        g_e1env_lbf_cell[2]=0xffu; g_e1env_lbf_cell[3]=0xffu;
-        g_e1env_lbf_cached_x=0xffu; g_e1env_lbf_cached_y=0xffu;
-        return;
-    }
-    wx=(int16_t)(wx-E1ENV_LBF_WORLD_MIN_X);
-    wy=(int16_t)(wy-E1ENV_LBF_WORLD_MIN_Y);
-    if((uint8_t)wx!=g_e1env_lbf_cached_x || (uint8_t)wy!=g_e1env_lbf_cached_y)
-    {
-        e1env_local_bearing_load((uint8_t)wx,(uint8_t)wy,g_e1env_lbf_cell);
-        g_e1env_lbf_cached_x=(uint8_t)wx;
-        g_e1env_lbf_cached_y=(uint8_t)wy;
+        e1env_local_bearing_load(wx,wy,g_e1env_lbf_cell);
+        g_e1env_lbf_cached_x=wx;
+        g_e1env_lbf_cached_y=wy;
     }
 }
 #endif
