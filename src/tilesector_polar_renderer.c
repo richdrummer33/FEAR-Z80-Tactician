@@ -1129,18 +1129,11 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     return 1u;
 }
 
-/* Program adjacency already proves that these runs meet at the same envelope
- * boundary. Bit7 says that boundary is also a physical endpoint shared by both
- * authored walls. Suppress one of the two black borders only when BOTH spans
- * actually own adjacent coarse columns; a sub-column neighbor must not steal
- * the sole visible corner line. */
-static void envelope_join_connected(uint8_t li,uint8_t ri)
-{
-    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
-       g_runs[li].right_real && g_runs[ri].left_real &&
-       g_runs[li].right_connected)
-        g_runs[li].right_real=0u;
-}
+/* Adjacent emitted envelope runs share the carried coarse-column boundary.
+ * Packed bit7 is baked only when the right physical endpoint is shared by the
+ * immediately following owner. If both runs survived the coarse-centre test,
+ * the old c1/c0 + endpoint rechecks are therefore tautologies. The two walk
+ * loops consume bit7 directly and clear exactly the same duplicate border. */
 #endif
 
 static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom)
@@ -1517,7 +1510,8 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(last,cur);
+                    if(last!=0xffu && g_runs[last].right_connected)
+                        g_runs[last].right_real=0u;
                     last=cur;
                 }
             }
@@ -1543,7 +1537,8 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(cur,last);
+                    if(last!=0xffu && g_runs[cur].right_connected)
+                        g_runs[cur].right_real=0u;
                     last=cur;
                 }
             }
