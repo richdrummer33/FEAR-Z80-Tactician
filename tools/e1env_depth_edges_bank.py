@@ -81,7 +81,6 @@ def main():
         raise SystemExit(f"expected <=12 normal classes, got {len(normals)}")
 
     edge_sec=[sec[abs(r)] for r in EDGES]
-    qs=[(i*i)//4 for i in range(511)]
 
     outdir=pathlib.Path(args.out_dir); outdir.mkdir(parents=True,exist_ok=True)
     hdr=[
@@ -133,19 +132,13 @@ BANKREF(e1env_depth_edges_{bank_i})
 
 {emit_u8("k_sec",edge_sec,21)}
 
-{emit_u16("k_qsquare",qs,12)}
-
 {bridge_defs}
 
-static uint16_t mul8u(uint8_t a,uint8_t b) {{
-    uint16_t s=(uint16_t)a+(uint16_t)b;
-    uint16_t d=(uint16_t)(a>b ? a-b : b-a);
-    return (uint16_t)(k_qsquare[s]-k_qsquare[d]);
-}}
+extern uint16_t e1env_mul8u(uint8_t a,uint8_t b);
 static uint8_t eval_one(uint8_t dot,uint8_t edge,uint8_t invd) {{
-    uint16_t p=mul8u(invd,dot);
+    uint16_t p=e1env_mul8u(invd,dot);
     uint16_t q=(uint16_t)((p+64u)>>7);
-    p=mul8u((uint8_t)q,k_sec[edge]);
+    p=e1env_mul8u((uint8_t)q,k_sec[edge]);
     q=(uint16_t)((p+64u)>>7);
     return (uint8_t)(q>255u ? 255u : q);
 }}
@@ -163,7 +156,7 @@ uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,uint8_t invd) B
 """
         (outdir/f"{fn}.c").write_text(src)
 
-    data_bytes=bank_count*(2*256*21 + 21 + 2*len(qs))
+    data_bytes=bank_count*(2*256*21 + 21)
     print(f"E1ENV_DEPTH_EDGES banks={bank_count} bank_range={args.bank_base}..{args.bank_base+bank_count-1} "
           f"normal_classes={len(normals)} approx_data_bytes={data_bytes}")
 
