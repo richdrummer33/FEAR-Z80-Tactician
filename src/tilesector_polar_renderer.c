@@ -1033,55 +1033,48 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
     return 0u;
 }
 
-/* Project exactly one baked envelope entry into the next run slot.
- *
- * This used to be a thin envelope_add_span() wrapper around a seven-argument
- * project_envelope_span() call.  On SDCC/Z80 that wrapper+callee boundary was
- * surprisingly expensive: both sides rebuilt large stack frames for every
- * candidate span.  The exact-envelope path has only this caller, so keep the
- * projection body here and let the compiler keep its shared state live.
- */
-static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
-                                 const TSPState *s,uint8_t *count)
+/* Convert one monotonic camera-relative envelope boundary to the coarse
+ * column-centre partition.  The outward FOV walk may carry boundaries beyond
+ * +/-512 Q12; clamp those without indexing past the fixed 1025-byte LUT. */
+static uint8_t envelope_rel_col(int16_t rel)
+{
+    if(rel<=-512) return 0u;
+    if(rel>=512) return TSP_COLS;
+    return envelope_center_col(rel);
+}
+
+/* Materialize one envelope span whose angular clipping has ALREADY been solved
+ * by the monotonic front-envelope walk.  The previous envelope_add_span()
+ * repeated yaw subtraction, signed wrapping, FOV clipping and two boundary
+ * projections for every candidate span.  Adjacent spans share a boundary, so
+ * the caller now carries its relative angle/column and this hot function runs
+ * only the remaining owner/depth/run work. */
+static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
+                                  uint8_t left_unclipped,uint8_t right_unclipped,
+                                  const TSPState *s,uint8_t *count)
 {
     uint8_t ni=(uint8_t)(i+1u<n?i+1u:0u);
     uint8_t off=(uint8_t)(1u+(uint8_t)(i<<1));
     uint8_t noff=(uint8_t)(1u+(uint8_t)(ni<<1));
     uint8_t owner=g_e1env_program[(uint8_t)(off+1u)];
     uint8_t idx=*count;
-    uint8_t sid,c0,cend,c1;
+    uint8_t sid,c1;
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
     int16_t dq4;
 #else
     uint8_t invd;
+    uint16_t yawq=(uint16_t)s->yaw<<4;
 #endif
-    uint16_t len,yawq;
-    int16_t st,en,lo,hi;
     PolarRun *r;
 
     if(idx>=TSPF_MAX_ACTIVE) return 0u;
+    /* A span can cross the FOV without owning any coarse-column centre. */
+    if(cend<=c0) return 2u;
     /* 0xff remains the unambiguous NO_WALL record; real surface IDs occupy
      * only the low five bits and high bits carry baked endpoint semantics. */
     if(owner==0xffu) return 2u;
 
     sid=(uint8_t)(owner&31u);
-    len=(uint16_t)((a1-a0)&4095u);
-    if(len==0u || len>=2048u) return 0u;
-
-    yawq=(uint16_t)s->yaw<<4;
-    st=signed_q12((uint16_t)(a0-yawq));
-    en=(int16_t)(st+(int16_t)len);
-    while(en < -512){ st=(int16_t)(st+4096); en=(int16_t)(en+4096); }
-    while(st > 512){ st=(int16_t)(st-4096); en=(int16_t)(en-4096); }
-    lo=st < -512 ? -512 : st;
-    hi=en > 512 ? 512 : en;
-    if(hi<=lo) return 0u;
-
-    c0=envelope_center_col(lo);
-    cend=envelope_center_col(hi);
-    /* An angular span may touch the FOV without owning a coarse-column centre.
-     * Keep walking in that case; only a genuine FOV miss terminates one side. */
-    if(cend==c0) return 2u;
     c1=(uint8_t)(cend-1u);
 
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
@@ -1123,8 +1116,8 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
         r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
     }
 #endif
-    r->left_real=(uint8_t)((lo==st) && (owner&0x20u));
-    r->right_real=(uint8_t)((hi==en) && (owner&0x40u));
+    r->left_real=(uint8_t)(left_unclipped && (owner&0x20u));
+    r->right_real=(uint8_t)(right_unclipped && (owner&0x40u));
     r->right_connected=(uint8_t)((owner&0x80u)!=0u);
     r->depth_plane=0u;
     r->c0=c0; r->c1=c1;
@@ -1461,25 +1454,39 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         n=e1env_fetch_program_q4(s->x_q4,s->y_q4,g_e1env_program);
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
-            uint8_t focus,step,i,q,last,focus_run;
+            uint8_t focus,step,i,q,last,focus_run,c0,cend;
 #if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
             e1env_local_bearing_prepare(s);
 #endif
-            uint16_t a0,a1,nexta;
+            uint16_t a0,a1,nexta,len,d,yawq;
+            int16_t rel0,rel1,nextrel;
 #ifdef __SDCC
             g_polar_run_owned=1u;
 #endif
-            /* Do NOT project the complete 360-degree envelope. Find the span
-             * under camera centre, then walk outward. Adjacent cyclic spans
-             * share one boundary vertex, so carry its already-solved bearing:
-             * each additional span needs only ONE bearing lookup, not two. */
+            /* Find the span under camera centre, then walk the cyclic envelope
+             * monotonically toward each FOV edge.  Once focus is known, every
+             * adjacent span shares one angular boundary with its neighbour.
+             * Carry BOTH that bearing and its camera-relative column partition:
+             * each new span solves only one new boundary and visible spans go
+             * straight to envelope_emit_span(). */
             if(!n) goto e1full_candidates_ready;
             TSPF_ENV_PHASE(2u);
             focus=envelope_focus_span(n,s);
             a0=g_e1env_focus_a0;
             a1=g_e1env_focus_a1;
+            yawq=(uint16_t)s->yaw<<4;
+            len=(uint16_t)((a1-a0)&4095u);
+            d=(uint16_t)((yawq-a0)&4095u);
+            if(!len || len>=2048u || d>=len) goto e1full_candidates_ready;
+            rel0=(int16_t)-(int16_t)d;
+            rel1=(int16_t)((int16_t)len-(int16_t)d);
+            c0=envelope_rel_col(rel0);
+            cend=envelope_rel_col(rel1);
+
             TSPF_ENV_PHASE(3u);
-            q=envelope_add_span(focus,n,a0,a1,s,&count);
+            q=envelope_emit_span(focus,n,c0,cend,
+                                 (uint8_t)(rel0>=-512),
+                                 (uint8_t)(rel1<=512),s,&count);
             if(q!=1u) goto e1full_candidates_ready;
             focus_run=(uint8_t)(count-1u);
 
@@ -1487,11 +1494,20 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 uint8_t ni;
+                if(rel1>=512) break;
                 i=(uint8_t)(i+1u<n?i+1u:0u);
                 ni=(uint8_t)(i+1u<n?i+1u:0u);
                 nexta=bearing_vertex_q12(g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))],s);
-                q=envelope_add_span(i,n,a1,nexta,s,&count);
+                len=(uint16_t)((nexta-a1)&4095u);
+                if(!len || len>=2048u) break;
+                nextrel=(int16_t)(rel1+(int16_t)len);
+                c0=envelope_rel_col(rel1);
+                cend=envelope_rel_col(nextrel);
+                q=envelope_emit_span(i,n,c0,cend,
+                                     (uint8_t)(rel1>=-512),
+                                     (uint8_t)(nextrel<=512),s,&count);
                 a1=nexta;
+                rel1=nextrel;
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
@@ -1504,10 +1520,19 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             i=focus;
             a0=g_e1env_focus_a0;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
+                if(rel0<=-512) break;
                 i=(uint8_t)(i?i-1u:n-1u);
                 nexta=bearing_vertex_q12(g_e1env_program[(uint8_t)(1u+(uint8_t)(i<<1))],s);
-                q=envelope_add_span(i,n,nexta,a0,s,&count);
+                len=(uint16_t)((a0-nexta)&4095u);
+                if(!len || len>=2048u) break;
+                nextrel=(int16_t)(rel0-(int16_t)len);
+                c0=envelope_rel_col(nextrel);
+                cend=envelope_rel_col(rel0);
+                q=envelope_emit_span(i,n,c0,cend,
+                                     (uint8_t)(nextrel>=-512),
+                                     (uint8_t)(rel0<=512),s,&count);
                 a0=nexta;
+                rel0=nextrel;
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
