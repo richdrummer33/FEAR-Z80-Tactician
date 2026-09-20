@@ -12,11 +12,11 @@ then reproduces the same two rounded products with an exact quarter-square
 uint8 multiply, so endpoint inverse depths stay bit-identical to the existing
 path while the Z80 trades arithmetic for ROM reads.
 
-One normal class now gets one 16 KiB bank. That halves the per-bank dot field
-and spends the recovered space on a 21 x 256 exact secant-result table. Runtime
-therefore keeps only the first invd*dot multiply; the second q*sec multiply is
-already baked. Twelve normal classes use twelve banks, still cheap after the
-exact-Q4 index compression reclaimed roughly a hundred banks.
+Orthogonal-only geometry has only +/-X and +/-Y normals. Because endpoint
+projection uses abs(dot), normal sign is irrelevant; and X is exactly Y with a
+quarter-turn yaw phase. Generate ONE canonical +Y depth bank and bake a per-
+surface yaw phase byte (0 for Y, 64 for X). Runtime therefore uses one bank for
+all walls while preserving bit-identical cardinal projection.
 """
 from __future__ import annotations
 import argparse
@@ -76,12 +76,18 @@ def main():
     sin=arr(text,"k_tspf_sin_q7")
     sec=arr(text,"k_tspf_sec_q7")
     invz=arr(text,"k_tspf_invz")
-    normals=[]; cls=[]
-    for p in zip(nx,ny):
-        if p not in normals: normals.append(p)
-        cls.append(normals.index(p))
-    if len(normals)>12:
-        raise SystemExit(f"expected <=12 normal classes, got {len(normals)}")
+    source_normals=[]
+    phase=[]
+    for qx,qy in zip(nx,ny):
+        p=(qx,qy)
+        if p not in source_normals: source_normals.append(p)
+        if qy==0 and (qx==32 or qx==-32):
+            phase.append(64)  # +Y canonical table at yaw+90deg == abs(cos)
+        elif qx==0 and (qy==32 or qy==-32):
+            phase.append(0)   # canonical +Y table == abs(sin)
+        else:
+            raise SystemExit(f"ORTHOGONAL_DEPTH_REQUIRED normal={p}")
+    canonical_normal=(0,32)
 
     edge_sec=[sec[abs(r)] for r in EDGES]
     # Exact replacement for round(q * sec(edge) / 128), including saturation.
@@ -120,20 +126,19 @@ def main():
         "#include <stdint.h>",
         "#include <gbdk/platform.h>",
         "#define E1ENV_DEPTH_EDGES_BANK 1u",
-        emit_u8("k_e1env_depth_class",cls,20),
+        "#define E1ENV_DEPTH_CANONICAL_CARDINAL 1u",
+        emit_u8("k_e1env_depth_phase",phase,20),
         "extern int16_t g_e1env_depth_iq;",
         "extern int16_t g_e1env_depth_step;",
     ]
 
-    bank_count=len(normals)
-    for bi in range(bank_count):
-        hdr.append(f"void e1env_depth_edges_{bi}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED;")
+    bank_count=1
+    hdr.append("void e1env_depth_edges_0(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED;")
     hdr += ["#endif",""]
     (outdir/"e1env_depth_edges_bank.h").write_text("\n".join(hdr))
 
     for bank_i in range(bank_count):
-        ci=bank_i
-        cx,cy=normals[ci]
+        cx,cy=canonical_normal
         dots=[]
         for yaw in range(256):
             for rel in EDGES:
@@ -190,7 +195,7 @@ void {fn}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED {{
 
     data_bytes=bank_count*(256*21 + len(sec_eval) + len(invd_q4) + len(col_recip))
     print(f"E1ENV_DEPTH_EDGES banks={bank_count} bank_range={args.bank_base}..{args.bank_base+bank_count-1} "
-          f"normal_classes={len(normals)} approx_data_bytes={data_bytes}")
+          f"source_normal_classes={len(source_normals)} canonical_classes=1 approx_data_bytes={data_bytes}")
 
 if __name__=="__main__":
     main()
