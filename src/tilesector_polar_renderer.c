@@ -32,6 +32,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_SCREEN_DEPTH_PLANE
 #define TSPF_SCREEN_DEPTH_PLANE 0
 #endif
+#ifndef TSPF_E1M1_DEPTH_EDGE_LUT
+#define TSPF_E1M1_DEPTH_EDGE_LUT 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -40,6 +43,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #endif
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_BEARING_LUT
 #include "e1env_bearing_lut.h"
+#endif
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+#include "e1env_depth_edges_bank.h"
 #endif
 
 #if defined(TSPF_E1M1_FULL_ONLY)
@@ -702,6 +708,7 @@ static int16_t wall_d_q4(uint8_t sid, uint8_t anchor_vid, const TSPState *s)
         return (int16_t)(shr_signed(whole, 1) - shr_signed(frac, 5));
     }
 }
+#if !defined(__SDCC) || !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) || !TSPF_E1M1_DEPTH_EDGE_LUT
 static uint8_t inv_at_invd(uint8_t sid, uint8_t invd, uint16_t world_bearing, int16_t rel)
 {
     uint8_t bi = (uint8_t)(world_bearing >> 4);
@@ -725,6 +732,7 @@ static uint8_t inv_at_invd(uint8_t sid, uint8_t invd, uint16_t world_bearing, in
     q = (q * sec + 64u) >> 7;
     return (uint8_t)(q > 255u ? 255u : q);
 }
+#endif
 static uint8_t shade_for(uint8_t inv, int8_t bias)
 {
     int8_t s;
@@ -904,7 +912,9 @@ static uint8_t project_envelope_span(uint8_t owner, uint8_t bv0, uint8_t bv1,
     uint16_t len=(uint16_t)((a1-a0)&4095u), yawq=(uint16_t)s->yaw<<4;
     int16_t st,en,lo,hi;
     uint8_t c0,cend,c1,invd;
+#if !defined(__SDCC) || !TSPF_E1M1_DEPTH_EDGE_LUT
     int16_t rel0,rel1;
+#endif
 
     if(len==0u || len>=2048u) return 0u;
     st=signed_q12((uint16_t)(a0-yawq));
@@ -925,13 +935,6 @@ static uint8_t project_envelope_span(uint8_t owner, uint8_t bv0, uint8_t bv1,
     if(cend==c0) return 2u;
     c1=(uint8_t)(cend-1u);
 
-    /* Evaluate depth at the owned coarse-column edges. Do not clamp these
-     * samples to the first-hit angular interval: an envelope boundary can be
-     * an occlusion transition inside a physically longer wall. Treating that
-     * transition as a geometric endpoint badly distorts perspective for the
-     * whole owned coarse run (the near-corner stress frame made this obvious). */
-    rel0=k_e1env_col_edge_q12[c0];
-    rel1=k_e1env_col_edge_q12[(uint8_t)(c1+1u)];
     invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
 
     r->sid=sid;
@@ -941,9 +944,31 @@ static uint8_t project_envelope_span(uint8_t owner, uint8_t bv0, uint8_t bv1,
     r->v0=bv0; r->v1=bv1;
     r->x0=(uint8_t)(c0<<3);
     r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
-    r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+rel0)&4095u,rel0);
-    r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+rel1)&4095u,rel1);
-    r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
+#if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
+    {
+        uint8_t cls=k_e1env_depth_class[sid];
+        switch(cls>>1)
+        {
+        case 0u: (void)e1env_depth_edges_0((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 1u: (void)e1env_depth_edges_1((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 2u: (void)e1env_depth_edges_2((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 3u: (void)e1env_depth_edges_3((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 4u: (void)e1env_depth_edges_4((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        default: (void)e1env_depth_edges_5((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        }
+        r->inv0=g_e1env_depth_inv0;
+        r->inv1=g_e1env_depth_inv1;
+        r->inv_mid=g_e1env_depth_mid;
+    }
+#else
+    {
+        int16_t rel0=k_e1env_col_edge_q12[c0];
+        int16_t rel1=k_e1env_col_edge_q12[(uint8_t)(c1+1u)];
+        r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+rel0)&4095u,rel0);
+        r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+rel1)&4095u,rel1);
+        r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
+    }
+#endif
     r->left_real=(uint8_t)((lo==st) && (owner&0x20u));
     r->right_real=(uint8_t)((hi==en) && (owner&0x40u));
     r->right_connected=(uint8_t)((owner&0x80u)!=0u);
