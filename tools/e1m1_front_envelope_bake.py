@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Bake/census exact first-hit visibility envelopes for flattened E1M1.
+"""Bake/census exact first-hit visibility envelopes for the orthogonal E1M1 benchmark.
+
+This optimization course has a hard geometry contract: every wall endpoint is
+integer-grid aligned and every wall span is X- or Y-aligned. Angled geometry is
+rejected before any ROM is emitted.
 
 This is deliberately ROM-heavy and runtime-light.  For each fine spatial cell
 we solve the complete 360-degree first-visible wall topology offline.  A stable
