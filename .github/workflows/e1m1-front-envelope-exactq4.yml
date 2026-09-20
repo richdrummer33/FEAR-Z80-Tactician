@@ -6,13 +6,13 @@ on:
     branches:
       - experiment/e1m1-front-envelope-rom
     paths:
+      # Rebake only when topology/floor source changes. Runtime renderer and
+      # profiler optimization commits deliberately do NOT burn six minutes
+      # recomputing the exact-Q4 oracle.
       - tools/e1m1_latest_full_bake.py
       - tools/e1m1_front_envelope_bake.py
-      - src/tilesector_polar_motion.c
-      - src/tilesector_polar_renderer.c
-      - src/tilesector_polar_materialize_gg.s
-      - src/e1env_center_col_gg.s
-      - .github/workflows/e1m1-front-envelope-exactq4.yml
+      - src/generated/e1m1_room1_exact_geometry.h
+      - src/generated/e1m1_room1_exact_floor.h
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
