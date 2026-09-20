@@ -211,13 +211,31 @@ jobs:
           def rd(buf,fi,ci):
               o=fi*frame_bytes+ci*2
               return buf[o] | (buf[o+1]<<8)
+          EDGE_BASE=FULL_END
+          EDGE_END=EDGE_BASE+3*16*8
+          STATIC_END=3
           def border_only(wa,wb):
               ta,tb=wa&TILE_MASK,wb&TILE_MASK
               if not (FULL_BASE<=ta<FULL_END and FULL_BASE<=tb<FULL_END): return False
               if (wa&~TILE_MASK)!=(wb&~TILE_MASK): return False
               return ((ta-FULL_BASE)//4)==((tb-FULL_BASE)//4)
+          def tile_family(w):
+              t=w&TILE_MASK
+              if t<STATIC_END: return ("static",t)
+              if FULL_BASE<=t<FULL_END:
+                  q=t-FULL_BASE
+                  return ("full",(q//12,(q//4)%3,q%4))
+              if EDGE_BASE<=t<EDGE_END:
+                  q=t-EDGE_BASE
+                  return ("edge",(q//128,(q//8)%16,q%8))
+              return ("other",t)
           heat=[0]*(cols*rows)
+          nonborder_heat=[0]*(cols*rows)
           pairs=Counter()
+          family_pairs=Counter()
+          semantic_pairs=Counter()
+          attr_pairs=Counter()
+          nonborder_by_frame=Counter()
           total_diff=total_border=0
           detail=[]
           for fi in bad:
@@ -226,7 +244,16 @@ jobs:
                   wa,wb=rd(pa,fi,ci),rd(pb,fi,ci)
                   if wa==wb: continue
                   ds.append(ci); heat[ci]+=1; pairs[(wa,wb)]+=1
-                  if border_only(wa,wb): bo+=1
+                  if border_only(wa,wb):
+                      bo+=1
+                  else:
+                      nonborder_heat[ci]+=1
+                      nonborder_by_frame[fi]+=1
+                      fa,sa=tile_family(wa); fb,sb=tile_family(wb)
+                      family_pairs[(fa,fb)]+=1
+                      semantic_pairs[(fa,sa,fb,sb)]+=1
+                      aa=wa&~TILE_MASK; ab=wb&~TILE_MASK
+                      if aa!=ab: attr_pairs[(aa,ab)]+=1
               total_diff+=len(ds); total_border+=bo
               if ds:
                   rs=[ci//cols for ci in ds]; cs=[ci%cols for ci in ds]
@@ -238,10 +265,22 @@ jobs:
                     f"bbox=col{c0}..{c1},row{r0}..{r1}")
           topheat=sorted(((v,i) for i,v in enumerate(heat) if v),reverse=True)[:20]
           print("mismatch_hot_cells="+",".join(f"r{i//cols}c{i%cols}:{v}" for v,i in topheat))
+          top_nonborder=sorted(((v,i) for i,v in enumerate(nonborder_heat) if v),reverse=True)[:20]
+          print("nonborder_hot_cells="+",".join(f"r{i//cols}c{i%cols}:{v}" for v,i in top_nonborder))
           print("top_word_pairs="+",".join(
               f"{a:04x}->{b:04x}:{cnt}" for (a,b),cnt in pairs.most_common(20)))
+          print("nonborder_family_pairs="+",".join(
+              f"{a}->{b}:{cnt}" for (a,b),cnt in family_pairs.most_common()))
+          print("nonborder_top_semantics="+",".join(
+              f"{fa}:{sa}->{fb}:{sb}:{cnt}" for (fa,sa,fb,sb),cnt in semantic_pairs.most_common(30)))
+          print("nonborder_attr_pairs="+(",".join(
+              f"{a:04x}->{b:04x}:{cnt}" for (a,b),cnt in attr_pairs.most_common(12)) or "none"))
+          print("nonborder_heavy_updates="+",".join(
+              f"{fi}:{cnt}" for fi,cnt in nonborder_by_frame.most_common(20)))
           print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
           print(f"FOCUS total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
+          p95b=pct(bt,.95); worstb=max(bt); budget10=clock/10.0
+          print(f"FOCUS_10FPS_MARGIN p95={budget10-p95b:+.0f}T worst={budget10-worstb:+.0f}T budget={budget10:.0f}T")
           print(f"delta total={mean(bt)-mean(at):+.0f} ({100*(mean(bt)/mean(at)-1):+.1f}%)")
           print(f"PVS render mean={mean(ar):.0f} p95={pct(ar,.95)}")
           print(f"FOCUS render mean={mean(br):.0f} p95={pct(br,.95)}")
