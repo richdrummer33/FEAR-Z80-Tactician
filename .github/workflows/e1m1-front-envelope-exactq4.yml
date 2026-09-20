@@ -41,6 +41,7 @@ jobs:
             --floor src/generated/e1m1_room1_exact_floor.h \
             --out "$GEN/optimized_renderer_map_data.inc" \
             | tee "$ROOT/full-bake.txt"
+          grep -q 'orthogonal_contract .*arbitrary_angles=0' "$ROOT/full-bake.txt"
           python3 tools/e1m1_front_envelope_bake.py \
             --cell 0.0625 \
             --emit-banked-dir "$GEN" \
@@ -48,6 +49,7 @@ jobs:
             --rows-per-bank 8 \
             | tee "$ROOT/envelope-bake.txt"
           grep -q 'stability_proof=one_baked_record_per_exact_Q4_player_position' "$ROOT/envelope-bake.txt"
+          grep -q 'orthogonal_segments=.*arbitrary_angles=0' "$ROOT/envelope-bake.txt"
           grep -q 'unstable=0' "$ROOT/envelope-bake.txt"
           cat "$GEN/manifest.txt" | tee "$ROOT/envelope-manifest.txt"
 
