@@ -165,6 +165,12 @@ static uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
  * can change every Q4 step, but this vertex usually survives into the next
  * cyclic envelope, giving the FOV walker a near-zero-cost starting point. */
 static uint8_t g_e1env_focus_bv=0xffu;
+/* Bearings of the focus span found by envelope_focus_span(). Reuse them as
+ * the first projected pair, then carry one shared boundary bearing while
+ * walking right/left. Adjacent envelope spans share a boundary vertex, so
+ * recomputing both endpoint bearings per span was pure wrapper/cache overhead. */
+static uint16_t g_e1env_focus_a0;
+static uint16_t g_e1env_focus_a1;
 /* Q12 camera-relative angles whose projection lands nearest each coarse
  * 8-pixel column centre / boundary. The envelope assigns ownership by centre
  * ray, then evaluates wall depth at the snapped column edges. */
@@ -905,10 +911,10 @@ static uint8_t envelope_center_col(int16_t rel)
  * depth sort / ownership arbitration is required.
  */
 static uint8_t project_envelope_span(uint8_t owner, uint8_t bv0, uint8_t bv1,
+                                     uint16_t a0, uint16_t a1,
                                      const TSPState *s, PolarRun *r)
 {
     uint8_t sid=(uint8_t)(owner&31u);
-    uint16_t a0=bearing_vertex_q12(bv0,s), a1=bearing_vertex_q12(bv1,s);
     uint16_t len=(uint16_t)((a1-a0)&4095u), yawq=(uint16_t)s->yaw<<4;
     int16_t st,en,lo,hi;
     uint8_t c0,cend,c1,invd;
@@ -1005,6 +1011,8 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
         uint16_t d=(uint16_t)((yawq-a0)&4095u);
         if(len && len<2048u && d<len){
             g_e1env_focus_bv=v0;
+            g_e1env_focus_a0=a0;
+            g_e1env_focus_a1=a1;
             return i;
         }
         /* d<pi means yaw lies forward of this directed interval; otherwise
@@ -1015,11 +1023,14 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
     }
 
     g_e1env_focus_bv=g_e1env_program[1u];
+    g_e1env_focus_a0=bearing_vertex_q12(g_e1env_program[1u],s);
+    g_e1env_focus_a1=bearing_vertex_q12(g_e1env_program[3u],s);
     return 0u;
 }
 
 /* Project exactly one baked envelope entry into the next run slot. */
-static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *count)
+static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
+                                 const TSPState *s,uint8_t *count)
 {
     uint8_t ni=(uint8_t)(i+1u<n?i+1u:0u);
     uint8_t off=(uint8_t)(1u+(uint8_t)(i<<1));
@@ -1031,7 +1042,7 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,const TSPState *s,uint8_t *
     /* 0xff remains the unambiguous NO_WALL record; real surface IDs occupy
      * only the low five bits and high bits carry baked endpoint semantics. */
     if(owner==0xffu) return 2u;
-    q=project_envelope_span(owner,g_e1env_program[off],g_e1env_program[noff],s,&g_runs[idx]);
+    q=project_envelope_span(owner,g_e1env_program[off],g_e1env_program[noff],a0,a1,s,&g_runs[idx]);
     if(q!=1u) return q;
     g_run_order[idx]=idx;
     *count=(uint8_t)(idx+1u);
@@ -1343,27 +1354,33 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
             uint8_t focus,step,i,q,last,focus_run;
+            uint16_t a0,a1,nexta;
 #ifdef __SDCC
             g_polar_run_owned=1u;
 #endif
             /* Do NOT project the complete 360-degree envelope. Find the span
-             * under the camera centre ray, then walk outward only while spans
-             * intersect the 90-degree FOV. Endpoint/connected facts are baked;
-             * runtime only checks whether both connected spans actually landed
-             * on adjacent coarse columns before collapsing their double line. */
+             * under camera centre, then walk outward. Adjacent cyclic spans
+             * share one boundary vertex, so carry its already-solved bearing:
+             * each additional span needs only ONE bearing lookup, not two. */
             if(!n) goto e1full_candidates_ready;
             TSPF_ENV_PHASE(2u);
             focus=envelope_focus_span(n,s);
+            a0=g_e1env_focus_a0;
+            a1=g_e1env_focus_a1;
             TSPF_ENV_PHASE(3u);
-            q=envelope_add_span(focus,n,s,&count);
+            q=envelope_add_span(focus,n,a0,a1,s,&count);
             if(q!=1u) goto e1full_candidates_ready;
             focus_run=(uint8_t)(count-1u);
 
             last=focus_run;
             i=focus;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
+                uint8_t ni;
                 i=(uint8_t)(i+1u<n?i+1u:0u);
-                q=envelope_add_span(i,n,s,&count);
+                ni=(uint8_t)(i+1u<n?i+1u:0u);
+                nexta=bearing_vertex_q12(g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))],s);
+                q=envelope_add_span(i,n,a1,nexta,s,&count);
+                a1=nexta;
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
@@ -1374,9 +1391,12 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 
             last=focus_run;
             i=focus;
+            a0=g_e1env_focus_a0;
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 i=(uint8_t)(i?i-1u:n-1u);
-                q=envelope_add_span(i,n,s,&count);
+                nexta=bearing_vertex_q12(g_e1env_program[(uint8_t)(1u+(uint8_t)(i<<1))],s);
+                q=envelope_add_span(i,n,nexta,a0,s,&count);
+                a0=nexta;
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
