@@ -208,20 +208,49 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
 
     idx_banks=[]
     bank=bank_base
+    compact_index=(int(round(result["cell"]*16))==1)
     for row0 in range(0,rows,rows_per_bank):
         row1=min(rows,row0+rows_per_bank)
         vals=grid[row0*cols:row1*cols]
         fn=f"e1env_idx_{len(idx_banks):02d}"
-        src=[
-            f"#pragma bank {bank}",
-            "#include <stdint.h>",
-            "#include <gbdk/platform.h>",
-            emit_arr("uint16_t","k_idx",vals,12),
-            f"uint16_t {fn}(uint16_t i) BANKED {{ return k_idx[i]; }}",
-            "",
-        ]
+        if compact_index:
+            # Exact-Q4 spatial coherence is enormous: an 8-row band sees only
+            # a few dozen of the global ~700 programs. Encode every cell as a
+            # local uint8 dictionary ID, then translate to the global PID in
+            # the same bank. This keeps O(1) lookup while halving index bytes.
+            dictionary=[]
+            local={}
+            codes=[]
+            for pid in vals:
+                if pid not in local:
+                    if len(dictionary)>=256:
+                        raise SystemExit(
+                            f"index band rows {row0}..{row1-1} exceeds uint8 dictionary")
+                    local[pid]=len(dictionary)
+                    dictionary.append(pid)
+                codes.append(local[pid])
+            src=[
+                f"#pragma bank {bank}",
+                "#include <stdint.h>",
+                "#include <gbdk/platform.h>",
+                emit_arr("uint8_t","k_idx",codes,20),
+                emit_arr("uint16_t","k_dict",dictionary,12),
+                f"uint16_t {fn}(uint16_t i) BANKED {{ return k_dict[k_idx[i]]; }}",
+                "",
+            ]
+            dict_count=len(dictionary)
+        else:
+            src=[
+                f"#pragma bank {bank}",
+                "#include <stdint.h>",
+                "#include <gbdk/platform.h>",
+                emit_arr("uint16_t","k_idx",vals,12),
+                f"uint16_t {fn}(uint16_t i) BANKED {{ return k_idx[i]; }}",
+                "",
+            ]
+            dict_count=0
         (outdir/f"e1env_idx_{len(idx_banks):02d}.c").write_text("\n\n".join(src))
-        idx_banks.append((row0,row1,bank,fn,len(vals)))
+        idx_banks.append((row0,row1,bank,fn,len(vals),dict_count))
         bank += 1
 
     # Encode each program as count,(boundary_vertex,packed_owner)*.
@@ -304,7 +333,7 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         "#define E1ENV_MAX_PROGRAM_BYTES 64u",
         "#define E1ENV_PACKED_OWNER_FLAGS 1u",
     ]
-    for _r0,_r1,_bank,fn,_n in idx_banks:
+    for _r0,_r1,_bank,fn,_n,_dict_n in idx_banks:
         hdr.append(f"uint16_t {fn}(uint16_t i) BANKED;")
     for _base,_count,_bank,fn in prog_meta:
         hdr.append(f"uint8_t {fn}(uint16_t local, uint8_t *dst) BANKED;")
@@ -331,6 +360,10 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         # 1536 = 1024+512. Local stays below 6144.
         local_expr="(uint16_t)((((gy & 3u)<<10)+((gy & 3u)<<9))+gx)"
         band_expr="(uint8_t)(gy >> 2)"
+    elif rows_per_bank==8 and cols==1536:
+        # Compact exact-Q4 format: 8 rows * 1536 byte IDs = 12288 bytes.
+        local_expr="(uint16_t)((((gy & 7u)<<10)+((gy & 7u)<<9))+gx)"
+        band_expr="(uint8_t)(gy >> 3)"
     elif rows_per_bank==16:
         local_expr="(uint16_t)(((gy & 15u) * E1ENV_COLS) + gx)"
         band_expr="(uint8_t)(gy >> 4)"
@@ -382,6 +415,9 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         f"dispatch_bank={dispatch_bank}",
         f"generated_c_files={1+len(idx_banks)+len(prog_meta)}",
         f"rows_per_index_bank={rows_per_bank}",
+        f"index_format={'u8-local-dictionary' if compact_index else 'u16-global'}",
+        f"index_dictionary_max={max((q[5] for q in idx_banks),default=0)}",
+        f"index_payload_bytes={sum((q[4] if compact_index else q[4]*2) + q[5]*2 for q in idx_banks)}",
     ]
     (outdir/"manifest.txt").write_text("\n".join(manifest)+"\n")
     return idx_banks,prog_meta
