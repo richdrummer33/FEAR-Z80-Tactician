@@ -46,7 +46,9 @@ jobs:
           PRE="$ROOT/prebake"
           GEN="$ROOT/generated"
           mkdir -p "$PRE" "$GEN"
-          gh run download 35479470462 \
+          # Orthogonal-only benchmark oracle (30/30 axis-aligned walls,
+          # exact-Q4 stable at every legal player position).
+          gh run download 35501744023 \
             -n GG-E1M1-Exact-Q4-FrontEnvelope \
             -D "$PRE"
           cp "$PRE/generated/optimized_renderer_map_data.inc" "$GEN/"
