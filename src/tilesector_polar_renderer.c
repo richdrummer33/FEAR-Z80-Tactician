@@ -144,8 +144,10 @@ static const uint16_t k_row_base[TSP_ROWS] = {
 #ifdef __SDCC
 static const uint8_t k_nt_mask8[8] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u};
 #endif
+#if !defined(__SDCC) || !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) || !TSPF_E1M1_DEPTH_EDGE_LUT
 static const uint8_t k_col_recip_q8[21] = {
     0, 255, 128, 85, 64, 51, 43, 36, 32, 28, 26, 23, 21, 20, 18, 17, 16, 15, 14, 13, 13};
+#endif
 
 typedef struct PolarRun
 {
@@ -197,14 +199,18 @@ void e1env_local_bearing_eval(void);
 /* Q12 camera-relative angles whose projection lands nearest each coarse
  * 8-pixel column centre / boundary. The envelope assigns ownership by centre
  * ray, then evaluates wall depth at the snapped column edges. */
+#ifndef __SDCC
 static const int16_t k_e1env_col_center_q12[20] = {
     -497,-461,-422,-378,-330,-279,-223,-163,-101,-36,
       29,  94, 156, 216, 273, 325, 373, 417, 457,494
 };
+#endif
+#if !defined(__SDCC) || !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) || !TSPF_E1M1_DEPTH_EDGE_LUT
 static const int16_t k_e1env_col_edge_q12[21] = {
     -512,-479,-442,-400,-355,-305,-251,-193,-132,-69,-4,
       61, 125, 187, 245, 299, 350, 396, 438, 476,506
 };
+#endif
 #endif
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
 static int8_t g_depth_nf_q7[TSPF_DEPTH_NORMAL_CLASS_COUNT];
