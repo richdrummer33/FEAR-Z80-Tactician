@@ -262,7 +262,13 @@ nte_col_loop$:
         ld      (#nte_group$), a
 
 nte_group_loop$:
+        ; Most smooth-motion coverage bytes are identical to last frame.  If
+        ; so there can be no stale cells and prev already contains the correct
+        ; next-frame value: skip the write, complement/AND and stale scratch.
         ld      a, 0 (iy)
+        cp      0 (ix)
+        jr      z, nte_group_done$
+
         ld      c, a                    ; C=current coverage byte
         ld      a, 0 (ix)
         ld      b, a                    ; B=previous coverage byte
@@ -270,10 +276,8 @@ nte_group_loop$:
         ld      0 (ix), a               ; previous <- current for next frame
         cpl
         and     b                       ; A = stale bits
-        ld      (#nte_stale$), a
-
-        or      a
         jr      z, nte_group_done$
+        ld      c, a                    ; C=stale mask, keep it live
 
         ; Row base is group*8: 0,8,16.
         ld      a, (#nte_group$)
@@ -287,8 +291,6 @@ nte_group_loop$:
         jr      nz, nte_bits_ready$
         ld      b, #2
 nte_bits_ready$:
-        ld      a, (#nte_stale$)
-        ld      c, a
 
 nte_bit_loop$:
         srl     c
