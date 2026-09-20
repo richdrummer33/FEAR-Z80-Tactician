@@ -1217,7 +1217,15 @@ static int16_t opt_camera_z_shift(uint8_t inv,const TSPState *s)
 #endif
 static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TSPState *s)
 {
+#if defined(TSPF_E1M1_FULL_ONLY)
+    /* This baked course contains FULL walls only (the generated profile table
+     * is identically zero). Make that compile-time knowledge explicit so SDCC
+     * can erase lintel/raised/riser branches instead of reloading profile ROM
+     * and rediscovering the same fact for every visible run/column. */
+    uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c, profile = TSP_PROFILE_FULL;
+#else
     uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c, profile = k_tspf_profile[r->sid];
+#endif
     int16_t iq, step;
     if (c0 >= TSP_COLS)
         c0 = TSP_COLS - 1;
