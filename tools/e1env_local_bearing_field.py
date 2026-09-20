@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Generate a 1-world-cell affine bearing field for exact E1M1 vertices.
+
+This is a performance ROM, not topology. The exact-Q4 visibility envelope still
+chooses which boundary vertices matter. For each 1x1 world cell and each map
+vertex, bake:
+
+    bearing(local_x,local_y) ~= base + sx*local_x/16 + sy*local_y/16
+
+where local_x/local_y are the player's Q4 fractional coordinates 0..15.
+Every representable Q4 point is exhaustively checked against atan2. If worst
+wrapped error exceeds --threshold Q12 units, that vertex/cell sets a fallback
+bit and the runtime uses the existing exact bearing LUT.
+
+At threshold 2 Q12, worst accepted angular error is about half a screen pixel
+at the +/-45-degree FOV edge. The record is intentionally fixed-size:
+4 fallback bytes + 30 * 4-byte descriptors = 124 bytes/cell. One world row
+(96 cells) is 11,904 bytes and therefore fits comfortably in one 16 KiB ROM
+bank. Cell loads happen only when the integer player cell changes; per-frame
+visible vertex evaluation then runs entirely from WRAM plus a fixed correction
+LUT.
+
+A 4,080-byte fixed-ROM table maps signed slope (-127..127) and local nibble
+(0..15) to trunc_toward_zero(slope*local/16), removing runtime multiplies.
+"""
+from __future__ import annotations
+import argparse, math, pathlib, re
+
+TAU=math.tau
+QTURN=4096.0
+
+def arr(text,name):
+    m=re.search(r"static\s+const\s+[^;=]+?\b"+re.escape(name)+r"\s*\[[^\]]+\]\s*=\s*\{(.*?)\};",text,re.S)
+    if not m: raise SystemExit("missing generated array "+name)
+    return [int(x,0) for x in re.findall(r"-?0x[0-9A-Fa-f]+|-?\d+",m.group(1))]
+
+def wrap(v):
+    return ((v+2048.0)%4096.0)-2048.0
+
+def bearing(vx,vy,xq,yq):
+    dx=vx*16.0-xq; dy=vy*16.0-yq
+    if dx*dx+dy*dy < 1e-12: return None
+    return (math.atan2(dy,dx)*QTURN/TAU)%QTURN
+
+def shr0(v,n=4):
+    return v>>n if v>=0 else -((-v)>>n)
+
+def record(vx,vy,wx,wy,threshold):
+    x0=wx*16; y0=wy*16
+    cx=x0+7.5; cy=y0+7.5
+    X=vx*16.0-cx; Y=vy*16.0-cy
+    r2=X*X+Y*Y
+    if r2<0.25: return None,float("inf")
+    center=bearing(vx,vy,cx,cy)
+    scale=QTURN/TAU
+    dx=(Y/r2)*scale
+    dy=(-X/r2)*scale
+    # Intercept of the center-tangent plane at local (0,0).
+    base=(center-dx*7.5-dy*7.5)%QTURN
+    sx=round(dx*16.0); sy=round(dy*16.0)
+    if not(-127<=sx<=127 and -127<=sy<=127):
+        return None,float("inf")
+    b=int(round(base))&4095
+    worst=0.0
+    for ly in range(16):
+      for lx in range(16):
+        e=bearing(vx,vy,x0+lx,y0+ly)
+        if e is None: return None,float("inf")
+        p=b+shr0(sx*lx)+shr0(sy*ly)
+        worst=max(worst,abs(wrap(e-p)))
+    if worst>threshold:
+        return None,worst
+    return (b,sx,sy),worst
+
+def emit_u8(name,data,per=24):
+    out=[f"static const uint8_t {name}[{len(data)}] = {{"]
+    for i in range(0,len(data),per):
+        out.append("    "+", ".join(str(v) for v in data[i:i+per])+",")
+    out.append("};")
+    return "\n".join(out)
+
+def main():
+    ap=argparse.ArgumentParser()
+    ap.add_argument("--map-inc",required=True)
+    ap.add_argument("--out-dir",required=True)
+    ap.add_argument("--bank-base",type=int,default=144)
+    ap.add_argument("--dispatch-bank",type=int,default=200)
+    ap.add_argument("--threshold",type=float,default=2.0)
+    ap.add_argument("--world-min-x",type=int,default=16)
+    ap.add_argument("--world-min-y",type=int,default=24)
+    ap.add_argument("--world-max-x",type=int,default=112)
+    ap.add_argument("--world-max-y",type=int,default=80)
+    a=ap.parse_args()
+
+    text=pathlib.Path(a.map_inc).read_text()
+    vx=arr(text,"k_tspf_vx"); vy=arr(text,"k_tspf_vy")
+    if len(vx)!=len(vy) or len(vx)>32:
+        raise SystemExit(f"unsupported vertex count {len(vx)}/{len(vy)}")
+    nv=len(vx)
+    width=a.world_max_x-a.world_min_x
+    height=a.world_max_y-a.world_min_y
+    if a.bank_base+height>a.dispatch_bank:
+        raise SystemExit("row banks collide with dispatch bank")
+
+    outdir=pathlib.Path(a.out_dir); outdir.mkdir(parents=True,exist_ok=True)
+    cell_bytes=4+nv*4
+    fallback=accepted=0; worst_accepted=0.0; worst_all=0.0
+
+    for ry in range(height):
+        wy=a.world_min_y+ry
+        cells=bytearray()
+        for rx in range(width):
+            wx=a.world_min_x+rx
+            mask=0
+            desc=[]
+            for vid,(x,y) in enumerate(zip(vx,vy)):
+                rec,err=record(x,y,wx,wy,a.threshold)
+                if math.isfinite(err): worst_all=max(worst_all,err)
+                if rec is None:
+                    mask|=1<<vid; fallback+=1
+                    desc.extend((0,0,0,0))
+                else:
+                    b,sx,sy=rec; accepted+=1;worst_accepted=max(worst_accepted,err)
+                    desc.extend((b&255,(b>>8)&15,sx&255,sy&255))
+            cells.extend((mask&255,(mask>>8)&255,(mask>>16)&255,(mask>>24)&255))
+            cells.extend(desc)
+        fn=f"e1env_bearing_row_{ry}"
+        src=f"""/* GENERATED by tools/e1env_local_bearing_field.py. */
+#include <stdint.h>
+#include <string.h>
+#include <gbdk/platform.h>
+#pragma bank {a.bank_base+ry}
+BANKREF(e1env_bearing_row_{ry})
+#define CELL_BYTES {cell_bytes}u
+{emit_u8("k_cells",cells)}
+void {fn}(uint8_t x,uint8_t *dst) BANKED {{
+    uint16_t off=(uint16_t)x*(uint16_t)CELL_BYTES;
+    memcpy(dst,&k_cells[off],CELL_BYTES);
+}}
+"""
+        (outdir/f"{fn}.c").write_text(src)
+
+    hdr=[
+      "/* GENERATED exact-envelope local bearing field. */",
+      "#ifndef E1ENV_LOCAL_BEARING_FIELD_H",
+      "#define E1ENV_LOCAL_BEARING_FIELD_H",
+      "#include <stdint.h>",
+      "#include <gbdk/platform.h>",
+      f"#define E1ENV_LOCAL_BEARING_FIELD 1u",
+      f"#define E1ENV_LBF_WORLD_MIN_X {a.world_min_x}",
+      f"#define E1ENV_LBF_WORLD_MIN_Y {a.world_min_y}",
+      f"#define E1ENV_LBF_WIDTH {width}u",
+      f"#define E1ENV_LBF_HEIGHT {height}u",
+      f"#define E1ENV_LBF_VERTEX_COUNT {nv}u",
+      f"#define E1ENV_LBF_CELL_BYTES {cell_bytes}u",
+      "void e1env_local_bearing_load(uint8_t wx,uint8_t wy,uint8_t *dst) BANKED;",
+      "#endif",""
+    ]
+    (outdir/"e1env_local_bearing_field.h").write_text("\n".join(hdr))
+
+    dispatch=[
+      f"#pragma bank {a.dispatch_bank}",
+      "#include <stdint.h>",
+      "#include <gbdk/platform.h>",
+    ]
+    for ry in range(height):
+        dispatch.append(f"void e1env_bearing_row_{ry}(uint8_t x,uint8_t *dst) BANKED;")
+    dispatch += [
+      "void e1env_local_bearing_load(uint8_t wx,uint8_t wy,uint8_t *dst) BANKED {",
+      f"    if(wx>={width}u || wy>={height}u) return;",
+      "    switch(wy) {",
+    ]
+    for ry in range(height):
+        dispatch.append(f"    case {ry}u: e1env_bearing_row_{ry}(wx,dst); break;")
+    dispatch += ["    default: break;","    }","}",""]
+    (outdir/"e1env_local_bearing_dispatch.c").write_text("\n".join(dispatch))
+
+    # Fixed-ROM correction table used by runtime: slope index = signed+127.
+    corr=[]
+    for slope in range(-127,128):
+      for local in range(16):
+        corr.append(shr0(slope*local)&255)
+    fixed=[
+      '        .title  "Exact envelope local-bearing correction LUT"',
+      '        .module e1env_local_bearing_corr_gg',
+      '',
+      '        .area   _HOME',
+      '        .globl  _g_e1env_lbf_corr',
+      '_g_e1env_lbf_corr::'
+    ]
+    for i in range(0,len(corr),32):
+        fixed.append("        .db     "+",".join(str(v) for v in corr[i:i+32]))
+    (outdir/"e1env_local_bearing_corr_gg.s").write_text("\n".join(fixed)+"\n")
+
+    total=accepted+fallback
+    print(f"E1ENV_LOCAL_BEARING_FIELD cells={width*height} vertices={nv} cell_bytes={cell_bytes} "
+          f"row_banks={height} bank_range={a.bank_base}..{a.bank_base+height-1} dispatch_bank={a.dispatch_bank}")
+    print(f"threshold_q12={a.threshold:g} accepted={accepted}/{total} fallback={fallback} "
+          f"fallback_pct={100.0*fallback/total:.2f} worst_accepted_q12={worst_accepted:.3f} "
+          f"raw_data_bytes={width*height*cell_bytes}")
+
+if __name__=="__main__":
+    main()
