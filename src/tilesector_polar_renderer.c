@@ -1043,16 +1043,6 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
     return 0u;
 }
 
-/* Convert one monotonic camera-relative envelope boundary to the coarse
- * column-centre partition.  The outward FOV walk may carry boundaries beyond
- * +/-512 Q12; clamp those without indexing past the fixed 1025-byte LUT. */
-static uint8_t envelope_rel_col(int16_t rel)
-{
-    if(rel<=-512) return 0u;
-    if(rel>=512) return TSP_COLS;
-    return envelope_center_col(rel);
-}
-
 /* Materialize one envelope span whose angular clipping has ALREADY been solved
  * by the monotonic front-envelope walk.  The previous envelope_add_span()
  * repeated yaw subtraction, signed wrapping, FOV clipping and two boundary
@@ -1490,8 +1480,8 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             if(!len || len>=2048u || d>=len) goto e1full_candidates_ready;
             rel0=(int16_t)-(int16_t)d;
             rel1=(int16_t)((int16_t)len-(int16_t)d);
-            c0=envelope_rel_col(rel0);
-            cend=envelope_rel_col(rel1);
+            c0=(uint8_t)(rel0<=-512 ? 0u : envelope_center_col(rel0));
+            cend=(uint8_t)(rel1>=512 ? TSP_COLS : envelope_center_col(rel1));
 
             TSPF_ENV_PHASE(3u);
             q=envelope_emit_span(focus,n,c0,cend,
@@ -1514,8 +1504,8 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 len=(uint16_t)((nexta-a1)&4095u);
                 if(!len || len>=2048u) break;
                 nextrel=(int16_t)(rel1+(int16_t)len);
-                c0=envelope_rel_col(rel1);
-                cend=envelope_rel_col(nextrel);
+                c0=cend;
+                cend=(uint8_t)(nextrel>=512 ? TSP_COLS : envelope_center_col(nextrel));
                 q=envelope_emit_span(i,n,c0,cend,
                                      (uint8_t)(rel1>=-512),
                                      (uint8_t)(nextrel<=512),s,&count);
@@ -1539,8 +1529,8 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 len=(uint16_t)((a0-nexta)&4095u);
                 if(!len || len>=2048u) break;
                 nextrel=(int16_t)(rel0-(int16_t)len);
-                c0=envelope_rel_col(nextrel);
-                cend=envelope_rel_col(rel0);
+                cend=c0;
+                c0=(uint8_t)(nextrel<=-512 ? 0u : envelope_center_col(nextrel));
                 q=envelope_emit_span(i,n,c0,cend,
                                      (uint8_t)(nextrel>=-512),
                                      (uint8_t)(rel0<=512),s,&count);
