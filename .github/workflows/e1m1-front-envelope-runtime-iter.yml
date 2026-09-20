@@ -69,7 +69,7 @@ jobs:
           test -n "$LAST_BANK"
           BEARING_BASE=$((LAST_BANK+1))
           DEPTH_BASE=$((BEARING_BASE+8))
-          LBF_BASE=$((DEPTH_BASE+12))
+          LBF_BASE=$((DEPTH_BASE+1))
           LBF_DISPATCH=$((LBF_BASE+56))
           test "$LBF_DISPATCH" -lt 255
           printf 'envelope_last_bank=%s\nbearing_base=%s\ndepth_base=%s\nlbf_base=%s\nlbf_dispatch=%s\n' \
