@@ -219,6 +219,12 @@ uint16_t g_corner_bearing_q12[32];
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
 static uint8_t g_corner_bearing_stamp[32];
 static uint8_t g_corner_bearing_epoch;
+/* World-space corner bearings depend on player X/Y, not yaw. Keep the solved
+ * values across pure rotation frames; translation bumps the epoch and lazily
+ * repopulates only vertices the envelope actually touches. */
+static int16_t g_corner_bearing_x_q4;
+static int16_t g_corner_bearing_y_q4;
+static uint8_t g_corner_bearing_pos_valid;
 #else
 static uint16_t g_corner_bearing_valid_lo;
 static uint16_t g_corner_bearing_valid_hi;
@@ -1408,9 +1414,20 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     const uint8_t *p, *b;
 #if defined(TSPF_E1M1_FULL_ONLY)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
-    if(++g_corner_bearing_epoch==0u){
-        memset(g_corner_bearing_stamp,0,sizeof(g_corner_bearing_stamp));
-        g_corner_bearing_epoch=1u;
+    /* A yaw-only update does not change any world-space vertex bearing.
+     * The old code invalidated all 32 cache stamps every frame, forcing the
+     * local-bearing evaluator to redo ~13 vertices even while merely turning.
+     * Invalidate only when camera X/Y actually changes. */
+    if(!g_corner_bearing_pos_valid ||
+       s->x_q4!=g_corner_bearing_x_q4 ||
+       s->y_q4!=g_corner_bearing_y_q4){
+        g_corner_bearing_x_q4=s->x_q4;
+        g_corner_bearing_y_q4=s->y_q4;
+        g_corner_bearing_pos_valid=1u;
+        if(++g_corner_bearing_epoch==0u){
+            memset(g_corner_bearing_stamp,0,sizeof(g_corner_bearing_stamp));
+            g_corner_bearing_epoch=1u;
+        }
     }
 #else
     g_corner_bearing_valid_lo = 0u;
