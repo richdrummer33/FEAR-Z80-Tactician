@@ -1105,6 +1105,8 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
         r->inv0=g_e1env_depth_inv0;
         r->inv1=g_e1env_depth_inv1;
         r->inv_mid=g_e1env_depth_mid;
+        r->iq=g_e1env_depth_iq;
+        r->step=g_e1env_depth_step;
     }
 #else
     {
@@ -1205,7 +1207,13 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
     if (c1 < c0)
         return;
     n = (uint8_t)(c1 - c0 + 1u);
-#if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+    /* The banked depth evaluator already knows c0/c1 and therefore the run
+     * length. It returns the materializer's native Q6 start/step directly,
+     * avoiding one generic signed multiply and shr_signed() per visible run. */
+    iq = r->iq;
+    step = r->step;
+#elif defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if (g_tspf_appearance_mode < 2u && r->depth_plane)
     {
         c0 = r->c0;
@@ -1215,12 +1223,18 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
         step = r->step;
     }
     else
-#endif
     {
         iq = (int16_t)r->inv0 << 6;
         step = (int16_t)(((int16_t)r->inv1 - (int16_t)r->inv0) * (int16_t)k_col_recip_q8[n]);
         step = shr_signed(step, 2);
     }
+#else
+    {
+        iq = (int16_t)r->inv0 << 6;
+        step = (int16_t)(((int16_t)r->inv1 - (int16_t)r->inv0) * (int16_t)k_col_recip_q8[n]);
+        step = shr_signed(step, 2);
+    }
+#endif
 #ifdef __SDCC
     /* The assembly column materializer now branches on profile for FULL
      * symmetry. Keep the run profile live for BOTH geometry-only and shaded
