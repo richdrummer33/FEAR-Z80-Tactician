@@ -50,10 +50,10 @@ def main():
     for sid,(axid,qx,qy) in enumerate(zip(anchor,nx,ny)):
         x=vx[axid]; y=vy[axid]
         op=GENERIC; c=0
-        if qx==32 and qy==0: op,c=X_POS,x
-        elif qx==-32 and qy==0: op,c=X_NEG,x
-        elif qx==0 and qy==32: op,c=Y_POS,y
-        elif qx==0 and qy==-32: op,c=Y_NEG,y
+        if qx==32 and qy==0: op,c=X_POS,x<<4
+        elif qx==-32 and qy==0: op,c=X_NEG,x<<4
+        elif qx==0 and qy==32: op,c=Y_POS,y<<4
+        elif qx==0 and qy==-32: op,c=Y_NEG,y<<4
         elif abs(qx)==23 and abs(qy)==23:
             sx=1 if qx>0 else -1
             sy=1 if qy>0 else -1

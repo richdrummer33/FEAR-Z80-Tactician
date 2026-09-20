@@ -748,63 +748,31 @@ static uint8_t inv_for_dq4(int16_t dq4)
     d = (int16_t)x1 - (int16_t)x0;
     return (uint8_t)((int16_t)x0 + shr_signed((int16_t)(d * (int16_t)f + (d >= 0 ? 8 : -8)), 4));
 }
-#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_PLANE_META
-/* Exact 45-degree fallback arithmetic without a generic multiply. This matches
- * the current Q5 normal magnitude (23) used by q5_normal() for true diagonals.
- * The plane constant itself is baked, so runtime still works in one of the
- * four canonical map-plane families rather than rediscovering endpoints. */
-static int16_t plane_mul23(int16_t v)
-{
-    uint16_t a=(uint16_t)(v<0 ? -v : v);
-    uint16_t p=(uint16_t)((a<<4)+(a<<2)+(a<<1)+a);
-    return v<0 ? (int16_t)-p : (int16_t)p;
-}
-#endif
-
 static int16_t wall_d_q4(uint8_t sid, const TSPState *s)
 {
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_PLANE_META
     uint8_t op=k_e1env_plane_op[sid];
     int16_t c=k_e1env_plane_c[sid];
 
-    /* Cardinal planes are the hot case: one baked constant and one camera
-     * coordinate subtraction. No normal loads, endpoint lookup or multiply. */
+    /* The common grid-wall case is already a compiled plane equation.  The
+     * constant is stored in Q4, so the hot path is only an axis selection and
+     * subtraction.  45-degree families are also identified by the baker, but
+     * retain the exact legacy arithmetic below until their scaled-depth lookup
+     * is moved out of the already-full renderer bank. */
     switch(op)
     {
-    case E1ENV_PLANE_X_POS:
-        return (int16_t)((c<<4)-s->x_q4);
-    case E1ENV_PLANE_X_NEG:
-        return (int16_t)(s->x_q4-(c<<4));
-    case E1ENV_PLANE_Y_POS:
-        return (int16_t)((c<<4)-s->y_q4);
-    case E1ENV_PLANE_Y_NEG:
-        return (int16_t)(s->y_q4-(c<<4));
-    case E1ENV_PLANE_XPYP:
-    case E1ENV_PLANE_XPYN:
-    case E1ENV_PLANE_XNYP:
-    case E1ENV_PLANE_XNYN:
-        {
-            int16_t xi=(int16_t)(s->x_q4>>4), yi=(int16_t)(s->y_q4>>4);
-            int16_t px,py,whole,frac;
-            int16_t fx=(int16_t)(s->x_q4&15), fy=(int16_t)(s->y_q4&15);
-            if(op==E1ENV_PLANE_XPYP){ px=xi; py=yi; }
-            else if(op==E1ENV_PLANE_XPYN){ px=xi; py=(int16_t)-yi; fy=(int16_t)-fy; }
-            else if(op==E1ENV_PLANE_XNYP){ px=(int16_t)-xi; py=yi; fx=(int16_t)-fx; }
-            else { px=(int16_t)-xi; py=(int16_t)-yi; fx=(int16_t)-fx; fy=(int16_t)-fy; }
-            whole=(int16_t)(c-px-py);
-            frac=(int16_t)(fx+fy);
-            return (int16_t)(shr_signed(plane_mul23(whole),1)-
-                             shr_signed(plane_mul23(frac),5));
-        }
-    default:
-        break;
+    case E1ENV_PLANE_X_POS: return (int16_t)(c-s->x_q4);
+    case E1ENV_PLANE_X_NEG: return (int16_t)(s->x_q4-c);
+    case E1ENV_PLANE_Y_POS: return (int16_t)(c-s->y_q4);
+    case E1ENV_PLANE_Y_NEG: return (int16_t)(s->y_q4-c);
+    default: break;
     }
 #endif
     {
         uint8_t anchor_vid=k_tspf_seg_anchor[sid];
         int8_t nx = k_tspf_nx_q5[sid], ny = k_tspf_ny_q5[sid];
-        /* Generic compatibility path for legacy arbitrary-angle E1M1 walls.
-         * New authored grid maps should compile to canonical plane ops above. */
+#if !(defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_PLANE_META)
+        /* Non-compiled builds still get the exact cardinal shortcuts. */
         if (ny == 0 && (nx == 32 || nx == -32))
         {
             int16_t wall = (int16_t)((int16_t)k_tspf_vx[anchor_vid] << 4);
@@ -815,6 +783,7 @@ static int16_t wall_d_q4(uint8_t sid, const TSPState *s)
             int16_t wall = (int16_t)((int16_t)k_tspf_vy[anchor_vid] << 4);
             return ny > 0 ? (int16_t)(wall - s->y_q4) : (int16_t)(s->y_q4 - wall);
         }
+#endif
         {
             int16_t xi = (int16_t)(s->x_q4 >> 4), yi = (int16_t)(s->y_q4 >> 4);
             uint8_t fx = (uint8_t)(s->x_q4 & 15), fy = (uint8_t)(s->y_q4 & 15);
