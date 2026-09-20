@@ -179,7 +179,7 @@ uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BA
     uint8_t a=eval_one(k_dot[base+c0],c0,invd);
     uint8_t e=(uint8_t)(c1+1u);
     uint8_t b=eval_one(k_dot[base+e],e,invd);
-    {
+    {{
         uint8_t n=(uint8_t)(c1-c0+1u);
         int16_t d=(int16_t)b-(int16_t)a;
         uint8_t mag=(uint8_t)(d<0 ? -d : d);
@@ -187,7 +187,7 @@ uint8_t {fn}(uint8_t local_cls,uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BA
         int16_t st=(int16_t)(p>>2);
         g_e1env_depth_iq=(int16_t)((uint16_t)a<<6);
         g_e1env_depth_step=d<0 ? (int16_t)-st : st;
-    }
+    }}
     g_e1env_depth_inv0=a;
     g_e1env_depth_inv1=b;
     g_e1env_depth_mid=(uint8_t)(((uint16_t)a+(uint16_t)b)>>1);
