@@ -954,87 +954,6 @@ static uint8_t envelope_center_col(int16_t rel)
 }
 #endif
 
-/* Project one already-solved first-hit angular span.
-
- * The baker tells us which FULL wall owns the interval between boundary
- * vertices bv0..bv1. Runtime only projects those two boundary rays and the
- * owner wall's depth. Coarse columns are assigned by their centre ray, so
- * neighbouring envelope spans cannot compete for one column and no runtime
- * depth sort / ownership arbitration is required.
- */
-static uint8_t project_envelope_span(uint8_t owner, uint8_t bv0, uint8_t bv1,
-                                     uint16_t a0, uint16_t a1,
-                                     const TSPState *s, PolarRun *r)
-{
-    uint8_t sid=(uint8_t)(owner&31u);
-    uint16_t len=(uint16_t)((a1-a0)&4095u), yawq=(uint16_t)s->yaw<<4;
-    int16_t st,en,lo,hi;
-    uint8_t c0,cend,c1,invd;
-#if !defined(__SDCC) || !TSPF_E1M1_DEPTH_EDGE_LUT
-    int16_t rel0,rel1;
-#endif
-
-    if(len==0u || len>=2048u) return 0u;
-    st=signed_q12((uint16_t)(a0-yawq));
-    en=(int16_t)(st+(int16_t)len);
-    while(en < -512){ st=(int16_t)(st+4096); en=(int16_t)(en+4096); }
-    while(st > 512){ st=(int16_t)(st-4096); en=(int16_t)(en-4096); }
-    lo=st < -512 ? -512 : st;
-    hi=en > 512 ? 512 : en;
-    if(hi<=lo) return 0u;
-
-    /* Same half-open centre-ray ownership as the old scan, without walking
-     * from column zero for every span. */
-    c0=envelope_center_col(lo);
-    cend=envelope_center_col(hi);
-    /* The angular span can intersect the FOV yet be narrower than one
-     * coarse-column centre. Report that separately so the FOV walker keeps
-     * walking; only a genuine FOV miss may terminate one side. */
-    if(cend==c0) return 2u;
-    c1=(uint8_t)(cend-1u);
-
-    invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
-
-    r->sid=sid;
-    /* AO only reads an endpoint when its corresponding real-border flag is
-     * set. Packed owner flags prove that the envelope witness is then the
-     * authored endpoint, so no runtime segment-key unpack is needed. */
-    r->v0=bv0; r->v1=bv1;
-    r->x0=(uint8_t)(c0<<3);
-    r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
-#if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
-    {
-        uint8_t cls=k_e1env_depth_class[sid];
-        switch(cls>>1)
-        {
-        case 0u: (void)e1env_depth_edges_0((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 1u: (void)e1env_depth_edges_1((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 2u: (void)e1env_depth_edges_2((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 3u: (void)e1env_depth_edges_3((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        case 4u: (void)e1env_depth_edges_4((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        default: (void)e1env_depth_edges_5((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
-        }
-        r->inv0=g_e1env_depth_inv0;
-        r->inv1=g_e1env_depth_inv1;
-        r->inv_mid=g_e1env_depth_mid;
-    }
-#else
-    {
-        int16_t rel0=k_e1env_col_edge_q12[c0];
-        int16_t rel1=k_e1env_col_edge_q12[(uint8_t)(c1+1u)];
-        r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+rel0)&4095u,rel0);
-        r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+rel1)&4095u,rel1);
-        r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
-    }
-#endif
-    r->left_real=(uint8_t)((lo==st) && (owner&0x20u));
-    r->right_real=(uint8_t)((hi==en) && (owner&0x40u));
-    r->right_connected=(uint8_t)((owner&0x80u)!=0u);
-    r->depth_plane=0u;
-    r->c0=c0; r->c1=c1;
-    return 1u;
-}
-
 /* Find the one cyclic envelope span containing the camera centre ray.
  * We retain its boundary vertex across frames. When the exact-Q4 position
  * selects a different deduplicated program, a cheap byte scan recovers that
@@ -1080,7 +999,14 @@ static uint8_t envelope_focus_span(uint8_t n,const TSPState *s)
     return 0u;
 }
 
-/* Project exactly one baked envelope entry into the next run slot. */
+/* Project exactly one baked envelope entry into the next run slot.
+ *
+ * This used to be a thin envelope_add_span() wrapper around a seven-argument
+ * project_envelope_span() call.  On SDCC/Z80 that wrapper+callee boundary was
+ * surprisingly expensive: both sides rebuilt large stack frames for every
+ * candidate span.  The exact-envelope path has only this caller, so keep the
+ * projection body here and let the compiler keep its shared state live.
+ */
 static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
                                  const TSPState *s,uint8_t *count)
 {
@@ -1089,13 +1015,75 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
     uint8_t noff=(uint8_t)(1u+(uint8_t)(ni<<1));
     uint8_t owner=g_e1env_program[(uint8_t)(off+1u)];
     uint8_t idx=*count;
-    uint8_t q;
+    uint8_t sid,c0,cend,c1,invd;
+    uint16_t len,yawq;
+    int16_t st,en,lo,hi;
+    PolarRun *r;
+
     if(idx>=TSPF_MAX_ACTIVE) return 0u;
     /* 0xff remains the unambiguous NO_WALL record; real surface IDs occupy
      * only the low five bits and high bits carry baked endpoint semantics. */
     if(owner==0xffu) return 2u;
-    q=project_envelope_span(owner,g_e1env_program[off],g_e1env_program[noff],a0,a1,s,&g_runs[idx]);
-    if(q!=1u) return q;
+
+    sid=(uint8_t)(owner&31u);
+    len=(uint16_t)((a1-a0)&4095u);
+    if(len==0u || len>=2048u) return 0u;
+
+    yawq=(uint16_t)s->yaw<<4;
+    st=signed_q12((uint16_t)(a0-yawq));
+    en=(int16_t)(st+(int16_t)len);
+    while(en < -512){ st=(int16_t)(st+4096); en=(int16_t)(en+4096); }
+    while(st > 512){ st=(int16_t)(st-4096); en=(int16_t)(en-4096); }
+    lo=st < -512 ? -512 : st;
+    hi=en > 512 ? 512 : en;
+    if(hi<=lo) return 0u;
+
+    c0=envelope_center_col(lo);
+    cend=envelope_center_col(hi);
+    /* An angular span may touch the FOV without owning a coarse-column centre.
+     * Keep walking in that case; only a genuine FOV miss terminates one side. */
+    if(cend==c0) return 2u;
+    c1=(uint8_t)(cend-1u);
+
+    invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
+    r=&g_runs[idx];
+
+    r->sid=sid;
+    r->v0=g_e1env_program[off];
+    r->v1=g_e1env_program[noff];
+    r->x0=(uint8_t)(c0<<3);
+    r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
+#if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
+    {
+        uint8_t cls=k_e1env_depth_class[sid];
+        switch(cls>>1)
+        {
+        case 0u: (void)e1env_depth_edges_0((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 1u: (void)e1env_depth_edges_1((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 2u: (void)e1env_depth_edges_2((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 3u: (void)e1env_depth_edges_3((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        case 4u: (void)e1env_depth_edges_4((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        default: (void)e1env_depth_edges_5((uint8_t)(cls&1u),s->yaw,c0,c1,invd); break;
+        }
+        r->inv0=g_e1env_depth_inv0;
+        r->inv1=g_e1env_depth_inv1;
+        r->inv_mid=g_e1env_depth_mid;
+    }
+#else
+    {
+        int16_t rel0=k_e1env_col_edge_q12[c0];
+        int16_t rel1=k_e1env_col_edge_q12[(uint8_t)(c1+1u)];
+        r->inv0=inv_at_invd(sid,invd,(uint16_t)(yawq+rel0)&4095u,rel0);
+        r->inv1=inv_at_invd(sid,invd,(uint16_t)(yawq+rel1)&4095u,rel1);
+        r->inv_mid=(uint8_t)(((uint16_t)r->inv0+r->inv1)>>1);
+    }
+#endif
+    r->left_real=(uint8_t)((lo==st) && (owner&0x20u));
+    r->right_real=(uint8_t)((hi==en) && (owner&0x40u));
+    r->right_connected=(uint8_t)((owner&0x80u)!=0u);
+    r->depth_plane=0u;
+    r->c0=c0; r->c1=c1;
+
     g_run_order[idx]=idx;
     *count=(uint8_t)(idx+1u);
     return 1u;
