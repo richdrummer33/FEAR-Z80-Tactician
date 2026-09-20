@@ -870,22 +870,23 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
 #endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
-/* Inverse of the existing angle->pixel projection at coarse 8-pixel column
- * centres. The previous code linearly scanned 20 Q12 centre thresholds for
- * every span. k_tspf_angle_x_pos already gives the projected pixel in O(1).
- *
- * Rounding to the nearest 8-pixel centre is (x+4)>>3. The one equality check
- * preserves the old half-open tie convention exactly: when rel is exactly a
- * baked centre ray, that centre belongs to the interval beginning there.
- * Exhaustive host check over every rel in [-512,+512] matches the old scan. */
+/* Exact inverse of the 20 centre-ray thresholds. The 1025-byte table lives
+ * in fixed ROM (_HOME), so bank-255 renderer code pays one indexed byte load
+ * and no bank switch, multiply, projection-table lookup, or equality repair. */
+#ifdef __SDCC
+extern const uint8_t g_e1env_center_col_lut[1025];
 static uint8_t envelope_center_col(int16_t rel)
 {
-    uint16_t a=(uint16_t)(rel<0 ? -rel : rel);
-    uint8_t x=(uint8_t)(rel<0 ? (uint16_t)(160u-k_tspf_angle_x_pos[a]) : k_tspf_angle_x_pos[a]);
-    uint8_t c=(uint8_t)((x+4u)>>3);
-    if(c && rel==k_e1env_col_center_q12[(uint8_t)(c-1u)]) --c;
+    return g_e1env_center_col_lut[(uint16_t)(rel+512)];
+}
+#else
+static uint8_t envelope_center_col(int16_t rel)
+{
+    uint8_t c=0u;
+    while(c<TSP_COLS && k_e1env_col_center_q12[c]<rel) ++c;
     return c;
 }
+#endif
 
 /* Project one already-solved first-hit angular span.
 
