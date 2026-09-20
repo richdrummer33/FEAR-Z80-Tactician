@@ -1104,18 +1104,11 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
     {
-        uint8_t cls=k_e1env_depth_class[sid];
-        /* Orthogonal-only benchmark: q5 normals can only be +/-X or
-         * +/-Y, so the generated exact-depth vocabulary has four directed
-         * classes.  Angled geometry is rejected by the bake before this code
-         * can exist. */
-        switch(cls)
-        {
-        case 0u: e1env_depth_edges_0(s->yaw,c0,c1,dq4); break;
-        case 1u: e1env_depth_edges_1(s->yaw,c0,c1,dq4); break;
-        case 2u: e1env_depth_edges_2(s->yaw,c0,c1,dq4); break;
-        default: e1env_depth_edges_3(s->yaw,c0,c1,dq4); break;
-        }
+        /* Orthogonal-only benchmark: endpoint depth is one canonical +Y ROM
+         * vocabulary. X-normal walls phase yaw by +90 degrees; normal sign
+         * disappears under abs(dot). No runtime class dispatch remains. */
+        e1env_depth_edges_0((uint8_t)(s->yaw+k_e1env_depth_phase[sid]),
+                            c0,c1,dq4);
         /* Exact-envelope draw_run consumes the native Q6 start/step
          * directly.  inv0/inv1/inv_mid were legacy projection/sort fields and
          * are dead on this no-sort path, so do not copy them per visible run. */
