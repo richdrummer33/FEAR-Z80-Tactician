@@ -391,7 +391,7 @@ def write_banked_sources(outdir, result, bank_base=32, rows_per_bank=16, prog_pa
         f"    band={band_expr};",
         "    switch(band) {",
     ]
-    for bi,(_r0,_r1,_bank,fn,_n) in enumerate(idx_banks):
+    for bi,(_r0,_r1,_bank,fn,_n,_dict_n) in enumerate(idx_banks):
         dispatch.append(f"    case {bi}u: pid={fn}(local); break;")
     dispatch += [
         "    default: return 0xffu;",
