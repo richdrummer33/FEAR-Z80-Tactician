@@ -41,6 +41,33 @@ _e1env_local_bearing_eval::
         ld      a, (hl)
         ld      (#lbf_sy$), a
 
+        ; A common movement rail lands exactly on a world-cell Y boundary.
+        ; For ly=0 the Y term and bilinear cross term are mathematically zero,
+        ; so evaluate only X instead of paying the second multiply plus all
+        ; cross-term bookkeeping for every visible boundary vertex.
+        ld      a, (#_g_e1env_lbf_ly)
+        or      a
+        jr      nz, lbf_general$
+        ld      a, (#_g_e1env_lbf_lx)
+        or      a
+        jr      z, lbf_ly0_base$
+        ld      c, a
+        ld      a, (#lbf_slope$)
+        call    lbf_mul_s8_u4_div16$
+        ld      e, a
+        ld      d, #0
+        bit     7, e
+        jr      z, lbf_ly0_x_pos$
+        dec     d
+lbf_ly0_x_pos$:
+        ld      hl, (#lbf_base$)
+        add     hl, de
+        jp      lbf_finalize$
+lbf_ly0_base$:
+        ld      hl, (#lbf_base$)
+        jp      lbf_finalize$
+
+lbf_general$:
         ld      a, (#_g_e1env_lbf_lx)
         ld      c, a
         ld      a, (#lbf_slope$)
@@ -112,6 +139,7 @@ lbf_cross_sign_ready$:
 lbf_cross_pos$:
         add     hl, de
 lbf_cross_done$:
+lbf_finalize$:
 
         ld      a, h
         and     #0x0f
