@@ -36,6 +36,13 @@ FULL=0
 LINTEL=1
 RISER=3
 WINDOW_SOURCE_IDS=(19,46)
+# Source geometry 50..57 are the two closed square pillars. They are interior
+# solids (holes in walkable space), so their visible/front side is opposite an
+# outer world-boundary ring. The original E1M1 extraction preserved the outer
+# winding and therefore made the pillars effectively inside-out to the one-sided
+# first-hit renderer.
+INTERIOR_SOLID_SOURCE_IDS=frozenset(range(50,58))
+INTERIOR_SOLID_AABBS=((56,32,64,40),(56,64,64,72))
 
 def parse_geometry(path: Path):
     text=path.read_text()
@@ -67,6 +74,11 @@ def parse_floor(path: Path):
     return offs,runs
 
 def floor_at(x: float,y: float,offs,runs):
+    # Pillars are true filled convex obstacles, not four independent render
+    # faces laid over otherwise-walkable floor.
+    for x0,y0,x1,y1 in INTERIOR_SOLID_AABBS:
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return None
     xi=int(math.floor(x)); yi=int(math.floor(y))
     if xi<WORLD_MIN_X or xi>WORLD_MAX_X or yi<WORLD_MIN_Y or yi>WORLD_MAX_Y:
         return None
@@ -85,6 +97,10 @@ def flatten_compact(verts,segs,window_ids=()):
     for source_sid,(a,b,_z0,_z1,occ,bias) in enumerate(segs):
         if not occ:
             continue
+        # Reverse interior-solid rings so the walkable EXTERIOR is their
+        # accepted side. This turns each pillar into one closed convex solid.
+        if source_sid in INTERIOR_SOLID_SOURCE_IDS:
+            a,b=b,a
         if source_sid in window_ids:
             keep.append((source_sid,a,b,bias,LINTEL))
             keep.append((source_sid,a,b,bias,RISER))
