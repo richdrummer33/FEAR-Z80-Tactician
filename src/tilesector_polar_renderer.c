@@ -35,6 +35,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_E1M1_DEPTH_EDGE_LUT
 #define TSPF_E1M1_DEPTH_EDGE_LUT 0
 #endif
+#ifndef TSPF_E1M1_LOCAL_BEARING_FIELD
+#define TSPF_E1M1_LOCAL_BEARING_FIELD 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -46,6 +49,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #endif
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
 #include "e1env_depth_edges_bank.h"
+#endif
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_LOCAL_BEARING_FIELD
+#include "e1env_local_bearing_field.h"
 #endif
 
 #if defined(TSPF_E1M1_FULL_ONLY)
@@ -171,6 +177,17 @@ static uint8_t g_e1env_focus_bv=0xffu;
  * recomputing both endpoint bearings per span was pure wrapper/cache overhead. */
 static uint16_t g_e1env_focus_a0;
 static uint16_t g_e1env_focus_a1;
+#if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
+static uint8_t g_e1env_lbf_cell[E1ENV_LBF_CELL_BYTES];
+static uint8_t g_e1env_lbf_cached_x=0xffu;
+static uint8_t g_e1env_lbf_cached_y=0xffu;
+/* Explicit fixed-ASM bridge for one on-demand four-byte affine descriptor. */
+const uint8_t *g_e1env_lbf_ptr;
+uint8_t g_e1env_lbf_lx;
+uint8_t g_e1env_lbf_ly;
+uint16_t g_e1env_lbf_out;
+void e1env_local_bearing_eval(void);
+#endif
 /* Q12 camera-relative angles whose projection lands nearest each coarse
  * 8-pixel column centre / boundary. The envelope assigns ownership by centre
  * ray, then evaluates wall depth at the snapped column edges. */
@@ -337,6 +354,10 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
     g_e1env_focus_bv=0xffu;
+#if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
+    g_e1env_lbf_cached_x=0xffu;
+    g_e1env_lbf_cached_y=0xffu;
+#endif
 #endif
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
     memset(g_corner_bearing_stamp,0,sizeof(g_corner_bearing_stamp));
@@ -358,6 +379,33 @@ static uint8_t selector_pass(uint8_t sid, uint8_t lx, uint8_t ly)
     TSPF_SELECTOR_HIT();
     return (uint8_t)(((v >= 0) ? 1u : 0u) ^ k_tspf_sel_inv[sid]);
 }
+
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_LOCAL_BEARING_FIELD
+static void e1env_local_bearing_prepare(const TSPState *s)
+{
+    int16_t wx=(int16_t)(s->x_q4>>4);
+    int16_t wy=(int16_t)(s->y_q4>>4);
+    g_e1env_lbf_lx=(uint8_t)(s->x_q4&15);
+    g_e1env_lbf_ly=(uint8_t)(s->y_q4&15);
+    if(wx<E1ENV_LBF_WORLD_MIN_X || wy<E1ENV_LBF_WORLD_MIN_Y ||
+       wx>=(int16_t)(E1ENV_LBF_WORLD_MIN_X+E1ENV_LBF_WIDTH) ||
+       wy>=(int16_t)(E1ENV_LBF_WORLD_MIN_Y+E1ENV_LBF_HEIGHT))
+    {
+        g_e1env_lbf_cell[0]=0xffu; g_e1env_lbf_cell[1]=0xffu;
+        g_e1env_lbf_cell[2]=0xffu; g_e1env_lbf_cell[3]=0xffu;
+        g_e1env_lbf_cached_x=0xffu; g_e1env_lbf_cached_y=0xffu;
+        return;
+    }
+    wx=(int16_t)(wx-E1ENV_LBF_WORLD_MIN_X);
+    wy=(int16_t)(wy-E1ENV_LBF_WORLD_MIN_Y);
+    if((uint8_t)wx!=g_e1env_lbf_cached_x || (uint8_t)wy!=g_e1env_lbf_cached_y)
+    {
+        e1env_local_bearing_load((uint8_t)wx,(uint8_t)wy,g_e1env_lbf_cell);
+        g_e1env_lbf_cached_x=(uint8_t)wx;
+        g_e1env_lbf_cached_y=(uint8_t)wy;
+    }
+}
+#endif
 
 static uint16_t bearing_q12(int16_t dxq4, int16_t dyq4);
 
@@ -626,9 +674,21 @@ static uint16_t bearing_vertex_q12(uint8_t vid, const TSPState *s)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
     if (g_corner_bearing_stamp[vid] != g_corner_bearing_epoch)
     {
-        g_corner_bearing_q12[vid] = bearing_q12(
-            (int16_t)((int16_t)k_tspf_vx[vid] << 4) - s->x_q4,
-            (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
+#if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
+        uint8_t mb=g_e1env_lbf_cell[vid>>3];
+        if(!(mb & k_nt_mask8[vid&7u]))
+        {
+            g_e1env_lbf_ptr=&g_e1env_lbf_cell[4u+((uint8_t)(vid<<2))];
+            e1env_local_bearing_eval();
+            g_corner_bearing_q12[vid]=g_e1env_lbf_out;
+        }
+        else
+#endif
+        {
+            g_corner_bearing_q12[vid] = bearing_q12(
+                (int16_t)((int16_t)k_tspf_vx[vid] << 4) - s->x_q4,
+                (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
+        }
         g_corner_bearing_stamp[vid] = g_corner_bearing_epoch;
     }
 #else
@@ -1354,6 +1414,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
             uint8_t focus,step,i,q,last,focus_run;
+#if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
+            e1env_local_bearing_prepare(s);
+#endif
             uint16_t a0,a1,nexta;
 #ifdef __SDCC
             g_polar_run_owned=1u;
