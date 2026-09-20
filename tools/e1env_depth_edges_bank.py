@@ -127,7 +127,7 @@ def main():
 
     bank_count=len(normals)
     for bi in range(bank_count):
-        hdr.append(f"uint8_t e1env_depth_edges_{bi}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED;")
+        hdr.append(f"void e1env_depth_edges_{bi}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED;")
     hdr += ["#endif",""]
     (outdir/"e1env_depth_edges_bank.h").write_text("\n".join(hdr))
 
@@ -167,7 +167,7 @@ static uint8_t eval_one(uint8_t dot,uint8_t edge,uint8_t invd) {{
     return k_sec_eval[((uint16_t)edge<<8)|q];
 }}
 
-uint8_t {fn}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED {{
+void {fn}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED {{
     uint16_t ad=(uint16_t)(dq4<0 ? -dq4 : dq4);
     uint16_t base=(uint16_t)yaw*21u;
     uint8_t invd=k_invd_q4[ad>=2032u ? 2032u : ad];
@@ -183,7 +183,7 @@ uint8_t {fn}(uint8_t yaw,uint8_t c0,uint8_t c1,int16_t dq4) BANKED {{
         g_e1env_depth_iq=(int16_t)((uint16_t)a<<6);
         g_e1env_depth_step=d<0 ? (int16_t)-st : st;
     }}
-    return 1u;
+    return;
 }}
 """
         (outdir/f"{fn}.c").write_text(src)
