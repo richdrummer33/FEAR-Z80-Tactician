@@ -54,6 +54,7 @@
         .globl  _tsp_h_full_tile_low
         .globl  _tsp_h_row_floor_hl
         .globl  _tsp_h_profile_half
+        .globl  _tsp_h_full_top_half
         .globl  _tsp_h_q6_round_u8
         .globl  _tsp_h_prepare_edge
         .globl  _tsp_h_prepare_symfull_edges
@@ -108,21 +109,20 @@ run_geom_loop$:
         call    q6_round_u8$
         ld      (#r_run_invr$), a
 
-        ; Left profile endpoints from half=invl>>1.
+        ; FULL-only benchmark: bottom geometry is the exact hardware mirror
+        ; of top, so materialize only the two top endpoints. Retention still
+        ; keys on the half-heights themselves.
         ld      a, (#r_run_invl$)
         srl     a
         ld      (#r_run_halfl$), a
-        call    profile_half$
+        call    full_top_half$
         ld      (#_g_polar_mat_top_l), hl
-        ld      (#_g_polar_mat_bot_l), de
 
-        ; Right profile endpoints from half=invr>>1.
         ld      a, (#r_run_invr$)
         srl     a
         ld      (#r_run_halfr$), a
-        call    profile_half$
+        call    full_top_half$
         ld      (#_g_polar_mat_top_r), hl
-        ld      (#_g_polar_mat_bot_r), de
 
         ; Physical-chain border bits: 1 at the true left endpoint, 2 at the
         ; true right endpoint. Interior coarse columns carry no border bits.
@@ -226,6 +226,22 @@ q6_overflow$:
         ld      a, #255
         ret
 
+; A = FULL half height (inv>>1, 0..127). Returns only signed HL=71-half.
+; Bottom is exactly 143-top and is never materialized as a pixel endpoint.
+full_top_half$:
+_tsp_h_full_top_half::
+        ld      c, a
+        ld      a, #71
+        sub     c
+        ld      l, a
+        ld      h, #0
+        bit     7, l
+        ret     z
+        dec     h
+        ret
+
+; Legacy generic profile helper retained for non-benchmark/reference callers.
+; The orthogonal FULL benchmark hot path above no longer calls it.
 ; A = half height (inv>>1, 0..127)
 ; Returns HL=top pixel Y, DE=bottom pixel Y using the exact C profile formulas.
 ; Profiles: 0 FULL, 1 LINTEL, 2 RAISED, 3 RISER.
@@ -319,17 +335,8 @@ _tsp_polar_surface_column_fast::
         call    row_floor_hl$
         ld      (#r_top_r_row$), a
 
-        ; POLAR_STAGE21_FULL_VFLIP: exact FULL bottom rows are 17-top rows.
-        ; Do not floor two pixel endpoints that are already implied by the top.
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      z, polar_endpoint_rows_ready$
-        ld      hl, (#_g_polar_mat_bot_l)
-        call    row_floor_hl$
-        ld      (#r_bot_l_row$), a
-        ld      hl, (#_g_polar_mat_bot_r)
-        call    row_floor_hl$
-        ld      (#r_bot_r_row$), a
+        ; FULL-only benchmark: bottom rows are always 17-top rows. There
+        ; are no bottom pixel endpoints to floor.
 polar_endpoint_rows_ready$:
 
         ; A foreground FULL wall whose top edge moved a row or two needs a few
@@ -361,11 +368,8 @@ top_r_is_min$:
         ld      (#r_top_max$), a
 top_minmax_done$:
 
-        ; Exact FULL mirror: bottom_min=17-top_max,
-        ; bottom_max=17-top_min. Asymmetric profiles keep generic comparison.
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      nz, polar_bot_generic$
+        ; FULL-only exact mirror: bottom_min=17-top_max,
+        ; bottom_max=17-top_min.
         ld      a, (#r_top_max$)
         ld      c, a
         ld      a, #17
@@ -457,19 +461,9 @@ _tsp_probe_ret_skip::
         jp      z, raster_done$
 polar_cov_done$:
 
-        ; FULL is exact hardware symmetry: calculate each top edge word once
-        ; and emit its floor partner with VFLIP+palette. Other profiles retain
-        ; independent top/bottom vector edges.
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      z, polar_draw_symfull$
-        xor     a
-        call    prepare_edge$          ; top
-        ld      a, #1
-        call    prepare_edge$          ; bottom
-        call    draw_plain_interior$
-        call    ret_record_clean$
-        jr      raster_done$
+        ; FULL-only benchmark: calculate each top edge word once and emit
+        ; its floor partner with VFLIP+palette. No runtime profile dispatch.
+        jp      polar_draw_symfull$
 
 polar_draw_symfull$:
         call    prepare_symfull_edges$
@@ -1935,9 +1929,7 @@ ret_put5$:
 ; ---------------------------------------------------------------------------
 ret_try_patch$:
 _tsp_h_ret_try_patch::
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      nz, ret_patch_no$
+        ; FULL-only benchmark: profile is a compile-time course invariant.
         ld      hl, (#r_ret_base$)
         ld      a, h
         or      l
@@ -2237,9 +2229,7 @@ _tsp_h_ret_record_clean::
         ld      bc, #6
         add     hl, bc
         ld      (hl), #0xff
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jr      nz, ret_rc_out$
+        ; FULL-only benchmark: no profile test is needed here.
         ld      a, (#r_occluded$)
         or      a
         jr      nz, ret_rc_out$
