@@ -38,6 +38,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_E1M1_LOCAL_BEARING_FIELD
 #define TSPF_E1M1_LOCAL_BEARING_FIELD 0
 #endif
+#ifndef TSPF_E1M1_PLANE_META
+#define TSPF_E1M1_PLANE_META 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -52,6 +55,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #endif
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_LOCAL_BEARING_FIELD
 #include "e1env_local_bearing_field.h"
+#endif
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_PLANE_META
+#include "e1env_plane_meta.h"
 #endif
 
 #if defined(TSPF_E1M1_FULL_ONLY)
@@ -742,28 +748,81 @@ static uint8_t inv_for_dq4(int16_t dq4)
     d = (int16_t)x1 - (int16_t)x0;
     return (uint8_t)((int16_t)x0 + shr_signed((int16_t)(d * (int16_t)f + (d >= 0 ? 8 : -8)), 4));
 }
-static int16_t wall_d_q4(uint8_t sid, uint8_t anchor_vid, const TSPState *s)
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_PLANE_META
+/* Exact 45-degree fallback arithmetic without a generic multiply. This matches
+ * the current Q5 normal magnitude (23) used by q5_normal() for true diagonals.
+ * The plane constant itself is baked, so runtime still works in one of the
+ * four canonical map-plane families rather than rediscovering endpoints. */
+static int16_t plane_mul23(int16_t v)
 {
-    int8_t nx = k_tspf_nx_q5[sid], ny = k_tspf_ny_q5[sid];
-    /* Exact cardinal-wall identities. For +/-32 Q5 normals the original
-     * multiply/shift expression reduces to one Q4 coordinate subtraction. */
-    if (ny == 0 && (nx == 32 || nx == -32))
+    uint16_t a=(uint16_t)(v<0 ? -v : v);
+    uint16_t p=(uint16_t)((a<<4)+(a<<2)+(a<<1)+a);
+    return v<0 ? (int16_t)-p : (int16_t)p;
+}
+#endif
+
+static int16_t wall_d_q4(uint8_t sid, const TSPState *s)
+{
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_PLANE_META
+    uint8_t op=k_e1env_plane_op[sid];
+    int16_t c=k_e1env_plane_c[sid];
+
+    /* Cardinal planes are the hot case: one baked constant and one camera
+     * coordinate subtraction. No normal loads, endpoint lookup or multiply. */
+    switch(op)
     {
-        int16_t wall = (int16_t)((int16_t)k_tspf_vx[anchor_vid] << 4);
-        return nx > 0 ? (int16_t)(wall - s->x_q4) : (int16_t)(s->x_q4 - wall);
+    case E1ENV_PLANE_X_POS:
+        return (int16_t)((c<<4)-s->x_q4);
+    case E1ENV_PLANE_X_NEG:
+        return (int16_t)(s->x_q4-(c<<4));
+    case E1ENV_PLANE_Y_POS:
+        return (int16_t)((c<<4)-s->y_q4);
+    case E1ENV_PLANE_Y_NEG:
+        return (int16_t)(s->y_q4-(c<<4));
+    case E1ENV_PLANE_XPYP:
+    case E1ENV_PLANE_XPYN:
+    case E1ENV_PLANE_XNYP:
+    case E1ENV_PLANE_XNYN:
+        {
+            int16_t xi=(int16_t)(s->x_q4>>4), yi=(int16_t)(s->y_q4>>4);
+            int16_t px,py,whole,frac;
+            int16_t fx=(int16_t)(s->x_q4&15), fy=(int16_t)(s->y_q4&15);
+            if(op==E1ENV_PLANE_XPYP){ px=xi; py=yi; }
+            else if(op==E1ENV_PLANE_XPYN){ px=xi; py=(int16_t)-yi; fy=(int16_t)-fy; }
+            else if(op==E1ENV_PLANE_XNYP){ px=(int16_t)-xi; py=yi; fx=(int16_t)-fx; }
+            else { px=(int16_t)-xi; py=(int16_t)-yi; fx=(int16_t)-fx; fy=(int16_t)-fy; }
+            whole=(int16_t)(c-px-py);
+            frac=(int16_t)(fx+fy);
+            return (int16_t)(shr_signed(plane_mul23(whole),1)-
+                             shr_signed(plane_mul23(frac),5));
+        }
+    default:
+        break;
     }
-    if (nx == 0 && (ny == 32 || ny == -32))
+#endif
     {
-        int16_t wall = (int16_t)((int16_t)k_tspf_vy[anchor_vid] << 4);
-        return ny > 0 ? (int16_t)(wall - s->y_q4) : (int16_t)(s->y_q4 - wall);
-    }
-    {
-        int16_t xi = (int16_t)(s->x_q4 >> 4), yi = (int16_t)(s->y_q4 >> 4);
-        uint8_t fx = (uint8_t)(s->x_q4 & 15), fy = (uint8_t)(s->y_q4 & 15);
-        int16_t dx = (int16_t)k_tspf_vx[anchor_vid] - xi, dy = (int16_t)k_tspf_vy[anchor_vid] - yi;
-        int16_t whole = (int16_t)nx * dx + (int16_t)ny * dy;
-        int16_t frac = (int16_t)nx * fx + (int16_t)ny * fy;
-        return (int16_t)(shr_signed(whole, 1) - shr_signed(frac, 5));
+        uint8_t anchor_vid=k_tspf_seg_anchor[sid];
+        int8_t nx = k_tspf_nx_q5[sid], ny = k_tspf_ny_q5[sid];
+        /* Generic compatibility path for legacy arbitrary-angle E1M1 walls.
+         * New authored grid maps should compile to canonical plane ops above. */
+        if (ny == 0 && (nx == 32 || nx == -32))
+        {
+            int16_t wall = (int16_t)((int16_t)k_tspf_vx[anchor_vid] << 4);
+            return nx > 0 ? (int16_t)(wall - s->x_q4) : (int16_t)(s->x_q4 - wall);
+        }
+        if (nx == 0 && (ny == 32 || ny == -32))
+        {
+            int16_t wall = (int16_t)((int16_t)k_tspf_vy[anchor_vid] << 4);
+            return ny > 0 ? (int16_t)(wall - s->y_q4) : (int16_t)(s->y_q4 - wall);
+        }
+        {
+            int16_t xi = (int16_t)(s->x_q4 >> 4), yi = (int16_t)(s->y_q4 >> 4);
+            uint8_t fx = (uint8_t)(s->x_q4 & 15), fy = (uint8_t)(s->y_q4 & 15);
+            int16_t dx = (int16_t)k_tspf_vx[anchor_vid] - xi, dy = (int16_t)k_tspf_vy[anchor_vid] - yi;
+            int16_t whole = (int16_t)nx * dx + (int16_t)ny * dy;
+            int16_t frac = (int16_t)nx * fx + (int16_t)ny * fy;
+            return (int16_t)(shr_signed(whole, 1) - shr_signed(frac, 5));
+        }
     }
 }
 #if !defined(__SDCC) || !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) || !TSPF_E1M1_DEPTH_EDGE_LUT
@@ -914,7 +973,7 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
     r->left_real = (uint8_t)(lo == st);
     r->right_real = (uint8_t)(hi == en);
     r->depth_plane = 0u;
-    invd = inv_for_dq4(wall_d_q4(sid, k_tspf_seg_anchor[sid], s));
+    invd = inv_for_dq4(wall_d_q4(sid, s));
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if (g_tspf_appearance_mode < 2u)
     {
@@ -1051,9 +1110,9 @@ static uint8_t envelope_add_span(uint8_t i,uint8_t n,uint16_t a0,uint16_t a1,
     c1=(uint8_t)(cend-1u);
 
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
-    dq4=wall_d_q4(sid,k_tspf_seg_anchor[sid],s);
+    dq4=wall_d_q4(sid,s);
 #else
-    invd=inv_for_dq4(wall_d_q4(sid,k_tspf_seg_anchor[sid],s));
+    invd=inv_for_dq4(wall_d_q4(sid,s));
 #endif
     r=&g_runs[idx];
 
