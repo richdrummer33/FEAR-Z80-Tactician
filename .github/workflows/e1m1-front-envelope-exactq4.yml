@@ -2,6 +2,17 @@ name: E1M1 exact-Q4 front-envelope A-B
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - experiment/e1m1-front-envelope-rom
+    paths:
+      - tools/e1m1_latest_full_bake.py
+      - tools/e1m1_front_envelope_bake.py
+      - src/tilesector_polar_motion.c
+      - src/tilesector_polar_renderer.c
+      - src/tilesector_polar_materialize_gg.s
+      - src/e1env_center_col_gg.s
+      - .github/workflows/e1m1-front-envelope-exactq4.yml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -34,7 +45,7 @@ jobs:
             --cell 0.0625 \
             --emit-banked-dir "$GEN" \
             --bank-base 16 \
-            --rows-per-bank 4 \
+            --rows-per-bank 8 \
             | tee "$ROOT/envelope-bake.txt"
           grep -q 'stability_proof=one_baked_record_per_exact_Q4_player_position' "$ROOT/envelope-bake.txt"
           grep -q 'unstable=0' "$ROOT/envelope-bake.txt"
@@ -67,6 +78,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/frame/gen_traces.py cruise build/frame_trace.c
+
+      - name: Build fixed envelope column lookup
+        shell: bash
+        run: |
+          make GBDK_HOME="$PWD/.toolchain/gbdk" POLAR_ROM_BANKS=256 build/e1env_center_col_gg.o
 
       - name: Compile exact-Q4 ROM tables
         shell: bash
@@ -120,7 +136,7 @@ jobs:
           make GBDK_HOME="$PWD/.toolchain/gbdk" \
             POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
             POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
-            POLAR_EXTRA_OBJS="build/frame_trace_gg.o $ENVOBJS" \
+            POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o $ENVOBJS" \
             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/envelope-build.txt"
           cp build/gg-tilesector-polar.gg "$ROOT/envelope.gg"
@@ -212,8 +228,9 @@ jobs:
           projects only those foreground boundaries, skips run depth sorting,
           and installs FULL-wall ownership directly.
 
-          Data is deliberately uncompressed. This rung spends cartridge ROM to
-          remove runtime visibility reasoning; compression comes later.
+          Exact-Q4 cell indices use per-8-row uint8 local dictionaries, keeping
+          O(1) lookup while reclaiming roughly half of the original position-
+          index ROM. Topology programs remain exact and lossless.
           EOF
 
       - uses: actions/upload-artifact@v4
