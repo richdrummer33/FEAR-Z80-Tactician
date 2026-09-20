@@ -438,6 +438,10 @@ def main():
     verts,segs,_source_vertices=base.flatten_compact(verts0,segs0,())
     if any(p != base.FULL for _sid,_src,_a,_b,_bias,p in segs):
         raise SystemExit("front-envelope rung expects FULL-only geometry")
+    bad=[(sid,verts[a],verts[b]) for sid,_src,a,b,_bias,_p in segs
+         if verts[a][0]!=verts[b][0] and verts[a][1]!=verts[b][1]]
+    if bad:
+        raise SystemExit(f"ORTHOGONAL_GEOMETRY_REQUIRED bad_segments={bad}")
 
     result=bake(args.cell,verts,segs,offs,runs)
     spans=result["spans_per"]
@@ -465,6 +469,7 @@ def main():
           f"spans_p95={(sorted(spans)[int(.95*(len(spans)-1))] if spans else 0)} "
           f"spans_max={(max(spans) if spans else 0)}")
     print(f"grid_aligned_vertices={aligned}/{len(verts)} cell={args.cell:g}")
+    print(f"orthogonal_segments={len(segs)}/{len(segs)} arbitrary_angles=0")
     if args.out:
         print(f"rom_uncompressed_bytes={rom_bytes} program_stream_bytes={stream_bytes} "
               f"index_bytes={len(result['grid'])*2} offsets_bytes={len(result['programs'])*2}")
