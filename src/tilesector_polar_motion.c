@@ -47,6 +47,14 @@ static int8_t yaw_error(uint8_t target,uint8_t yaw){return (int8_t)(target-yaw);
 static uint8_t e1full_floor_world(int16_t xq,int16_t yq){
     int16_t x=(int16_t)(xq>>4),y=(int16_t)(yq>>4);
     uint16_t a,b,i;
+    /* The two 8x8 E1M1 pillars are filled interior solids. Keep this Q4 test
+     * ahead of the legacy floor-run lookup so the existing four radius probes
+     * provide collision clearance from every convex face. */
+    if(xq>=(int16_t)(56<<4) && xq<=(int16_t)(64<<4)){
+        if((yq>=(int16_t)(32<<4) && yq<=(int16_t)(40<<4)) ||
+           (yq>=(int16_t)(64<<4) && yq<=(int16_t)(72<<4)))
+            return 0u;
+    }
     if(x<E1X_WORLD_MIN_X||x>E1X_WORLD_MAX_X||
        y<E1X_WORLD_MIN_Y||y>E1X_WORLD_MAX_Y)return 0u;
     a=k_e1x_floor_row_off[(uint8_t)(y-E1X_WORLD_MIN_Y)];
