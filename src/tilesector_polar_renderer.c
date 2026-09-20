@@ -1087,10 +1087,8 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     r->sid=sid;
     r->v0=g_e1env_program[off];
     r->v1=g_e1env_program[noff];
-#if !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
     r->x0=(uint8_t)(c0<<3);
     r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
-#endif
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
     {
         uint8_t cls=k_e1env_depth_class[sid];
@@ -1201,16 +1199,8 @@ static int16_t opt_camera_z_shift(uint8_t inv,const TSPState *s)
 #endif
 static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TSPState *s)
 {
-#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
-    /* The exact envelope already solved the coarse ownership interval.  Reading
-     * c0/c1 back from pixel x0/x1, shifting, clamping, and rebuilding n was
-     * pure legacy work on every visible run. */
-    uint8_t c0 = r->c0, c1 = r->c1, c, profile = k_tspf_profile[r->sid];
-#else
     uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c, profile = k_tspf_profile[r->sid];
-#endif
     int16_t iq, step;
-#if !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
     if (c0 >= TSP_COLS)
         c0 = TSP_COLS - 1;
     if (c1 >= TSP_COLS)
@@ -1218,7 +1208,6 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
     if (c1 < c0)
         return;
     n = (uint8_t)(c1 - c0 + 1u);
-#endif
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
     /* The banked depth evaluator already knows c0/c1 and therefore the run
      * length. It returns the materializer's native Q6 start/step directly,
