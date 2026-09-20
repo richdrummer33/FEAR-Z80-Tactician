@@ -1077,8 +1077,6 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     r->sid=sid;
     r->v0=g_e1env_program[off];
     r->v1=g_e1env_program[noff];
-    r->x0=(uint8_t)(c0<<3);
-    r->x1=(uint8_t)(c1==19u ? 159u : (((uint8_t)(c1+1u)<<3)-1u));
 #if defined(__SDCC) && TSPF_E1M1_DEPTH_EDGE_LUT
     {
         uint8_t cls=k_e1env_depth_class[sid];
@@ -1091,8 +1089,6 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
         case 4u: (void)e1env_depth_edges_4((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
         default: (void)e1env_depth_edges_5((uint8_t)(cls&1u),s->yaw,c0,c1,dq4); break;
         }
-        r->inv0=g_e1env_depth_inv0;
-        r->inv1=g_e1env_depth_inv1;
         r->inv_mid=g_e1env_depth_mid;
         r->iq=g_e1env_depth_iq;
         r->step=g_e1env_depth_step;
@@ -1109,7 +1105,6 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     r->left_real=(uint8_t)(left_unclipped && (owner&0x20u));
     r->right_real=(uint8_t)(right_unclipped && (owner&0x40u));
     r->right_connected=(uint8_t)((owner&0x80u)!=0u);
-    r->depth_plane=0u;
     r->c0=c0; r->c1=c1;
 
     g_run_order[idx]=idx;
@@ -1187,7 +1182,11 @@ static int16_t opt_camera_z_shift(uint8_t inv,const TSPState *s)
 #endif
 static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TSPState *s)
 {
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+    uint8_t c0 = r->c0, c1 = r->c1, n, c, profile = k_tspf_profile[r->sid];
+#else
     uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c, profile = k_tspf_profile[r->sid];
+#endif
     int16_t iq, step;
     if (c0 >= TSP_COLS)
         c0 = TSP_COLS - 1;
