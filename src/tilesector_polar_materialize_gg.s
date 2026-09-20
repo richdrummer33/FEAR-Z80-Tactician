@@ -179,10 +179,27 @@ run_geom_done$:
         pop     bc
         ret
 
-; HL = signed Q6-ish accumulator + rounding bias. Return the exact C
-; clamp_u8i((value)>>6,255): arithmetic shift, negative -> 0, >255 -> 255.
+; HL = Q6 accumulator + rounding bias. Run interpolation begins from
+; uint8 inverse-depth endpoints, so the normal hot path is non-negative.
+; Convert positive 16-bit /64 directly from H:L instead of six shift pairs.
+; Keep the signed fallback for defensive compatibility with future callers.
 q6_round_u8$:
 _tsp_h_q6_round_u8::
+        bit     7, h
+        jr      nz, q6_signed_slow$
+        ld      a, h
+        cp      #64
+        jr      nc, q6_overflow$
+        add     a, a
+        add     a, a
+        ld      c, a
+        ld      a, l
+        rlca
+        rlca
+        and     #3
+        or      c
+        ret
+q6_signed_slow$:
         sra     h
         rr      l
         sra     h
@@ -237,6 +254,8 @@ profile_top_default_ready$:
         ld      d, #0
 
         ld      a, (#_g_polar_run_profile)
+        or      a
+        ret     z                       ; FULL is overwhelmingly hot
         cp      #1
         jr      z, profile_lintel$
         cp      #2
@@ -464,9 +483,17 @@ raster_done$:
         pop     bc
         ret
 
-; Signed floor(pixel/8). Arithmetic shifting gives true floor for negative Y.
+; Signed floor(pixel/8). Projected endpoints normally fit a sign-extended
+; byte (FULL top) or positive byte (bottom / special profiles). Handle those
+; directly in A; retain the 16-bit shift fallback for any future wider value.
 row_floor_hl$:
 _tsp_h_row_floor_hl::
+        ld      a, h
+        or      a
+        jr      z, row_floor_pos8$
+        inc     a
+        jr      z, row_floor_neg8$
+        ; wider signed fallback
         sra     h
         rr      l
         sra     h
@@ -474,6 +501,18 @@ _tsp_h_row_floor_hl::
         sra     h
         rr      l
         ld      a, l
+        ret
+row_floor_pos8$:
+        ld      a, l
+        srl     a
+        srl     a
+        srl     a
+        ret
+row_floor_neg8$:
+        ld      a, l
+        sra     a
+        sra     a
+        sra     a
         ret
 
 ; POLAR_STAGE21_FULL_VFLIP
