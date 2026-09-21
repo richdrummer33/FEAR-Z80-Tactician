@@ -1603,7 +1603,9 @@ seam_row_loop$:
         ; geometry-only FULL-mid cap-none tiles are IDs 15..18, whose low two
         ; bits are the old left/right border flags. Seam tiles are 423..458
         ; (0x01A7..0x01CA) and map back through the 36-entry mask vocabulary.
-        ld      a, 1(hl)
+        inc     hl
+        ld      a, (hl)
+        dec     hl
         or      a
         jr      z, seam_decode_full$
         cp      #1
