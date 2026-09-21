@@ -220,11 +220,19 @@ def main():
     masks,counts,empty=bake_masks(verts,segs,offs,runs,depth_layers)
 
     baseline="\n".join((root/f"src/generated/tilesector_polar_data_part0{i}.inc").read_text() for i in range(5))
-    keys=[]; anchors=[]; nx=[]; ny=[]; prof=[]; shade=[]; source_sids=[]
+    keys=[]; anchors=[]; nx=[]; ny=[]; proj_route=[]; prof=[]; shade=[]; source_sids=[]
     for sid,src,a,b,bias,profile in segs:
         keys.append(sid | (a<<5) | (b<<10))
         anchors.append(a)
         qx,qy=q5_normal(a,b,verts); nx.append(qx); ny.append(qy)
+        # Runtime route is the immutable projection family, not a semantic
+        # surface enum: 0=X+, 1=X-, 2=Y+, 3=Y-, 4=general/diagonal.
+        if qy==0 and qx==32: route=0
+        elif qy==0 and qx==-32: route=1
+        elif qx==0 and qy==32: route=2
+        elif qx==0 and qy==-32: route=3
+        else: route=4
+        proj_route.append(route)
         prof.append(profile); shade.append(bias); source_sids.append(src)
 
     pvs=[]
@@ -259,6 +267,7 @@ def main():
       emit_arr("uint8_t","k_tspf_seg_anchor",anchors,20),
       emit_arr("int8_t","k_tspf_nx_q5",nx,20),
       emit_arr("int8_t","k_tspf_ny_q5",ny,20),
+      emit_arr("uint8_t","k_tspf_proj_route",proj_route,20),
       emit_arr("uint8_t","k_tspf_profile",prof,20),
       emit_arr("int8_t","k_tspf_shade_bias",shade,20),
       emit_arr("uint8_t","k_e1full_source_sid",source_sids,20),
@@ -279,6 +288,11 @@ def main():
     mode="WINDOW_AB" if windows else "FULL_ONLY"
     print(f"E1FULL_BAKE_PASS mode={mode} source_vertices={len(verts0)} source_segments={len(segs0)} full_vertices={len(verts)} surfaces={len(segs)}")
     print(f"profiles FULL={full_count} LINTEL={lintel_count} RAISED=0 RISER={riser_count} windows={windows} stairs=0 floor_insets=0")
+    print("projection_routes X+=" + str(proj_route.count(0)) +
+          " X-=" + str(proj_route.count(1)) +
+          " Y+=" + str(proj_route.count(2)) +
+          " Y-=" + str(proj_route.count(3)) +
+          " GENERAL=" + str(proj_route.count(4)))
     print(f"pvs cells={COLS*ROWS} yaw_bins={YAW_BINS} bytes={len(pvs)} candidate_mean={sum(counts)/len(counts):.2f} min={min(counts)} max={max(counts)}")
     print(f"empty_unwalkable_masks={empty} depth_layers={depth_layers} uniform_rays={UNIFORM_RAYS}")
     print("source_sids="+",".join(map(str,source_sids)))
