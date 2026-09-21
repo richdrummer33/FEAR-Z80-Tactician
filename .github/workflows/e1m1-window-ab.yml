@@ -49,18 +49,8 @@ jobs:
           echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
           tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
 
-      - name: Build Gearsystem cycle-timeline tool
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
-          ROOT="$PWD/.toolchain/Gearsystem"
-          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
-            tools/frame/frame_timeline.cpp \
-            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
-            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Generate deterministic spin trace
         shell: bash
         run: |
