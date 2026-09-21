@@ -9,6 +9,7 @@ on:
       - experiment/e1m1-shared-corner-anchor
       - experiment/e1m1-subcolumn-corner-height
       - experiment/e1m1-corner-edge-vocabulary
+      - experiment/e1m1-edge-border-atlas
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
@@ -17,6 +18,7 @@ on:
       - src/tilesector_polar_ntupload_profiled_gg.s
       - src/tilesector_polar_ntupload_raw_gg.s
       - src/e1env_center_col_gg.s
+      - src/generated/tilesector_polar_edge_atlas.h
       - .github/workflows/e1m1-front-envelope-runtime-iter.yml
       - Makefile
       - experiments/adaptive_polar_field/screen_depth_plane_lut.py

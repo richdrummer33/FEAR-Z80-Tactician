@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
+#define TSP_EDGE_ATLAS_INIT 1
+#include "generated/tilesector_polar_edge_atlas.h"
+#undef TSP_EDGE_ATLAS_INIT
 
 #define C_BLACK 0u
 #define C_OUT   1u
@@ -93,8 +96,32 @@ static void emit_solid(uint16_t id,uint8_t color){uint8_t x,y;clear_tile();for(y
 static void emit_horizon(void){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x)paint_pixel(x,y,y==0u?C_BLACK:C_FLOOR);set_bkg_4bpp_data(TSP_TILE_HORIZON,1u,g_tile);}
 static uint8_t side_border(uint8_t border,uint8_t x){return (uint8_t)(((border&1u)&&x==0u)||((border&2u)&&x==7u));}
 static void emit_full(uint8_t shade,uint8_t cap,uint8_t border){uint8_t x,y,color=shade_color(shade);clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){uint8_t black=side_border(border,x);if(cap==TSP_CAP_TOP&&y==0u)black=1u;if(cap==TSP_CAP_BOTTOM&&y==7u)black=1u;paint_pixel(x,y,black?C_BLACK:color);}set_bkg_4bpp_data(TSP_TILE_FULL(shade,cap,border),1u,g_tile);}
-static void emit_edge(uint8_t shade,uint8_t oi,uint8_t si){uint8_t x,y,color=shade_color(shade);int8_t off=(int8_t)TSP_EDGE_OFF_MIN+(int8_t)oi;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){int8_t line=(int8_t)(off+k_edge_lut[si][x]);uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:color);paint_pixel(x,y,c);}set_bkg_4bpp_data(TSP_TILE_EDGE(shade,oi,si),1u,g_tile);}
-static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);}
+static void emit_edge_to(uint16_t id,uint8_t shade,uint8_t oi,uint8_t si,uint8_t border){
+    uint8_t x,y,color=shade_color(shade);int8_t off=(int8_t)TSP_EDGE_OFF_MIN+(int8_t)oi;
+    clear_tile();
+    for(y=0;y<8u;++y)for(x=0;x<8u;++x){
+        int8_t line=(int8_t)(off+k_edge_lut[si][x]);
+        uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:color);
+        if(side_border(border,x)&&(int8_t)y>=line)c=C_BLACK;
+        paint_pixel(x,y,c);
+    }
+    set_bkg_4bpp_data(id,1u,g_tile);
+}
+static void init_tiles(void){
+    uint8_t s,c,b,o,m,g;uint16_t id;
+    emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();
+    for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
+    for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){
+        g=k_tsp_edge_geom_map[(uint8_t)(o*8u+m)];
+        id=(uint16_t)(TSP_EDGE_ATLAS_PLAIN_BASE+(uint16_t)s*TSP_EDGE_ATLAS_SHADE_STRIDE+g);
+        emit_edge_to(id,s,o,m,0u);
+    }
+    for(b=1u;b<=2u;++b)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){
+        g=k_tsp_edge_geom_map[(uint8_t)(o*8u+m)];
+        id=k_tsp_edge_border_phys[(uint16_t)(b-1u)*TSP_EDGE_ATLAS_GEOM_COUNT+g];
+        emit_edge_to(id,1u,o,m,b);
+    }
+}
 static uint16_t upload_dirty_map(void){
     tsp_polar_nt_upload_dirty();
 #if TSPF_PROFILE_HOOKS
@@ -131,9 +158,8 @@ static uint8_t read_input(void){
 #endif
 
 void main(void){
-    /* 423 generated 4-bpp patterns occupy VRAM through ~0x34DF. Keep the
-     * visible name table in the non-overlapping 0x3800 region. The row uploader
-     * targets the matching 0x38xx addresses. */
+    /* Compact atlas: 399 patterns = 12768 bytes, leaving
+     * 1568 bytes before the 0x3800 name table. */
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
     tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
     g_ts_vblank_pending=0u;
