@@ -79,13 +79,8 @@ jobs:
           done
           wc -c build/transition-proof/patch-raw.gg
 
-      - name: Build Gearsystem profilers
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Profile actual Z80 patch executor
         shell: bash
         run: |
