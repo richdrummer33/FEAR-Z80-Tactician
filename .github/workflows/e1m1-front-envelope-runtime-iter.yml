@@ -23,6 +23,7 @@ on:
       - tools/e1env_local_bearing_field.py
       - tools/e1env_plane_meta.py
       - src/e1env_local_bearing_eval_gg.s
+      - tools/frame/frame_timeline.cpp
   workflow_dispatch:
 
 concurrency:

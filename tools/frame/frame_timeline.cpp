@@ -176,8 +176,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "no _g_ts_loop_count\n"); return 3;
     }
     u16 s_state = 0, s_map = 0, s_env_phase = 0;
+    u16 s_dirty_min = 0, s_vblank_bursts = 0, s_vblank_missed = 0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
     const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
+    const bool have_dirty_min =
+        find_symbol(noi, "_g_polar_nt_row_min", s_dirty_min) || find_symbol(noi, "g_polar_nt_row_min", s_dirty_min);
+    const bool have_vblank_stats =
+        (find_symbol(noi, "_g_ts_vblank_bursts", s_vblank_bursts) || find_symbol(noi, "g_ts_vblank_bursts", s_vblank_bursts)) &&
+        (find_symbol(noi, "_g_ts_vblank_missed", s_vblank_missed) || find_symbol(noi, "g_ts_vblank_missed", s_vblank_missed));
     const bool have_env_phase =
         find_symbol(noi, "_g_tspf_env_phase", s_env_phase) || find_symbol(noi, "g_tspf_env_phase", s_env_phase);
 
@@ -237,12 +243,16 @@ int main(int argc, char** argv) {
         uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t envph[ENV_PHASE_COUNT]; uint64_t total;
         int16_t x_q4, y_q4, z_q4; uint8_t yaw;
         uint64_t map_fnv64;
+        uint8_t dirty_rows_pending;
+        uint16_t vblank_bursts, vblank_missed;
     };
     std::vector<Frame> frames;
     std::vector<std::vector<uint8_t>> map_snaps;
     Frame cur{}; std::memset(&cur, 0, sizeof cur);
     uint64_t prev = core.GetMasterClockCycles();
     unsigned seen_loops = 0, last_loop = 0xFFFFu;
+    uint16_t last_vblank_bursts = have_vblank_stats ? rd16(mem, s_vblank_bursts) : 0u;
+    uint16_t last_vblank_missed = have_vblank_stats ? rd16(mem, s_vblank_missed) : 0u;
     uint64_t steps = 0;
     const uint64_t limit = 6000000000ull;
 
@@ -279,6 +289,20 @@ int main(int argc, char** argv) {
                     cur.yaw = mem->DebugRetrieve((u16)(s_state + 6u));
                 }
                 if (have_map) cur.map_fnv64 = fnv1a64(mem, s_map, 20u * 18u * 2u);
+                if (have_dirty_min) {
+                    uint8_t pending = 0u;
+                    for (unsigned dr = 0; dr < 18u; ++dr)
+                        if (mem->DebugRetrieve((u16)(s_dirty_min + dr)) != 0xffu) ++pending;
+                    cur.dirty_rows_pending = pending;
+                }
+                if (have_vblank_stats) {
+                    const uint16_t vb = rd16(mem, s_vblank_bursts);
+                    const uint16_t vm = rd16(mem, s_vblank_missed);
+                    cur.vblank_bursts = (uint16_t)(vb - last_vblank_bursts);
+                    cur.vblank_missed = (uint16_t)(vm - last_vblank_missed);
+                    last_vblank_bursts = vb;
+                    last_vblank_missed = vm;
+                }
                 if (seen_loops >= warmup) {
                     frames.push_back(cur);
                     if (map_dump_path && have_map) {
@@ -302,7 +326,7 @@ int main(int argc, char** argv) {
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
         if (have_env_phase)
             for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%s",ENV_PHASE_NAME[e]);
-        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64\n");
+        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -312,9 +336,10 @@ int main(int argc, char** argv) {
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
             if (have_env_phase)
                 for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%llu",(unsigned long long)f.envph[e]);
-            std::fprintf(csv, ",%d,%d,%d,%u,%016llx\n",
+            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u\n",
                 (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
-                (unsigned long long)f.map_fnv64);
+                (unsigned long long)f.map_fnv64,
+                (unsigned)f.dirty_rows_pending, (unsigned)f.vblank_bursts, (unsigned)f.vblank_missed);
         }
         std::fclose(csv);
     }
@@ -335,6 +360,23 @@ int main(int argc, char** argv) {
     for (auto& f : frames) tot.push_back(f.total);
     double mean = 0; for (auto t : tot) mean += (double)t; mean /= tot.size();
 
+    if (have_dirty_min || have_vblank_stats) {
+        double dirty_mean = 0.0, bursts_mean = 0.0, missed_mean = 0.0;
+        unsigned dirty_worst = 0u, dirty_zero = 0u, missed_total = 0u;
+        for (const auto& f : frames) {
+            dirty_mean += f.dirty_rows_pending;
+            bursts_mean += f.vblank_bursts;
+            missed_mean += f.vblank_missed;
+            if (f.dirty_rows_pending > dirty_worst) dirty_worst = f.dirty_rows_pending;
+            if (!f.dirty_rows_pending) ++dirty_zero;
+            missed_total += f.vblank_missed;
+        }
+        dirty_mean /= frames.size(); bursts_mean /= frames.size(); missed_mean /= frames.size();
+        std::printf("vblank pipeline: bursts/update=%.2f missed/update=%.3f missed_total=%u "
+                    "dirty_rows mean=%.2f worst=%u empty=%.1f%%\n",
+                    bursts_mean, missed_mean, missed_total, dirty_mean, dirty_worst,
+                    100.0 * dirty_zero / frames.size());
+    }
     std::printf("frame timeline: %zu frames (warmup %u discarded)\n", frames.size(), warmup);
     std::printf("Game Gear budget at 60 Hz is %.0f T-states a frame, %.0f at 30 Hz\n\n",
                 FRAME_T_60, 2 * FRAME_T_60);
