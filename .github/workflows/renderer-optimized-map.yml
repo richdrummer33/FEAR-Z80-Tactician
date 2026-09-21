@@ -49,13 +49,8 @@ jobs:
           stat -c 'rom_bytes=%s' build/optimized-map/GG-Renderer-Optimized-Course.gg | tee build/optimized-map/ROM-size.txt
           git rev-parse HEAD > build/optimized-map/SOURCE_COMMIT.txt
 
-      - name: Build Gearsystem verification tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Prove boot, traversal, turning and both step transitions
         shell: bash
         run: |
