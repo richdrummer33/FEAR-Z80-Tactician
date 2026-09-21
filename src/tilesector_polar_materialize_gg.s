@@ -234,14 +234,13 @@ profile_top_default_ready$:
         ld      e, a
         ld      d, #0
 
-        ld      a, (#_g_polar_run_profile)
-        cp      #1
-        jr      z, profile_lintel$
-        cp      #2
-        jr      z, profile_raised$
-        cp      #3
-        ret     nz
+        ; EXPERIMENT/BAKED-DISPATCH: this branch's runtime stream contains
+        ; FULL surfaces only.  The bake has already made the profile decision,
+        ; so returning here replaces the old 3-way runtime discriminator.
+        ret
 
+        ; Generic profile handlers retained below as dead reference code for
+        ; easy diff/rebase while this is an experimental branch.
         ; RISER top = 72 + half - (half>>2).
         ld      a, b
         srl     a
@@ -300,9 +299,9 @@ _tsp_polar_surface_column_fast::
 
         ; POLAR_STAGE21_FULL_VFLIP: exact FULL bottom rows are 17-top rows.
         ; Do not floor two pixel endpoints that are already implied by the top.
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      z, polar_endpoint_rows_ready$
+        ; EXPERIMENT/BAKED-DISPATCH: FULL is guaranteed by the baked stream.
+        ; Bottom rows are implied by the top; skip the profile load/test.
+        jp      polar_endpoint_rows_ready$
         ld      hl, (#_g_polar_mat_bot_l)
         call    row_floor_hl$
         ld      (#r_bot_l_row$), a
@@ -342,9 +341,7 @@ top_minmax_done$:
 
         ; Exact FULL mirror: bottom_min=17-top_max,
         ; bottom_max=17-top_min. Asymmetric profiles keep generic comparison.
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      nz, polar_bot_generic$
+        ; EXPERIMENT/BAKED-DISPATCH: FULL mirror is baked, so no type test.
         ld      a, (#r_top_max$)
         ld      c, a
         ld      a, #17
@@ -427,21 +424,8 @@ _tsp_probe_ret_skip::
         jp      z, raster_done$
 polar_cov_done$:
 
-        ; FULL is exact hardware symmetry: calculate each top edge word once
-        ; and emit its floor partner with VFLIP+palette. Other profiles retain
-        ; independent top/bottom vector edges.
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      z, polar_draw_symfull$
-        xor     a
-        call    prepare_edge$          ; top
-        ld      a, #1
-        call    prepare_edge$          ; bottom
-        call    draw_plain_interior$
-        call    ret_record_clean$
-        jr      raster_done$
-
-polar_draw_symfull$:
+        ; EXPERIMENT/BAKED-DISPATCH: FULL is exact hardware symmetry and the
+        ; bake has already selected this kernel family. No runtime profile test.
         call    prepare_symfull_edges$
         call    draw_plain_interior$
         call    ret_record_clean$
@@ -1545,8 +1529,7 @@ ret_end_group$:
 ret_run_begin$:
 _tsp_h_ret_run_begin::
         ld      a, (#_g_polar_run_sid)
-        cp      #32
-        jp      nc, ret_run_disable$
+        ; EXPERIMENT/BAKED-DISPATCH: bake emits surface IDs 0..29 only.
         call    ret_bitmask$            ; HL=&live[group], C=mask
         ld      a, (hl)
         and     c
@@ -1793,9 +1776,7 @@ ret_put5$:
 ; ---------------------------------------------------------------------------
 ret_try_patch$:
 _tsp_h_ret_try_patch::
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jp      nz, ret_patch_no$
+        ; EXPERIMENT/BAKED-DISPATCH: only FULL surfaces enter this kernel.
         ld      hl, (#r_ret_base$)
         ld      a, h
         or      l
@@ -2095,9 +2076,7 @@ _tsp_h_ret_record_clean::
         ld      bc, #6
         add     hl, bc
         ld      (hl), #0xff
-        ld      a, (#_g_polar_run_profile)
-        or      a
-        jr      nz, ret_rc_out$
+        ; EXPERIMENT/BAKED-DISPATCH: FULL eligibility is guaranteed by bake.
         ld      a, (#r_occluded$)
         or      a
         jr      nz, ret_rc_out$
