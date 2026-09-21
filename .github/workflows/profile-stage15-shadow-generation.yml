@@ -95,12 +95,8 @@ jobs:
       - name: Host acceptance — control
         run: make tilesector-test tilesector-host
 
-      - name: Build cycle profiler
-        shell: bash
-        run: |
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Build Stage 23 control ROM
         run: |
           make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
