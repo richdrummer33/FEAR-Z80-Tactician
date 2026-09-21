@@ -55,6 +55,7 @@
         .globl  _tsp_h_row_floor_hl
         .globl  _tsp_h_profile_half
         .globl  _tsp_h_full_top_half
+        .globl  _tsp_h_full_q6_top_row
         .globl  _tsp_h_q6_round_u8
         .globl  _tsp_h_prepare_edge
         .globl  _tsp_h_prepare_symfull_edges
@@ -100,12 +101,11 @@ run_geom_loop$:
         ld      hl, (#_g_polar_run_iq)
         ld      de, #32
         add     hl, de
-        call    q6_round_u8$
-        srl     a
-        ld      (#r_run_halfl$), a
-        call    full_top_half$
-        ld      (#_g_polar_mat_top_l), hl
+        call    full_q6_top_row$        ; A=row, C=half, HL=signed top
         ld      (#r_top_l_row$), a
+        ld      a, c
+        ld      (#r_run_halfl$), a
+        ld      (#_g_polar_mat_top_l), hl
 
         ; Right endpoint uses iq+step, exactly matching the C column path.
         ld      hl, (#_g_polar_run_iq)
@@ -113,12 +113,11 @@ run_geom_loop$:
         add     hl, de
         ld      de, #32
         add     hl, de
-        call    q6_round_u8$
-        srl     a
-        ld      (#r_run_halfr$), a
-        call    full_top_half$
-        ld      (#_g_polar_mat_top_r), hl
+        call    full_q6_top_row$
         ld      (#r_top_r_row$), a
+        ld      a, c
+        ld      (#r_run_halfr$), a
+        ld      (#_g_polar_mat_top_r), hl
 
         ; Physical-chain border bits: 1 at the true left endpoint, 2 at the
         ; true right endpoint. Interior coarse columns carry no border bits.
@@ -222,8 +221,43 @@ q6_overflow$:
         ld      a, #255
         ret
 
-; A = FULL half height (inv>>1, 0..127). Returns only signed HL=71-half.
-; Bottom is exactly 143-top and is never materialized as a pixel endpoint.
+; FULL-only exact-envelope fused helper.
+; Input HL is non-negative Q6 inverse depth PLUS the rounding bias 32.
+; Exact depth interpolation stays between its two uint8 endpoints, so this
+; hot path can neither be negative nor exceed 255 after >>6.  Outputs:
+;   C = half height = rounded_inv >> 1
+;   HL = signed top pixel = 71-half
+;   A = signed tile row = floor(top/8)
+full_q6_top_row$:
+_tsp_h_full_q6_top_row::
+        ; Positive 16-bit >>6 without six shift pairs.
+        ld      a, h
+        add     a, a
+        add     a, a
+        ld      c, a
+        ld      a, l
+        rlca
+        rlca
+        and     #3
+        or      c                       ; rounded inverse depth
+        srl     a                       ; FULL half height
+        ld      c, a
+        ld      a, #71
+        sub     c
+        ld      l, a
+        ld      h, #0
+        bit     7, l
+        jr      z, full_q6_sign_ready$
+        dec     h
+full_q6_sign_ready$:
+        sra     a
+        sra     a
+        sra     a
+        ret
+
+; A = FULL half height (inv>>1, 0..127). Returns signed HL=71-half and row A.
+; Retained for generic/reference call sites; hot exact-envelope traversal uses
+; full_q6_top_row$ above.
 full_top_half$:
 _tsp_h_full_top_half::
         ld      c, a
