@@ -5,7 +5,6 @@
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
 #if defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
-#define TSP_EDGE_VOCAB_INCLUDE_BORDER 1
 #include "e1m1_edge_vocab.h"
 #endif
 
@@ -105,8 +104,8 @@ static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT
      * then spend the recovered slots on left/right EDGE+vertical-border
      * combinations. Border=3 (one-column faces) deliberately remains a later
      * thin-face rung. 435 patterns stay below the 0x3800 name-table boundary. */
-    for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)s*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+k_tsp_edge_unique_idx[sem]);emit_edge_at(id,s,o,m,0u);}
-    for(b=1u;b<3u;++b)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_BORDER_BASE+k_tsp_edge_border_idx[(uint16_t)(b-1u)*128u+sem]);emit_edge_at(id,1u,o,m,b);}
+    for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)s*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);emit_edge_at(id,s,o,m,0u);}
+    for(b=1u;b<3u;++b)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_BORDER_BASE+(b==1u?g_tsp_edge_border_b1_home[sem]:g_tsp_edge_border_b2_home[sem]));emit_edge_at(id,1u,o,m,b);}
 #else
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);
 #endif

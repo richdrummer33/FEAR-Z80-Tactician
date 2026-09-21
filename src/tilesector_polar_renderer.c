@@ -1259,7 +1259,7 @@ static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint
     {
         uint8_t sem=(uint8_t)(((uint8_t)(off-TSP_EDGE_OFF_MIN)<<3)+mag);
         uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+
-            (uint16_t)shade*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+k_tsp_edge_unique_idx[sem]);
+            (uint16_t)shade*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);
         return (uint16_t)(id|attr);
     }
 #else

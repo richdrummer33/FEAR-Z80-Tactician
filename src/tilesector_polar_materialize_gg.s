@@ -31,6 +31,9 @@
         .globl  _tsp_polar_p_fill
         .globl  _tsp_polar_p_symtop
         .globl  _tsp_polar_p_symbot
+        .globl  _g_tsp_edge_unique_idx_home
+        .globl  _g_tsp_edge_border_b1_home
+        .globl  _g_tsp_edge_border_b2_home
         .globl  _tsp_probe_sym_edge_key
         .globl  _tsp_probe_edge_slope
         .globl  _tsp_probe_local_index
@@ -1572,7 +1575,7 @@ edge_lookup_border_canon$:
         add     a, a                    ; *2 pointer entry
         ld      l, a
         ld      h, #0
-        ld      de, #edge_border_ptrs$
+        ld      de, #edge_border_home_ptrs$
         add     hl, de
         ld      e, (hl)
         inc     hl
@@ -1591,7 +1594,7 @@ edge_lookup_border_canon$:
 edge_lookup_plain$:
         ld      l, c
         ld      h, #0
-        ld      de, #edge_unique_idx$
+        ld      de, #_g_tsp_edge_unique_idx_home
         add     hl, de
         ld      a, (hl)                 ; unique normal pattern 0..79
         ld      l, a
@@ -1621,37 +1624,8 @@ edge_lookup_attrs$:
         pop     bc
         ret
 
-edge_unique_idx$:
-        .db     0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,2
-        .db     0,0,0,0,0,1,2,3,0,0,0,0,1,4,3,5
-        .db     0,0,0,6,4,7,8,9,0,0,6,10,11,12,13,14
-        .db     0,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29
-        .db     30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45
-        .db     46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61
-        .db     62,63,64,65,66,67,68,68,69,70,71,72,73,73,74,74
-        .db     75,76,77,77,78,78,78,78,79,79,79,79,79,79,79,79
-
-edge_border_ptrs$:
-        .dw     edge_border_b1$, edge_border_b2$
-edge_border_b1$:
-        .db     0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,2
-        .db     0,0,0,0,0,1,2,3,0,0,0,0,1,4,3,5
-        .db     0,0,0,6,4,7,8,9,0,0,6,10,11,12,13,14
-        .db     0,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29
-        .db     30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45
-        .db     46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61
-        .db     62,63,64,65,66,67,68,68,69,70,71,72,73,73,74,74
-        .db     75,76,74,74,77,77,77,77,77,77,77,77,77,77,77,77
-
-edge_border_b2$:
-        .db     78,78,78,78,78,78,78,78,78,78,78,78,78,78,78,79
-        .db     78,78,78,78,78,78,79,80,78,78,78,78,78,81,80,82
-        .db     78,78,78,79,81,83,84,85,78,78,79,86,87,88,89,90
-        .db     78,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105
-        .db     106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121
-        .db     122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137
-        .db     138,139,140,141,142,143,144,144,145,146,147,148,149,149,150,150
-        .db     151,152,153,153,154,154,154,154,155,155,155,155,155,155,155,155
+edge_border_home_ptrs$:
+        .dw     _g_tsp_edge_border_b1_home, _g_tsp_edge_border_b2_home
 
 ; ---------------------------------------------------------------------------
 ; Retained swept-boundary state (rung 26).
