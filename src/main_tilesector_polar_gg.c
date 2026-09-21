@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <gbdk/platform.h>
 #include "tilesector_polar.h"
-#if defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
+#if (defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB) || (defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB)
 #include "e1m1_edge_vocab.h"
 #endif
 
@@ -25,6 +25,40 @@ static const int8_t k_edge_lut[8][8] = {
     {0,0,0,0,0,0,0,0},{0,0,0,0,1,1,1,1},{0,0,1,1,1,1,2,2},{0,0,1,1,2,2,3,3},
     {0,1,1,2,2,3,3,4},{0,1,1,2,3,4,4,5},{0,1,2,3,3,4,5,6},{0,1,2,3,4,5,6,7}
 };
+#if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+static const uint8_t k_edge_step_p99[29][8] = {
+    {0,0,0,0,0,0,0,0},
+    {0,0,0,0,1,1,1,1},
+    {0,0,1,1,1,1,2,2},
+    {0,0,1,1,2,2,3,3},
+    {0,1,1,2,2,3,3,4},
+    {0,1,1,2,3,4,4,5},
+    {0,1,2,3,3,4,5,6},
+    {0,1,2,3,4,5,6,7},
+    {0,1,2,3,5,6,7,8},
+    {0,1,3,4,5,6,8,9},
+    {0,1,3,4,6,7,9,10},
+    {0,2,3,5,6,8,9,11},
+    {0,2,3,5,7,9,10,12},
+    {0,2,4,6,7,9,11,13},
+    {0,2,4,6,8,10,12,14},
+    {0,2,4,6,9,11,13,15},
+    {0,2,5,7,9,11,14,16},
+    {0,2,5,7,10,12,15,17},
+    {0,3,5,8,10,13,15,18},
+    {0,3,5,8,11,14,16,19},
+    {0,3,6,9,11,14,17,20},
+    {0,3,6,9,12,15,18,21},
+    {0,3,6,9,13,16,19,22},
+    {0,3,7,10,13,16,20,23},
+    {0,3,7,10,14,17,21,24},
+    {0,4,7,11,14,18,21,25},
+    {0,4,7,11,15,19,22,26},
+    {0,4,8,12,15,19,23,27},
+    {0,4,8,12,16,20,24,28},
+};
+#endif
+
 
 TSPState g_state;
 uint16_t g_map[TSP_MAP_CELLS];
@@ -95,18 +129,23 @@ static void paint_pixel(uint8_t x,uint8_t y,uint8_t color){uint8_t p,bit=(uint8_
 static void emit_solid(uint16_t id,uint8_t color){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x)paint_pixel(x,y,color);set_bkg_4bpp_data(id,1u,g_tile);}
 static void emit_horizon(void){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x)paint_pixel(x,y,y==0u?C_BLACK:C_FLOOR);set_bkg_4bpp_data(TSP_TILE_HORIZON,1u,g_tile);}
 static uint8_t side_border(uint8_t border,uint8_t x){return (uint8_t)(((border&1u)&&x==0u)||((border&2u)&&x==7u));}
-static void emit_full(uint8_t shade,uint8_t cap,uint8_t border){uint8_t x,y,color=shade_color(shade);clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){uint8_t black=side_border(border,x);if(cap==TSP_CAP_TOP&&y==0u)black=1u;if(cap==TSP_CAP_BOTTOM&&y==7u)black=1u;paint_pixel(x,y,black?C_BLACK:color);}set_bkg_4bpp_data(TSP_TILE_FULL(shade,cap,border),1u,g_tile);}
+static void emit_full_at(uint16_t id,uint8_t shade,uint8_t cap,uint8_t border){uint8_t x,y,color=shade_color(shade);clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){uint8_t black=side_border(border,x);if(cap==TSP_CAP_TOP&&y==0u)black=1u;if(cap==TSP_CAP_BOTTOM&&y==7u)black=1u;paint_pixel(x,y,black?C_BLACK:color);}set_bkg_4bpp_data(id,1u,g_tile);}
+static void emit_full(uint8_t shade,uint8_t cap,uint8_t border){emit_full_at(TSP_TILE_FULL(shade,cap,border),shade,cap,border);}
 static void emit_edge_at(uint16_t id,uint8_t shade,uint8_t oi,uint8_t si,uint8_t border){uint8_t x,y,color=shade_color(shade);int8_t off=(int8_t)TSP_EDGE_OFF_MIN+(int8_t)oi;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){int8_t line=(int8_t)(off+k_edge_lut[si][x]);uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:color);if(side_border(border,x))c=C_BLACK;paint_pixel(x,y,c);}set_bkg_4bpp_data(id,1u,g_tile);}
 static void emit_edge(uint8_t shade,uint8_t oi,uint8_t si){emit_edge_at(TSP_TILE_EDGE(shade,oi,si),shade,oi,si,0u);}
-static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
-#if defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
-    /* Repack the 384 semantic EDGE tiles into 240 unique physical patterns,
-     * then spend the recovered slots on left/right EDGE+vertical-border
-     * combinations. Border=3 (one-column faces) deliberately remains a later
-     * thin-face rung. 435 patterns stay below the 0x3800 name-table boundary. */
+static void emit_edge_p99_at(uint16_t id,int8_t off,uint8_t mag,uint8_t border){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){int8_t line=(int8_t)(off+(int8_t)k_edge_step_p99[mag][x]);uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:C_MID);if(side_border(border,x))c=C_BLACK;paint_pixel(x,y,c);}set_bkg_4bpp_data(id,1u,g_tile);}
+static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();
+#if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+    int8_t off;uint16_t wi=0u;
+    for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full_at((uint16_t)(TSP_TILE_FULL_COMPACT_BASE+(uint16_t)c*4u+b),1u,c,b);
+    for(m=0u;m<=TSP_P99_EDGE_MAX;++m)for(off=-28;off<=8;++off)emit_edge_p99_at(g_tsp_edge_p99_words_home[wi++],off,m,0u);
+    for(b=1u;b<3u;++b)for(o=0u;o<16u;++o)for(m=0u;m<8u;++m){uint16_t sem=(uint16_t)o*8u+m;uint16_t id=(b==1u?g_tsp_edge_border_b1_words_home[sem]:g_tsp_edge_border_b2_words_home[sem]);emit_edge_p99_at(id,(int8_t)o-7,m,b);}
+#elif defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
+    for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)s*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);emit_edge_at(id,s,o,m,0u);}
     for(b=1u;b<3u;++b)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_BORDER_BASE+(b==1u?g_tsp_edge_border_b1_home[sem]:g_tsp_edge_border_b2_home[sem]));emit_edge_at(id,1u,o,m,b);}
 #else
+    for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);
 #endif
 }
@@ -140,7 +179,9 @@ static uint8_t read_input(void){
     if(pad&J_B)input|=TSP_INPUT_STRAFE_LEFT;if(pad&J_A)input|=TSP_INPUT_STRAFE_RIGHT;
     /* Profiling toggle: START cycles core -> shade -> shade+AO. Holding B+START
      * jumps directly to geometry-only; holding A+START jumps directly to AO. */
+#if !(defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB)
     if(pressed&J_START){if(pad&J_B)g_tspf_appearance_mode=0u;else if(pad&J_A)g_tspf_appearance_mode=2u;else {++g_tspf_appearance_mode;if(g_tspf_appearance_mode>2u)g_tspf_appearance_mode=0u;}}
+#endif
     g_prev_pad=pad;return input;
 }
 #endif

@@ -14,7 +14,7 @@ BANKREF(tilesector_polar_renderer_bank)
 #include <stdint.h>
 #include <string.h>
 #include "tilesector_polar.h"
-#if defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
+#if (defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB) || (defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB)
 #include "e1m1_edge_vocab.h"
 #endif
 #if defined(TSPF_OPTIMIZED_MAP)
@@ -1235,41 +1235,32 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
 
 static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom)
 {
-    uint16_t attr = 0;
-    uint8_t mag;
-    int8_t off;
-    if (bottom)
-    {
-        local_left = (int16_t)(7 - local_left);
-        slope = (int8_t)-slope;
-        attr = (uint16_t)(TSP_ATTR_FLIPY | TSP_ATTR_PALETTE);
-    }
-    if (slope < 0)
-    {
-        mag = (uint8_t)(-slope);
-        local_left = (int16_t)(local_left - mag);
-        attr |= TSP_ATTR_FLIPX;
-    }
-    else
-        mag = (uint8_t)slope;
-    if (mag >= TSP_EDGE_SLOPE_COUNT)
-        mag = TSP_EDGE_SLOPE_COUNT - 1u;
-    off = clamp_s8(local_left, TSP_EDGE_OFF_MIN, (int8_t)(TSP_EDGE_OFF_MIN + TSP_EDGE_OFF_COUNT - 1));
-#if defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
-    {
-        uint8_t sem=(uint8_t)(((uint8_t)(off-TSP_EDGE_OFF_MIN)<<3)+mag);
-        uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+
-            (uint16_t)shade*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);
-        return (uint16_t)(id|attr);
-    }
+    uint16_t attr=0u;uint8_t mag;int8_t off;
+    if(bottom){local_left=(int16_t)(7-local_left);slope=(int8_t)-slope;attr=(uint16_t)(TSP_ATTR_FLIPY|TSP_ATTR_PALETTE);}
+    if(slope<0){mag=(uint8_t)(-slope);local_left=(int16_t)(local_left-mag);attr|=TSP_ATTR_FLIPX;}else mag=(uint8_t)slope;
+#if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+    if(mag>TSP_P99_EDGE_MAX)mag=TSP_P99_EDGE_MAX;
+    off=clamp_s8(local_left,-28,8);
+    (void)shade;
+    return (uint16_t)(g_tsp_edge_p99_words_home[(uint16_t)mag*37u+(uint8_t)(off+28)]|attr);
 #else
-    return (uint16_t)(TSP_TILE_EDGE(shade, (uint8_t)(off - TSP_EDGE_OFF_MIN), mag) | attr);
+    if(mag>=TSP_EDGE_SLOPE_COUNT)mag=TSP_EDGE_SLOPE_COUNT-1u;
+    off=clamp_s8(local_left,TSP_EDGE_OFF_MIN,(int8_t)(TSP_EDGE_OFF_MIN+TSP_EDGE_OFF_COUNT-1));
+#if defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
+    {uint8_t sem=(uint8_t)(((uint8_t)(off-TSP_EDGE_OFF_MIN)<<3)+mag);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)shade*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);return (uint16_t)(id|attr);}
+#else
+    return (uint16_t)(TSP_TILE_EDGE(shade,(uint8_t)(off-TSP_EDGE_OFF_MIN),mag)|attr);
+#endif
 #endif
 }
 static int8_t row_floor(int16_t y) { return y >= 0 ? (int8_t)(y >> 3) : (int8_t)-(((-y) + 7) >> 3); }
 static void draw_edge(uint16_t *out, uint8_t col, int16_t yl, int16_t yr, uint8_t shade, uint8_t bottom)
 {
-    int8_t slope = clamp_s8((int16_t)(yr - yl), -7, 7), r0 = row_floor(yl < yr ? yl : yr), r1 = row_floor(yl > yr ? yl : yr), r;
+#if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+    int8_t slope=clamp_s8((int16_t)(yr-yl),-28,28),r0=row_floor(yl<yr?yl:yr),r1=row_floor(yl>yr?yl:yr),r;
+#else
+    int8_t slope=clamp_s8((int16_t)(yr-yl),-7,7),r0=row_floor(yl<yr?yl:yr),r1=row_floor(yl>yr?yl:yr),r;
+#endif
     if (r0 < 0)
         r0 = 0;
     if (r1 >= (int8_t)TSP_ROWS)
@@ -1287,7 +1278,11 @@ static void draw_full(uint16_t *out, uint8_t col, int8_t first, int8_t last, uin
     if (first > last)
         return;
     for (r = first; r <= last; ++r)
-        put_cell(out, (uint8_t)r, col, TSP_TILE_FULL(shade, TSP_CAP_NONE, border));
+#if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+        put_cell(out,(uint8_t)r,col,(uint16_t)(TSP_TILE_FULL_COMPACT_BASE+border));
+#else
+        put_cell(out,(uint8_t)r,col,TSP_TILE_FULL(shade,TSP_CAP_NONE,border));
+#endif
 }
 #if defined(TSPF_OPTIMIZED_MAP)
 static int16_t opt_camera_z_shift(uint8_t inv,const TSPState *s)

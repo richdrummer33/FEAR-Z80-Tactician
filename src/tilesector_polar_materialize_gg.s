@@ -31,9 +31,9 @@
         .globl  _tsp_polar_p_fill
         .globl  _tsp_polar_p_symtop
         .globl  _tsp_polar_p_symbot
-        .globl  _g_tsp_edge_unique_idx_home
-        .globl  _g_tsp_edge_border_b1_home
-        .globl  _g_tsp_edge_border_b2_home
+        .globl  _g_tsp_edge_p99_row_ptrs_home
+        .globl  _g_tsp_edge_border_b1_words_home
+        .globl  _g_tsp_edge_border_b2_words_home
         .globl  _tsp_probe_sym_edge_key
         .globl  _tsp_probe_edge_slope
         .globl  _tsp_probe_local_index
@@ -623,14 +623,14 @@ _tsp_h_prepare_symfull_edges::
         ld      a, l
         bit     7, a
         jr      nz, sym_slope_negative$
-        cp      #8
+        cp      #29
         jr      c, sym_slope_store$
-        ld      a, #7
+        ld      a, #28
         jr      sym_slope_store$
 sym_slope_negative$:
-        cp      #0xF9
+        cp      #0xE4
         jr      nc, sym_slope_store$
-        ld      a, #0xF9
+        ld      a, #0xE4
 sym_slope_store$:
         ld      (#r_edge_slope$), a
         ld      a, (#r_top_min$)
@@ -694,6 +694,7 @@ sym_rows_ready$:
         ld      e, a
         ld      a, (#r_edge_left$)
         sub     e
+        ld      (#r_edge_local_raw$), a
         cp      #0x80
         jr      c, sym_local_positive$
         cp      #0xF1
@@ -781,14 +782,14 @@ prep_slope$:
         ld      a, l                    ; signed slope, clamp exactly like C
         bit     7, a
         jr      nz, slope_negative$
-        cp      #8
+        cp      #29
         jr      c, slope_store$
-        ld      a, #7
+        ld      a, #28
         jr      slope_store$
 slope_negative$:
-        cp      #0xF9                  ; -7
+        cp      #0xE4                  ; -28
         jr      nc, slope_store$
-        ld      a, #0xF9
+        ld      a, #0xE4
 slope_store$:
         ld      (#r_edge_slope$), a
         ; Polar path may cross more than two tile rows at steep/near
@@ -846,7 +847,8 @@ edge_row_open$:
         ld      e, a
         ld      a, (#r_edge_left$)
         sub     e
-        ; Conservative clamp into LUT local domain [-15,+15].
+        ld      (#r_edge_local_raw$), a
+        ; Conservative legacy probe index; P99 lookup uses r_edge_local_raw$.
         cp      #0x80
         jr      c, local_positive$
         cp      #0xF1                  ; -15
@@ -1076,19 +1078,7 @@ _tsp_probe_end_fill_open::
 ; Return low-byte full tile ID for current shade/border, cap none.
 full_tile_low$:
 _tsp_h_full_tile_low::
-        ld      a, (#_g_polar_mat_shade)
-        or      a
-        jr      z, full_far$
-        dec     a
-        jr      z, full_mid$
-        ld      a, #27
-        jr      full_add_border$
-full_mid$:
-        ld      a, #15
-        jr      full_add_border$
-full_far$:
         ld      a, #3
-full_add_border$:
         ld      e, a
         ld      a, (#_g_polar_mat_border)
         add     a, e
@@ -1492,90 +1482,124 @@ polar_prefix$:
 ; Input is materializer state: local_index 0..30, signed slope -7..7,
 ; bottom flag, shade, and physical border bits. Returns final name-table word DE.
 edge_word_lookup$:
-        push    bc                      ; B is the hardware column in caller
-        ; signed local = local_index-15
-        ld      a, (#r_local_index$)
-        sub     #15
-        ld      c, a
+        push    bc                      ; B is caller's hardware column
+        ld      a, (#r_edge_local_raw$)
+        ld      c, a                    ; signed canonical-left candidate
         ld      a, (#r_edge_slope$)
         ld      b, a
         xor     a
         ld      (#r_edge_attr$), a
 
-        ; Generic bottom path canonicalizes through VFLIP/palette first.
         ld      a, (#r_edge_bottom$)
         or      a
-        jr      z, edge_lookup_slope$
+        jr      z, p99_slope$
         ld      a, #7
         sub     c
         ld      c, a
         ld      a, b
         neg
         ld      b, a
-        ld      a, #0x0c
+        ld      a, #0x0c               ; VFLIP | palette
         ld      (#r_edge_attr$), a
 
-edge_lookup_slope$:
+p99_slope$:
         ld      a, b
         bit     7, a
-        jr      z, edge_lookup_mag_ready$
+        jr      z, p99_mag_pos$
         neg
-        ld      b, a                    ; B=mag
+        ld      b, a
         ld      a, c
-        sub     b                       ; negative slope canonical local
+        sub     b
         ld      c, a
         ld      a, (#r_edge_attr$)
-        or      #0x02                  ; XFLIP
+        or      #0x02                  ; HFLIP
         ld      (#r_edge_attr$), a
-        jr      edge_lookup_off$
-edge_lookup_mag_ready$:
+        jr      p99_mag_clamp$
+p99_mag_pos$:
         ld      b, a
+p99_mag_clamp$:
+        ld      a, b
+        cp      #29
+        jr      c, p99_moderate_test$
+        ld      b, #28
 
-edge_lookup_off$:
-        ; Clamp canonical offset to emitted domain -7..+8.
+p99_moderate_test$:
+        ; Preserve real vertical seams through ordinary sloped EDGE tiles.
+        ; The combined vocabulary currently covers magnitude 0..7, matching
+        ; the already-proven R98 seam rung; steeper silhouette is prioritized.
+        ld      a, b
+        cp      #8
+        jr      nc, p99_plain$
+        ld      a, (#_g_polar_mat_border)
+        and     #3
+        jr      z, p99_plain$
+        cp      #3
+        jr      z, p99_plain$
+        ld      e, a
+        ld      a, (#r_edge_attr$)
+        and     #0x02
+        jr      z, p99_border_side$
+        ld      a, e
+        xor     #3                     ; HFLIP swaps physical L/R
+        ld      e, a
+p99_border_side$:
+        ; Combined seam table keeps the original canonical -7..+8 domain.
         ld      a, c
         bit     7, a
-        jr      z, edge_lookup_off_pos$
+        jr      z, p99_boff_pos$
         cp      #0xF9
-        jr      nc, edge_lookup_off_ok$
+        jr      nc, p99_boff_ok$
         ld      a, #0xF9
-        jr      edge_lookup_off_ok$
-edge_lookup_off_pos$:
+        jr      p99_boff_ok$
+p99_boff_pos$:
         cp      #9
-        jr      c, edge_lookup_off_ok$
+        jr      c, p99_boff_ok$
         ld      a, #8
-edge_lookup_off_ok$:
+p99_boff_ok$:
         add     a, #7
         add     a, a
         add     a, a
         add     a, a
-        add     a, b                    ; semantic 0..127
-        ld      c, a
-
-        ; On geometry-only FULL walls, EDGE rows at a real vertical wall seam
-        ; get a combined pattern instead of dropping the seam for 1+ tile rows.
-        ld      a, (#_g_polar_mat_shade)
-        cp      #1
-        jr      nz, edge_lookup_plain$
-        ld      a, (#_g_polar_mat_border)
-        and     #3
-        jr      z, edge_lookup_plain$
-        cp      #3
-        jr      z, edge_lookup_plain$   ; one-column face is the next rung
-        ld      b, a                    ; physical border
-        ld      a, (#r_edge_attr$)
-        and     #0x02
-        jr      z, edge_lookup_border_canon$
-        ld      a, b
-        xor     #3                     ; XFLIP swaps left/right border bits
-        ld      b, a
-edge_lookup_border_canon$:
-        ld      a, b
-        dec     a
-        add     a, a                    ; *2 pointer entry
+        add     a, b
+        add     a, a                    ; uint16 word index
         ld      l, a
         ld      h, #0
-        ld      de, #edge_border_home_ptrs$
+        ld      a, e
+        cp      #1
+        jr      z, p99_border_l$
+        ld      de, #_g_tsp_edge_border_b2_words_home
+        jr      p99_border_ptr$
+p99_border_l$:
+        ld      de, #_g_tsp_edge_border_b1_words_home
+p99_border_ptr$:
+        add     hl, de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        jr      p99_attrs$
+
+p99_plain$:
+        ; Exact p99 silhouette: magnitude 0..28, canonical offset -28..+8.
+        ld      a, c
+        bit     7, a
+        jr      z, p99_off_pos$
+        cp      #0xE4
+        jr      nc, p99_off_ok$
+        ld      a, #0xE4
+        jr      p99_off_ok$
+p99_off_pos$:
+        cp      #9
+        jr      c, p99_off_ok$
+        ld      a, #8
+p99_off_ok$:
+        add     a, #28
+        add     a, a                    ; word offset within 37-word row
+        ld      c, a
+        ld      a, b
+        add     a, a
+        ld      l, a
+        ld      h, #0
+        ld      de, #_g_tsp_edge_p99_row_ptrs_home
         add     hl, de
         ld      e, (hl)
         inc     hl
@@ -1583,39 +1607,11 @@ edge_lookup_border_canon$:
         ld      l, c
         ld      h, #0
         add     hl, de
-        ld      a, (hl)                 ; unique border pattern 0..231
-        ld      l, a
-        ld      h, #0
-        ld      de, #279                ; TSP_TILE_EDGE_BORDER_BASE
-        add     hl, de
-        ex      de, hl
-        jr      edge_lookup_attrs$
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
 
-edge_lookup_plain$:
-        ld      l, c
-        ld      h, #0
-        ld      de, #_g_tsp_edge_unique_idx_home
-        add     hl, de
-        ld      a, (hl)                 ; unique normal pattern 0..79
-        ld      l, a
-        ld      h, #0
-        ld      a, (#_g_polar_mat_shade)
-        or      a
-        jr      z, edge_lookup_base0$
-        dec     a
-        jr      z, edge_lookup_base1$
-        ld      de, #199                ; 39 + 2*80
-        jr      edge_lookup_addbase$
-edge_lookup_base1$:
-        ld      de, #119                ; 39 + 1*80
-        jr      edge_lookup_addbase$
-edge_lookup_base0$:
-        ld      de, #39
-edge_lookup_addbase$:
-        add     hl, de
-        ex      de, hl
-
-edge_lookup_attrs$:
+p99_attrs$:
         ld      a, d
         ld      c, a
         ld      a, (#r_edge_attr$)
@@ -1623,9 +1619,6 @@ edge_lookup_attrs$:
         ld      d, a
         pop     bc
         ret
-
-edge_border_home_ptrs$:
-        .dw     _g_tsp_edge_border_b1_home, _g_tsp_edge_border_b2_home
 
 ; ---------------------------------------------------------------------------
 ; Retained swept-boundary state (rung 26).
@@ -2381,6 +2374,8 @@ _tsp_probe_edge_slope::
 r_edge_bottom$:
         .ds     1
 r_edge_attr$:
+        .ds     1
+r_edge_local_raw$:
         .ds     1
 r_edge_min$:
         .ds     1
