@@ -181,7 +181,7 @@ jobs:
           ROOT=build/e1env-iter
           ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 "$ROOT/pvs-map.bin" \
             | tee "$ROOT/pvs-timeline.txt"
-          ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 "$ROOT/focused-map.bin" \
+          timeout 20s ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 20 8 "$ROOT/focused-map.bin" \
             | tee "$ROOT/focused-timeline.txt"
 
       - name: Census sub-column ownership handoffs
