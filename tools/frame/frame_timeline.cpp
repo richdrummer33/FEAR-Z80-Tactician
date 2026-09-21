@@ -156,12 +156,15 @@ int main(int argc, char** argv) {
     const unsigned target = argc > 4 ? (unsigned)std::strtoul(argv[4], nullptr, 0) : 180u;
     const unsigned warmup = argc > 5 ? (unsigned)std::strtoul(argv[5], nullptr, 0) : 8u;
 
-    u16 s_phase = 0, s_loop = 0;
+    u16 s_phase = 0, s_loop = 0, s_map = 0;
     if (!find_symbol(noi, "_g_ts_prof_phase", s_phase) && !find_symbol(noi, "g_ts_prof_phase", s_phase)) {
         std::fprintf(stderr, "no _g_ts_prof_phase: build with POLAR_PROFILE_HOOKS=1\n"); return 3;
     }
     if (!find_symbol(noi, "_g_ts_loop_count", s_loop) && !find_symbol(noi, "g_ts_loop_count", s_loop)) {
         std::fprintf(stderr, "no _g_ts_loop_count\n"); return 3;
+    }
+    if (!find_symbol(noi, "_g_map", s_map) && !find_symbol(noi, "g_map", s_map)) {
+        std::fprintf(stderr, "no _g_map\n"); return 3;
     }
 
     /* PC ranges from the current link, one per fixed-bank symbol */
@@ -211,13 +214,21 @@ int main(int argc, char** argv) {
     Processor* cpu = core.GetProcessor();
 
     /* phase 1 input+motion, 2 render, 3 vsync, 4 VRAM upload, 5 loop tail */
-    struct Frame { uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t total; };
+    struct Frame { uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t total; uint32_t map_hash; };
     std::vector<Frame> frames;
     Frame cur{}; std::memset(&cur, 0, sizeof cur);
     uint64_t prev = core.GetMasterClockCycles();
     unsigned seen_loops = 0, last_loop = 0xFFFFu;
     uint64_t steps = 0;
     const uint64_t limit = 6000000000ull;
+    auto hash_map = [&]() -> uint32_t {
+        uint32_t h = 2166136261u; /* FNV-1a over 360 uint16 name-table cells. */
+        for (unsigned i = 0; i < 720u; ++i) {
+            h ^= (uint8_t)mem->DebugRetrieve((u16)(s_map + i));
+            h *= 16777619u;
+        }
+        return h;
+    };
 
     while (frames.size() < target && steps < limit) {
         samples = 0;
@@ -235,6 +246,7 @@ int main(int argc, char** argv) {
         const unsigned lc = mem->DebugRetrieve(s_loop);
         if (lc != last_loop) {
             if (last_loop != 0xFFFFu) {
+                cur.map_hash = hash_map();
                 if (seen_loops >= warmup) frames.push_back(cur);
                 ++seen_loops;
             }
@@ -248,7 +260,7 @@ int main(int argc, char** argv) {
     if (csv) {
         std::fprintf(csv, "frame,total,input_motion,render,vsync,vram");
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
-        std::fprintf(csv, "\n");
+        std::fprintf(csv, ",map_hash\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -256,7 +268,7 @@ int main(int argc, char** argv) {
                 (unsigned long long)f.ph[2], (unsigned long long)f.ph[3],
                 (unsigned long long)f.ph[4]);
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
-            std::fprintf(csv, "\n");
+            std::fprintf(csv, ",%08x\n", (unsigned)f.map_hash);
         }
         std::fclose(csv);
     }
