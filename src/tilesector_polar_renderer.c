@@ -44,6 +44,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_E1M1_PLANE_META
 #define TSPF_E1M1_PLANE_META 0
 #endif
+#ifndef TSPF_THIN_FACE_SURVIVAL
+#define TSPF_THIN_FACE_SURVIVAL 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -80,6 +83,10 @@ void tsp_polar_run_geometry_fast(void);
 void tsp_polar_ret_begin_frame(void);
 void tsp_polar_ret_end_frame(void);
 void tsp_polar_ret_invalidate(void);
+#if TSPF_THIN_FACE_SURVIVAL
+void tsp_polar_record_subcolumn_seam(void);
+void tsp_polar_subcolumn_seams_fast(void);
+#endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
 #endif
@@ -108,6 +115,16 @@ int16_t g_polar_run_step;
 /* Identity of the surface this run projects. The retained swept-boundary
  * path keys last frame's per-column result on it. */
 uint8_t g_polar_run_sid;
+#if TSPF_THIN_FACE_SURVIVAL
+/* The fixed materializer caches the exact endpoint heights of every surviving
+ * run by authored vertex ID. Dropped <8px faces can then be reconstructed as
+ * the pair of true-X corner seams supplied by their two neighbours. */
+uint8_t g_polar_run_v0;
+uint8_t g_polar_run_v1;
+uint8_t g_tspf_seam_pending_c0;
+int8_t g_tspf_seam_pending_dx;
+uint8_t g_tspf_seam_pending_vid;
+#endif
 /* Exact endpoint lock: the banked depth evaluator returns a compact Q6
  * start/step for interior columns plus the exact final FULL half-height.  The
  * assembly walker uses this byte only on the last right endpoint so connected
@@ -1016,6 +1033,26 @@ static int8_t envelope_center_dx(int16_t rel)
 {
     return (int8_t)((envelope_center_code(rel)>>5)-4);
 }
+
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+/* Record a PHYSICAL connected boundary independently of coarse-column
+ * ownership. This is the key thin-face change: even when the span on either
+ * side owns no 8px centre sample, its real corner survives as a pixel-X seam.
+ * Height is resolved later from endpoint halves cached by surviving neighbours. */
+static void envelope_record_connected_boundary(uint8_t left_i,uint8_t n,int16_t rel)
+{
+    uint8_t owner,ni,code;
+    if(rel<=-512 || rel>=512) return;
+    owner=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
+    if(!(owner&0x80u)) return;
+    ni=(uint8_t)(left_i+1u<n?left_i+1u:0u);
+    code=envelope_center_code(rel);
+    g_tspf_seam_pending_c0=(uint8_t)(code&31u);
+    g_tspf_seam_pending_dx=(int8_t)((code>>5)-4);
+    g_tspf_seam_pending_vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
+    tsp_polar_record_subcolumn_seam();
+}
+#endif
 #else
 static uint8_t envelope_center_col(int16_t rel)
 {
@@ -1219,10 +1256,14 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
         orig=(uint8_t)(l->inv1>>1);
         d=(uint8_t)(half>orig ? half-orig : orig-half);
 
-        /* At grazing angles a true sub-column correction can exceed what the
-         * current +/-7 edge vocabulary can draw in one tile. Leave those for
-         * the steep-edge rung rather than manufacture a spike here. */
+        /* With the p24 vocabulary, a vertex displaced by at most four screen
+         * pixels can legitimately differ by up to ~12 vertical pixels. Keep
+         * the guard, but match it to the representation we now actually own. */
+#if TSPF_THIN_FACE_SURVIVAL
+        if(d<=12u){
+#else
         if(d<=4u){
+#endif
             l->inv_mid=half; l->depth_plane|=2u; /* canonical right endpoint */
             r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
         }
@@ -1361,6 +1402,10 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
        )
     {
         g_polar_run_sid = r->sid;
+#if TSPF_THIN_FACE_SURVIVAL
+        g_polar_run_v0 = r->v0;
+        g_polar_run_v1 = r->v1;
+#endif
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
         g_polar_run_left_anchor=(uint8_t)((r->depth_plane&1u) ? (0x80u|r->inv0) : 0u);
         g_polar_run_right_anchor=(uint8_t)(0x80u |
@@ -1609,6 +1654,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
              * 8-pixel column-centre sample. Keep walking both directions;
              * 0xff means there is not yet a visible run to join against. */
             if(q==0u) goto e1full_candidates_ready;
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+            envelope_record_connected_boundary(focus,n,rel1);
+#endif
             focus_run=(uint8_t)(q==1u ? count-1u : 0xffu);
 
             last=focus_run;
@@ -1622,6 +1670,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 len=(uint16_t)((nexta-a1)&4095u);
                 if(!len || len>=2048u) break;
                 nextrel=(int16_t)(rel1+(int16_t)len);
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+                envelope_record_connected_boundary(i,n,nextrel);
+#endif
                 c0=cend;
                 cend=(uint8_t)(nextrel>=512 ? TSP_COLS : envelope_center_col(nextrel));
                 q=envelope_emit_span(i,n,c0,cend,
@@ -1644,6 +1695,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             for(step=1u;step<n && count<TSPF_MAX_ACTIVE;++step){
                 if(rel0<=-512) break;
                 i=(uint8_t)(i?i-1u:n-1u);
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+                envelope_record_connected_boundary(i,n,rel0);
+#endif
                 nexta=bearing_vertex_q12(g_e1env_program[(uint8_t)(1u+(uint8_t)(i<<1))],s);
                 len=(uint16_t)((a0-nexta)&4095u);
                 if(!len || len>=2048u) break;
@@ -1761,6 +1815,12 @@ e1full_candidates_ready:
     TSPF_ENV_PHASE(4u);
     for (i = 0; i < count; ++i)
         draw_run(out_map, cols, &g_runs[g_run_order[i]], s);
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+    /* Same wall material on both faces means a sub-column face is visually
+     * defined by its two physical corner seams. Apply them only after coarse
+     * fills are complete, so a dropped 1..7px face no longer vanishes. */
+    tsp_polar_subcolumn_seams_fast();
+#endif
 done:
 #ifdef __SDCC
     /* Retained keys are only trusted one frame deep; settle which surfaces
