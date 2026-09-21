@@ -41,6 +41,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_E1M1_PLANE_META
 #define TSPF_E1M1_PLANE_META 0
 #endif
+#ifndef TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+#define TSPF_SUBCOLUMN_SEAM_EXPERIMENT 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -77,6 +80,9 @@ void tsp_polar_run_geometry_fast(void);
 void tsp_polar_ret_begin_frame(void);
 void tsp_polar_ret_end_frame(void);
 void tsp_polar_ret_invalidate(void);
+#if TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+void tsp_polar_subcolumn_seams_fast(void);
+#endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
 #endif
@@ -115,6 +121,12 @@ uint8_t g_polar_run_right_anchor;
  * exactly one first-hit owner, so the assembly can install the FULL span mask
  * directly instead of re-solving occlusion with polar_mark_span_fast(). */
 uint8_t g_polar_run_owned;
+#if TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+#define TSPF_MAX_SUBCOLUMN_SEAMS 32u
+uint8_t g_tspf_seam_count;
+uint8_t g_tspf_seam_x[TSPF_MAX_SUBCOLUMN_SEAMS];
+uint8_t g_tspf_seam_half[TSPF_MAX_SUBCOLUMN_SEAMS];
+#endif
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
@@ -1222,9 +1234,25 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
         if(d<=4u){
             l->inv_mid=half; l->depth_plane|=2u; /* canonical right endpoint */
             r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
+#if TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+            /* Rung X1: keep coarse ownership and the proven top/bottom raster,
+             * but move the visible vertical corner line to physical sub-column
+             * X. The fixed-ASM post pass merges two lines in one 8px tile. */
+            if(g_tspf_appearance_mode==0u && g_tspf_seam_count<TSPF_MAX_SUBCOLUMN_SEAMS){
+                int16_t sx=(int16_t)(((int16_t)r->c0<<3)+(int16_t)dx);
+                uint8_t si=g_tspf_seam_count;
+                if(sx<0) sx=0;
+                if(sx>159) sx=159;
+                g_tspf_seam_x[si]=(uint8_t)sx;
+                g_tspf_seam_half[si]=half;
+                g_tspf_seam_count=(uint8_t)(si+1u);
+                /* The overlay replaces the right run's snapped left border. */
+                r->left_real=0u;
+            }
+#endif
         }
 #endif
-        /* Preserve the existing single visible vertical seam on the right run. */
+        /* Suppress the left run's duplicate; X1 may suppress both coarse sides. */
         l->right_real=0u;
     }
 }
@@ -1533,7 +1561,14 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     TSPF_SET_STAGE(1u);
 #ifdef __SDCC
     tsp_polar_nt_begin_frame();
+#if TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+    /* X1 diagnostic: redraw underlying FULL cells before the seam overlay so
+     * no retained special tile can survive after its seam moves. */
+    tsp_polar_ret_invalidate();
+    g_tspf_seam_count=0u;
+#else
     tsp_polar_ret_begin_frame();
+#endif
     (void)cols;
 #else
     if (!g_map_ready)
@@ -1745,6 +1780,10 @@ e1full_candidates_ready:
     TSPF_ENV_PHASE(4u);
     for (i = 0; i < count; ++i)
         draw_run(out_map, cols, &g_runs[g_run_order[i]], s);
+#if defined(__SDCC) && TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+    if(g_tspf_appearance_mode==0u && g_tspf_seam_count)
+        tsp_polar_subcolumn_seams_fast();
+#endif
 done:
 #ifdef __SDCC
     /* Retained keys are only trusted one frame deep; settle which surfaces
