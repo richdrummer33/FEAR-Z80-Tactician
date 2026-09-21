@@ -1620,13 +1620,13 @@ seam_desc_loop$:
         xor     a
 seam_first_nonneg$:
         cp      #18
-        jr      nc, seam_next_desc$
+        jp      nc, seam_next_desc$
         ld      (#r_seam_row$), a
 
         ld      a, #16                  ; bottom row - 1 = 16-top
         sub     c
         bit     7, a
-        jr      nz, seam_next_desc$
+        jp      nz, seam_next_desc$
         cp      #18
         jr      c, seam_last_ready$
         ld      a, #17
@@ -1637,7 +1637,7 @@ seam_last_ready$:
         cp      c
         jr      c, seam_row_loop$
         jr      z, seam_row_loop$
-        jr      seam_next_desc$
+        jp      seam_next_desc$
 
 seam_row_loop$:
         ld      a, (#r_seam_col$)
