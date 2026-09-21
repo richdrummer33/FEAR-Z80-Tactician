@@ -5,10 +5,14 @@ on:
   push:
     branches:
       - experiment/e1m1-front-envelope-rom
+      - experiment/e1m1-vblank-pipeline
     paths:
+      - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
       - src/tilesector_polar_materialize_gg.s
       - src/tilesector_polar_ntstate_gg.s
+      - src/tilesector_polar_ntupload_profiled_gg.s
+      - src/tilesector_polar_ntupload_raw_gg.s
       - src/e1env_center_col_gg.s
       - .github/workflows/e1m1-front-envelope-runtime-iter.yml
       - Makefile

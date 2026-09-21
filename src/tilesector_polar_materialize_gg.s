@@ -73,6 +73,8 @@
         .globl  _tsp_h_ret_run_begin
         .globl  _tsp_h_ret_bitmask
         .globl  _tsp_probe_ret_skip
+        .globl  _g_ts_vblank_pending
+        .globl  _tsp_polar_service_vblank
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
@@ -147,6 +149,23 @@ run_border_done$:
         ld      a, c
         ld      (#_g_polar_mat_col), a
         call    _tsp_polar_surface_column_fast
+
+        ; R84 cooperative VBlank yield.  The ISR only sets one byte; test it
+        ; here after a complete column so the authoritative name-table word and
+        ; dirty extents are always coherent before any VRAM publication.  The
+        ; normal path costs only a load/test/untaken branch.  The service itself
+        ; runs in HOME and preserves our live traversal registers explicitly.
+        ld      a, (#_g_ts_vblank_pending)
+        or      a
+        jr      z, run_no_vblank_service$
+        push    bc
+        push    de
+        push    hl
+        call    _tsp_polar_service_vblank
+        pop     hl
+        pop     de
+        pop     bc
+run_no_vblank_service$:
 
         ; iq += step for the next coarse column.
         ld      hl, (#_g_polar_run_iq)

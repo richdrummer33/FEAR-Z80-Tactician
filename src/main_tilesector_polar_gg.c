@@ -47,6 +47,44 @@ volatile uint16_t g_ts_dirty_words;
 
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
+void tsp_polar_nt_upload_dirty_budgeted(void);
+
+/* Cooperative VBlank publisher.
+ *
+ * The VBL ISR itself only raises a byte flag.  Rendering reaches safe yield
+ * points (currently every FULL coarse column) and services the flag from normal
+ * code, so VDP writes never run inside the interrupt dispatcher.  The GG V
+ * interrupt fires at V counter C0h; while VCOUNTER>=C0h the VDP is outside the
+ * effective display area and VRAM writes need no active-display wait states.
+ *
+ * The uploader intentionally drains only six dirty rows per VBlank.  A worst
+ * case row is 20 name-table words / 40 VDP bytes, so this leaves substantial
+ * margin inside the ~4.3 ms post-effective-area safe interval even when the
+ * renderer notices VBlank a little late. */
+volatile uint8_t g_ts_vblank_pending;
+#if TSPF_PROFILE_HOOKS
+volatile uint16_t g_ts_vblank_bursts;
+volatile uint16_t g_ts_vblank_missed;
+#endif
+
+static void tsp_vblank_mark(void) NONBANKED {
+    g_ts_vblank_pending=1u;
+}
+
+void tsp_polar_service_vblank(void) NONBANKED {
+    if(!g_ts_vblank_pending) return;
+    g_ts_vblank_pending=0u;
+    if(VCOUNTER<0xC0u){
+#if TSPF_PROFILE_HOOKS
+        ++g_ts_vblank_missed;
+#endif
+        return;
+    }
+    tsp_polar_nt_upload_dirty_budgeted();
+#if TSPF_PROFILE_HOOKS
+    ++g_ts_vblank_bursts;
+#endif
+}
 
 static uint8_t shade_color(uint8_t shade){return shade==0u?C_FAR:(shade==1u?C_MID:C_NEAR);}
 static void clear_tile(void){uint8_t i;for(i=0;i<32u;++i)g_tile[i]=0u;}
@@ -98,6 +136,11 @@ void main(void){
      * targets the matching 0x38xx addresses. */
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
     tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
+    g_ts_vblank_pending=0u;
+#if TSPF_PROFILE_HOOKS
+    g_ts_vblank_bursts=0u;g_ts_vblank_missed=0u;
+#endif
+    disable_interrupts();add_VBL(tsp_vblank_mark);enable_interrupts();
 #if defined(TSPF_OPTIMIZED_MAP)
     g_opt_loop_count=0u;
 #endif
@@ -107,15 +150,13 @@ void main(void){
     DISPLAY_ON;
     for(;;){
         uint8_t input;
-        TSPF_PHASE(1u);input=read_input();tsp_step(&g_state,input);
+        /* Do not quantize logical updates behind a blocking vsync().  The
+         * column materializer services VBlank while rendering, and these two
+         * boundary checks cover frames with no visible FULL columns. */
+        TSPF_PHASE(1u);tsp_polar_service_vblank();input=read_input();tsp_step(&g_state,input);
         TSPF_PHASE(2u);tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
-        TSPF_PHASE(3u);vsync();
+        TSPF_PHASE(3u);tsp_polar_service_vblank();
         TSPF_PHASE(4u);
-#if TSPF_PROFILE_HOOKS
-        g_ts_dirty_words=upload_dirty_map();
-#else
-        (void)upload_dirty_map();
-#endif
         TSPF_PHASE(5u);TSPF_LOOP_INC();
 #if defined(TSPF_OPTIMIZED_MAP)
         ++g_opt_loop_count;

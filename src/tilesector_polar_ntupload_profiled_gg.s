@@ -12,6 +12,15 @@
 ; horizontal interval for each visible row. VBlank consumes it directly.
 _tsp_polar_nt_upload_dirty::
         push    af
+        ld      a, #18
+        jr      pe_budget_ready$
+_tsp_polar_nt_upload_dirty_budgeted::
+        push    af
+        ; Conservative first rung: at most six dirty scan rows per safe
+        ; post-effective-area interval.  Rows not reached remain dirty.
+        ld      a, #6
+pe_budget_ready$:
+        ld      (#pe_budget$), a
         push    bc
         push    de
         push    hl
@@ -106,6 +115,11 @@ pe_count_ready$:
         otir
         ei
 
+        ld      a, (#pe_budget$)
+        dec     a
+        ld      (#pe_budget$), a
+        jr      z, pe_upload_done$
+
 pe_next_row$:
         inc     ix
         inc     iy
@@ -115,6 +129,7 @@ pe_next_row$:
         cp      #18
         jp      c, pe_row_loop$
 
+pe_upload_done$:
         pop     iy
         pop     ix
         pop     hl
@@ -138,3 +153,4 @@ pe_row$:   .ds 1
 pe_first$: .ds 1
 pe_last$:  .ds 1
 pe_words$: .ds 1
+pe_budget$: .ds 1
