@@ -2052,7 +2052,7 @@ seam_mask_to_code$:
         push    bc
         ld      a, e
         or      a
-        jr      z, seam_code_invalid$
+        jp      z, seam_code_invalid$
         ld      c, #0
 seam_code_find_x$:
         srl     a
@@ -2083,7 +2083,7 @@ seam_code_y_found$:
         ld      (#r_seam_y0$), a
         ld      a, e
         or      a
-        jr      nz, seam_code_invalid$
+        jp      nz, seam_code_invalid$
 
         ld      a, #7
         sub     c
