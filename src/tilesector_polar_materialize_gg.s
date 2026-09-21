@@ -81,7 +81,8 @@
         .globl  _g_tspf_seam_x
         .globl  _g_tspf_seam_half
         .globl  _g_tspf_seam_mask_for_index
-        .globl  _g_tspf_seam_index_for_mask
+        .globl  _g_tspf_seam_reflect_for_index
+        .globl  _g_tspf_seam_code_for_mask
         .globl  _tsp_polar_subcolumn_seams_fast
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
@@ -1601,25 +1602,42 @@ seam_row_loop$:
 
         ; Decode the current tile into a vertical-line mask. Ordinary
         ; geometry-only FULL-mid cap-none tiles are IDs 15..18, whose low two
-        ; bits are the old left/right border flags. Seam tiles are 423..458
-        ; (0x01A7..0x01CA) and map back through the 36-entry mask vocabulary.
+        ; bits are the old left/right border flags. Seam tiles are 423..442
+        ; (0x01A7..0x01BA). High byte 1 is canonical; 3 adds hardware HFLIP.
         inc     hl
         ld      a, (hl)
         dec     hl
         or      a
         jr      z, seam_decode_full$
         cp      #1
-        jr      nz, seam_row_done$
+        jr      z, seam_decode_special_canon$
+        cp      #3
+        jr      z, seam_decode_special_flip$
+        jr      seam_row_done$
+
+seam_decode_special_canon$:
+        ld      c, #0
+        jr      seam_decode_special$
+seam_decode_special_flip$:
+        ld      c, #1
+seam_decode_special$:
         ld      a, (hl)
         cp      #167
         jr      c, seam_row_done$
-        cp      #203
+        cp      #187
         jr      nc, seam_row_done$
         sub     #167
         ld      e, a
         ld      d, #0
         push    hl
+        ld      a, c
+        or      a
+        jr      nz, seam_special_reflected$
         ld      hl, #_g_tspf_seam_mask_for_index
+        jr      seam_special_table$
+seam_special_reflected$:
+        ld      hl, #_g_tspf_seam_reflect_for_index
+seam_special_table$:
         add     hl, de
         ld      a, (hl)
         pop     hl
@@ -1654,12 +1672,18 @@ seam_have_base_mask$:
         push    hl
         ld      l, e
         ld      h, #0
-        ld      de, #_g_tspf_seam_index_for_mask
+        ld      de, #_g_tspf_seam_code_for_mask
         add     hl, de
         ld      a, (hl)
         pop     hl
         cp      #0xff                   ; >2 lines: leave proven tile untouched
         jr      z, seam_row_done$
+        ld      d, #1                   ; tile-id bit8, no attributes
+        bit     7, a
+        jr      z, seam_code_canon$
+        res     7, a
+        ld      d, #3                   ; tile-id bit8 | HFLIP(bit9)
+seam_code_canon$:
         add     a, #167                 ; tile 423 low byte = 0xA7
         ld      e, a
 
@@ -1668,13 +1692,13 @@ seam_have_base_mask$:
         jr      nz, seam_write_word$
         inc     hl
         ld      a, (hl)
-        cp      #1
+        cp      d
         dec     hl
         jr      z, seam_row_done$
 seam_write_word$:
         ld      (hl), e
         inc     hl
-        ld      (hl), #1
+        ld      (hl), d
         dec     hl
         ld      a, (#r_seam_row$)
         call    polar_mark_dirty_fast$
