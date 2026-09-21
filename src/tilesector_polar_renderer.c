@@ -121,12 +121,13 @@ uint8_t g_polar_run_right_anchor;
  * exactly one first-hit owner, so the assembly can install the FULL span mask
  * directly instead of re-solving occlusion with polar_mark_span_fast(). */
 uint8_t g_polar_run_owned;
-#if TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+/* Kept as fixed WRAM symbols even when the X1 experiment is compiled out so
+ * the fixed-ASM materializer has a stable link surface. They are touched only
+ * when TSPF_SUBCOLUMN_SEAM_EXPERIMENT is enabled. */
 #define TSPF_MAX_SUBCOLUMN_SEAMS 32u
 uint8_t g_tspf_seam_count;
 uint8_t g_tspf_seam_x[TSPF_MAX_SUBCOLUMN_SEAMS];
 uint8_t g_tspf_seam_half[TSPF_MAX_SUBCOLUMN_SEAMS];
-#endif
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
