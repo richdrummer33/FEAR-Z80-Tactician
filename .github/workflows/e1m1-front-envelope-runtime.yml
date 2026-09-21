@@ -90,13 +90,8 @@ jobs:
           sha256sum "$OUT/GG-E1M1-Front-Envelope-ROM.gg" | tee "$OUT/SHA256.txt"
           stat -c 'rom_bytes=%s' "$OUT/GG-E1M1-Front-Envelope-ROM.gg" | tee "$OUT/ROM-size.txt"
 
-      - name: Build state-capture verifier
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Prove boot, motion and rotation
         shell: bash
         run: |
