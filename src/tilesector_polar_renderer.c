@@ -109,7 +109,8 @@ uint8_t g_polar_run_sid;
  * start/step for interior columns plus the exact final FULL half-height.  The
  * assembly walker uses this byte only on the last right endpoint so connected
  * faces meet without cumulative Q6-step drift. */
-uint8_t g_polar_run_right_anchor_half;
+uint8_t g_polar_run_left_anchor;
+uint8_t g_polar_run_right_anchor;
 /* Set only by the baked front-envelope path. Each coarse screen column has
  * exactly one first-hit owner, so the assembly can install the FULL span mask
  * directly instead of re-solving occlusion with polar_mark_span_fast(). */
@@ -1000,9 +1001,17 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
  * and no bank switch, multiply, projection-table lookup, or equality repair. */
 #ifdef __SDCC
 extern const uint8_t g_e1env_center_col_lut[1025];
-static uint8_t envelope_center_col(int16_t rel)
+static uint8_t envelope_center_code(int16_t rel)
 {
     return g_e1env_center_col_lut[(uint16_t)(rel+512)];
+}
+static uint8_t envelope_center_col(int16_t rel)
+{
+    return (uint8_t)(envelope_center_code(rel)&31u);
+}
+static int8_t envelope_center_dx(int16_t rel)
+{
+    return (int8_t)((envelope_center_code(rel)>>5)-4);
 }
 #else
 static uint8_t envelope_center_col(int16_t rel)
@@ -1135,7 +1144,7 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
         r->step=g_e1env_depth_step;
         /* Preserve the exact final endpoint alongside the compact Q6
          * interpolation. inv1 is dead to the exact no-sort path otherwise. */
-        r->inv1=g_e1env_depth_end_half;
+        r->inv1=g_e1env_depth_end_inv;
     }
 #else
     {
@@ -1162,12 +1171,62 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
  * authored walls. Suppress one of the two black borders only when BOTH spans
  * actually own adjacent coarse columns; a sub-column neighbor must not steal
  * the sole visible corner line. */
-static void envelope_join_connected(uint8_t li,uint8_t ri)
+static int16_t scale_step_subpx(int16_t step,uint8_t px)
 {
-    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
-       g_runs[li].right_real && g_runs[ri].left_real &&
-       g_runs[li].right_connected)
-        g_runs[li].right_real=0u;
+    /* px is only 0..4. Avoid a signed multiply/helper call: exact fractions
+     * of one 8-pixel coarse-column step are enough for the canonical corner
+     * height, and the final result is quantized to an integer screen pixel. */
+    if(px==1u) return shr_signed(step,3u);
+    if(px==2u) return shr_signed(step,2u);
+    if(px==3u) return (int16_t)(shr_signed(step,2u)+shr_signed(step,3u));
+    if(px>=4u) return shr_signed(step,1u);
+    return 0;
+}
+
+static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
+{
+    PolarRun *l=&g_runs[li], *r=&g_runs[ri];
+    if((uint8_t)(l->c1+1u)==r->c0 &&
+       l->right_real && r->left_real &&
+       l->right_connected)
+    {
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+        /* The real authored corner lies up to four pixels either side of the
+         * snapped 8px ownership boundary.  Inverse depth is linear in screen X
+         * across a straight wall, so recover the corner from whichever face
+         * actually contains that pixel: exact left-run END when dx<0, exact
+         * right-run START when dx>=0.  Both faces then consume the same
+         * canonical half-height at the coarse handoff.
+         *
+         * This fixes the remaining moderate-angle Y overshoot without needing
+         * a sub-tile two-face compositor yet. X is still coarse-snapped; only
+         * the corner's physically correct projected HEIGHT is restored here. */
+        int16_t q;
+        uint8_t px=(uint8_t)(dx<0 ? -dx : dx);
+        uint8_t inv,half,orig,d;
+        if(dx<0){
+            q=(int16_t)((uint16_t)l->inv1<<6);
+            q=(int16_t)(q-scale_step_subpx(l->step,px));
+        }else{
+            q=r->iq;
+            q=(int16_t)(q+scale_step_subpx(r->step,px));
+        }
+        inv=clamp_u8i((int16_t)((q+32)>>6),255u);
+        half=(uint8_t)(inv>>1);
+        orig=(uint8_t)(l->inv1>>1);
+        d=(uint8_t)(half>orig ? half-orig : orig-half);
+
+        /* At grazing angles a true sub-column correction can exceed what the
+         * current +/-7 edge vocabulary can draw in one tile. Leave those for
+         * the steep-edge rung rather than manufacture a spike here. */
+        if(d<=4u){
+            l->inv_mid=half; l->depth_plane|=2u; /* canonical right endpoint */
+            r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
+        }
+#endif
+        /* Preserve the existing single visible vertical seam on the right run. */
+        l->right_real=0u;
+    }
 }
 #endif
 
@@ -1287,7 +1346,9 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
     {
         g_polar_run_sid = r->sid;
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
-        g_polar_run_right_anchor_half = r->inv1;
+        g_polar_run_left_anchor=(uint8_t)((r->depth_plane&1u) ? (0x80u|r->inv0) : 0u);
+        g_polar_run_right_anchor=(uint8_t)(0x80u |
+            ((r->depth_plane&2u) ? r->inv_mid : (uint8_t)(r->inv1>>1)));
 #endif
         g_polar_run_c0 = c0;
         g_polar_run_c1 = c1;
@@ -1550,14 +1611,14 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 q=envelope_emit_span(i,n,c0,cend,
                                      (uint8_t)(rel1>=-512),
                                      (uint8_t)(nextrel<=512),s,&count);
-                a1=nexta;
-                rel1=nextrel;
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(last,cur);
+                    if(last!=0xffu) envelope_join_connected(last,cur,envelope_center_dx(rel1));
                     last=cur;
                 }
+                a1=nexta;
+                rel1=nextrel;
             }
 
             last=focus_run;
@@ -1576,14 +1637,14 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 q=envelope_emit_span(i,n,c0,cend,
                                      (uint8_t)(nextrel>=-512),
                                      (uint8_t)(rel0<=512),s,&count);
-                a0=nexta;
-                rel0=nextrel;
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(cur,last);
+                    if(last!=0xffu) envelope_join_connected(cur,last,envelope_center_dx(rel0));
                     last=cur;
                 }
+                a0=nexta;
+                rel0=nextrel;
             }
             goto e1full_candidates_ready;
         }

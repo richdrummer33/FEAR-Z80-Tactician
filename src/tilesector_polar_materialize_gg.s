@@ -18,7 +18,8 @@
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
         .globl  _g_polar_run_sid
-        .globl  _g_polar_run_right_anchor_half
+        .globl  _g_polar_run_left_anchor
+        .globl  _g_polar_run_right_anchor
         .globl  _g_polar_run_owned
         .globl  _g_polar_nt_cov_cur
         .globl  _g_polar_nt_row_min
@@ -97,6 +98,21 @@ _tsp_polar_run_geometry_fast::
         call    ret_run_begin$
 
 run_geom_loop$:
+        ; Connected corner may supply a canonical physical-vertex height for
+        ; this run's first LEFT endpoint. High bit is validity; low 7 bits are
+        ; FULL half-height. Only the first column can consume it.
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c0)
+        cp      c
+        jr      nz, run_left_q6$
+        ld      a, (#_g_polar_run_left_anchor)
+        bit     7, a
+        jr      z, run_left_q6$
+        and     #0x7f
+        call    full_top_half$
+        jr      run_left_ready$
+run_left_q6$:
         ; FULL-only fused projection endpoint: round Q6 inverse depth, halve it,
         ; construct top=71-half, and derive floor(top/8) while the signed top
         ; byte is already live.  The old path spilled invl/invr to RAM and then
@@ -105,6 +121,7 @@ run_geom_loop$:
         ld      de, #32
         add     hl, de
         call    full_q6_top_row$        ; A=row, C=half, HL=signed top
+run_left_ready$:
         ld      (#r_top_l_row$), a
         ld      a, c
         ld      (#r_run_halfl$), a
@@ -127,7 +144,8 @@ run_geom_loop$:
         call    full_q6_top_row$
         jr      run_right_ready$
 run_right_exact$:
-        ld      a, (#_g_polar_run_right_anchor_half)
+        ld      a, (#_g_polar_run_right_anchor)
+        and     #0x7f
         call    full_top_half$
 run_right_ready$:
         ld      (#r_top_r_row$), a
