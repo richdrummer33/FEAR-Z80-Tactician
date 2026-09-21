@@ -80,9 +80,13 @@
         .globl  _g_tspf_seam_count
         .globl  _g_tspf_seam_x
         .globl  _g_tspf_seam_half
+        .globl  _g_tspf_seam_pending_dx
+        .globl  _g_tspf_seam_pending_c0
+        .globl  _g_tspf_seam_pending_half
         .globl  _g_tspf_seam_mask_for_index
         .globl  _g_tspf_seam_reflect_for_index
         .globl  _g_tspf_seam_code_for_mask
+        .globl  _tsp_polar_record_subcolumn_seam
         .globl  _tsp_polar_subcolumn_seams_fast
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
@@ -1511,6 +1515,47 @@ polar_claim_g1$:
 polar_claim_g0$:
         ld      a, (#r_unclaimed0$)
         and     e
+        ret
+
+; X1 descriptor packer kept in fixed code so bank-255 only pays three
+; bridge stores + one call. Internal connected joins always have c0 in 1..19,
+; therefore (c0*8 + dx[-4,+3]) is already in the visible 0..159 domain.
+_tsp_polar_record_subcolumn_seam::
+        push    af
+        push    bc
+        push    de
+        push    hl
+        ld      a, (#_g_tspf_seam_count)
+        cp      #32
+        jr      nc, seam_record_done$
+        ld      c, a                    ; descriptor index
+
+        ld      a, (#_g_tspf_seam_pending_c0)
+        add     a, a
+        add     a, a
+        add     a, a
+        ld      b, a
+        ld      a, (#_g_tspf_seam_pending_dx)
+        add     a, b
+        ld      e, c
+        ld      d, #0
+        ld      hl, #_g_tspf_seam_x
+        add     hl, de
+        ld      (hl), a
+
+        ld      hl, #_g_tspf_seam_half
+        add     hl, de
+        ld      a, (#_g_tspf_seam_pending_half)
+        ld      (hl), a
+
+        ld      a, c
+        inc     a
+        ld      (#_g_tspf_seam_count), a
+seam_record_done$:
+        pop     hl
+        pop     de
+        pop     bc
+        pop     af
         ret
 
 ; X1 sub-column seam overlay.
