@@ -112,12 +112,12 @@ static void init_tiles(void){
     emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();
     for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){
-        g=k_tsp_edge_geom_map[(uint8_t)(o*8u+m)];
+        g=g_tsp_edge_geom_map[(uint8_t)(o*8u+m)];
         id=(uint16_t)(TSP_EDGE_ATLAS_PLAIN_BASE+(uint16_t)s*TSP_EDGE_ATLAS_SHADE_STRIDE+g);
         emit_edge_to(id,s,o,m,0u);
     }
     for(b=1u;b<=2u;++b)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){
-        g=k_tsp_edge_geom_map[(uint8_t)(o*8u+m)];
+        g=g_tsp_edge_geom_map[(uint8_t)(o*8u+m)];
         id=k_tsp_edge_border_phys[(uint16_t)(b-1u)*TSP_EDGE_ATLAS_GEOM_COUNT+g];
         emit_edge_to(id,1u,o,m,b);
     }

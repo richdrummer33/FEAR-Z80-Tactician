@@ -1255,7 +1255,7 @@ static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint
     off = clamp_s8(local_left, TSP_EDGE_OFF_MIN, (int8_t)(TSP_EDGE_OFF_MIN + TSP_EDGE_OFF_COUNT - 1));
     {
         uint8_t oi=(uint8_t)(off-TSP_EDGE_OFF_MIN);
-        uint8_t geom=k_tsp_edge_geom_map[(uint8_t)(oi*8u+mag)];
+        uint8_t geom=g_tsp_edge_geom_map[(uint8_t)(oi*8u+mag)];
         return (uint16_t)(TSP_EDGE_ATLAS_PLAIN_BASE+
                           (uint16_t)shade*TSP_EDGE_ATLAS_SHADE_STRIDE+geom+attr);
     }
