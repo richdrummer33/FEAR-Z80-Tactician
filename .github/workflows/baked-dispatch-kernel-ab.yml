@@ -65,62 +65,88 @@ jobs:
           ./build/frame_timeline build/e1dispatch/base.gg build/e1dispatch/base.noi \
             build/e1dispatch/base.csv 180 8 | tee build/e1dispatch/base-timeline.txt
 
-      - name: Build and measure baked-dispatch candidate
+      - name: Build and measure FULL-specialization only
         shell: bash
         run: |
           set -euo pipefail
           git checkout --force "$CANDIDATE_SHA"
-          mkdir -p build/e1dispatch/candidate/generated
+          mkdir -p build/e1dispatch/profile/generated
           python3 tools/e1m1_latest_full_bake.py \
             --repo-root . \
             --geometry src/generated/e1m1_room1_exact_geometry.h \
             --floor src/generated/e1m1_room1_exact_floor.h \
-            --out build/e1dispatch/candidate/generated/optimized_renderer_map_data.inc \
-            | tee build/e1dispatch/candidate-bake.txt
-          grep -q 'profiles FULL=30 LINTEL=0 RAISED=0 RISER=0' build/e1dispatch/candidate-bake.txt
-          grep -q 'projection_routes ' build/e1dispatch/candidate-bake.txt
+            --out build/e1dispatch/profile/generated/optimized_renderer_map_data.inc \
+            | tee build/e1dispatch/profile-bake.txt
+          grep -q 'profiles FULL=30 LINTEL=0 RAISED=0 RISER=0' build/e1dispatch/profile-bake.txt
           rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
             build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
             build/frame_trace_gg.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" \
             POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
-            POLAR_PROJ_GEN_DIR="$PWD/build/e1dispatch/candidate/generated" \
+            POLAR_PROJ_GEN_DIR="$PWD/build/e1dispatch/profile/generated" \
             POLAR_ROM_BANKS=8 POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
-            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1 -DTSPF_BAKED_PROJ_ROUTE=0" \
             gg-tilesector-polar
-          cp build/gg-tilesector-polar.gg build/e1dispatch/candidate.gg
-          cp build/gg-tilesector-polar.noi build/e1dispatch/candidate.noi
-          cp build/gg-tilesector-polar.sym build/e1dispatch/candidate.sym
-          ./build/frame_timeline build/e1dispatch/candidate.gg build/e1dispatch/candidate.noi \
-            build/e1dispatch/candidate.csv 180 8 | tee build/e1dispatch/candidate-timeline.txt
+          cp build/gg-tilesector-polar.gg build/e1dispatch/profile.gg
+          cp build/gg-tilesector-polar.noi build/e1dispatch/profile.noi
+          cp build/gg-tilesector-polar.sym build/e1dispatch/profile.sym
+          ./build/frame_timeline build/e1dispatch/profile.gg build/e1dispatch/profile.noi \
+            build/e1dispatch/profile.csv 180 8 | tee build/e1dispatch/profile-timeline.txt
+
+      - name: Build and measure FULL plus baked projection route
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --force "$CANDIDATE_SHA"
+          mkdir -p build/e1dispatch/route/generated
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --out build/e1dispatch/route/generated/optimized_renderer_map_data.inc \
+            | tee build/e1dispatch/route-bake.txt
+          grep -q 'projection_routes ' build/e1dispatch/route-bake.txt
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$PWD/build/e1dispatch/route/generated" \
+            POLAR_ROM_BANKS=8 POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1 -DTSPF_BAKED_PROJ_ROUTE=1" \
+            gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/e1dispatch/route.gg
+          cp build/gg-tilesector-polar.noi build/e1dispatch/route.noi
+          cp build/gg-tilesector-polar.sym build/e1dispatch/route.sym
+          ./build/frame_timeline build/e1dispatch/route.gg build/e1dispatch/route.noi \
+            build/e1dispatch/route.csv 180 8 | tee build/e1dispatch/route-timeline.txt
 
       - name: Prove framebuffer parity
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/e1dispatch-base /tmp/e1dispatch-candidate
-          ./build/tilesector_state_capture build/e1dispatch/base.gg build/e1dispatch/base.sym \
-            --vblank-sequence roomA-turn 180 20 /tmp/e1dispatch-base/frame build/e1dispatch/base-state.csv >/dev/null
-          ./build/tilesector_state_capture build/e1dispatch/candidate.gg build/e1dispatch/candidate.sym \
-            --vblank-sequence roomA-turn 180 20 /tmp/e1dispatch-candidate/frame build/e1dispatch/candidate-state.csv >/dev/null
+          for tag in base profile route; do
+            mkdir -p "/tmp/e1dispatch-$tag"
+            ./build/tilesector_state_capture "build/e1dispatch/$tag.gg" "build/e1dispatch/$tag.sym" \
+              --vblank-sequence roomA-turn 180 20 "/tmp/e1dispatch-$tag/frame" "build/e1dispatch/$tag-state.csv" >/dev/null
+          done
           python3 - <<'PY' | tee build/e1dispatch/parity.txt
           from pathlib import Path
           import hashlib
-          a=Path("/tmp/e1dispatch-base")
-          b=Path("/tmp/e1dispatch-candidate")
-          af=sorted(a.glob("frame-*.ppm"))
-          bf=sorted(b.glob("frame-*.ppm"))
-          if len(af)!=len(bf) or not af:
-              raise SystemExit(f"frame count mismatch {len(af)} vs {len(bf)}")
-          bad=[]
-          for x,y in zip(af,bf):
-              if x.read_bytes()!=y.read_bytes():
-                  bad.append(x.name)
-          if bad:
-              raise SystemExit("FRAMEBUFFER_PARITY_FAIL " + ",".join(bad[:12]))
-          print(f"FRAMEBUFFER_PARITY_PASS frames={len(af)}")
-          print("sha256_sequence="+hashlib.sha256(b"".join(x.read_bytes() for x in af)).hexdigest())
+          sets={}
+          for tag in ("base","profile","route"):
+              sets[tag]=sorted(Path(f"/tmp/e1dispatch-{tag}").glob("frame-*.ppm"))
+          n=len(sets["base"])
+          if not n or any(len(v)!=n for v in sets.values()):
+              raise SystemExit("frame count mismatch")
+          for tag in ("profile","route"):
+              bad=[a.name for a,b in zip(sets["base"],sets[tag]) if a.read_bytes()!=b.read_bytes()]
+              if bad:
+                  raise SystemExit(f"FRAMEBUFFER_PARITY_FAIL {tag} " + ",".join(bad[:12]))
+              print(f"FRAMEBUFFER_PARITY_PASS {tag} frames={n}")
+          print("sha256_sequence="+hashlib.sha256(b"".join(x.read_bytes() for x in sets["base"])).hexdigest())
           PY
 
       - name: Compare T-state timelines
@@ -131,25 +157,32 @@ jobs:
           import csv, statistics
           from pathlib import Path
           root=Path("build/e1dispatch")
-          a=list(csv.DictReader((root/"base.csv").open()))
-          b=list(csv.DictReader((root/"candidate.csv").open()))
-          n=min(len(a),len(b))
+          rows={tag:list(csv.DictReader((root/f"{tag}.csv").open())) for tag in ("base","profile","route")}
+          n=min(len(v) for v in rows.values())
           if n<100: raise SystemExit(f"too few aligned frames: {n}")
-          def vals(rows,k): return [int(r[k]) for r in rows[:n]]
+          def vals(tag,k): return [int(r[k]) for r in rows[tag][:n]]
           def mean(v): return statistics.fmean(v)
           def pct(v,p):
               q=sorted(v); return q[min(len(q)-1,max(0,int(round((len(q)-1)*p))))]
           print("BAKED_DISPATCH_AB_PASS")
           print(f"frames={n} trace=spin")
-          for k in ("total","render","projection/setup","geometry walk","materializer","retained gate","boundary patch"):
-              if k not in a[0] or k not in b[0]: continue
-              av,bv=vals(a,k),vals(b,k)
-              d=[y-x for x,y in zip(av,bv)]
-              pc=100.0*mean(d)/mean(av)
-              print(f"{k}: BASE={mean(av):.0f} CAND={mean(bv):.0f} DELTA={mean(d):+.0f} ({pc:+.2f}%) p95_delta={pct(d,.95):+d}")
+          keys=("total","render","projection/setup","geometry walk","materializer","retained gate","boundary patch","other render")
+          for k in keys:
+              if any(k not in rows[tag][0] for tag in rows): continue
+              av=vals("base",k)
+              pv=vals("profile",k)
+              rv=vals("route",k)
+              dp=[y-x for x,y in zip(av,pv)]
+              dr=[y-x for x,y in zip(av,rv)]
+              rr=[y-x for x,y in zip(pv,rv)]
+              print(f"{k}: BASE={mean(av):.0f} PROFILE={mean(pv):.0f} ROUTE={mean(rv):.0f} "
+                    f"PROFILE_DELTA={mean(dp):+.0f} ({100*mean(dp)/mean(av):+.2f}%) "
+                    f"ROUTE_DELTA={mean(dr):+.0f} ({100*mean(dr)/mean(av):+.2f}%) "
+                    f"ROUTE_vs_PROFILE={mean(rr):+.0f}")
           PY
           grep -q BAKED_DISPATCH_AB_PASS build/e1dispatch/summary.txt
-          grep -q FRAMEBUFFER_PARITY_PASS build/e1dispatch/parity.txt
+          grep -q 'FRAMEBUFFER_PARITY_PASS profile' build/e1dispatch/parity.txt
+          grep -q 'FRAMEBUFFER_PARITY_PASS route' build/e1dispatch/parity.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -158,13 +191,8 @@ jobs:
           path: |
             build/e1dispatch/summary.txt
             build/e1dispatch/parity.txt
-            build/e1dispatch/base-bake.txt
-            build/e1dispatch/candidate-bake.txt
-            build/e1dispatch/base-timeline.txt
-            build/e1dispatch/candidate-timeline.txt
-            build/e1dispatch/base.csv
-            build/e1dispatch/candidate.csv
-            build/e1dispatch/base-state.csv
-            build/e1dispatch/candidate-state.csv
+            build/e1dispatch/*-bake.txt
+            build/e1dispatch/*-timeline.txt
+            build/e1dispatch/*.csv
           if-no-files-found: warn
           retention-days: 30
