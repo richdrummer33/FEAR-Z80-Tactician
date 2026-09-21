@@ -71,12 +71,8 @@ jobs:
       - name: Build Stage 14 ROM
         run: make GBDK_HOME="$PWD/.toolchain/gbdk" gg-tilesector
 
-      - name: Build cycle profiler
-        shell: bash
-        run: |
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Profile Stage 14
         shell: bash
         run: |
