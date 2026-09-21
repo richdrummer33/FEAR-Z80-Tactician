@@ -432,9 +432,25 @@ bot_r_is_min$:
         ld      (#r_bot_max$), a
 bot_minmax_done$:
 
-        ; Persistent name-table lifetime: this projected surface owns one
-        ; contiguous visible tile-row span in this coarse screen column.
-        ; Mark it once; individual stores only need change-time dirty marking.
+        ; Exact-envelope FULL ownership has only nine visible coverage shapes.
+        ; For top_min<=0 the wall owns all 18 rows; top_min 1..8 owns the
+        ; mirrored span top_min..17-top_min; top_min>=9 owns nothing.  Baked
+        ; first-hit ownership means no overlap solve is required.
+        ld      a, (#_g_polar_run_owned)
+        or      a
+        jr      z, polar_cov_generic_prepare$
+        ld      a, (#r_top_min$)
+        bit     7, a
+        jr      z, polar_cov_full_nonneg$
+        xor     a
+polar_cov_full_nonneg$:
+        cp      #9
+        jr      nc, ret_kill_cov_done$
+        call    polar_set_full_owned_fast$
+        jr      polar_cov_mark_done$
+
+polar_cov_generic_prepare$:
+        ; Legacy/general path: clip an arbitrary contiguous owned span.
         ld      a, (#r_top_min$)
         bit     7, a
         jr      z, polar_cov_first_nonneg$
@@ -454,23 +470,18 @@ polar_cov_last_ready$:
         ld      c, a                   ; C=last visible owned row
         ld      a, e
         cp      c
-        jr      c, polar_cov_emit$
-        jr      z, polar_cov_emit$
+        jr      c, polar_cov_generic_mark$
+        jr      nz, ret_kill_cov_done$
+polar_cov_generic_mark$:
+        ld      a, e
+        call    polar_mark_span_fast$   ; returns A=OR of previously-unclaimed rows
+        jr      polar_cov_mark_done$
+
 ret_kill_cov_done$:
         ; Nothing of this surface lands in this column, so the retained slot
         ; must not be able to answer for it next frame.
         call    ret_column_kill$
         jr      polar_cov_done$
-polar_cov_emit$:
-        ld      a, (#_g_polar_run_owned)
-        or      a
-        jr      z, polar_cov_generic_mark$
-        ld      a, e
-        call    polar_set_span_owned_fast$
-        jr      polar_cov_mark_done$
-polar_cov_generic_mark$:
-        ld      a, e
-        call    polar_mark_span_fast$   ; returns A=OR of previously-unclaimed rows
 polar_cov_mark_done$:
 _tsp_polar_p_span::
         or      a
@@ -1230,6 +1241,57 @@ _tsp_h_polar_set_span_owned_fast::
         or      c
         ret
 
+; A=FULL top_min class 0..8, B=column.
+; Install the exact mirrored owned mask directly.  There are only nine shapes:
+; 0 => rows 0..17, 1 => 1..16, ... 8 => row 8..9.
+polar_set_full_owned_fast$:
+_tsp_h_polar_set_full_owned_fast::
+        ld      e, a
+        add     a, a
+        add     a, e                    ; A = shape*3
+        ld      l, a
+        ld      h, #0
+        ld      de, #full_owned_mask$
+        add     hl, de                  ; HL = baked mask triple
+
+        push    hl
+        ld      a, b
+        ld      e, a
+        add     a, a
+        add     a, e                    ; A = column*3
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_polar_nt_cov_cur
+        add     hl, de
+        ex      de, hl                  ; DE = destination
+        pop     hl                      ; HL = source
+
+        ld      a, (hl)
+        ld      (#r_unclaimed0$), a
+        ex      de, hl
+        ld      (hl), a
+        inc     hl
+        ex      de, hl
+        inc     hl
+
+        ld      a, (hl)
+        ld      (#r_unclaimed1$), a
+        ex      de, hl
+        ld      (hl), a
+        inc     hl
+        ex      de, hl
+        inc     hl
+
+        ld      a, (hl)
+        ld      (#r_unclaimed2$), a
+        ex      de, hl
+        ld      (hl), a
+
+        xor     a
+        ld      (#r_occluded$), a
+        inc     a                       ; known non-empty mask => live column
+        ret
+
 ; A=first owned row, C=last owned row, B=column. No register-save ceremony:
 ; this call sits at the column-materializer level where AF/C/DE/HL are scratch.
 ; span = prefix[last+1] XOR prefix[first], ORed into cov_cur[col*3].
@@ -1417,6 +1479,19 @@ _tsp_h_map_ptr_row_col::
 
 polar_dirty_mask_lut$:
         .db 0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80
+; Exact FULL first-hit ownership masks indexed by top_min class 0..8.
+; Bits cover 18 hardware tile rows, low row first.
+full_owned_mask$:
+        .db 0xff,0xff,0x03 ; 0..17
+        .db 0xfe,0xff,0x01 ; 1..16
+        .db 0xfc,0xff,0x00 ; 2..15
+        .db 0xf8,0x7f,0x00 ; 3..14
+        .db 0xf0,0x3f,0x00 ; 4..13
+        .db 0xe0,0x1f,0x00 ; 5..12
+        .db 0xc0,0x0f,0x00 ; 6..11
+        .db 0x80,0x07,0x00 ; 7..10
+        .db 0x00,0x03,0x00 ; 8..9
+
 polar_prefix$:
         .db 0x00,0x00,0x00 ; rows < 0
         .db 0x01,0x00,0x00 ; rows < 1
