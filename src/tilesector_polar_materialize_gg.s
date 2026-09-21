@@ -2144,60 +2144,11 @@ ret_patch_abs$:
 
 ret_patch_moved$:
 
-        ; Coverage is rows n..17-n, all of them ours.
+        ; Same nine-shape FULL ownership vocabulary as the normal exact path.
+        ; n is already proven 0..6 above, so reuse the baked 27-byte mask
+        ; installer instead of reconstructing prefix[18-n] XOR prefix[n].
         ld      a, (#r_patch_n$)
-        ld      e, a
-        add     a, a
-        add     a, e
-        ld      e, a
-        ld      d, #0
-        ld      hl, #polar_prefix$
-        add     hl, de
-        ld      (#r_patch_pp$), hl      ; &prefix[n]
-        ld      a, (#r_patch_n$)
-        neg
-        add     a, #18
-        ld      e, a
-        add     a, a
-        add     a, e
-        ld      e, a
-        ld      d, #0
-        ld      hl, #polar_prefix$
-        add     hl, de                  ; &prefix[18-n]
-        ld      de, (#r_patch_pp$)
-        ld      a, (de)
-        xor     (hl)
-        ld      (#r_unclaimed0$), a
-        inc     de
-        inc     hl
-        ld      a, (de)
-        xor     (hl)
-        ld      (#r_unclaimed1$), a
-        inc     de
-        inc     hl
-        ld      a, (de)
-        xor     (hl)
-        ld      (#r_unclaimed2$), a
-
-        ld      a, b
-        ld      e, a
-        add     a, a
-        add     a, e
-        ld      e, a
-        ld      d, #0
-        ld      hl, #_g_polar_nt_cov_cur
-        add     hl, de
-        ld      a, (#r_unclaimed0$)
-        ld      (hl), a
-        inc     hl
-        ld      a, (#r_unclaimed1$)
-        ld      (hl), a
-        inc     hl
-        ld      a, (#r_unclaimed2$)
-        ld      (hl), a
-
-        xor     a
-        ld      (#r_occluded$), a
+        call    polar_set_full_owned_fast$
 
         ; Edge tile and its mirror, through the existing LUT emitter. The LUT
         ; is where sub-cell precision lives, so nothing here needs to know
