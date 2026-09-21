@@ -6,11 +6,11 @@
  * The combined edge+vertical-border space (border L/R/both) collapses from
  * 384 semantic cases to 232 actual pixels. */
 #define TSP_EDGE_UNIQUE_COUNT 80u
-#define TSP_EDGE_BORDER_UNIQUE_COUNT 232u
+#define TSP_EDGE_BORDER_UNIQUE_COUNT 156u
 #define TSP_TILE_EDGE_COMPACT_BASE 39u
 #define TSP_TILE_EDGE_COMPACT_SHADE_STRIDE 80u
 #define TSP_TILE_EDGE_BORDER_BASE 279u
-#define TSP_EDGE_COMPACT_TILE_COUNT 511u
+#define TSP_EDGE_COMPACT_TILE_COUNT 435u
 static const uint8_t k_tsp_edge_unique_idx[128] = {
     0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,2,
     0,0,0,0,0,1,2,3,0,0,0,0,1,4,3,5,
@@ -23,7 +23,7 @@ static const uint8_t k_tsp_edge_unique_idx[128] = {
 
 };
 #ifdef TSP_EDGE_VOCAB_INCLUDE_BORDER
-static const uint8_t k_tsp_edge_border_idx[384] = {
+static const uint8_t k_tsp_edge_border_idx[256] = {
     0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,2,
     0,0,0,0,0,1,2,3,0,0,0,0,1,4,3,5,
     0,0,0,6,4,7,8,9,0,0,6,10,11,12,13,14,
@@ -40,15 +40,6 @@ static const uint8_t k_tsp_edge_border_idx[384] = {
     122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,
     138,139,140,141,142,143,144,144,145,146,147,148,149,149,150,150,
     151,152,153,153,154,154,154,154,155,155,155,155,155,155,155,155,
-    156,156,156,156,156,156,156,156,156,156,156,156,156,156,156,157,
-    156,156,156,156,156,156,157,158,156,156,156,156,156,159,158,160,
-    156,156,156,157,159,161,162,163,156,156,157,164,165,166,167,168,
-    156,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,
-    184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,
-    200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,
-    216,217,218,219,220,221,222,222,223,224,225,226,227,227,228,228,
-    229,230,228,228,231,231,231,231,231,231,231,231,231,231,231,231,
-
 };
 #endif
 #endif

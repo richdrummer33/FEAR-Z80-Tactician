@@ -1489,6 +1489,7 @@ polar_prefix$:
 ; Input is materializer state: local_index 0..30, signed slope -7..7,
 ; bottom flag, shade, and physical border bits. Returns final name-table word DE.
 edge_word_lookup$:
+        push    bc                      ; B is the hardware column in caller
         ; signed local = local_index-15
         ld      a, (#r_local_index$)
         sub     #15
@@ -1556,13 +1557,13 @@ edge_lookup_off_ok$:
         ld      a, (#_g_polar_mat_border)
         and     #3
         jr      z, edge_lookup_plain$
+        cp      #3
+        jr      z, edge_lookup_plain$   ; one-column face is the next rung
         ld      b, a                    ; physical border
         ld      a, (#r_edge_attr$)
         and     #0x02
         jr      z, edge_lookup_border_canon$
         ld      a, b
-        cp      #3
-        jr      z, edge_lookup_border_canon$
         xor     #3                     ; XFLIP swaps left/right border bits
         ld      b, a
 edge_lookup_border_canon$:
@@ -1617,6 +1618,7 @@ edge_lookup_attrs$:
         ld      a, (#r_edge_attr$)
         or      c
         ld      d, a
+        pop     bc
         ret
 
 edge_unique_idx$:
@@ -1630,7 +1632,7 @@ edge_unique_idx$:
         .db     75,76,77,77,78,78,78,78,79,79,79,79,79,79,79,79
 
 edge_border_ptrs$:
-        .dw     edge_border_b1$, edge_border_b2$, edge_border_b3$
+        .dw     edge_border_b1$, edge_border_b2$
 edge_border_b1$:
         .db     0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,2
         .db     0,0,0,0,0,1,2,3,0,0,0,0,1,4,3,5
@@ -1650,17 +1652,6 @@ edge_border_b2$:
         .db     122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137
         .db     138,139,140,141,142,143,144,144,145,146,147,148,149,149,150,150
         .db     151,152,153,153,154,154,154,154,155,155,155,155,155,155,155,155
-
-edge_border_b3$:
-        .db     156,156,156,156,156,156,156,156,156,156,156,156,156,156,156,157
-        .db     156,156,156,156,156,156,157,158,156,156,156,156,156,159,158,160
-        .db     156,156,156,157,159,161,162,163,156,156,157,164,165,166,167,168
-        .db     156,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183
-        .db     184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199
-        .db     200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215
-        .db     216,217,218,219,220,221,222,222,223,224,225,226,227,227,228,228
-        .db     229,230,228,228,231,231,231,231,231,231,231,231,231,231,231,231
-
 
 ; ---------------------------------------------------------------------------
 ; Retained swept-boundary state (rung 26).

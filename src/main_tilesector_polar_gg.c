@@ -102,10 +102,11 @@ static void emit_edge(uint8_t shade,uint8_t oi,uint8_t si){emit_edge_at(TSP_TILE
 static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
 #if defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
     /* Repack the 384 semantic EDGE tiles into 240 unique physical patterns,
-     * then spend the recovered slots on the missing EDGE+vertical-border
-     * combinations. Total is 511 patterns: still inside the GG's 9-bit tile id. */
+     * then spend the recovered slots on left/right EDGE+vertical-border
+     * combinations. Border=3 (one-column faces) deliberately remains a later
+     * thin-face rung. 435 patterns stay below the 0x3800 name-table boundary. */
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)s*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+k_tsp_edge_unique_idx[sem]);emit_edge_at(id,s,o,m,0u);}
-    for(b=1u;b<4u;++b)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_BORDER_BASE+k_tsp_edge_border_idx[(uint16_t)(b-1u)*128u+sem]);emit_edge_at(id,1u,o,m,b);}
+    for(b=1u;b<3u;++b)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_BORDER_BASE+k_tsp_edge_border_idx[(uint16_t)(b-1u)*128u+sem]);emit_edge_at(id,1u,o,m,b);}
 #else
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);
 #endif
