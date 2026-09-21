@@ -1143,6 +1143,12 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
          * are dead on this no-sort path, so do not copy them per visible run. */
         r->iq=g_e1env_depth_iq;
         r->step=g_e1env_depth_step;
+        /* Exact depth evaluator already computed the two coarse-edge inverse
+         * depths a/b. Keep their FULL half-heights in fields dead to this
+         * exact no-sort path: inv0=start, inv1=end. */
+        r->inv0=g_e1env_depth_start_half;
+        r->inv1=g_e1env_depth_end_half;
+        r->inv_mid=0u; /* reused below only when a connected anchor is valid */
     }
 #else
     {
@@ -1183,48 +1189,31 @@ static void envelope_join_connected(uint8_t li,uint8_t ri)
        l->right_connected)
     {
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
-        /* R90 shared-corner continuity lock.
+        /* R92 shared-corner continuity lock, cheap form.
          *
-         * The two authored faces really meet at one vertex, but exact-envelope
-         * ownership snaps the handoff to an 8px coarse boundary. Evaluating
-         * each face's plane independently at that snapped X can make their
-         * FULL heights disagree by several pixels even at moderate view
-         * angles.  Do NOT distort either whole plane: take the left face's
-         * already-computed right endpoint as the authoritative corner height
-         * and override ONLY the right face's first left endpoint. Its first
-         * right endpoint and every later column remain exactly as before.
+         * The depth-bank call that created each run already produced the exact
+         * start/end inverse depths. Their FULL half-heights are cached in
+         * inv0/inv1, so continuity is now just a byte comparison/copy rather
+         * than an n-column Q6 reconstruction in renderer C.
          *
-         * This is deliberately the cheapest diagnostic/fix rung. If it removes
-         * the 40/50-degree pillar seam jank, the next rung can replace the
-         * left-authoritative height with a true projected-vertex anchor. */
-        int16_t q=l->iq;
-        uint8_t k=(uint8_t)(l->c1-l->c0+1u);
-        uint8_t lh,rh,d;
-        while(k--) q=(int16_t)(q+l->step);
-        if(q<0) lh=0u;
-        else {
-            uint16_t uq=(uint16_t)q+32u;
-            uint16_t inv=uq>>6;
-            if(inv>255u) inv=255u;
-            lh=(uint8_t)(inv>>1);
-        }
-        q=r->iq;
-        if(q<0) rh=0u;
-        else {
-            uint16_t uq=(uint16_t)q+32u;
-            uint16_t inv=uq>>6;
-            if(inv>255u) inv=255u;
-            rh=(uint8_t)(inv>>1);
-        }
-        r->inv0=lh;          /* exact-path scratch: first-left half-height */
-        r->depth_plane=1u;   /* exact-path scratch: anchor valid */
+         * Only lock mismatches <=7 pixels. Larger discrepancies are grazing
+         * cases where the current edge vocabulary itself saturates at +/-7;
+         * forcing a huge endpoint correction there would merely move the
+         * artifact into the first 8px tile. Those belong to the steep-edge
+         * follow-up, not this moderate-angle fix. */
+        uint8_t lh=l->inv1;
+        uint8_t rh=r->inv0;
+        uint8_t d=(uint8_t)(lh>rh ? lh-rh : rh-lh);
 #if TSPF_PROFILE_HOOKS
-        d=(uint8_t)(lh>rh ? lh-rh : rh-lh);
         ++g_tspf_join_anchor_count;
         g_tspf_join_anchor_sum_px=(uint16_t)(g_tspf_join_anchor_sum_px+d);
         if(d>g_tspf_join_anchor_max_px) g_tspf_join_anchor_max_px=d;
-#else
-        (void)d;
+#endif
+        if(d<=7u)
+        {
+            r->inv_mid=lh;      /* exact-path scratch: first-left half-height */
+            r->depth_plane=1u;  /* exact-path scratch: anchor valid */
+        }
 #endif
 #endif
         /* Keep the existing single visible vertical seam: the right run keeps
@@ -1351,7 +1340,7 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
         g_polar_run_sid = r->sid;
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
         g_polar_run_left_anchor_valid = r->depth_plane;
-        g_polar_run_left_anchor_half = r->inv0;
+        g_polar_run_left_anchor_half = r->inv_mid;
 #else
         g_polar_run_left_anchor_valid = 0u;
 #endif
