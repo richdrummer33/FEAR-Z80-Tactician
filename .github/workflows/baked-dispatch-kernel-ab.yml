@@ -1,0 +1,170 @@
+name: Baked dispatch kernel A-B
+
+on:
+  push:
+    branches:
+      - experiment/baked-dispatch-kernels
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remember candidate and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CANDIDATE_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"
+          mkdir -p .toolchain build/e1dispatch
+          curl -L --fail --retry 3 -o .toolchain/gbdk-linux64.tar.gz \
+            https://github.com/gbdk-2020/gbdk-2020/releases/download/4.5.0/gbdk-linux64.tar.gz
+          echo "d7857a5f6d135ee4c249043ca26aad9f2ec8ab5d4106d97720d404114f42605c  .toolchain/gbdk-linux64.tar.gz" | sha256sum -c -
+          tar -xzf .toolchain/gbdk-linux64.tar.gz -C .toolchain
+          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
+          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
+          ROOT="$PWD/.toolchain/Gearsystem"
+          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
+            tools/frame/frame_timeline.cpp \
+            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
+            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
+          python3 tools/frame/gen_traces.py spin build/frame_trace.c
+
+      - name: Build and measure baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --force 082cc2402310e594c43fc04ed7daf350990975c3
+          mkdir -p build/e1dispatch/base/generated
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --out build/e1dispatch/base/generated/optimized_renderer_map_data.inc \
+            | tee build/e1dispatch/base-bake.txt
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$PWD/build/e1dispatch/base/generated" \
+            POLAR_ROM_BANKS=8 POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/e1dispatch/base.gg
+          cp build/gg-tilesector-polar.noi build/e1dispatch/base.noi
+          cp build/gg-tilesector-polar.sym build/e1dispatch/base.sym
+          ./build/frame_timeline build/e1dispatch/base.gg build/e1dispatch/base.noi \
+            build/e1dispatch/base.csv 180 8 | tee build/e1dispatch/base-timeline.txt
+
+      - name: Build and measure baked-dispatch candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --force "$CANDIDATE_SHA"
+          mkdir -p build/e1dispatch/candidate/generated
+          python3 tools/e1m1_latest_full_bake.py \
+            --repo-root . \
+            --geometry src/generated/e1m1_room1_exact_geometry.h \
+            --floor src/generated/e1m1_room1_exact_floor.h \
+            --out build/e1dispatch/candidate/generated/optimized_renderer_map_data.inc \
+            | tee build/e1dispatch/candidate-bake.txt
+          grep -q 'profiles FULL=30 LINTEL=0 RAISED=0 RISER=0' build/e1dispatch/candidate-bake.txt
+          grep -q 'projection_routes ' build/e1dispatch/candidate-bake.txt
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$PWD/build/e1dispatch/candidate/generated" \
+            POLAR_ROM_BANKS=8 POLAR_EXTRA_OBJS=build/frame_trace_gg.o \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar
+          cp build/gg-tilesector-polar.gg build/e1dispatch/candidate.gg
+          cp build/gg-tilesector-polar.noi build/e1dispatch/candidate.noi
+          cp build/gg-tilesector-polar.sym build/e1dispatch/candidate.sym
+          ./build/frame_timeline build/e1dispatch/candidate.gg build/e1dispatch/candidate.noi \
+            build/e1dispatch/candidate.csv 180 8 | tee build/e1dispatch/candidate-timeline.txt
+
+      - name: Prove framebuffer parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/e1dispatch-base /tmp/e1dispatch-candidate
+          ./build/tilesector_state_capture build/e1dispatch/base.gg build/e1dispatch/base.sym \
+            --vblank-sequence roomA-turn 180 20 /tmp/e1dispatch-base/frame build/e1dispatch/base-state.csv >/dev/null
+          ./build/tilesector_state_capture build/e1dispatch/candidate.gg build/e1dispatch/candidate.sym \
+            --vblank-sequence roomA-turn 180 20 /tmp/e1dispatch-candidate/frame build/e1dispatch/candidate-state.csv >/dev/null
+          python3 - <<'PY' | tee build/e1dispatch/parity.txt
+          from pathlib import Path
+          import hashlib
+          a=Path("/tmp/e1dispatch-base")
+          b=Path("/tmp/e1dispatch-candidate")
+          af=sorted(a.glob("frame-*.ppm"))
+          bf=sorted(b.glob("frame-*.ppm"))
+          if len(af)!=len(bf) or not af:
+              raise SystemExit(f"frame count mismatch {len(af)} vs {len(bf)}")
+          bad=[]
+          for x,y in zip(af,bf):
+              if x.read_bytes()!=y.read_bytes():
+                  bad.append(x.name)
+          if bad:
+              raise SystemExit("FRAMEBUFFER_PARITY_FAIL " + ",".join(bad[:12]))
+          print(f"FRAMEBUFFER_PARITY_PASS frames={len(af)}")
+          print("sha256_sequence="+hashlib.sha256(b"".join(x.read_bytes() for x in af)).hexdigest())
+          PY
+
+      - name: Compare T-state timelines
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/e1dispatch/summary.txt
+          import csv, statistics
+          from pathlib import Path
+          root=Path("build/e1dispatch")
+          a=list(csv.DictReader((root/"base.csv").open()))
+          b=list(csv.DictReader((root/"candidate.csv").open()))
+          n=min(len(a),len(b))
+          if n<100: raise SystemExit(f"too few aligned frames: {n}")
+          def vals(rows,k): return [int(r[k]) for r in rows[:n]]
+          def mean(v): return statistics.fmean(v)
+          def pct(v,p):
+              q=sorted(v); return q[min(len(q)-1,max(0,int(round((len(q)-1)*p))))]
+          print("BAKED_DISPATCH_AB_PASS")
+          print(f"frames={n} trace=spin")
+          for k in ("total","render","projection/setup","geometry walk","materializer","retained gate","boundary patch"):
+              if k not in a[0] or k not in b[0]: continue
+              av,bv=vals(a,k),vals(b,k)
+              d=[y-x for x,y in zip(av,bv)]
+              pc=100.0*mean(d)/mean(av)
+              print(f"{k}: BASE={mean(av):.0f} CAND={mean(bv):.0f} DELTA={mean(d):+.0f} ({pc:+.2f}%) p95_delta={pct(d,.95):+d}")
+          PY
+          grep -q BAKED_DISPATCH_AB_PASS build/e1dispatch/summary.txt
+          grep -q FRAMEBUFFER_PARITY_PASS build/e1dispatch/parity.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Baked-dispatch-kernel-AB
+          path: |
+            build/e1dispatch/summary.txt
+            build/e1dispatch/parity.txt
+            build/e1dispatch/base-bake.txt
+            build/e1dispatch/candidate-bake.txt
+            build/e1dispatch/base-timeline.txt
+            build/e1dispatch/candidate-timeline.txt
+            build/e1dispatch/base.csv
+            build/e1dispatch/candidate.csv
+            build/e1dispatch/base-state.csv
+            build/e1dispatch/candidate-state.csv
+          if-no-files-found: warn
+          retention-days: 30
