@@ -56,9 +56,18 @@ jobs:
           mkdir -p "$PRE" "$GEN"
           # Orthogonal-only benchmark oracle (30/30 axis-aligned walls,
           # exact-Q4 stable at every legal player position).
-          gh run download 35501744023 \
-            -n GG-E1M1-Exact-Q4-FrontEnvelope \
-            -D "$PRE"
+          # GitHub artifact storage occasionally returns a transient 503.
+          # Retry the immutable prebake download rather than failing a renderer
+          # experiment before compilation even starts.
+          for attempt in 1 2 3 4; do
+            if gh run download 35501744023 \
+              -n GG-E1M1-Exact-Q4-FrontEnvelope \
+              -D "$PRE"; then
+              break
+            fi
+            test "$attempt" -lt 4
+            sleep $((attempt * 3))
+          done
           cp "$PRE/generated/optimized_renderer_map_data.inc" "$GEN/"
           cp "$PRE/generated"/e1env_idx_*.c "$GEN/"
           cp "$PRE/generated"/e1env_prog_*.c "$GEN/"
