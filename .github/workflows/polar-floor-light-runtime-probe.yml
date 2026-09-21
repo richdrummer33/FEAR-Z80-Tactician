@@ -115,13 +115,8 @@ jobs:
           p.write_text(s.replace(old2,new2))
           PY
 
-      - name: Build Gearsystem profiler and capture tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Verify lit ROM remains real-player controlled
         shell: bash
         run: |
