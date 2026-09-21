@@ -939,10 +939,12 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
      * symmetry. Keep the run profile live for BOTH geometry-only and shaded
      * fast paths; previously only mode 0 initialized it because nothing else
      * consumed this bridge field. */
+#if !defined(TSPF_E1M1_FULL_ONLY)
     if (g_tspf_appearance_mode < 2u)
         g_polar_run_profile = profile;
+#endif
     if (g_tspf_appearance_mode == 0u
-#if defined(TSPF_OPTIMIZED_MAP)
+#if defined(TSPF_OPTIMIZED_MAP) && !defined(TSPF_E1M1_FULL_ONLY)
         && s->z_q4 == TSP_OPT_EYE_Q4
 #endif
        )
@@ -1021,9 +1023,9 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
             /* Fast-path geometry/shade materialization. The baked polar
              * renderer supplies final projected endpoints; this kernel only
              * turns them into the existing GG edge/full tile vocabulary. */
-#if defined(TSPF_OPTIMIZED_MAP)
-            /* FULL symmetry is valid only at the nominal eye height. Elevated
-             * step states use the exact endpoints and generic edge pair. */
+#if defined(TSPF_OPTIMIZED_MAP) && !defined(TSPF_E1M1_FULL_ONLY)
+            /* Generic optimized maps may elevate the camera; the E1M1
+             * experiment is flat and the bake fixes the FULL kernel. */
             g_polar_run_profile = (s->z_q4==TSP_OPT_EYE_Q4)?profile:0xffu;
 #endif
             g_polar_mat_col = c;
