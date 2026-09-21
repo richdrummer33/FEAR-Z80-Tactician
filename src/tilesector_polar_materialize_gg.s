@@ -93,36 +93,32 @@ _tsp_polar_run_geometry_fast::
         call    ret_run_begin$
 
 run_geom_loop$:
-        ; inv_left = clamp_u8(((iq + 32) arithmetic>>6), 0..255)
+        ; FULL-only fused projection endpoint: round Q6 inverse depth, halve it,
+        ; construct top=71-half, and derive floor(top/8) while the signed top
+        ; byte is already live.  The old path spilled invl/invr to RAM and then
+        ; reloaded them before calling separate top and row helpers.
         ld      hl, (#_g_polar_run_iq)
         ld      de, #32
         add     hl, de
         call    q6_round_u8$
-        ld      (#r_run_invl$), a
+        srl     a
+        ld      (#r_run_halfl$), a
+        call    full_top_half$
+        ld      (#_g_polar_mat_top_l), hl
+        ld      (#r_top_l_row$), a
 
-        ; inv_right uses iq+step, exactly matching the C column path.
+        ; Right endpoint uses iq+step, exactly matching the C column path.
         ld      hl, (#_g_polar_run_iq)
         ld      de, (#_g_polar_run_step)
         add     hl, de
         ld      de, #32
         add     hl, de
         call    q6_round_u8$
-        ld      (#r_run_invr$), a
-
-        ; FULL-only benchmark: bottom geometry is the exact hardware mirror
-        ; of top, so materialize only the two top endpoints. Retention still
-        ; keys on the half-heights themselves.
-        ld      a, (#r_run_invl$)
-        srl     a
-        ld      (#r_run_halfl$), a
-        call    full_top_half$
-        ld      (#_g_polar_mat_top_l), hl
-
-        ld      a, (#r_run_invr$)
         srl     a
         ld      (#r_run_halfr$), a
         call    full_top_half$
         ld      (#_g_polar_mat_top_r), hl
+        ld      (#r_top_r_row$), a
 
         ; Physical-chain border bits: 1 at the true left endpoint, 2 at the
         ; true right endpoint. Interior coarse columns carry no border bits.
@@ -236,8 +232,14 @@ _tsp_h_full_top_half::
         ld      l, a
         ld      h, #0
         bit     7, l
-        ret     z
+        jr      z, full_top_sign_ready$
         dec     h
+full_top_sign_ready$:
+        ; A still holds the signed low byte of top. All FULL tops fit in int8,
+        ; so three arithmetic shifts are the exact signed floor(top/8) row.
+        sra     a
+        sra     a
+        sra     a
         ret
 
 ; Legacy generic profile helper retained for non-benchmark/reference callers.
@@ -327,16 +329,8 @@ _tsp_polar_surface_column_fast::
         ld      a, #17
         ld      (#r_clip_last$), a
 
-        ; Four signed pixel endpoints -> four signed tile rows.
-        ld      hl, (#_g_polar_mat_top_l)
-        call    row_floor_hl$
-        ld      (#r_top_l_row$), a
-        ld      hl, (#_g_polar_mat_top_r)
-        call    row_floor_hl$
-        ld      (#r_top_r_row$), a
-
-        ; FULL-only benchmark: bottom rows are always 17-top rows. There
-        ; are no bottom pixel endpoints to floor.
+        ; FULL-only run traversal already produced exact signed top rows while
+        ; constructing the pixel endpoints. Bottom rows are always 17-top.
 polar_endpoint_rows_ready$:
 
         ; A foreground FULL wall whose top edge moved a row or two needs a few
