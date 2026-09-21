@@ -105,15 +105,11 @@ int16_t g_polar_run_step;
 /* Identity of the surface this run projects. The retained swept-boundary
  * path keys last frame's per-column result on it. */
 uint8_t g_polar_run_sid;
-/* R90 shared-corner anchor. Exact-envelope connected faces meet at one
- * physical vertex, but their depth planes are sampled at a snapped 8px
- * coarse-column boundary.  The first column of the right-hand run may
- * therefore start at a different FULL half-height than the left-hand run
- * ended with.  Carry one authoritative half-height into the assembly walker
- * for that first endpoint only; the rest of the run keeps its original depth
- * plane untouched. */
-uint8_t g_polar_run_left_anchor_valid;
-uint8_t g_polar_run_left_anchor_half;
+/* Exact endpoint lock: the banked depth evaluator returns a compact Q6
+ * start/step for interior columns plus the exact final FULL half-height.  The
+ * assembly walker uses this byte only on the last right endpoint so connected
+ * faces meet without cumulative Q6-step drift. */
+uint8_t g_polar_run_right_anchor_half;
 /* Set only by the baked front-envelope path. Each coarse screen column has
  * exactly one first-hit owner, so the assembly can install the FULL span mask
  * directly instead of re-solving occlusion with polar_mark_span_fast(). */
@@ -133,12 +129,6 @@ volatile uint16_t g_tspf_touched_cells;
  * executing banked callees, so e1env_fetch_program_q4() no longer disappears
  * into the profiler's "unassigned / callees" bucket. */
 volatile uint8_t g_tspf_env_phase;
-/* Visual-geometry diagnostic for R90: number of connected coarse boundaries
- * locked this update, plus the mismatch that existed BEFORE the lock.  Since
- * FULL top=71-half, half-height delta is exactly top-edge pixel delta. */
-volatile uint8_t g_tspf_join_anchor_count;
-volatile uint8_t g_tspf_join_anchor_max_px;
-volatile uint16_t g_tspf_join_anchor_sum_px;
 #define TSPF_SET_STAGE(v)        \
     do                           \
     {                            \
@@ -1143,12 +1133,9 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
          * are dead on this no-sort path, so do not copy them per visible run. */
         r->iq=g_e1env_depth_iq;
         r->step=g_e1env_depth_step;
-        /* Exact depth evaluator already computed the two coarse-edge inverse
-         * depths a/b. Keep their FULL half-heights in fields dead to this
-         * exact no-sort path: inv0=start, inv1=end. */
-        r->inv0=g_e1env_depth_start_half;
+        /* Preserve the exact final endpoint alongside the compact Q6
+         * interpolation. inv1 is dead to the exact no-sort path otherwise. */
         r->inv1=g_e1env_depth_end_half;
-        r->inv_mid=0u; /* reused below only when a connected anchor is valid */
     }
 #else
     {
@@ -1162,13 +1149,7 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     r->left_real=(uint8_t)(left_unclipped && (owner&0x20u));
     r->right_real=(uint8_t)(right_unclipped && (owner&0x40u));
     r->right_connected=(uint8_t)((owner&0x80u)!=0u);
-#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
-    /* inv0/depth_plane are otherwise dead in the exact Q6 path. Reuse them
-     * as left-anchor half-height / valid so PolarRun does not grow in WRAM. */
     r->depth_plane=0u;
-#else
-    r->depth_plane=0u;
-#endif
     r->c0=c0; r->c1=c1;
 
     g_run_order[idx]=idx;
@@ -1183,38 +1164,11 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
  * the sole visible corner line. */
 static void envelope_join_connected(uint8_t li,uint8_t ri)
 {
-    PolarRun *l=&g_runs[li], *r=&g_runs[ri];
-    if((uint8_t)(l->c1+1u)==r->c0 &&
-       l->right_real && r->left_real &&
-       l->right_connected)
-    {
-#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
-        /* R92 shared-corner continuity lock, cheap form.
-         *
-         * The depth-bank call that created each run already produced the exact
-         * start/end inverse depths. Their FULL half-heights are cached in
-         * inv0/inv1, so continuity is now just a byte comparison/copy rather
-         * than an n-column Q6 reconstruction in renderer C.
-         *
-         * Only lock mismatches <=7 pixels. Larger discrepancies are grazing
-         * cases where the current edge vocabulary itself saturates at +/-7;
-         * forcing a huge endpoint correction there would merely move the
-         * artifact into the first 8px tile. Those belong to the steep-edge
-         * follow-up, not this moderate-angle fix. */
-        uint8_t lh=l->inv1;
-        uint8_t rh=r->inv0;
-        uint8_t d=(uint8_t)(lh>rh ? lh-rh : rh-lh);
-#if TSPF_PROFILE_HOOKS
-        ++g_tspf_join_anchor_count;
-        g_tspf_join_anchor_sum_px=(uint16_t)(g_tspf_join_anchor_sum_px+d);
-        if(d>g_tspf_join_anchor_max_px) g_tspf_join_anchor_max_px=d;
-#endif
-        if(d<=7u)
-        {
-            r->inv_mid=lh;      /* exact-path scratch: first-left half-height */
-            r->depth_plane=1u;  /* exact-path scratch: anchor valid */
-        }
-#endif
+    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
+       g_runs[li].right_real && g_runs[ri].left_real &&
+       g_runs[li].right_connected)
+        g_runs[li].right_real=0u;
+}#endif
         /* Keep the existing single visible vertical seam: the right run keeps
          * its left border; only the duplicate left-run right border is hidden. */
         l->right_real=0u;
@@ -1338,10 +1292,7 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
     {
         g_polar_run_sid = r->sid;
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
-        g_polar_run_left_anchor_valid = r->depth_plane;
-        g_polar_run_left_anchor_half = r->inv_mid;
-#else
-        g_polar_run_left_anchor_valid = 0u;
+        g_polar_run_right_anchor_half = r->inv1;
 #endif
         g_polar_run_c0 = c0;
         g_polar_run_c1 = c1;
@@ -1539,11 +1490,6 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     TSPF_SET_STAGE(2u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_selector_tests = 0u;
-#endif
-#if TSPF_PROFILE_HOOKS
-    g_tspf_join_anchor_count=0u;
-    g_tspf_join_anchor_max_px=0u;
-    g_tspf_join_anchor_sum_px=0u;
 #endif
 #if defined(TSPF_E1M1_FULL_ONLY)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)

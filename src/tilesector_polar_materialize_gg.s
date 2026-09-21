@@ -18,8 +18,7 @@
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
         .globl  _g_polar_run_sid
-        .globl  _g_polar_run_left_anchor_valid
-        .globl  _g_polar_run_left_anchor_half
+        .globl  _g_polar_run_right_anchor_half
         .globl  _g_polar_run_owned
         .globl  _g_polar_nt_cov_cur
         .globl  _g_polar_nt_row_min
@@ -97,19 +96,6 @@ _tsp_polar_run_geometry_fast::
         ld      (#_g_polar_mat_shade), a
         call    ret_run_begin$
 
-        ; R90: a connected exact-envelope boundary may carry one authoritative
-        ; half-height from the left neighbour. Consume it ONLY for this run's
-        ; first left endpoint.  The first right endpoint still uses the run's
-        ; original Q6 plane, so no error is propagated through the face.
-        ld      a, (#_g_polar_run_left_anchor_valid)
-        or      a
-        jr      z, run_geom_loop$
-        xor     a
-        ld      (#_g_polar_run_left_anchor_valid), a
-        ld      a, (#_g_polar_run_left_anchor_half)
-        call    full_top_half$          ; A=row, C=half, HL=signed top
-        jr      run_geom_left_ready$
-
 run_geom_loop$:
         ; FULL-only fused projection endpoint: round Q6 inverse depth, halve it,
         ; construct top=71-half, and derive floor(top/8) while the signed top
@@ -119,19 +105,31 @@ run_geom_loop$:
         ld      de, #32
         add     hl, de
         call    full_q6_top_row$        ; A=row, C=half, HL=signed top
-run_geom_left_ready$:
         ld      (#r_top_l_row$), a
         ld      a, c
         ld      (#r_run_halfl$), a
         ld      (#_g_polar_mat_top_l), hl
 
-        ; Right endpoint uses iq+step, exactly matching the C column path.
+        ; R94 endpoint lock. Interior right edges use the compact Q6 step,
+        ; but the LAST right edge uses the exact b endpoint already calculated
+        ; by the depth bank. This removes accumulated reciprocal/step error at
+        ; physical run boundaries without changing the rest of the plane.
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      z, run_right_exact$
         ld      hl, (#_g_polar_run_iq)
         ld      de, (#_g_polar_run_step)
         add     hl, de
         ld      de, #32
         add     hl, de
         call    full_q6_top_row$
+        jr      run_right_ready$
+run_right_exact$:
+        ld      a, (#_g_polar_run_right_anchor_half)
+        call    full_top_half$
+run_right_ready$:
         ld      (#r_top_r_row$), a
         ld      a, c
         ld      (#r_run_halfr$), a
