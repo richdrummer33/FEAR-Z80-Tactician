@@ -105,6 +105,15 @@ int16_t g_polar_run_step;
 /* Identity of the surface this run projects. The retained swept-boundary
  * path keys last frame's per-column result on it. */
 uint8_t g_polar_run_sid;
+/* R90 shared-corner anchor. Exact-envelope connected faces meet at one
+ * physical vertex, but their depth planes are sampled at a snapped 8px
+ * coarse-column boundary.  The first column of the right-hand run may
+ * therefore start at a different FULL half-height than the left-hand run
+ * ended with.  Carry one authoritative half-height into the assembly walker
+ * for that first endpoint only; the rest of the run keeps its original depth
+ * plane untouched. */
+uint8_t g_polar_run_left_anchor_valid;
+uint8_t g_polar_run_left_anchor_half;
 /* Set only by the baked front-envelope path. Each coarse screen column has
  * exactly one first-hit owner, so the assembly can install the FULL span mask
  * directly instead of re-solving occlusion with polar_mark_span_fast(). */
@@ -124,6 +133,12 @@ volatile uint16_t g_tspf_touched_cells;
  * executing banked callees, so e1env_fetch_program_q4() no longer disappears
  * into the profiler's "unassigned / callees" bucket. */
 volatile uint8_t g_tspf_env_phase;
+/* Visual-geometry diagnostic for R90: number of connected coarse boundaries
+ * locked this update, plus the mismatch that existed BEFORE the lock.  Since
+ * FULL top=71-half, half-height delta is exactly top-edge pixel delta. */
+volatile uint8_t g_tspf_join_anchor_count;
+volatile uint8_t g_tspf_join_anchor_max_px;
+volatile uint16_t g_tspf_join_anchor_sum_px;
 #define TSPF_SET_STAGE(v)        \
     do                           \
     {                            \
@@ -1141,7 +1156,11 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     r->left_real=(uint8_t)(left_unclipped && (owner&0x20u));
     r->right_real=(uint8_t)(right_unclipped && (owner&0x40u));
     r->right_connected=(uint8_t)((owner&0x80u)!=0u);
-#if !defined(__SDCC) || !defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) || !TSPF_E1M1_DEPTH_EDGE_LUT
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+    /* inv0/depth_plane are otherwise dead in the exact Q6 path. Reuse them
+     * as left-anchor half-height / valid so PolarRun does not grow in WRAM. */
+    r->depth_plane=0u;
+#else
     r->depth_plane=0u;
 #endif
     r->c0=c0; r->c1=c1;
@@ -1158,10 +1177,60 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
  * the sole visible corner line. */
 static void envelope_join_connected(uint8_t li,uint8_t ri)
 {
-    if((uint8_t)(g_runs[li].c1+1u)==g_runs[ri].c0 &&
-       g_runs[li].right_real && g_runs[ri].left_real &&
-       g_runs[li].right_connected)
-        g_runs[li].right_real=0u;
+    PolarRun *l=&g_runs[li], *r=&g_runs[ri];
+    if((uint8_t)(l->c1+1u)==r->c0 &&
+       l->right_real && r->left_real &&
+       l->right_connected)
+    {
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+        /* R90 shared-corner continuity lock.
+         *
+         * The two authored faces really meet at one vertex, but exact-envelope
+         * ownership snaps the handoff to an 8px coarse boundary. Evaluating
+         * each face's plane independently at that snapped X can make their
+         * FULL heights disagree by several pixels even at moderate view
+         * angles.  Do NOT distort either whole plane: take the left face's
+         * already-computed right endpoint as the authoritative corner height
+         * and override ONLY the right face's first left endpoint. Its first
+         * right endpoint and every later column remain exactly as before.
+         *
+         * This is deliberately the cheapest diagnostic/fix rung. If it removes
+         * the 40/50-degree pillar seam jank, the next rung can replace the
+         * left-authoritative height with a true projected-vertex anchor. */
+        int16_t q=l->iq;
+        uint8_t k=(uint8_t)(l->c1-l->c0+1u);
+        uint8_t lh,rh,d;
+        while(k--) q=(int16_t)(q+l->step);
+        if(q<0) lh=0u;
+        else {
+            uint16_t uq=(uint16_t)q+32u;
+            uint16_t inv=uq>>6;
+            if(inv>255u) inv=255u;
+            lh=(uint8_t)(inv>>1);
+        }
+        q=r->iq;
+        if(q<0) rh=0u;
+        else {
+            uint16_t uq=(uint16_t)q+32u;
+            uint16_t inv=uq>>6;
+            if(inv>255u) inv=255u;
+            rh=(uint8_t)(inv>>1);
+        }
+        r->inv0=lh;          /* exact-path scratch: first-left half-height */
+        r->depth_plane=1u;   /* exact-path scratch: anchor valid */
+#if TSPF_PROFILE_HOOKS
+        d=(uint8_t)(lh>rh ? lh-rh : rh-lh);
+        ++g_tspf_join_anchor_count;
+        g_tspf_join_anchor_sum_px=(uint16_t)(g_tspf_join_anchor_sum_px+d);
+        if(d>g_tspf_join_anchor_max_px) g_tspf_join_anchor_max_px=d;
+#else
+        (void)d;
+#endif
+#endif
+        /* Keep the existing single visible vertical seam: the right run keeps
+         * its left border; only the duplicate left-run right border is hidden. */
+        l->right_real=0u;
+    }
 }
 #endif
 
@@ -1280,6 +1349,12 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
        )
     {
         g_polar_run_sid = r->sid;
+#if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+        g_polar_run_left_anchor_valid = r->depth_plane;
+        g_polar_run_left_anchor_half = r->inv0;
+#else
+        g_polar_run_left_anchor_valid = 0u;
+#endif
         g_polar_run_c0 = c0;
         g_polar_run_c1 = c1;
         g_polar_run_left_real = r->left_real;
@@ -1476,6 +1551,11 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     TSPF_SET_STAGE(2u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_selector_tests = 0u;
+#endif
+#if TSPF_PROFILE_HOOKS
+    g_tspf_join_anchor_count=0u;
+    g_tspf_join_anchor_max_px=0u;
+    g_tspf_join_anchor_sum_px=0u;
 #endif
 #if defined(TSPF_E1M1_FULL_ONLY)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)

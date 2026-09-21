@@ -18,6 +18,8 @@
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
         .globl  _g_polar_run_sid
+        .globl  _g_polar_run_left_anchor_valid
+        .globl  _g_polar_run_left_anchor_half
         .globl  _g_polar_run_owned
         .globl  _g_polar_nt_cov_cur
         .globl  _g_polar_nt_row_min
@@ -95,6 +97,19 @@ _tsp_polar_run_geometry_fast::
         ld      (#_g_polar_mat_shade), a
         call    ret_run_begin$
 
+        ; R90: a connected exact-envelope boundary may carry one authoritative
+        ; half-height from the left neighbour. Consume it ONLY for this run's
+        ; first left endpoint.  The first right endpoint still uses the run's
+        ; original Q6 plane, so no error is propagated through the face.
+        ld      a, (#_g_polar_run_left_anchor_valid)
+        or      a
+        jr      z, run_geom_loop$
+        xor     a
+        ld      (#_g_polar_run_left_anchor_valid), a
+        ld      a, (#_g_polar_run_left_anchor_half)
+        call    full_top_half$          ; A=row, C=half, HL=signed top
+        jr      run_geom_left_ready$
+
 run_geom_loop$:
         ; FULL-only fused projection endpoint: round Q6 inverse depth, halve it,
         ; construct top=71-half, and derive floor(top/8) while the signed top
@@ -104,6 +119,7 @@ run_geom_loop$:
         ld      de, #32
         add     hl, de
         call    full_q6_top_row$        ; A=row, C=half, HL=signed top
+run_geom_left_ready$:
         ld      (#r_top_l_row$), a
         ld      a, c
         ld      (#r_run_halfl$), a

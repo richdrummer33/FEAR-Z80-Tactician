@@ -177,6 +177,7 @@ int main(int argc, char** argv) {
     }
     u16 s_state = 0, s_map = 0, s_env_phase = 0;
     u16 s_dirty_min = 0, s_vblank_bursts = 0, s_vblank_missed = 0;
+    u16 s_join_count = 0, s_join_max = 0, s_join_sum = 0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
     const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
     const bool have_dirty_min =
@@ -186,6 +187,10 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_ts_vblank_missed", s_vblank_missed) || find_symbol(noi, "g_ts_vblank_missed", s_vblank_missed));
     const bool have_env_phase =
         find_symbol(noi, "_g_tspf_env_phase", s_env_phase) || find_symbol(noi, "g_tspf_env_phase", s_env_phase);
+    const bool have_join_anchor =
+        (find_symbol(noi, "_g_tspf_join_anchor_count", s_join_count) || find_symbol(noi, "g_tspf_join_anchor_count", s_join_count)) &&
+        (find_symbol(noi, "_g_tspf_join_anchor_max_px", s_join_max) || find_symbol(noi, "g_tspf_join_anchor_max_px", s_join_max)) &&
+        (find_symbol(noi, "_g_tspf_join_anchor_sum_px", s_join_sum) || find_symbol(noi, "g_tspf_join_anchor_sum_px", s_join_sum));
 
     /* PC ranges from the current link, one per fixed-bank symbol */
     unsigned rbank = 0;
@@ -245,6 +250,8 @@ int main(int argc, char** argv) {
         uint64_t map_fnv64;
         uint8_t dirty_rows_pending;
         uint16_t vblank_bursts, vblank_missed;
+        uint8_t join_anchor_count, join_anchor_max_px;
+        uint16_t join_anchor_sum_px;
     };
     std::vector<Frame> frames;
     std::vector<std::vector<uint8_t>> map_snaps;
@@ -296,6 +303,11 @@ int main(int argc, char** argv) {
                         if (mem->DebugRetrieve((u16)(s_dirty_min + dr)) != 0xffu) ++pending;
                     cur.dirty_rows_pending = pending;
                 }
+                if (have_join_anchor) {
+                    cur.join_anchor_count = mem->DebugRetrieve(s_join_count);
+                    cur.join_anchor_max_px = mem->DebugRetrieve(s_join_max);
+                    cur.join_anchor_sum_px = rd16(mem, s_join_sum);
+                }
                 if (have_vblank_stats) {
                     const uint16_t vb = rd16(mem, s_vblank_bursts);
                     const uint16_t vm = rd16(mem, s_vblank_missed);
@@ -336,7 +348,7 @@ int main(int argc, char** argv) {
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
         if (have_env_phase)
             for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%s",ENV_PHASE_NAME[e]);
-        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed\n");
+        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -346,10 +358,11 @@ int main(int argc, char** argv) {
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
             if (have_env_phase)
                 for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%llu",(unsigned long long)f.envph[e]);
-            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u\n",
+            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u\n",
                 (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
                 (unsigned long long)f.map_fnv64,
-                (unsigned)f.dirty_rows_pending, (unsigned)f.vblank_bursts, (unsigned)f.vblank_missed);
+                (unsigned)f.dirty_rows_pending, (unsigned)f.vblank_bursts, (unsigned)f.vblank_missed,
+                (unsigned)f.join_anchor_count, (unsigned)f.join_anchor_max_px, (unsigned)f.join_anchor_sum_px);
         }
         std::fclose(csv);
     }
@@ -392,6 +405,19 @@ int main(int argc, char** argv) {
                 std::printf(" r%u=%.1f/%u", dr, 100.0*pending_by_row[dr]/frames.size(), pending_run_max[dr]);
             std::printf("\n");
         }
+    }
+    if (have_join_anchor) {
+        unsigned joins=0u, sum_px=0u, worst_px=0u, nonzero=0u;
+        for (const auto& f : frames) {
+            joins += f.join_anchor_count;
+            sum_px += f.join_anchor_sum_px;
+            if (f.join_anchor_max_px > worst_px) worst_px = f.join_anchor_max_px;
+            if (f.join_anchor_sum_px) ++nonzero;
+        }
+        std::printf("shared-corner anchor: joins/update=%.2f prelock_mean_abs=%.2fpx "
+                    "prelock_worst=%upx updates_with_mismatch=%.1f%%\n",
+                    (double)joins/frames.size(), joins ? (double)sum_px/joins : 0.0,
+                    worst_px, 100.0*nonzero/frames.size());
     }
     std::printf("frame timeline: %zu frames (warmup %u discarded)\n", frames.size(), warmup);
     std::printf("Game Gear budget at 60 Hz is %.0f T-states a frame, %.0f at 30 Hz\n\n",

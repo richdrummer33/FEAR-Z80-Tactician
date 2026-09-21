@@ -6,6 +6,7 @@ on:
     branches:
       - experiment/e1m1-front-envelope-rom
       - experiment/e1m1-vblank-pipeline
+      - experiment/e1m1-shared-corner-anchor
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
