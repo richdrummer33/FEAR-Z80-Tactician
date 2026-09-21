@@ -102,13 +102,8 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Build Gearsystem profiler and frame capture tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Prove player control and cycle profile
         shell: bash
         run: |
