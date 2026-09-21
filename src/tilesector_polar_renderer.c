@@ -1215,7 +1215,6 @@ static void envelope_join_connected(uint8_t li,uint8_t ri)
             r->depth_plane=1u;  /* exact-path scratch: anchor valid */
         }
 #endif
-#endif
         /* Keep the existing single visible vertical seam: the right run keeps
          * its left border; only the duplicate left-run right border is hidden. */
         l->right_real=0u;
