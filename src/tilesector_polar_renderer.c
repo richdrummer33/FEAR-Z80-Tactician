@@ -81,6 +81,7 @@ void tsp_polar_ret_begin_frame(void);
 void tsp_polar_ret_end_frame(void);
 void tsp_polar_ret_invalidate(void);
 #if TSPF_SUBCOLUMN_SEAM_EXPERIMENT
+void tsp_polar_record_subcolumn_seam(void);
 void tsp_polar_subcolumn_seams_fast(void);
 #endif
 #if TSPF_LOCAL_PROJECTION
@@ -128,6 +129,9 @@ uint8_t g_polar_run_owned;
 uint8_t g_tspf_seam_count;
 uint8_t g_tspf_seam_x[TSPF_MAX_SUBCOLUMN_SEAMS];
 uint8_t g_tspf_seam_half[TSPF_MAX_SUBCOLUMN_SEAMS];
+int8_t g_tspf_seam_pending_dx;
+uint8_t g_tspf_seam_pending_c0;
+uint8_t g_tspf_seam_pending_half;
 #endif
 
 volatile uint8_t g_tspf_appearance_mode;
@@ -1236,18 +1240,13 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
             l->inv_mid=half; l->depth_plane|=2u; /* canonical right endpoint */
             r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
 #if TSPF_SUBCOLUMN_SEAM_EXPERIMENT
-            /* Rung X1: keep coarse ownership and the proven top/bottom raster,
-             * but move the visible vertical corner line to physical sub-column
-             * X. The fixed-ASM post pass merges two lines in one 8px tile. */
-            if(g_tspf_appearance_mode==0u && g_tspf_seam_count<TSPF_MAX_SUBCOLUMN_SEAMS){
-                int16_t sx=(int16_t)(((int16_t)r->c0<<3)+(int16_t)dx);
-                uint8_t si=g_tspf_seam_count;
-                if(sx<0) sx=0;
-                if(sx>159) sx=159;
-                g_tspf_seam_x[si]=(uint8_t)sx;
-                g_tspf_seam_half[si]=half;
-                g_tspf_seam_count=(uint8_t)(si+1u);
-                /* The overlay replaces the right run's snapped left border. */
+            /* Keep bank 255 tiny: fixed ASM owns descriptor bounds/index/X
+             * arithmetic. The renderer only exposes the three live bytes. */
+            if(g_tspf_appearance_mode==0u){
+                g_tspf_seam_pending_c0=r->c0;
+                g_tspf_seam_pending_dx=dx;
+                g_tspf_seam_pending_half=half;
+                tsp_polar_record_subcolumn_seam();
                 r->left_real=0u;
             }
 #endif
