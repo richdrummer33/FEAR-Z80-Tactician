@@ -1168,11 +1168,6 @@ static void envelope_join_connected(uint8_t li,uint8_t ri)
        g_runs[li].right_real && g_runs[ri].left_real &&
        g_runs[li].right_connected)
         g_runs[li].right_real=0u;
-}#endif
-        /* Keep the existing single visible vertical seam: the right run keeps
-         * its left border; only the duplicate left-run right border is hidden. */
-        l->right_real=0u;
-    }
 }
 #endif
 
