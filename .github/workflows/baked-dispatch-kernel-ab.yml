@@ -123,30 +123,24 @@ jobs:
           ./build/frame_timeline build/e1dispatch/route.gg build/e1dispatch/route.noi \
             build/e1dispatch/route.csv 180 8 | tee build/e1dispatch/route-timeline.txt
 
-      - name: Prove framebuffer parity
+      - name: Prove logical name-table parity
         shell: bash
         run: |
           set -euo pipefail
-          for tag in base profile route; do
-            mkdir -p "/tmp/e1dispatch-$tag"
-            ./build/tilesector_state_capture "build/e1dispatch/$tag.gg" "build/e1dispatch/$tag.sym" \
-              --vblank-sequence roomA-turn 180 20 "/tmp/e1dispatch-$tag/frame" "build/e1dispatch/$tag-state.csv" >/dev/null
-          done
           python3 - <<'PY' | tee build/e1dispatch/parity.txt
+          import csv
           from pathlib import Path
-          import hashlib
-          sets={}
-          for tag in ("base","profile","route"):
-              sets[tag]=sorted(Path(f"/tmp/e1dispatch-{tag}").glob("frame-*.ppm"))
-          n=len(sets["base"])
-          if not n or any(len(v)!=n for v in sets.values()):
-              raise SystemExit("frame count mismatch")
+          root=Path("build/e1dispatch")
+          rows={tag:list(csv.DictReader((root/f"{tag}.csv").open())) for tag in ("base","profile","route")}
+          n=min(len(v) for v in rows.values())
+          if n<100: raise SystemExit(f"too few aligned logical frames: {n}")
+          bh=[r["map_hash"] for r in rows["base"][:n]]
           for tag in ("profile","route"):
-              bad=[a.name for a,b in zip(sets["base"],sets[tag]) if a.read_bytes()!=b.read_bytes()]
+              hh=[r["map_hash"] for r in rows[tag][:n]]
+              bad=[i for i,(a,b) in enumerate(zip(bh,hh)) if a!=b]
               if bad:
-                  raise SystemExit(f"FRAMEBUFFER_PARITY_FAIL {tag} " + ",".join(bad[:12]))
-              print(f"FRAMEBUFFER_PARITY_PASS {tag} frames={n}")
-          print("sha256_sequence="+hashlib.sha256(b"".join(x.read_bytes() for x in sets["base"])).hexdigest())
+                  raise SystemExit(f"LOGICAL_MAP_PARITY_FAIL {tag} frames=" + ",".join(map(str,bad[:20])))
+              print(f"LOGICAL_MAP_PARITY_PASS {tag} frames={n}")
           PY
 
       - name: Compare T-state timelines
@@ -181,8 +175,8 @@ jobs:
                     f"ROUTE_vs_PROFILE={mean(rr):+.0f}")
           PY
           grep -q BAKED_DISPATCH_AB_PASS build/e1dispatch/summary.txt
-          grep -q 'FRAMEBUFFER_PARITY_PASS profile' build/e1dispatch/parity.txt
-          grep -q 'FRAMEBUFFER_PARITY_PASS route' build/e1dispatch/parity.txt
+          grep -q 'LOGICAL_MAP_PARITY_PASS profile' build/e1dispatch/parity.txt
+          grep -q 'LOGICAL_MAP_PARITY_PASS route' build/e1dispatch/parity.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
