@@ -139,13 +139,8 @@ jobs:
           print('PLAYER_INPUT_SCENARIOS=idle,forward,back,turn,button1,button2')
           PY
 
-      - name: Build Gearsystem profilers
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Prove no rail and real GG-control movement
         shell: bash
         run: |
