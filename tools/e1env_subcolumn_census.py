@@ -77,20 +77,18 @@ def main():
     idxbanks=parse_idx(gen); progs=parse_programs(gen)
     mt=(gen/'optimized_renderer_map_data.inc').read_text()
     vx=arr(mt,'k_tspf_vx'); vy=arr(mt,'k_tspf_vy')
-    recip=arr(mt,'k_tspf_recip8_q16'); atan=arr(mt,'k_tspf_atan_q12'); angle_x_pos=arr(mt,'k_tspf_angle_x_pos')
+    recip=arr(mt,'k_tspf_recip8_q16'); atan=arr(mt,'k_tspf_atan_q12')
     centers=[-497,-461,-422,-378,-330,-279,-223,-163,-101,-36,29,94,156,216,273,325,373,417,457,494]
     import bisect
-    def center_code(rel):
-        c=bisect.bisect_left(centers,rel)
-        aa=abs(rel); x=(160-angle_x_pos[aa]) if rel<0 else angle_x_pos[aa]; x=min(159,x)
-        dx=max(-4,min(3,x-8*c))
-        return c+((dx+4)<<5)
-    lut=[center_code(rel) for rel in range(-512,513)]
-    if a.center_lut:
-        actual=parse_center_lut(a.center_lut)
-        if actual != lut:
-            bad=[i for i,(x,y) in enumerate(zip(actual,lut)) if x!=y]
-            raise RuntimeError(f'center LUT reconstruction mismatch count={len(bad)} first_rel={bad[0]-512 if bad else None}')
+    if not a.center_lut:
+        raise RuntimeError('--center-lut is required: the packed high bits are the renderer\'s canonical sub-column phase')
+    lut=parse_center_lut(a.center_lut)
+    bad_low=[]
+    for rel,code in zip(range(-512,513),lut):
+        expected=bisect.bisect_left(centers,rel)
+        if (code&31)!=expected: bad_low.append((rel,code&31,expected))
+    if bad_low:
+        raise RuntimeError(f'center LUT low-bit ownership mismatch count={len(bad_low)} first={bad_low[0]}')
     assert len(progs)==h['E1ENV_PROGRAM_COUNT']
 
     xs=[]
