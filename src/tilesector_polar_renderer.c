@@ -227,11 +227,13 @@ static uint8_t g_depth_yaw_cache = 0xffu;
 #if defined(TSPF_E1M1_FULL_ONLY)
 uint16_t g_corner_bearing_q12[32];
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
-static uint8_t g_corner_bearing_stamp[32];
-static uint8_t g_corner_bearing_epoch;
-/* World-space corner bearings depend on player X/Y, not yaw. Keep the solved
- * values across pure rotation frames; translation bumps the epoch and lazily
- * repopulates only vertices the envelope actually touches. */
+/* Four-byte validity bitset for the 32 possible compact vertices.  The exact
+ * envelope already supplies an 8-bit vertex mask shape, so this reuses the
+ * same byte+bit calculation as the LBF fallback mask instead of paying a
+ * 32-byte stamp array + epoch compare on every bearing request. */
+static uint8_t g_corner_bearing_valid[4];
+/* World-space corner bearings depend on player X/Y, not yaw. Keep solved
+ * values across pure rotation frames; translation clears only four bytes. */
 static int16_t g_corner_bearing_x_q4;
 static int16_t g_corner_bearing_y_q4;
 static uint8_t g_corner_bearing_pos_valid;
@@ -383,8 +385,7 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #endif
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
-    memset(g_corner_bearing_stamp,0,sizeof(g_corner_bearing_stamp));
-    g_corner_bearing_epoch=0u;
+    memset(g_corner_bearing_valid,0,sizeof(g_corner_bearing_valid));
 #endif
     TSPF_SET_STAGE(0u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
@@ -689,24 +690,27 @@ static uint16_t bearing_vertex_q12(uint8_t vid, const TSPState *s)
 {
 #if defined(TSPF_E1M1_FULL_ONLY)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
-    if (g_corner_bearing_stamp[vid] != g_corner_bearing_epoch)
     {
+        uint8_t bi=(uint8_t)(vid>>3);
+        uint8_t bm=k_nt_mask8[vid&7u];
+        if(!(g_corner_bearing_valid[bi]&bm))
+        {
 #if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
-        uint8_t mb=g_e1env_lbf_cell[vid>>3];
-        if(!(mb & k_nt_mask8[vid&7u]))
-        {
-            g_e1env_lbf_ptr=&g_e1env_lbf_cell[4u+((uint8_t)(vid<<2))];
-            e1env_local_bearing_eval();
-            g_corner_bearing_q12[vid]=g_e1env_lbf_out;
-        }
-        else
+            if(!(g_e1env_lbf_cell[bi]&bm))
+            {
+                g_e1env_lbf_ptr=&g_e1env_lbf_cell[4u+((uint8_t)(vid<<2))];
+                e1env_local_bearing_eval();
+                g_corner_bearing_q12[vid]=g_e1env_lbf_out;
+            }
+            else
 #endif
-        {
-            g_corner_bearing_q12[vid] = bearing_q12(
-                (int16_t)((int16_t)k_tspf_vx[vid] << 4) - s->x_q4,
-                (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
+            {
+                g_corner_bearing_q12[vid] = bearing_q12(
+                    (int16_t)((int16_t)k_tspf_vx[vid] << 4) - s->x_q4,
+                    (int16_t)((int16_t)k_tspf_vy[vid] << 4) - s->y_q4);
+            }
+            g_corner_bearing_valid[bi]|=bm;
         }
-        g_corner_bearing_stamp[vid] = g_corner_bearing_epoch;
     }
 #else
     {
@@ -1435,20 +1439,19 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
     const uint8_t *p, *b;
 #if defined(TSPF_E1M1_FULL_ONLY)
 #if defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT)
-    /* A yaw-only update does not change any world-space vertex bearing.
-     * The old code invalidated all 32 cache stamps every frame, forcing the
-     * local-bearing evaluator to redo ~13 vertices even while merely turning.
-     * Invalidate only when camera X/Y actually changes. */
+    /* A yaw-only update does not change world-space vertex bearings.
+     * Translation invalidates the compact four-byte bitset once; the envelope
+     * then lazily repopulates only vertices it actually touches. */
     if(!g_corner_bearing_pos_valid ||
        s->x_q4!=g_corner_bearing_x_q4 ||
        s->y_q4!=g_corner_bearing_y_q4){
         g_corner_bearing_x_q4=s->x_q4;
         g_corner_bearing_y_q4=s->y_q4;
         g_corner_bearing_pos_valid=1u;
-        if(++g_corner_bearing_epoch==0u){
-            memset(g_corner_bearing_stamp,0,sizeof(g_corner_bearing_stamp));
-            g_corner_bearing_epoch=1u;
-        }
+        g_corner_bearing_valid[0]=0u;
+        g_corner_bearing_valid[1]=0u;
+        g_corner_bearing_valid[2]=0u;
+        g_corner_bearing_valid[3]=0u;
     }
 #else
     g_corner_bearing_valid_lo = 0u;
