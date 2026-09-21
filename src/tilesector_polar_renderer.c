@@ -26,6 +26,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_SCREEN_DEPTH_PLANE
 #define TSPF_SCREEN_DEPTH_PLANE 0
 #endif
+#ifndef TSPF_BAKED_PROJ_ROUTE
+#define TSPF_BAKED_PROJ_ROUTE 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -621,7 +624,7 @@ static uint8_t inv_at_invd(uint8_t sid, uint8_t invd, uint16_t world_bearing, in
     q = (q * sec + 64u) >> 7;
     return (uint8_t)(q > 255u ? 255u : q);
 }
-#if defined(TSPF_E1M1_FULL_ONLY)
+#if defined(TSPF_E1M1_FULL_ONLY) && TSPF_BAKED_PROJ_ROUTE
 enum {
     TSPF_PROJ_X_POS = 0u,
     TSPF_PROJ_X_NEG = 1u,
@@ -821,7 +824,7 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
     r->left_real = (uint8_t)(lo == st);
     r->right_real = (uint8_t)(hi == en);
     r->depth_plane = 0u;
-#if defined(TSPF_E1M1_FULL_ONLY)
+#if defined(TSPF_E1M1_FULL_ONLY) && TSPF_BAKED_PROJ_ROUTE
     project_depth_baked(sid, k_tspf_seg_anchor[sid], s,
                         (uint16_t)(yawq + lo) & 4095u, lo,
                         (uint16_t)(yawq + hi) & 4095u, hi, r);
@@ -841,7 +844,7 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
             return 1u;
     }
 #endif
-#if !defined(TSPF_E1M1_FULL_ONLY)
+#if !(defined(TSPF_E1M1_FULL_ONLY) && TSPF_BAKED_PROJ_ROUTE)
     r->inv0 = inv_at_invd(sid, invd, (uint16_t)(yawq + lo) & 4095u, lo);
     r->inv1 = inv_at_invd(sid, invd, (uint16_t)(yawq + hi) & 4095u, hi);
 #endif
