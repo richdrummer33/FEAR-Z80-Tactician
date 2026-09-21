@@ -609,6 +609,8 @@ row_floor_neg8$:
 ; this surface entered, so top/bottom members can be tested independently.
 prepare_symfull_edges$:
 _tsp_h_prepare_symfull_edges::
+        xor     a
+        ld      (#r_edge_bottom$), a
         ld      hl, (#_g_polar_mat_top_l)
         ld      (#r_edge_left$), hl
         ld      de, (#_g_polar_mat_top_r)
@@ -703,48 +705,7 @@ sym_local_ready$:
         add     a, #15
         ld      (#r_local_index$), a
 _tsp_probe_sym_edge_key::
-
-        ld      a, (#r_edge_slope$)
-        add     a, #7
-        ld      e, a
-        ld      l, e
-        ld      h, #0
-        ld      d, #0
-        push    de
-        add     hl, hl
-        add     hl, hl
-        add     hl, hl
-        add     hl, hl
-        add     hl, hl                  ; *32
-        pop     de
-        or      a
-        sbc     hl, de                  ; *31
-        ld      a, (#r_local_index$)
-        ld      e, a
-        ld      d, #0
-        add     hl, de
-        add     hl, hl
-        ld      de, #edge_lut$
-        add     hl, de
-        ld      e, (hl)
-        inc     hl
-        ld      d, (hl)
-
-        ; Same shade-family adjustment as the generic edge path.
-        ld      a, (#_g_polar_mat_shade)
-        or      a
-        jr      z, sym_edge_word_ready$
-        dec     a
-        jr      nz, sym_edge_shade_two$
-        ld      a, e
-        add     a, #0x80
-        ld      e, a
-        jr      nc, sym_edge_word_ready$
-        inc     d
-        jr      sym_edge_word_ready$
-sym_edge_shade_two$:
-        inc     d
-sym_edge_word_ready$:
+        call    edge_word_lookup$
         ld      (#r_sym_word$), de
 
         ld      a, (#r_sym_top_draw$)
@@ -897,54 +858,7 @@ local_ready$:
         add     a, #15
         ld      (#r_local_index$), a
 
-        ; group = slope+7 + (bottom?15:0); index = group*31 + local_index.
-        ld      a, (#r_edge_slope$)
-        add     a, #7
-        ld      e, a
-        ld      a, (#r_edge_bottom$)
-        or      a
-        jr      z, group_ready$
-        ld      a, e
-        add     a, #15
-        ld      e, a
-group_ready$:
-        ld      l, e
-        ld      h, #0
-        ld      d, #0
-        push    de                    ; group
-        add     hl, hl                ; 2
-        add     hl, hl                ; 4
-        add     hl, hl                ; 8
-        add     hl, hl                ; 16
-        add     hl, hl                ; 32
-        pop     de
-        or      a
-        sbc     hl, de                ; 31*group
-        ld      a, (#r_local_index$)
-        ld      e, a
-        ld      d, #0
-        add     hl, de
-        add     hl, hl
-        ld      de, #edge_lut$
-        add     hl, de
-        ld      e, (hl)
-        inc     hl
-        ld      d, (hl)
-
-        ; LUT is shade zero. Add 0x0080/0x0100 for mid/near families.
-        ld      a, (#_g_polar_mat_shade)
-        or      a
-        jr      z, edge_tile_ready$
-        dec     a
-        jr      nz, edge_shade_two$
-        ld      a, e
-        add     a, #0x80
-        ld      e, a
-        jr      nc, edge_tile_ready$
-        inc     d
-        jr      edge_tile_ready$
-edge_shade_two$:
-        inc     d
+        call    edge_word_lookup$
 edge_tile_ready$:
         push    de
         ld      a, (#r_row$)
@@ -1571,159 +1485,181 @@ polar_prefix$:
 ; edge_lut[bottom][slope+7][local+15], shade-zero tile word.
 ; Each entry already contains H/V flip + palette attributes exactly as the
 ; C edge_entry() path; the assembly kernel only adds the shade tile offset.
-edge_lut$:
-        ; Fresh polar LUT generated from edge_entry(shade=0,local,slope,bottom).
-        ; Index: bottom(0/1), slope -7..+7, raw local -15..+15.
-        ; bottom=0 slope=-7
-        .dw 0x022E, 0x022E, 0x022E, 0x022E, 0x022E, 0x022E, 0x022E, 0x022E
-        .dw 0x022E, 0x022E, 0x022E, 0x022E, 0x022E, 0x022E, 0x022E, 0x022E
-        .dw 0x0236, 0x023E, 0x0246, 0x024E, 0x0256, 0x025E, 0x0266, 0x026E
-        .dw 0x0276, 0x027E, 0x0286, 0x028E, 0x0296, 0x029E, 0x02A6
-        ; bottom=0 slope=-6
-        .dw 0x022D, 0x022D, 0x022D, 0x022D, 0x022D, 0x022D, 0x022D, 0x022D
-        .dw 0x022D, 0x022D, 0x022D, 0x022D, 0x022D, 0x022D, 0x022D, 0x0235
-        .dw 0x023D, 0x0245, 0x024D, 0x0255, 0x025D, 0x0265, 0x026D, 0x0275
-        .dw 0x027D, 0x0285, 0x028D, 0x0295, 0x029D, 0x02A5, 0x02A5
-        ; bottom=0 slope=-5
-        .dw 0x022C, 0x022C, 0x022C, 0x022C, 0x022C, 0x022C, 0x022C, 0x022C
-        .dw 0x022C, 0x022C, 0x022C, 0x022C, 0x022C, 0x022C, 0x0234, 0x023C
-        .dw 0x0244, 0x024C, 0x0254, 0x025C, 0x0264, 0x026C, 0x0274, 0x027C
-        .dw 0x0284, 0x028C, 0x0294, 0x029C, 0x02A4, 0x02A4, 0x02A4
-        ; bottom=0 slope=-4
-        .dw 0x022B, 0x022B, 0x022B, 0x022B, 0x022B, 0x022B, 0x022B, 0x022B
-        .dw 0x022B, 0x022B, 0x022B, 0x022B, 0x022B, 0x0233, 0x023B, 0x0243
-        .dw 0x024B, 0x0253, 0x025B, 0x0263, 0x026B, 0x0273, 0x027B, 0x0283
-        .dw 0x028B, 0x0293, 0x029B, 0x02A3, 0x02A3, 0x02A3, 0x02A3
-        ; bottom=0 slope=-3
-        .dw 0x022A, 0x022A, 0x022A, 0x022A, 0x022A, 0x022A, 0x022A, 0x022A
-        .dw 0x022A, 0x022A, 0x022A, 0x022A, 0x0232, 0x023A, 0x0242, 0x024A
-        .dw 0x0252, 0x025A, 0x0262, 0x026A, 0x0272, 0x027A, 0x0282, 0x028A
-        .dw 0x0292, 0x029A, 0x02A2, 0x02A2, 0x02A2, 0x02A2, 0x02A2
-        ; bottom=0 slope=-2
-        .dw 0x0229, 0x0229, 0x0229, 0x0229, 0x0229, 0x0229, 0x0229, 0x0229
-        .dw 0x0229, 0x0229, 0x0229, 0x0231, 0x0239, 0x0241, 0x0249, 0x0251
-        .dw 0x0259, 0x0261, 0x0269, 0x0271, 0x0279, 0x0281, 0x0289, 0x0291
-        .dw 0x0299, 0x02A1, 0x02A1, 0x02A1, 0x02A1, 0x02A1, 0x02A1
-        ; bottom=0 slope=-1
-        .dw 0x0228, 0x0228, 0x0228, 0x0228, 0x0228, 0x0228, 0x0228, 0x0228
-        .dw 0x0228, 0x0228, 0x0230, 0x0238, 0x0240, 0x0248, 0x0250, 0x0258
-        .dw 0x0260, 0x0268, 0x0270, 0x0278, 0x0280, 0x0288, 0x0290, 0x0298
-        .dw 0x02A0, 0x02A0, 0x02A0, 0x02A0, 0x02A0, 0x02A0, 0x02A0
-        ; bottom=0 slope=+0
-        .dw 0x0027, 0x0027, 0x0027, 0x0027, 0x0027, 0x0027, 0x0027, 0x0027
-        .dw 0x0027, 0x002F, 0x0037, 0x003F, 0x0047, 0x004F, 0x0057, 0x005F
-        .dw 0x0067, 0x006F, 0x0077, 0x007F, 0x0087, 0x008F, 0x0097, 0x009F
-        .dw 0x009F, 0x009F, 0x009F, 0x009F, 0x009F, 0x009F, 0x009F
-        ; bottom=0 slope=+1
-        .dw 0x0028, 0x0028, 0x0028, 0x0028, 0x0028, 0x0028, 0x0028, 0x0028
-        .dw 0x0028, 0x0030, 0x0038, 0x0040, 0x0048, 0x0050, 0x0058, 0x0060
-        .dw 0x0068, 0x0070, 0x0078, 0x0080, 0x0088, 0x0090, 0x0098, 0x00A0
-        .dw 0x00A0, 0x00A0, 0x00A0, 0x00A0, 0x00A0, 0x00A0, 0x00A0
-        ; bottom=0 slope=+2
-        .dw 0x0029, 0x0029, 0x0029, 0x0029, 0x0029, 0x0029, 0x0029, 0x0029
-        .dw 0x0029, 0x0031, 0x0039, 0x0041, 0x0049, 0x0051, 0x0059, 0x0061
-        .dw 0x0069, 0x0071, 0x0079, 0x0081, 0x0089, 0x0091, 0x0099, 0x00A1
-        .dw 0x00A1, 0x00A1, 0x00A1, 0x00A1, 0x00A1, 0x00A1, 0x00A1
-        ; bottom=0 slope=+3
-        .dw 0x002A, 0x002A, 0x002A, 0x002A, 0x002A, 0x002A, 0x002A, 0x002A
-        .dw 0x002A, 0x0032, 0x003A, 0x0042, 0x004A, 0x0052, 0x005A, 0x0062
-        .dw 0x006A, 0x0072, 0x007A, 0x0082, 0x008A, 0x0092, 0x009A, 0x00A2
-        .dw 0x00A2, 0x00A2, 0x00A2, 0x00A2, 0x00A2, 0x00A2, 0x00A2
-        ; bottom=0 slope=+4
-        .dw 0x002B, 0x002B, 0x002B, 0x002B, 0x002B, 0x002B, 0x002B, 0x002B
-        .dw 0x002B, 0x0033, 0x003B, 0x0043, 0x004B, 0x0053, 0x005B, 0x0063
-        .dw 0x006B, 0x0073, 0x007B, 0x0083, 0x008B, 0x0093, 0x009B, 0x00A3
-        .dw 0x00A3, 0x00A3, 0x00A3, 0x00A3, 0x00A3, 0x00A3, 0x00A3
-        ; bottom=0 slope=+5
-        .dw 0x002C, 0x002C, 0x002C, 0x002C, 0x002C, 0x002C, 0x002C, 0x002C
-        .dw 0x002C, 0x0034, 0x003C, 0x0044, 0x004C, 0x0054, 0x005C, 0x0064
-        .dw 0x006C, 0x0074, 0x007C, 0x0084, 0x008C, 0x0094, 0x009C, 0x00A4
-        .dw 0x00A4, 0x00A4, 0x00A4, 0x00A4, 0x00A4, 0x00A4, 0x00A4
-        ; bottom=0 slope=+6
-        .dw 0x002D, 0x002D, 0x002D, 0x002D, 0x002D, 0x002D, 0x002D, 0x002D
-        .dw 0x002D, 0x0035, 0x003D, 0x0045, 0x004D, 0x0055, 0x005D, 0x0065
-        .dw 0x006D, 0x0075, 0x007D, 0x0085, 0x008D, 0x0095, 0x009D, 0x00A5
-        .dw 0x00A5, 0x00A5, 0x00A5, 0x00A5, 0x00A5, 0x00A5, 0x00A5
-        ; bottom=0 slope=+7
-        .dw 0x002E, 0x002E, 0x002E, 0x002E, 0x002E, 0x002E, 0x002E, 0x002E
-        .dw 0x002E, 0x0036, 0x003E, 0x0046, 0x004E, 0x0056, 0x005E, 0x0066
-        .dw 0x006E, 0x0076, 0x007E, 0x0086, 0x008E, 0x0096, 0x009E, 0x00A6
-        .dw 0x00A6, 0x00A6, 0x00A6, 0x00A6, 0x00A6, 0x00A6, 0x00A6
-        ; bottom=1 slope=-7
-        .dw 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6
-        .dw 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0CA6, 0x0C9E
-        .dw 0x0C96, 0x0C8E, 0x0C86, 0x0C7E, 0x0C76, 0x0C6E, 0x0C66, 0x0C5E
-        .dw 0x0C56, 0x0C4E, 0x0C46, 0x0C3E, 0x0C36, 0x0C2E, 0x0C2E
-        ; bottom=1 slope=-6
-        .dw 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5
-        .dw 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0CA5, 0x0C9D
-        .dw 0x0C95, 0x0C8D, 0x0C85, 0x0C7D, 0x0C75, 0x0C6D, 0x0C65, 0x0C5D
-        .dw 0x0C55, 0x0C4D, 0x0C45, 0x0C3D, 0x0C35, 0x0C2D, 0x0C2D
-        ; bottom=1 slope=-5
-        .dw 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4
-        .dw 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0CA4, 0x0C9C
-        .dw 0x0C94, 0x0C8C, 0x0C84, 0x0C7C, 0x0C74, 0x0C6C, 0x0C64, 0x0C5C
-        .dw 0x0C54, 0x0C4C, 0x0C44, 0x0C3C, 0x0C34, 0x0C2C, 0x0C2C
-        ; bottom=1 slope=-4
-        .dw 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3
-        .dw 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0CA3, 0x0C9B
-        .dw 0x0C93, 0x0C8B, 0x0C83, 0x0C7B, 0x0C73, 0x0C6B, 0x0C63, 0x0C5B
-        .dw 0x0C53, 0x0C4B, 0x0C43, 0x0C3B, 0x0C33, 0x0C2B, 0x0C2B
-        ; bottom=1 slope=-3
-        .dw 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2
-        .dw 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0CA2, 0x0C9A
-        .dw 0x0C92, 0x0C8A, 0x0C82, 0x0C7A, 0x0C72, 0x0C6A, 0x0C62, 0x0C5A
-        .dw 0x0C52, 0x0C4A, 0x0C42, 0x0C3A, 0x0C32, 0x0C2A, 0x0C2A
-        ; bottom=1 slope=-2
-        .dw 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1
-        .dw 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0CA1, 0x0C99
-        .dw 0x0C91, 0x0C89, 0x0C81, 0x0C79, 0x0C71, 0x0C69, 0x0C61, 0x0C59
-        .dw 0x0C51, 0x0C49, 0x0C41, 0x0C39, 0x0C31, 0x0C29, 0x0C29
-        ; bottom=1 slope=-1
-        .dw 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0
-        .dw 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0CA0, 0x0C98
-        .dw 0x0C90, 0x0C88, 0x0C80, 0x0C78, 0x0C70, 0x0C68, 0x0C60, 0x0C58
-        .dw 0x0C50, 0x0C48, 0x0C40, 0x0C38, 0x0C30, 0x0C28, 0x0C28
-        ; bottom=1 slope=+0
-        .dw 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F
-        .dw 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C9F, 0x0C97
-        .dw 0x0C8F, 0x0C87, 0x0C7F, 0x0C77, 0x0C6F, 0x0C67, 0x0C5F, 0x0C57
-        .dw 0x0C4F, 0x0C47, 0x0C3F, 0x0C37, 0x0C2F, 0x0C27, 0x0C27
-        ; bottom=1 slope=+1
-        .dw 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0
-        .dw 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0, 0x0EA0, 0x0E98, 0x0E90
-        .dw 0x0E88, 0x0E80, 0x0E78, 0x0E70, 0x0E68, 0x0E60, 0x0E58, 0x0E50
-        .dw 0x0E48, 0x0E40, 0x0E38, 0x0E30, 0x0E28, 0x0E28, 0x0E28
-        ; bottom=1 slope=+2
-        .dw 0x0EA1, 0x0EA1, 0x0EA1, 0x0EA1, 0x0EA1, 0x0EA1, 0x0EA1, 0x0EA1
-        .dw 0x0EA1, 0x0EA1, 0x0EA1, 0x0EA1, 0x0EA1, 0x0E99, 0x0E91, 0x0E89
-        .dw 0x0E81, 0x0E79, 0x0E71, 0x0E69, 0x0E61, 0x0E59, 0x0E51, 0x0E49
-        .dw 0x0E41, 0x0E39, 0x0E31, 0x0E29, 0x0E29, 0x0E29, 0x0E29
-        ; bottom=1 slope=+3
-        .dw 0x0EA2, 0x0EA2, 0x0EA2, 0x0EA2, 0x0EA2, 0x0EA2, 0x0EA2, 0x0EA2
-        .dw 0x0EA2, 0x0EA2, 0x0EA2, 0x0EA2, 0x0E9A, 0x0E92, 0x0E8A, 0x0E82
-        .dw 0x0E7A, 0x0E72, 0x0E6A, 0x0E62, 0x0E5A, 0x0E52, 0x0E4A, 0x0E42
-        .dw 0x0E3A, 0x0E32, 0x0E2A, 0x0E2A, 0x0E2A, 0x0E2A, 0x0E2A
-        ; bottom=1 slope=+4
-        .dw 0x0EA3, 0x0EA3, 0x0EA3, 0x0EA3, 0x0EA3, 0x0EA3, 0x0EA3, 0x0EA3
-        .dw 0x0EA3, 0x0EA3, 0x0EA3, 0x0E9B, 0x0E93, 0x0E8B, 0x0E83, 0x0E7B
-        .dw 0x0E73, 0x0E6B, 0x0E63, 0x0E5B, 0x0E53, 0x0E4B, 0x0E43, 0x0E3B
-        .dw 0x0E33, 0x0E2B, 0x0E2B, 0x0E2B, 0x0E2B, 0x0E2B, 0x0E2B
-        ; bottom=1 slope=+5
-        .dw 0x0EA4, 0x0EA4, 0x0EA4, 0x0EA4, 0x0EA4, 0x0EA4, 0x0EA4, 0x0EA4
-        .dw 0x0EA4, 0x0EA4, 0x0E9C, 0x0E94, 0x0E8C, 0x0E84, 0x0E7C, 0x0E74
-        .dw 0x0E6C, 0x0E64, 0x0E5C, 0x0E54, 0x0E4C, 0x0E44, 0x0E3C, 0x0E34
-        .dw 0x0E2C, 0x0E2C, 0x0E2C, 0x0E2C, 0x0E2C, 0x0E2C, 0x0E2C
-        ; bottom=1 slope=+6
-        .dw 0x0EA5, 0x0EA5, 0x0EA5, 0x0EA5, 0x0EA5, 0x0EA5, 0x0EA5, 0x0EA5
-        .dw 0x0EA5, 0x0E9D, 0x0E95, 0x0E8D, 0x0E85, 0x0E7D, 0x0E75, 0x0E6D
-        .dw 0x0E65, 0x0E5D, 0x0E55, 0x0E4D, 0x0E45, 0x0E3D, 0x0E35, 0x0E2D
-        .dw 0x0E2D, 0x0E2D, 0x0E2D, 0x0E2D, 0x0E2D, 0x0E2D, 0x0E2D
-        ; bottom=1 slope=+7
-        .dw 0x0EA6, 0x0EA6, 0x0EA6, 0x0EA6, 0x0EA6, 0x0EA6, 0x0EA6, 0x0EA6
-        .dw 0x0E9E, 0x0E96, 0x0E8E, 0x0E86, 0x0E7E, 0x0E76, 0x0E6E, 0x0E66
-        .dw 0x0E5E, 0x0E56, 0x0E4E, 0x0E46, 0x0E3E, 0x0E36, 0x0E2E, 0x0E2E
-        .dw 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E, 0x0E2E
+; R98 compact edge word lookup.
+; Input is materializer state: local_index 0..30, signed slope -7..7,
+; bottom flag, shade, and physical border bits. Returns final name-table word DE.
+edge_word_lookup$:
+        ; signed local = local_index-15
+        ld      a, (#r_local_index$)
+        sub     #15
+        ld      c, a
+        ld      a, (#r_edge_slope$)
+        ld      b, a
+        xor     a
+        ld      (#r_edge_attr$), a
+
+        ; Generic bottom path canonicalizes through VFLIP/palette first.
+        ld      a, (#r_edge_bottom$)
+        or      a
+        jr      z, edge_lookup_slope$
+        ld      a, #7
+        sub     c
+        ld      c, a
+        ld      a, b
+        neg
+        ld      b, a
+        ld      a, #0x0c
+        ld      (#r_edge_attr$), a
+
+edge_lookup_slope$:
+        ld      a, b
+        bit     7, a
+        jr      z, edge_lookup_mag_ready$
+        neg
+        ld      b, a                    ; B=mag
+        ld      a, c
+        sub     b                       ; negative slope canonical local
+        ld      c, a
+        ld      a, (#r_edge_attr$)
+        or      #0x02                  ; XFLIP
+        ld      (#r_edge_attr$), a
+        jr      edge_lookup_off$
+edge_lookup_mag_ready$:
+        ld      b, a
+
+edge_lookup_off$:
+        ; Clamp canonical offset to emitted domain -7..+8.
+        ld      a, c
+        bit     7, a
+        jr      z, edge_lookup_off_pos$
+        cp      #0xF9
+        jr      nc, edge_lookup_off_ok$
+        ld      a, #0xF9
+        jr      edge_lookup_off_ok$
+edge_lookup_off_pos$:
+        cp      #9
+        jr      c, edge_lookup_off_ok$
+        ld      a, #8
+edge_lookup_off_ok$:
+        add     a, #7
+        add     a, a
+        add     a, a
+        add     a, a
+        add     a, b                    ; semantic 0..127
+        ld      c, a
+
+        ; On geometry-only FULL walls, EDGE rows at a real vertical wall seam
+        ; get a combined pattern instead of dropping the seam for 1+ tile rows.
+        ld      a, (#_g_polar_mat_shade)
+        cp      #1
+        jr      nz, edge_lookup_plain$
+        ld      a, (#_g_polar_mat_border)
+        and     #3
+        jr      z, edge_lookup_plain$
+        ld      b, a                    ; physical border
+        ld      a, (#r_edge_attr$)
+        and     #0x02
+        jr      z, edge_lookup_border_canon$
+        ld      a, b
+        cp      #3
+        jr      z, edge_lookup_border_canon$
+        xor     #3                     ; XFLIP swaps left/right border bits
+        ld      b, a
+edge_lookup_border_canon$:
+        ld      a, b
+        dec     a
+        add     a, a                    ; *2 pointer entry
+        ld      l, a
+        ld      h, #0
+        ld      de, #edge_border_ptrs$
+        add     hl, de
+        ld      e, (hl)
+        inc     hl
+        ld      d, (hl)
+        ld      l, c
+        ld      h, #0
+        add     hl, de
+        ld      a, (hl)                 ; unique border pattern 0..231
+        ld      l, a
+        ld      h, #0
+        ld      de, #279                ; TSP_TILE_EDGE_BORDER_BASE
+        add     hl, de
+        ex      de, hl
+        jr      edge_lookup_attrs$
+
+edge_lookup_plain$:
+        ld      l, c
+        ld      h, #0
+        ld      de, #edge_unique_idx$
+        add     hl, de
+        ld      a, (hl)                 ; unique normal pattern 0..79
+        ld      l, a
+        ld      h, #0
+        ld      a, (#_g_polar_mat_shade)
+        or      a
+        jr      z, edge_lookup_base0$
+        dec     a
+        jr      z, edge_lookup_base1$
+        ld      de, #199                ; 39 + 2*80
+        jr      edge_lookup_addbase$
+edge_lookup_base1$:
+        ld      de, #119                ; 39 + 1*80
+        jr      edge_lookup_addbase$
+edge_lookup_base0$:
+        ld      de, #39
+edge_lookup_addbase$:
+        add     hl, de
+        ex      de, hl
+
+edge_lookup_attrs$:
+        ld      a, d
+        ld      c, a
+        ld      a, (#r_edge_attr$)
+        or      c
+        ld      d, a
+        ret
+
+edge_unique_idx$:
+        .db     0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,2
+        .db     0,0,0,0,0,1,2,3,0,0,0,0,1,4,3,5
+        .db     0,0,0,6,4,7,8,9,0,0,6,10,11,12,13,14
+        .db     0,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29
+        .db     30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45
+        .db     46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61
+        .db     62,63,64,65,66,67,68,68,69,70,71,72,73,73,74,74
+        .db     75,76,77,77,78,78,78,78,79,79,79,79,79,79,79,79
+
+edge_border_ptrs$:
+        .dw     edge_border_b1$, edge_border_b2$, edge_border_b3$
+edge_border_b1$:
+        .db     0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,2
+        .db     0,0,0,0,0,1,2,3,0,0,0,0,1,4,3,5
+        .db     0,0,0,6,4,7,8,9,0,0,6,10,11,12,13,14
+        .db     0,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29
+        .db     30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45
+        .db     46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61
+        .db     62,63,64,65,66,67,68,68,69,70,71,72,73,73,74,74
+        .db     75,76,74,74,77,77,77,77,77,77,77,77,77,77,77,77
+
+edge_border_b2$:
+        .db     78,78,78,78,78,78,78,78,78,78,78,78,78,78,78,79
+        .db     78,78,78,78,78,78,79,80,78,78,78,78,78,81,80,82
+        .db     78,78,78,79,81,83,84,85,78,78,79,86,87,88,89,90
+        .db     78,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105
+        .db     106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121
+        .db     122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137
+        .db     138,139,140,141,142,143,144,144,145,146,147,148,149,149,150,150
+        .db     151,152,153,153,154,154,154,154,155,155,155,155,155,155,155,155
+
+edge_border_b3$:
+        .db     156,156,156,156,156,156,156,156,156,156,156,156,156,156,156,157
+        .db     156,156,156,156,156,156,157,158,156,156,156,156,156,159,158,160
+        .db     156,156,156,157,159,161,162,163,156,156,157,164,165,166,167,168
+        .db     156,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183
+        .db     184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199
+        .db     200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215
+        .db     216,217,218,219,220,221,222,222,223,224,225,226,227,227,228,228
+        .db     229,230,228,228,231,231,231,231,231,231,231,231,231,231,231,231
 
 
 ; ---------------------------------------------------------------------------
@@ -2478,6 +2414,8 @@ r_edge_slope$:
 _tsp_probe_edge_slope::
         .ds     1
 r_edge_bottom$:
+        .ds     1
+r_edge_attr$:
         .ds     1
 r_edge_min$:
         .ds     1
