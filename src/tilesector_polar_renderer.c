@@ -621,6 +621,84 @@ static uint8_t inv_at_invd(uint8_t sid, uint8_t invd, uint16_t world_bearing, in
     q = (q * sec + 64u) >> 7;
     return (uint8_t)(q > 255u ? 255u : q);
 }
+#if defined(TSPF_E1M1_FULL_ONLY)
+enum {
+    TSPF_PROJ_X_POS = 0u,
+    TSPF_PROJ_X_NEG = 1u,
+    TSPF_PROJ_Y_POS = 2u,
+    TSPF_PROJ_Y_NEG = 3u,
+    TSPF_PROJ_GENERAL = 4u
+};
+
+static uint8_t inv_from_dot(uint8_t invd, int16_t dot, int16_t rel)
+{
+    uint16_t q, sec;
+    if (dot < 0)
+        dot = (int16_t)-dot;
+    if (dot > 127)
+        dot = 127;
+    q = ((uint16_t)invd * (uint16_t)dot + 64u) >> 7;
+    sec = k_tspf_sec_q7[(uint16_t)(rel < 0 ? -rel : rel)];
+    q = (q * sec + 64u) >> 7;
+    return (uint8_t)(q > 255u ? 255u : q);
+}
+
+/* Baked projection dispatch: one immutable route decision per surface-run.
+ * The bake has already classified the normal as X+/X-/Y+/Y-/general, so the
+ * runtime does not rediscover that classification in wall_d_q4 and again at
+ * each endpoint. */
+static void project_depth_baked(uint8_t sid, uint8_t anchor_vid, const TSPState *s,
+                                uint16_t wb0, int16_t rel0,
+                                uint16_t wb1, int16_t rel1,
+                                PolarRun *r)
+{
+    uint8_t route = k_tspf_proj_route[sid];
+    uint8_t bi0 = (uint8_t)(wb0 >> 4), bi1 = (uint8_t)(wb1 >> 4);
+    int8_t sn0 = (int8_t)k_tspf_sin_q7[bi0], cs0 = (int8_t)k_tspf_sin_q7[(uint8_t)(bi0 + 64u)];
+    int8_t sn1 = (int8_t)k_tspf_sin_q7[bi1], cs1 = (int8_t)k_tspf_sin_q7[(uint8_t)(bi1 + 64u)];
+    int16_t dq4, dot0, dot1;
+    uint8_t invd;
+
+    switch (route)
+    {
+    case TSPF_PROJ_X_POS:
+        dq4 = (int16_t)(((int16_t)k_tspf_vx[anchor_vid] << 4) - s->x_q4);
+        dot0 = cs0; dot1 = cs1;
+        break;
+    case TSPF_PROJ_X_NEG:
+        dq4 = (int16_t)(s->x_q4 - ((int16_t)k_tspf_vx[anchor_vid] << 4));
+        dot0 = cs0; dot1 = cs1;
+        break;
+    case TSPF_PROJ_Y_POS:
+        dq4 = (int16_t)(((int16_t)k_tspf_vy[anchor_vid] << 4) - s->y_q4);
+        dot0 = sn0; dot1 = sn1;
+        break;
+    case TSPF_PROJ_Y_NEG:
+        dq4 = (int16_t)(s->y_q4 - ((int16_t)k_tspf_vy[anchor_vid] << 4));
+        dot0 = sn0; dot1 = sn1;
+        break;
+    default:
+        {
+            int8_t nx = k_tspf_nx_q5[sid], ny = k_tspf_ny_q5[sid];
+            int16_t xi = (int16_t)(s->x_q4 >> 4), yi = (int16_t)(s->y_q4 >> 4);
+            uint8_t fx = (uint8_t)(s->x_q4 & 15), fy = (uint8_t)(s->y_q4 & 15);
+            int16_t dx = (int16_t)k_tspf_vx[anchor_vid] - xi;
+            int16_t dy = (int16_t)k_tspf_vy[anchor_vid] - yi;
+            int16_t whole = (int16_t)nx * dx + (int16_t)ny * dy;
+            int16_t frac = (int16_t)nx * fx + (int16_t)ny * fy;
+            dq4 = (int16_t)(shr_signed(whole, 1) - shr_signed(frac, 5));
+            dot0 = shr_signed((int16_t)((int16_t)nx * cs0 + (int16_t)ny * sn0), 5);
+            dot1 = shr_signed((int16_t)((int16_t)nx * cs1 + (int16_t)ny * sn1), 5);
+        }
+        break;
+    }
+
+    invd = inv_for_dq4(dq4);
+    r->inv0 = inv_from_dot(invd, dot0, rel0);
+    r->inv1 = inv_from_dot(invd, dot1, rel1);
+}
+#endif
+
 static uint8_t shade_for(uint8_t inv, int8_t bias)
 {
     int8_t s;
@@ -743,7 +821,14 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
     r->left_real = (uint8_t)(lo == st);
     r->right_real = (uint8_t)(hi == en);
     r->depth_plane = 0u;
+#if defined(TSPF_E1M1_FULL_ONLY)
+    project_depth_baked(sid, k_tspf_seg_anchor[sid], s,
+                        (uint16_t)(yawq + lo) & 4095u, lo,
+                        (uint16_t)(yawq + hi) & 4095u, hi, r);
+    invd = 0u; /* depth-plane is disabled in this experimental E1M1 build */
+#else
     invd = inv_for_dq4(wall_d_q4(sid, k_tspf_seg_anchor[sid], s));
+#endif
 #if defined(__SDCC) && TSPF_SCREEN_DEPTH_PLANE
     if (g_tspf_appearance_mode < 2u)
     {
@@ -756,8 +841,10 @@ static uint8_t project_key(uint8_t keyid, const TSPState *s, PolarRun *r)
             return 1u;
     }
 #endif
+#if !defined(TSPF_E1M1_FULL_ONLY)
     r->inv0 = inv_at_invd(sid, invd, (uint16_t)(yawq + lo) & 4095u, lo);
     r->inv1 = inv_at_invd(sid, invd, (uint16_t)(yawq + hi) & 4095u, hi);
+#endif
     r->inv_mid = (uint8_t)(((uint16_t)r->inv0 + r->inv1) >> 1);
     return 1u;
 }
@@ -818,7 +905,11 @@ static int16_t opt_camera_z_shift(uint8_t inv,const TSPState *s)
 #endif
 static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TSPState *s)
 {
+#if defined(TSPF_E1M1_FULL_ONLY)
+    uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c, profile = TSP_PROFILE_FULL;
+#else
     uint8_t c0 = (uint8_t)(r->x0 >> 3), c1 = (uint8_t)(r->x1 >> 3), n, c, profile = k_tspf_profile[r->sid];
+#endif
     int16_t iq, step;
     if (c0 >= TSP_COLS)
         c0 = TSP_COLS - 1;
