@@ -34,18 +34,8 @@ jobs:
           test -f build/e1env-analysis/pvs.noi
           test -f build/e1env-analysis/envelope.noi
 
-      - name: Build Gearsystem analysis tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-          ROOT="$PWD/.toolchain/Gearsystem"
-          g++ -std=c++17 -O2 -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
-            tools/frame/frame_timeline.cpp \
-            $(ls "$ROOT"/src/*.cpp "$ROOT"/src/audio/*.cpp | grep -v "main\|Gearsystem.cpp") \
-            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/frame_timeline
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Re-run update-aligned timelines with state hashes
         shell: bash
         run: |
