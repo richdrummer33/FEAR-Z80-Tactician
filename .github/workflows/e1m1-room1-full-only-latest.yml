@@ -84,13 +84,8 @@ jobs:
           print("WRAM_CHECK_PASS")
           PY
 
-      - name: Build Gearsystem verification tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          bash tools/build_state_capture_only.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Prove boot, movement, turning, and flat eye height
         shell: bash
         run: |
