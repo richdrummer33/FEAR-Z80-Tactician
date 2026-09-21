@@ -135,11 +135,11 @@ static Group classify(const std::string& raw) {
         has("draw_full") || has("put_cell") || has("edge_entry") || has("row_floor")) return G_GEOM;
     if (has("polar_nt") || has("upload") || has("map_init") || has("restore_touched")) return G_NT;
     if (has("mul") || has("div") || has("memset") || has("memcpy")) return G_HELP;
-    if (has("project_key") || has("bearing") || has("angle_x") || has("inv_for_dq4") ||
-        has("wall_d_q4") || has("add_key") || has("ratio_q8") || has("signed_q12") ||
-        has("screen_depth_plane") || has("insert_run") || has("selector_pass") ||
-        has("projection_") || has("inv_at_invd") || has("shade_for") || has("ao_class") ||
-        has("depthplane") || has("clamp") || has("shr_signed")) return G_PROJ;
+    if (has("project_key") || has("project_depth_baked") || has("bearing") || has("angle_x") ||
+        has("inv_for_dq4") || has("inv_from_dot") || has("wall_d_q4") || has("add_key") ||
+        has("ratio_q8") || has("signed_q12") || has("screen_depth_plane") || has("insert_run") ||
+        has("selector_pass") || has("projection_") || has("inv_at_invd") || has("shade_for") ||
+        has("ao_class") || has("depthplane") || has("clamp") || has("shr_signed")) return G_PROJ;
     return G_OTHER;
 }
 
