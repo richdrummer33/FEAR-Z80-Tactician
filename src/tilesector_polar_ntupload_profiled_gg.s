@@ -40,8 +40,9 @@ pe_budget_ready$:
 
         ld      a, (#pe_start$)
         ld      (#pe_row$), a
-        ld      (#pe_scan_left$), #18
         ld      e, a
+        ld      a, #18
+        ld      (#pe_scan_left$), a
         ld      d, #0
         ld      hl, #_g_polar_nt_row_min
         add     hl, de
