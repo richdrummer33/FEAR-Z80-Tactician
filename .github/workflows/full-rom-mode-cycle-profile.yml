@@ -48,14 +48,8 @@ jobs:
             "6e742ee43220285fecdcc4078616bb10ee1ba9f3ffd48a6a9c7d075938c4637c"
           echo EXACT_PREVIOUS_PLAYABLE_ROM_HASH=PASS
 
-      - name: Build Gearsystem cycle tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
-
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
       - name: Profile same ROM in modes 0 1 2
         shell: bash
         run: |
