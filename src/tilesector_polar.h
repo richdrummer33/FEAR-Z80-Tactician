@@ -46,9 +46,9 @@
 #define TSP_TILE_EDGE_BASE (TSP_TILE_FULL_BASE + TSP_SHADE_COUNT*TSP_CAP_COUNT*TSP_BORDER_COUNT)
 #define TSP_TILE_EDGE_END (TSP_TILE_EDGE_BASE + TSP_SHADE_COUNT*TSP_EDGE_OFF_COUNT*TSP_EDGE_SLOPE_COUNT)
 /* Rung: true sub-column vertical corner seams. Geometry-only mode needs only
- * the mid-shade family. All one- and two-line masks across an 8px tile are
- * baked (8 singles + C(8,2)=28 pairs = 36 patterns). */
-#define TSP_SEAM_MASK_COUNT 36u
+ * the mid-shade family. The 36 physical one/two-line masks collapse to 20
+ * stored patterns under hardware HFLIP, keeping VRAM below the 0x3800 map. */
+#define TSP_SEAM_MASK_COUNT 20u
 #define TSP_TILE_SEAM_BASE TSP_TILE_EDGE_END
 #define TSP_GENERATED_TILE_COUNT (TSP_TILE_SEAM_BASE + TSP_SEAM_MASK_COUNT)
 
