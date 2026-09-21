@@ -32,8 +32,8 @@
         .globl  _tsp_polar_p_symtop
         .globl  _tsp_polar_p_symbot
         .globl  _g_tsp_edge_p99_row_ptrs_home
-        .globl  _g_tsp_edge_border_b1_words_home
-        .globl  _g_tsp_edge_border_b2_words_home
+        .globl  _g_tsp_edge_border_b1_packed_home
+        .globl  _g_tsp_edge_border_b2_packed_home
         .globl  _tsp_probe_sym_edge_key
         .globl  _tsp_probe_edge_slope
         .globl  _tsp_probe_local_index
@@ -1561,21 +1561,44 @@ p99_boff_ok$:
         add     a, a
         add     a, a
         add     a, b
-        add     a, a                    ; uint16 word index
-        ld      l, a
-        ld      h, #0
+        ld      c, a                    ; semantic index 0..127
         ld      a, e
         cp      #1
         jr      z, p99_border_l$
-        ld      de, #_g_tsp_edge_border_b2_words_home
+        ld      de, #_g_tsp_edge_border_b2_packed_home
         jr      p99_border_ptr$
 p99_border_l$:
-        ld      de, #_g_tsp_edge_border_b1_words_home
+        ld      de, #_g_tsp_edge_border_b1_packed_home
 p99_border_ptr$:
+        ld      l, c
+        ld      h, #0
         add     hl, de
-        ld      e, (hl)
-        inc     hl
-        ld      d, (hl)
+        ld      a, (hl)
+        ld      (#r_edge_id_lo$), a
+        ld      a, c
+        srl     a
+        srl     a
+        srl     a
+        add     a, #128
+        ld      l, a
+        ld      h, #0
+        add     hl, de
+        ld      a, c
+        and     #7
+        ld      c, a
+        ld      a, #1
+p99_bmask_shift$:
+        dec     c
+        jp      m, p99_bmask_ready$
+        add     a, a
+        jr      p99_bmask_shift$
+p99_bmask_ready$:
+        and     (hl)
+        ld      a, (#r_edge_id_lo$)
+        ld      e, a
+        ld      d, #0
+        jr      z, p99_attrs$
+        inc     d
         jr      p99_attrs$
 
 p99_plain$:
@@ -1593,8 +1616,7 @@ p99_off_pos$:
         ld      a, #8
 p99_off_ok$:
         add     a, #28
-        add     a, a                    ; word offset within 37-word row
-        ld      c, a
+        ld      c, a                    ; offset index 0..36
         ld      a, b
         add     a, a
         ld      l, a
@@ -1603,13 +1625,36 @@ p99_off_ok$:
         add     hl, de
         ld      e, (hl)
         inc     hl
-        ld      d, (hl)
+        ld      d, (hl)                 ; row = 37 low + 5 bitmap bytes
         ld      l, c
         ld      h, #0
         add     hl, de
-        ld      e, (hl)
-        inc     hl
-        ld      d, (hl)
+        ld      a, (hl)
+        ld      (#r_edge_id_lo$), a
+        ld      a, c
+        srl     a
+        srl     a
+        srl     a
+        add     a, #37
+        ld      l, a
+        ld      h, #0
+        add     hl, de
+        ld      a, c
+        and     #7
+        ld      c, a
+        ld      a, #1
+p99_mask_shift$:
+        dec     c
+        jp      m, p99_mask_ready$
+        add     a, a
+        jr      p99_mask_shift$
+p99_mask_ready$:
+        and     (hl)
+        ld      a, (#r_edge_id_lo$)
+        ld      e, a
+        ld      d, #0
+        jr      z, p99_attrs$
+        inc     d
 
 p99_attrs$:
         ld      a, d
@@ -2376,6 +2421,8 @@ r_edge_bottom$:
 r_edge_attr$:
         .ds     1
 r_edge_local_raw$:
+        .ds     1
+r_edge_id_lo$:
         .ds     1
 r_edge_min$:
         .ds     1

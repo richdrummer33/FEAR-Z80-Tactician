@@ -1233,6 +1233,15 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
 }
 #endif
 
+#if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+static uint16_t p99_edge_word(uint8_t mag,uint8_t oi)
+{
+    const uint8_t *p=g_tsp_edge_p99_packed_home+(uint16_t)mag*42u;
+    uint16_t id=p[oi];
+    if(p[37u+(oi>>3)]&(uint8_t)(1u<<(oi&7u)))id|=0x100u;
+    return id;
+}
+#endif
 static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint8_t bottom)
 {
     uint16_t attr=0u;uint8_t mag;int8_t off;
@@ -1242,7 +1251,7 @@ static uint16_t edge_entry(uint8_t shade, int16_t local_left, int8_t slope, uint
     if(mag>TSP_P99_EDGE_MAX)mag=TSP_P99_EDGE_MAX;
     off=clamp_s8(local_left,-28,8);
     (void)shade;
-    return (uint16_t)(g_tsp_edge_p99_words_home[(uint16_t)mag*37u+(uint8_t)(off+28)]|attr);
+    return (uint16_t)(p99_edge_word(mag,(uint8_t)(off+28))|attr);
 #else
     if(mag>=TSP_EDGE_SLOPE_COUNT)mag=TSP_EDGE_SLOPE_COUNT-1u;
     off=clamp_s8(local_left,TSP_EDGE_OFF_MIN,(int8_t)(TSP_EDGE_OFF_MIN+TSP_EDGE_OFF_COUNT-1));

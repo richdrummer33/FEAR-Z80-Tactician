@@ -10,7 +10,9 @@
 #define TSP_P99_EDGE_MAX 28u
 #define TSP_TILE_FULL_COMPACT_BASE 3u
 #define TSP_P99_TILE_COUNT 448u
-extern const uint16_t g_tsp_edge_p99_words_home[1073];
-extern const uint16_t g_tsp_edge_border_b1_words_home[128];
-extern const uint16_t g_tsp_edge_border_b2_words_home[128];
+/* 9-bit tile IDs packed as low bytes plus a high-bit bitmap.
+ * Edge row = 37 low bytes + 5 bitmap bytes. Border table = 128 + 16. */
+extern const uint8_t g_tsp_edge_p99_packed_home[1218];
+extern const uint8_t g_tsp_edge_border_b1_packed_home[144];
+extern const uint8_t g_tsp_edge_border_b2_packed_home[144];
 #endif
