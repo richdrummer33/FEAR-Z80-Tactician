@@ -76,6 +76,9 @@ int main(int argc, char** argv) {
 
     const u16 P_FILL = (u16)need(noi, "_tsp_polar_p_fill");
     const u16 P_SPAN = (u16)need(noi, "_tsp_polar_p_span");
+    unsigned p_edgekey_raw = 0;
+    const bool have_edgekey = find_symbol(noi, "_tsp_probe_sym_edge_key", p_edgekey_raw);
+    const u16 P_EDGEKEY = (u16)p_edgekey_raw;
     /* Optional: only the retained-gate build exports this. */
     unsigned p_ret_raw = 0;
     const bool have_ret = find_symbol(noi, "_tsp_probe_ret_skip", p_ret_raw);
@@ -94,6 +97,11 @@ int main(int argc, char** argv) {
     const u16 S_COL  = (u16)need(noi, "_g_polar_mat_col");
     const u16 S_SHD  = (u16)need(noi, "_g_polar_mat_shade");
     const u16 S_BRD  = (u16)need(noi, "_g_polar_mat_border");
+    unsigned s_eslope_raw=0, s_local_raw=0;
+    const bool have_edge_state =
+        find_symbol(noi, "_tsp_probe_edge_slope", s_eslope_raw) &&
+        find_symbol(noi, "_tsp_probe_local_index", s_local_raw);
+    const u16 S_ESLOPE=(u16)s_eslope_raw, S_LOCAL=(u16)s_local_raw;
     const u16 S_TL   = (u16)need(noi, "_g_polar_mat_top_l");
     const u16 S_TR   = (u16)need(noi, "_g_polar_mat_top_r");
     const u16 S_TMIN = (u16)need(noi, "_tsp_probe_top_min");
@@ -150,6 +158,8 @@ int main(int argc, char** argv) {
 
     unsigned frames = 0, last_loop = 0xFFFFu; bool counting = false;
     uint64_t steps = 0; const uint64_t limit = 4000000000ull;
+    uint64_t edge_border_total=0;
+    uint64_t edge_border_key[3][2][15][31] = {};
     /* per-span row-claim pattern, flushed when the span ends */
     std::vector<uint8_t> pattern;
 
@@ -190,6 +200,18 @@ int main(int argc, char** argv) {
                 if (p.live && p.shade == d.shade && p.border == d.border && p.tmin == d.tmin &&
                     p.tmax == d.tmax && p.bmin == d.bmin && p.bmax == d.bmax && p.tile == d.tile)
                     ++desc_same_q;
+            }
+        }
+        if (counting && have_edgekey && have_edge_state && pc == P_EDGEKEY) {
+            const uint8_t border=mem->DebugRetrieve(S_BRD);
+            if (border) {
+                const uint8_t shade=mem->DebugRetrieve(S_SHD);
+                const int8_t slope=(int8_t)mem->DebugRetrieve(S_ESLOPE);
+                const uint8_t local=mem->DebugRetrieve(S_LOCAL);
+                if (shade<3u && slope>=-7 && slope<=7 && local<31u) {
+                    if (border&1u) { ++edge_border_key[shade][0][slope+7][local]; ++edge_border_total; }
+                    if (border&2u) { ++edge_border_key[shade][1][slope+7][local]; ++edge_border_total; }
+                }
             }
         }
         if (counting && have_pat && pc == P_PAT) {
@@ -386,6 +408,21 @@ int main(int argc, char** argv) {
     std::printf("    length:");
     for (size_t i = 1; i < hrun_hist.size(); ++i) if (hrun_hist[i])
         std::printf(" %zu:%.1f%%", i, 100.0 * hrun_hist[i] / (double)hruns);
+    if (have_edgekey && have_edge_state) {
+        unsigned unique=0;
+        for (unsigned sh=0;sh<3;++sh) for (unsigned side=0;side<2;++side)
+        for (unsigned sl=0;sl<15;++sl) for (unsigned lo=0;lo<31;++lo)
+            if (edge_border_key[sh][side][sl][lo]) ++unique;
+        std::printf("  edge+vertical-border demand: %llu samples, %u unique logical keys\n",
+                    (unsigned long long)edge_border_total, unique);
+        for (unsigned sh=0;sh<3;++sh) for (unsigned side=0;side<2;++side)
+        for (unsigned sl=0;sl<15;++sl) for (unsigned lo=0;lo<31;++lo) {
+            const uint64_t n=edge_border_key[sh][side][sl][lo];
+            if(n) std::printf("EDGEKEY shade=%u side=%c slope=%d local=%d count=%llu\n",
+                sh, side?'R':'L', (int)sl-7, (int)lo-15, (unsigned long long)n);
+        }
+        std::printf("\n");
+    }
     std::printf("\n");
     return 0;
 }

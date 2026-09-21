@@ -31,6 +31,9 @@
         .globl  _tsp_polar_p_fill
         .globl  _tsp_polar_p_symtop
         .globl  _tsp_polar_p_symbot
+        .globl  _tsp_probe_sym_edge_key
+        .globl  _tsp_probe_edge_slope
+        .globl  _tsp_probe_local_index
 ; Read-only probe aliases for the materializer census. These are LABELS on
 ; existing storage, not new state: no instruction is added, moved or changed,
 ; so a census build is cycle-identical to the shipping one.
@@ -699,6 +702,7 @@ sym_local_positive$:
 sym_local_ready$:
         add     a, #15
         ld      (#r_local_index$), a
+_tsp_probe_sym_edge_key::
 
         ld      a, (#r_edge_slope$)
         add     a, #7
@@ -2471,6 +2475,7 @@ _tsp_probe_bot_max::
 r_edge_left$:
         .ds     2
 r_edge_slope$:
+_tsp_probe_edge_slope::
         .ds     1
 r_edge_bottom$:
         .ds     1
@@ -2493,6 +2498,7 @@ r_sym_word$:
 r_row$:
         .ds     1
 r_local_index$:
+_tsp_probe_local_index::
         .ds     1
 r_cap_delta$:
         .ds     1

@@ -8,6 +8,7 @@ on:
       - experiment/e1m1-vblank-pipeline
       - experiment/e1m1-shared-corner-anchor
       - experiment/e1m1-subcolumn-corner-height
+      - experiment/e1m1-corner-edge-vocabulary
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
@@ -26,6 +27,7 @@ on:
       - tools/e1env_plane_meta.py
       - src/e1env_local_bearing_eval_gg.s
       - tools/frame/frame_timeline.cpp
+      - tools/frame/mat_census.cpp
       - tools/build_gearsystem_tools.sh
       - .github/actions/gearsystem-tools/action.yml
   workflow_dispatch:
@@ -180,6 +182,14 @@ jobs:
             | tee "$ROOT/pvs-timeline.txt"
           ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 "$ROOT/focused-map.bin" \
             | tee "$ROOT/focused-timeline.txt"
+
+      - name: Census edge plus vertical-border vocabulary
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEAR="$PWD/.toolchain/Gearsystem"
+          g++ -std=c++17 -O2 -Wall -Wextra             -I"$GEAR/src" -I"$GEAR/platforms/shared/dependencies/miniz"             tools/frame/mat_census.cpp build/coredbg/libgearsystem_core.a -lm             -o build/mat_census
+          ./build/mat_census             build/e1env-iter/focused.gg build/e1env-iter/focused.noi cruise 180 8             | tee build/e1env-iter/edge-border-census.txt
 
       - name: Update-aligned parity and T-state comparison
         shell: bash
