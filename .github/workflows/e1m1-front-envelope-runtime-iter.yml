@@ -9,6 +9,7 @@ on:
       - experiment/e1m1-shared-corner-anchor
       - experiment/e1m1-subcolumn-corner-height
       - experiment/e1m1-corner-edge-vocabulary
+      - experiment/e1m1-acute-edge-census
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
@@ -144,7 +145,7 @@ jobs:
       - name: Generate identical deterministic trace
         shell: bash
         run: |
-          python3 tools/frame/gen_traces.py cruise build/frame_trace.c
+          python3 tools/frame/gen_traces.py spin build/frame_trace.c
 
       - name: Build fixed envelope helpers
         shell: bash

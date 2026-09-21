@@ -32,6 +32,7 @@
         .globl  _tsp_polar_p_symtop
         .globl  _tsp_polar_p_symbot
         .globl  _tsp_probe_sym_edge_key
+        .globl  _tsp_probe_edge_raw_slope
         .globl  _tsp_probe_edge_slope
         .globl  _tsp_probe_local_index
 ; Read-only probe aliases for the materializer census. These are LABELS on
@@ -617,6 +618,7 @@ _tsp_h_prepare_symfull_edges::
         ex      de, hl                  ; HL=right, DE=left
         or      a
         sbc     hl, de
+        ld      (#r_edge_raw_slope$), hl
         ld      a, l
         bit     7, a
         jr      nz, sym_slope_negative$
@@ -2400,6 +2402,9 @@ r_bot_max$:
 _tsp_probe_bot_max::
         .ds     1
 r_edge_left$:
+        .ds     2
+r_edge_raw_slope$:
+_tsp_probe_edge_raw_slope::
         .ds     2
 r_edge_slope$:
 _tsp_probe_edge_slope::

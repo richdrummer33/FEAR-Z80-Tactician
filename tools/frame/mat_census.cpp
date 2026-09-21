@@ -97,11 +97,12 @@ int main(int argc, char** argv) {
     const u16 S_COL  = (u16)need(noi, "_g_polar_mat_col");
     const u16 S_SHD  = (u16)need(noi, "_g_polar_mat_shade");
     const u16 S_BRD  = (u16)need(noi, "_g_polar_mat_border");
-    unsigned s_eslope_raw=0, s_local_raw=0;
+    unsigned s_eslope_raw=0, s_eraw_raw=0, s_local_raw=0;
     const bool have_edge_state =
         find_symbol(noi, "_tsp_probe_edge_slope", s_eslope_raw) &&
+        find_symbol(noi, "_tsp_probe_edge_raw_slope", s_eraw_raw) &&
         find_symbol(noi, "_tsp_probe_local_index", s_local_raw);
-    const u16 S_ESLOPE=(u16)s_eslope_raw, S_LOCAL=(u16)s_local_raw;
+    const u16 S_ESLOPE=(u16)s_eslope_raw, S_ERAW=(u16)s_eraw_raw, S_LOCAL=(u16)s_local_raw;
     const u16 S_TL   = (u16)need(noi, "_g_polar_mat_top_l");
     const u16 S_TR   = (u16)need(noi, "_g_polar_mat_top_r");
     const u16 S_TMIN = (u16)need(noi, "_tsp_probe_top_min");
@@ -160,6 +161,8 @@ int main(int argc, char** argv) {
     uint64_t steps = 0; const uint64_t limit = 4000000000ull;
     uint64_t edge_border_total=0;
     uint64_t edge_border_key[3][2][15][31] = {};
+    uint64_t raw_slope_hist[289] = {};
+    uint64_t raw_slope_samples=0, raw_slope_saturated=0;
     /* per-span row-claim pattern, flushed when the span ends */
     std::vector<uint8_t> pattern;
 
@@ -203,6 +206,16 @@ int main(int argc, char** argv) {
             }
         }
         if (counting && have_edgekey && have_edge_state && pc == P_EDGEKEY) {
+            {
+                const uint16_t ur=(uint16_t)(mem->DebugRetrieve(S_ERAW) |
+                    ((uint16_t)mem->DebugRetrieve((u16)(S_ERAW+1))<<8));
+                const int16_t raw=(int16_t)ur;
+                int bin=(int)raw+144;
+                if(bin<0) bin=0; else if(bin>288) bin=288;
+                ++raw_slope_hist[bin];
+                ++raw_slope_samples;
+                if(raw < -7 || raw > 7) ++raw_slope_saturated;
+            }
             const uint8_t border=mem->DebugRetrieve(S_BRD);
             if (border) {
                 const uint8_t shade=mem->DebugRetrieve(S_SHD);
@@ -409,6 +422,28 @@ int main(int argc, char** argv) {
     for (size_t i = 1; i < hrun_hist.size(); ++i) if (hrun_hist[i])
         std::printf(" %zu:%.1f%%", i, 100.0 * hrun_hist[i] / (double)hruns);
     if (have_edgekey && have_edge_state) {
+        if(raw_slope_samples) {
+            uint64_t acc=0;
+            int p95=0,p99=0,worst_abs=0;
+            for(int b=0;b<289;++b) {
+                const int v=b-144;
+                if(raw_slope_hist[b] && std::abs(v)>worst_abs) worst_abs=std::abs(v);
+            }
+            const uint64_t t95=(raw_slope_samples*95+99)/100;
+            const uint64_t t99=(raw_slope_samples*99+99)/100;
+            /* Percentiles of absolute slope. */
+            for(int a=0;a<=144;++a) {
+                uint64_t n=(a==0)?raw_slope_hist[144]:
+                    raw_slope_hist[144-a]+raw_slope_hist[144+a];
+                acc+=n;
+                if(!p95 && acc>=t95) p95=a;
+                if(!p99 && acc>=t99) {p99=a; break;}
+            }
+            std::printf("  raw FULL edge slope: samples=%llu saturated_gt7=%llu (%.2f%%) p95_abs=%d p99_abs=%d worst_abs=%d\n",
+                (unsigned long long)raw_slope_samples,
+                (unsigned long long)raw_slope_saturated,
+                100.0*raw_slope_saturated/raw_slope_samples,p95,p99,worst_abs);
+        }
         unsigned unique=0;
         for (unsigned sh=0;sh<3;++sh) for (unsigned side=0;side<2;++side)
         for (unsigned sl=0;sl<15;++sl) for (unsigned lo=0;lo<31;++lo)
