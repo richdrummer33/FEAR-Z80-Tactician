@@ -85,7 +85,6 @@
         .globl  _g_tspf_seam_pending_half
         .globl  _g_tspf_seam_mask_for_index
         .globl  _g_tspf_seam_reflect_for_index
-        .globl  _g_tspf_seam_code_for_mask
         .globl  _tsp_polar_record_subcolumn_seam
         .globl  _tsp_polar_subcolumn_seams_fast
 
@@ -1714,21 +1713,12 @@ seam_have_base_mask$:
         or      e
         ld      e, a                    ; E = merged one/two-line mask
 
-        push    hl
-        ld      l, e
-        ld      h, #0
-        ld      de, #_g_tspf_seam_code_for_mask
-        add     hl, de
-        ld      a, (hl)
-        pop     hl
+        ; Convert the merged one/two-line mask to one of the 20 stored
+        ; canonical patterns. Reflection is represented with hardware HFLIP;
+        ; no 256-byte mask->code table is needed in scarce fixed ROM.
+        call    seam_mask_to_code$       ; E=mask -> A=index, D=word high
         cp      #0xff                   ; >2 lines: leave proven tile untouched
         jr      z, seam_row_done$
-        ld      d, #1                   ; tile-id bit8, no attributes
-        bit     7, a
-        jr      z, seam_code_canon$
-        res     7, a
-        ld      d, #3                   ; tile-id bit8 | HFLIP(bit9)
-seam_code_canon$:
         add     a, #167                 ; tile 423 low byte = 0xA7
         ld      e, a
 
@@ -1770,6 +1760,119 @@ seam_overlay_done$:
         pop     de
         pop     bc
         pop     af
+        ret
+
+; E = physical local-X mask containing one or two set bits.
+; Returns A = canonical seam pattern index 0..19, D = name-table high byte:
+;   1 = canonical orientation, 3 = HFLIP.
+; A=0xff means unsupported (>2 lines / empty).
+; B and HL are preserved because the caller still owns the map pointer/column.
+seam_mask_to_code$:
+        push    bc
+        ld      a, e
+        or      a
+        jr      z, seam_code_invalid$
+
+        ; Locate first set bit x.
+        ld      c, #0
+seam_code_find_x$:
+        srl     a
+        jr      c, seam_code_x_found$
+        inc     c
+        jr      seam_code_find_x$
+seam_code_x_found$:
+        ld      (#r_seam_x0$), c
+        or      a
+        jr      z, seam_code_single$
+
+        ; Locate second set bit y. A already equals mask>>(x+1).
+        ld      e, a
+        ld      a, (#r_seam_x0$)
+        inc     a
+        ld      c, a
+        ld      a, e
+seam_code_find_y$:
+        srl     a
+        jr      c, seam_code_y_found$
+        inc     c
+        jr      seam_code_find_y$
+seam_code_y_found$:
+        ld      (#r_seam_y0$), c
+        or      a
+        jr      nz, seam_code_invalid$   ; a third line is outside X1 vocab
+
+        ; Pair reflection maps (x,y) -> (7-y, 7-x). Choose whichever has the
+        ; smaller first coordinate; equality implies a self-reflecting pair.
+        ld      a, #7
+        sub     c                        ; A = reflected x = 7-y
+        ld      e, a
+        ld      a, (#r_seam_x0$)
+        cp      e
+        jr      c, seam_code_pair_canon$
+        jr      z, seam_code_pair_canon$
+
+        ; Reflected pair is canonical.
+        ld      d, #3
+        ld      a, (#r_seam_x0$)
+        ld      c, a
+        ld      a, #7
+        sub     c                        ; A = reflected y = 7-old_x
+        ld      (#r_seam_y0$), a
+        ld      a, e
+        ld      (#r_seam_x0$), a
+        jr      seam_code_pair_index$
+
+seam_code_pair_canon$:
+        ld      d, #1
+
+seam_code_pair_index$:
+        ; Stored pair ordering:
+        ; x=0,y=1..7 -> 4..10
+        ; x=1,y=2..6 -> 11..15
+        ; x=2,y=3..5 -> 16..18
+        ; x=3,y=4    -> 19
+        ld      a, (#r_seam_x0$)
+        or      a
+        jr      nz, seam_code_pair_x1$
+        ld      a, (#r_seam_y0$)
+        add     a, #3
+        jr      seam_code_return$
+seam_code_pair_x1$:
+        dec     a
+        jr      nz, seam_code_pair_x2$
+        ld      a, (#r_seam_y0$)
+        add     a, #9
+        jr      seam_code_return$
+seam_code_pair_x2$:
+        dec     a
+        jr      nz, seam_code_pair_x3$
+        ld      a, (#r_seam_y0$)
+        add     a, #13
+        jr      seam_code_return$
+seam_code_pair_x3$:
+        ld      a, #19
+        jr      seam_code_return$
+
+seam_code_single$:
+        ; Singles x=0..3 are stored directly; x=4..7 use their mirror.
+        ld      a, (#r_seam_x0$)
+        cp      #4
+        jr      c, seam_code_single_canon$
+        ld      c, a
+        ld      a, #7
+        sub     c
+        ld      d, #3
+        jr      seam_code_return$
+seam_code_single_canon$:
+        ld      d, #1
+        ; A is already x.
+        jr      seam_code_return$
+
+seam_code_invalid$:
+        ld      a, #0xff
+        ld      d, #1
+seam_code_return$:
+        pop     bc
         ret
 
 seam_bit_lut$:
@@ -2707,6 +2810,10 @@ r_seam_col$:
 r_seam_row$:
         .ds     1
 r_seam_last$:
+        .ds     1
+r_seam_x0$:
+        .ds     1
+r_seam_y0$:
         .ds     1
 r_run_col$:
         .ds     1
