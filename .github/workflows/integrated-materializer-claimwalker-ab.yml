@@ -67,26 +67,17 @@ jobs:
           cp build/gg-tilesector-polar.sym build/claimwalker-ab/walker.sym
           echo "walker sha256=$(sha256sum build/claimwalker-ab/walker.gg | cut -d' ' -f1)" | tee -a build/claimwalker-ab/hashes.txt
 
-      - name: Build Gearsystem tools
+      - name: Setup cached Gearsystem tools
+        uses: ./.github/actions/gearsystem-tools
+
+      - name: Build polar A/B cycle tool
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch 3.9.16 https://github.com/drhelius/Gearsystem.git .toolchain/Gearsystem
-          tools/build_gearsystem_tools.sh "$PWD/.toolchain/Gearsystem"
           ROOT="$PWD/.toolchain/Gearsystem"
-          INC=(-I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz")
-          SRCS=(Audio.cpp Cartridge.cpp CodemastersMemoryRule.cpp GameGearIOPorts.cpp GearsystemCore.cpp Input.cpp
-            KoreanMemoryRule.cpp KoreanMSXSMS8000MemoryRule.cpp KoreanSMS32KB2000MemoryRule.cpp KoreanMSX32KB2000MemoryRule.cpp
-            Korean2000XOR1FMemoryRule.cpp KoreanMSX8KB0300MemoryRule.cpp Korean0000XORFFMemoryRule.cpp KoreanFFFFHiComMemoryRule.cpp
-            KoreanFFFEMemoryRule.cpp KoreanBFFCMemoryRule.cpp KoreanFFF3FFFCMemoryRule.cpp KoreanMDFFF5MemoryRule.cpp KoreanMDFFF0MemoryRule.cpp
-            Multi4PAKAllActionMemoryRule.cpp IratahackMemoryRule.cpp JumboDahjeeMemoryRule.cpp Eeprom93C46MemoryRule.cpp
-            Memory.cpp MemoryRule.cpp MSXMemoryRule.cpp opcodes.cpp opcodes_cb.cpp opcodes_ed.cpp Processor.cpp RomOnlyMemoryRule.cpp
-            SegaMemoryRule.cpp SG1000MemoryRule.cpp SmsIOPorts.cpp Video.cpp BootromMemoryRule.cpp JanggunMemoryRule.cpp YM2413.cpp
-            VgmRecorder.cpp TraceLogger.cpp audio/Blip_Buffer.cpp audio/Sms_Apu.cpp audio/Stereo_Buffer.cpp)
-          ARGS=(); for x in "${SRCS[@]}"; do ARGS+=("$ROOT/src/$x"); done
-          g++ -std=c++17 -O2 -Wall -Wextra "${INC[@]}" tools/polar_ab_profile.cpp "${ARGS[@]}" \
-            build/coredbg/emu2413.o build/coredbg/miniz.o -lm -o build/polar_ab_profile
-
+          g++ -std=c++17 -O2 -Wall -Wextra \
+            -I"$ROOT/src" -I"$ROOT/platforms/shared/dependencies/miniz" \
+            tools/polar_ab_profile.cpp build/coredbg/libgearsystem_core.a -lm -o build/polar_ab_profile
       - name: Exact update traces
         shell: bash
         run: |
