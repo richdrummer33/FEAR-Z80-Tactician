@@ -77,6 +77,12 @@
         .globl  _tsp_probe_ret_skip
         .globl  _g_ts_vblank_pending
         .globl  _tsp_polar_service_vblank
+        .globl  _g_tspf_seam_count
+        .globl  _g_tspf_seam_x
+        .globl  _g_tspf_seam_half
+        .globl  _g_tspf_seam_mask_for_index
+        .globl  _g_tspf_seam_index_for_mask
+        .globl  _tsp_polar_subcolumn_seams_fast
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
 ; convention: every input is a named symbol, and the visible aperture is always
@@ -1506,6 +1512,198 @@ polar_claim_g0$:
         and     e
         ret
 
+; X1 sub-column seam overlay.
+; The renderer has already emitted ordinary FULL/EDGE cells for the frame and
+; invalidated retained skips. Each descriptor is one physical connected corner:
+;   seam_x   = exact screen X 0..159
+;   seam_half= canonical FULL half-height at that corner
+; We only replace FULL interior tiles, leaving top/bottom EDGE silhouettes
+; untouched for this rung. Existing seam tiles are decoded and ORed so two
+; acute corners may share one 8px hardware tile.
+_tsp_polar_subcolumn_seams_fast::
+        push    af
+        push    bc
+        push    de
+        push    hl
+
+        xor     a
+        ld      (#r_seam_i$), a
+seam_desc_loop$:
+        ld      a, (#r_seam_i$)
+        ld      c, a
+        ld      a, (#_g_tspf_seam_count)
+        cp      c
+        jp      z, seam_overlay_done$
+
+        ld      a, c
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_tspf_seam_x
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_seam_x$), a
+        and     #7
+        ld      e, a
+        ld      d, #0
+        ld      hl, #seam_bit_lut$
+        add     hl, de
+        ld      a, (hl)
+        ld      (#r_seam_mask$), a
+
+        ld      a, (#r_seam_x$)
+        srl     a
+        srl     a
+        srl     a
+        ld      (#r_seam_col$), a
+
+        ld      a, (#r_seam_i$)
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_tspf_seam_half
+        add     hl, de
+        ld      a, #71
+        sub     (hl)                    ; signed top pixel = 71-half
+        sra     a
+        sra     a
+        sra     a                       ; signed top tile row
+        ld      c, a                    ; C = top row for last-row derivation
+
+        inc     a                       ; first FULL interior row = top+1
+        bit     7, a
+        jr      z, seam_first_nonneg$
+        xor     a
+seam_first_nonneg$:
+        cp      #18
+        jr      nc, seam_next_desc$
+        ld      (#r_seam_row$), a
+
+        ld      a, #16                  ; bottom row - 1 = 16-top
+        sub     c
+        bit     7, a
+        jr      nz, seam_next_desc$
+        cp      #18
+        jr      c, seam_last_ready$
+        ld      a, #17
+seam_last_ready$:
+        ld      (#r_seam_last$), a
+        ld      c, a
+        ld      a, (#r_seam_row$)
+        cp      c
+        jr      c, seam_row_loop$
+        jr      z, seam_row_loop$
+        jr      seam_next_desc$
+
+seam_row_loop$:
+        ld      a, (#r_seam_col$)
+        ld      b, a
+        ld      a, (#r_seam_row$)
+        call    map_ptr_row_col$
+
+        ; Decode the current tile into a vertical-line mask. Ordinary
+        ; geometry-only FULL-mid cap-none tiles are IDs 15..18, whose low two
+        ; bits are the old left/right border flags. Seam tiles are 423..458
+        ; (0x01A7..0x01CA) and map back through the 36-entry mask vocabulary.
+        ld      a, 1(hl)
+        or      a
+        jr      z, seam_decode_full$
+        cp      #1
+        jr      nz, seam_row_done$
+        ld      a, (hl)
+        cp      #167
+        jr      c, seam_row_done$
+        cp      #203
+        jr      nc, seam_row_done$
+        sub     #167
+        ld      e, a
+        ld      d, #0
+        push    hl
+        ld      hl, #_g_tspf_seam_mask_for_index
+        add     hl, de
+        ld      a, (hl)
+        pop     hl
+        jr      seam_have_base_mask$
+
+seam_decode_full$:
+        ld      a, (hl)
+        cp      #15
+        jr      c, seam_row_done$
+        cp      #19
+        jr      nc, seam_row_done$
+        sub     #15                      ; old border bits 0..3
+        ld      e, #0
+        bit     0, a
+        jr      z, seam_no_left_old$
+        ld      e, #1
+seam_no_left_old$:
+        bit     1, a
+        jr      z, seam_full_mask_ready$
+        ld      a, e
+        or      #0x80
+        ld      e, a
+seam_full_mask_ready$:
+        ld      a, e
+
+seam_have_base_mask$:
+        ld      e, a
+        ld      a, (#r_seam_mask$)
+        or      e
+        ld      e, a                    ; E = merged one/two-line mask
+
+        push    hl
+        ld      l, e
+        ld      h, #0
+        ld      de, #_g_tspf_seam_index_for_mask
+        add     hl, de
+        ld      a, (hl)
+        pop     hl
+        cp      #0xff                   ; >2 lines: leave proven tile untouched
+        jr      z, seam_row_done$
+        add     a, #167                 ; tile 423 low byte = 0xA7
+        ld      e, a
+
+        ld      a, (hl)
+        cp      e
+        jr      nz, seam_write_word$
+        inc     hl
+        ld      a, (hl)
+        cp      #1
+        dec     hl
+        jr      z, seam_row_done$
+seam_write_word$:
+        ld      (hl), e
+        inc     hl
+        ld      (hl), #1
+        dec     hl
+        ld      a, (#r_seam_row$)
+        call    polar_mark_dirty_fast$
+
+seam_row_done$:
+        ld      a, (#r_seam_row$)
+        ld      c, a
+        ld      a, (#r_seam_last$)
+        cp      c
+        jr      z, seam_next_desc$
+        ld      a, c
+        inc     a
+        ld      (#r_seam_row$), a
+        jp      seam_row_loop$
+
+seam_next_desc$:
+        ld      a, (#r_seam_i$)
+        inc     a
+        ld      (#r_seam_i$), a
+        jp      seam_desc_loop$
+
+seam_overlay_done$:
+        pop     hl
+        pop     de
+        pop     bc
+        pop     af
+        ret
+
+seam_bit_lut$:
+        .db 0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80
+
 ; A=row 0..17, B=column 0..19 -> HL=&g_map[row*20+col].
 map_ptr_row_col$:
 _tsp_h_map_ptr_row_col::
@@ -2427,6 +2625,18 @@ r_ret_ptr$:
 ; eighth-byte stride keeps the column index a shift rather than a multiply.
 polar_ret_store$:
         .ds     5120
+r_seam_i$:
+        .ds     1
+r_seam_x$:
+        .ds     1
+r_seam_mask$:
+        .ds     1
+r_seam_col$:
+        .ds     1
+r_seam_row$:
+        .ds     1
+r_seam_last$:
+        .ds     1
 r_run_col$:
         .ds     1
 r_run_invl$:
