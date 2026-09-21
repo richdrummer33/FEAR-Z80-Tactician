@@ -24,6 +24,8 @@ on:
       - tools/e1env_plane_meta.py
       - src/e1env_local_bearing_eval_gg.s
       - tools/frame/frame_timeline.cpp
+      - tools/build_gearsystem_tools.sh
+      - .github/actions/gearsystem-tools/action.yml
   workflow_dispatch:
 
 concurrency:
