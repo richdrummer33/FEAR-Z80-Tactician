@@ -1,0 +1,60 @@
+name: E1M1 subcolumn X handoff census
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-subcolumn-x-handoff
+    paths:
+      - tools/e1env_subcolumn_census.py
+      - .github/workflows/e1m1-subcolumn-x-census.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  census:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore immutable Run 96 artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/run96
+          for attempt in 1 2 3 4; do
+            if gh run download 35583440559 \
+              -n GG-E1M1-Exact-Q4-FocusedEnvelope \
+              -D build/run96; then
+              break
+            fi
+            test "$attempt" -lt 4
+            sleep $((attempt * 3))
+          done
+          test -f build/run96/focused.csv
+          test -f build/run96/generated/e1env_generated.h
+          test -f build/run96/generated/optimized_renderer_map_data.inc
+
+      - name: Census sub-column ownership handoffs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/e1env_subcolumn_census.py \
+            --generated-dir build/run96/generated \
+            --center-lut src/e1env_center_col_gg.s \
+            --trace-csv build/run96/focused.csv \
+            | tee build/run96/subcolumn-census.txt
+          grep -q '^SUBCOL_CENSUS$' build/run96/subcolumn-census.txt
+          grep -q '^lut_regressions=0 ' build/run96/subcolumn-census.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: E1M1-Subcolumn-X-Census
+          path: build/run96/subcolumn-census.txt
+          if-no-files-found: error
+          retention-days: 30
