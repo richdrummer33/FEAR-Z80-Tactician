@@ -1039,14 +1039,16 @@ static int8_t envelope_center_dx(int16_t rel)
  * ownership. This is the key thin-face change: even when the span on either
  * side owns no 8px centre sample, its real corner survives as a pixel-X seam.
  * Height is resolved later from endpoint halves cached by surviving neighbours. */
-static void envelope_record_connected_boundary(uint8_t left_i,uint8_t n,int16_t rel)
+static void envelope_record_connected_boundary(uint8_t left_i,uint8_t n,int16_t rel) NONBANKED
 {
     uint8_t owner,ni,code;
     if(rel<=-512 || rel>=512) return;
     owner=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
     if(!(owner&0x80u)) return;
     ni=(uint8_t)(left_i+1u<n?left_i+1u:0u);
-    code=envelope_center_code(rel);
+    /* Fixed-ROM LUT is directly visible from HOME; keeping this helper
+     * nonbanked recovers renderer-bank bytes without a bank-switch call. */
+    code=g_e1env_center_col_lut[(uint16_t)(rel+512)];
     g_tspf_seam_pending_c0=(uint8_t)(code&31u);
     g_tspf_seam_pending_dx=(int8_t)((code>>5)-4);
     g_tspf_seam_pending_vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
