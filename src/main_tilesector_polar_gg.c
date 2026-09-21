@@ -23,6 +23,32 @@ static const int8_t k_edge_lut[8][8] = {
     {0,1,1,2,2,3,3,4},{0,1,1,2,3,4,4,5},{0,1,2,3,3,4,5,6},{0,1,2,3,4,5,6,7}
 };
 
+/* Geometry-only sub-column seam vocabulary. The mask bit is the black vertical
+ * line's local X. We bake every one/two-line mask so two acute corners can
+ * coexist in one hardware tile without runtime pixel synthesis. */
+const uint8_t g_tspf_seam_mask_for_index[TSP_SEAM_MASK_COUNT] = {
+    1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 16, 17, 18, 20, 24, 32, 33, 34,
+    36, 40, 48, 64, 65, 66, 68, 72, 80, 96, 128, 129, 130, 132, 136, 144, 160, 192
+};
+const uint8_t g_tspf_seam_index_for_mask[256] = {
+    255, 0, 1, 2, 3, 4, 5, 255, 6, 7, 8, 255, 9, 255, 255, 255,
+    10, 11, 12, 255, 13, 255, 255, 255, 14, 255, 255, 255, 255, 255, 255, 255,
+    15, 16, 17, 255, 18, 255, 255, 255, 19, 255, 255, 255, 255, 255, 255, 255,
+    20, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    21, 22, 23, 255, 24, 255, 255, 255, 25, 255, 255, 255, 255, 255, 255, 255,
+    26, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    27, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    28, 29, 30, 255, 31, 255, 255, 255, 32, 255, 255, 255, 255, 255, 255, 255,
+    33, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    34, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    35, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255
+};
+
 TSPState g_state;
 uint16_t g_map[TSP_MAP_CELLS];
 #if defined(TSPF_OPTIMIZED_MAP)
@@ -94,7 +120,8 @@ static void emit_horizon(void){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0
 static uint8_t side_border(uint8_t border,uint8_t x){return (uint8_t)(((border&1u)&&x==0u)||((border&2u)&&x==7u));}
 static void emit_full(uint8_t shade,uint8_t cap,uint8_t border){uint8_t x,y,color=shade_color(shade);clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){uint8_t black=side_border(border,x);if(cap==TSP_CAP_TOP&&y==0u)black=1u;if(cap==TSP_CAP_BOTTOM&&y==7u)black=1u;paint_pixel(x,y,black?C_BLACK:color);}set_bkg_4bpp_data(TSP_TILE_FULL(shade,cap,border),1u,g_tile);}
 static void emit_edge(uint8_t shade,uint8_t oi,uint8_t si){uint8_t x,y,color=shade_color(shade);int8_t off=(int8_t)TSP_EDGE_OFF_MIN+(int8_t)oi;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){int8_t line=(int8_t)(off+k_edge_lut[si][x]);uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:color);paint_pixel(x,y,c);}set_bkg_4bpp_data(TSP_TILE_EDGE(shade,oi,si),1u,g_tile);}
-static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);}
+static void emit_seam(uint8_t index){uint8_t x,y,mask=g_tspf_seam_mask_for_index[index];clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x)paint_pixel(x,y,(mask&(uint8_t)(1u<<x))?C_BLACK:C_MID);set_bkg_4bpp_data((uint16_t)(TSP_TILE_SEAM_BASE+index),1u,g_tile);}
+static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m)emit_edge(s,o,m);for(m=0;m<TSP_SEAM_MASK_COUNT;++m)emit_seam(m);}
 static uint16_t upload_dirty_map(void){
     tsp_polar_nt_upload_dirty();
 #if TSPF_PROFILE_HOOKS
@@ -131,8 +158,8 @@ static uint8_t read_input(void){
 #endif
 
 void main(void){
-    /* 423 generated 4-bpp patterns occupy VRAM through ~0x34DF. Keep the
-     * visible name table in the non-overlapping 0x3800 region. The row uploader
+    /* 459 generated 4-bpp patterns (423 base + 36 seam masks) stay below the
+     * 0x3800 name-table region. The row uploader
      * targets the matching 0x38xx addresses. */
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
     tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
