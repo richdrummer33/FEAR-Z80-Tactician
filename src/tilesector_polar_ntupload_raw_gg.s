@@ -12,24 +12,40 @@
 _tsp_polar_nt_upload_dirty::
         push    af
         ld      a, #18
+        ld      (#pe_budget$), a
+        xor     a
+        ld      (#pe_start$), a
         jr      pe_budget_ready$
 _tsp_polar_nt_upload_dirty_budgeted::
         push    af
-        ; Conservative first rung: at most six dirty scan rows per safe
-        ; post-effective-area interval.  Rows not reached remain dirty.
-        ld      a, #6
-pe_budget_ready$:
+        ; R86: eight dirty rows per VBlank, but DO NOT restart at row zero.
+        ; The persistent round-robin cursor is the starvation fix: a row that
+        ; is continuously dirty is guaranteed to reach the head of the queue
+        ; instead of rows 0..N consuming every burst forever.
+        ld      a, #8
         ld      (#pe_budget$), a
+        ld      a, (#pe_cursor$)
+        ld      (#pe_start$), a
+pe_budget_ready$:
         push    bc
         push    de
         push    hl
         push    ix
         push    iy
 
-        xor     a
+        ld      a, (#pe_start$)
         ld      (#pe_row$), a
-        ld      ix, #_g_polar_nt_row_min
-        ld      iy, #_g_polar_nt_row_max
+        ld      (#pe_scan_left$), #18
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_polar_nt_row_min
+        add     hl, de
+        push    hl
+        pop     ix
+        ld      hl, #_g_polar_nt_row_max
+        add     hl, de
+        push    hl
+        pop     iy
 
 pe_row_loop$:
         ld      a, 0 (ix)
@@ -103,16 +119,38 @@ pe_row_loop$:
         ld      a, (#pe_budget$)
         dec     a
         ld      (#pe_budget$), a
-        jr      z, pe_upload_done$
+        jr      nz, pe_next_row$
+
+        ; Burst full: resume from the FOLLOWING physical row next VBlank.
+        ; This is deterministic round-robin rather than pseudo-random: same
+        ; cheapness, but with a hard fairness bound.
+        ld      a, (#pe_row$)
+        inc     a
+        cp      #18
+        jr      c, pe_store_cursor$
+        xor     a
+pe_store_cursor$:
+        ld      (#pe_cursor$), a
+        jr      pe_upload_done$
 
 pe_next_row$:
+        ld      a, (#pe_scan_left$)
+        dec     a
+        ld      (#pe_scan_left$), a
+        jr      z, pe_upload_done$
+
         inc     ix
         inc     iy
         ld      a, (#pe_row$)
         inc     a
-        ld      (#pe_row$), a
         cp      #18
-        jp      c, pe_row_loop$
+        jr      c, pe_row_ready$
+        xor     a
+        ld      ix, #_g_polar_nt_row_min
+        ld      iy, #_g_polar_nt_row_max
+pe_row_ready$:
+        ld      (#pe_row$), a
+        jp      pe_row_loop$
 
 pe_upload_done$:
         pop     iy
@@ -137,5 +175,8 @@ pe_vdp_rows$:
 pe_row$:   .ds 1
 pe_first$: .ds 1
 pe_last$:  .ds 1
-pe_words$: .ds 1
-pe_budget$: .ds 1
+pe_words$:     .ds 1
+pe_budget$:    .ds 1
+pe_start$:     .ds 1
+pe_scan_left$: .ds 1
+pe_cursor$:    .ds 1

@@ -248,6 +248,7 @@ int main(int argc, char** argv) {
     };
     std::vector<Frame> frames;
     std::vector<std::vector<uint8_t>> map_snaps;
+    unsigned pending_by_row[18] = {0}, pending_run[18] = {0}, pending_run_max[18] = {0};
     Frame cur{}; std::memset(&cur, 0, sizeof cur);
     uint64_t prev = core.GetMasterClockCycles();
     unsigned seen_loops = 0, last_loop = 0xFFFFu;
@@ -304,6 +305,15 @@ int main(int argc, char** argv) {
                     last_vblank_missed = vm;
                 }
                 if (seen_loops >= warmup) {
+                    if (have_dirty_min) {
+                        for (unsigned dr = 0; dr < 18u; ++dr) {
+                            if (mem->DebugRetrieve((u16)(s_dirty_min + dr)) != 0xffu) {
+                                ++pending_by_row[dr];
+                                ++pending_run[dr];
+                                if (pending_run[dr] > pending_run_max[dr]) pending_run_max[dr] = pending_run[dr];
+                            } else pending_run[dr] = 0u;
+                        }
+                    }
                     frames.push_back(cur);
                     if (map_dump_path && have_map) {
                         std::vector<uint8_t> snap(20u * 18u * 2u);
@@ -376,6 +386,12 @@ int main(int argc, char** argv) {
                     "dirty_rows mean=%.2f worst=%u empty=%.1f%%\n",
                     bursts_mean, missed_mean, missed_total, dirty_mean, dirty_worst,
                     100.0 * dirty_zero / frames.size());
+        if (have_dirty_min) {
+            std::printf("vblank pending by row (pct/max_consecutive_updates):");
+            for (unsigned dr=0; dr<18u; ++dr)
+                std::printf(" r%u=%.1f/%u", dr, 100.0*pending_by_row[dr]/frames.size(), pending_run_max[dr]);
+            std::printf("\n");
+        }
     }
     std::printf("frame timeline: %zu frames (warmup %u discarded)\n", frames.size(), warmup);
     std::printf("Game Gear budget at 60 Hz is %.0f T-states a frame, %.0f at 30 Hz\n\n",
