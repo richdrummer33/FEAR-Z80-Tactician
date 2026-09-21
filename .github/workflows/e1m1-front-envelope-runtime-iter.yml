@@ -12,6 +12,7 @@ on:
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
+      - src/tilesector_polar.h
       - src/tilesector_polar_materialize_gg.s
       - src/tilesector_polar_ntstate_gg.s
       - src/tilesector_polar_ntupload_profiled_gg.s
@@ -166,7 +167,7 @@ jobs:
             POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
             POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
             POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
-            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_SUBCOLUMN_SEAM_EXPERIMENT=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/build.txt"
           cp build/gg-tilesector-polar.gg "$ROOT/focused.gg"
           cp build/gg-tilesector-polar.noi "$ROOT/focused.noi"
@@ -368,7 +369,7 @@ jobs:
             POLAR_PROFILE_HOOKS=0 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
             POLAR_PROJ_GEN_DIR="$GEN" POLAR_DEPTHPLANE_MAP_INC="$GEN/optimized_renderer_map_data.inc" POLAR_DEPTHPLANE_BANK=243 POLAR_ROM_BANKS=256 \
             POLAR_EXTRA_OBJS="build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
-            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_SUBCOLUMN_SEAM_EXPERIMENT=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/clean-build.txt"
           cp build/gg-tilesector-polar.gg "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.gg"
           cp build/gg-tilesector-polar.sym "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.sym"
