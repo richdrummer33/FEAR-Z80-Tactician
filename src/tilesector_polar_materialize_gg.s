@@ -1781,7 +1781,10 @@ seam_code_find_x$:
         inc     c
         jr      seam_code_find_x$
 seam_code_x_found$:
-        ld      (#r_seam_x0$), c
+        ld      e, a
+        ld      a, c
+        ld      (#r_seam_x0$), a
+        ld      a, e
         or      a
         jr      z, seam_code_single$
 
@@ -1797,7 +1800,10 @@ seam_code_find_y$:
         inc     c
         jr      seam_code_find_y$
 seam_code_y_found$:
-        ld      (#r_seam_y0$), c
+        ld      e, a
+        ld      a, c
+        ld      (#r_seam_y0$), a
+        ld      a, e
         or      a
         jr      nz, seam_code_invalid$   ; a third line is outside X1 vocab
 
