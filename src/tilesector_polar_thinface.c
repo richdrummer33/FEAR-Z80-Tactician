@@ -66,6 +66,19 @@ static uint8_t s_prev_x[32];
 static uint8_t s_prev_seen[4];
 static uint8_t s_cur_seen[4];
 static uint8_t s_overlay_touched[(TSP_MAP_CELLS+7u)/8u];
+
+/* Seam-Y refinement is naturally vertex-major: a physical vertex appears at
+ * one screen X per frame. Index the current descriptors by vertex once, then
+ * visit each run endpoint instead of testing every descriptor against every
+ * run (D*R). This keeps the exact same candidate/reconciliation policy while
+ * changing the search cost to O(D + R). */
+static uint8_t s_refine_active[4];
+static uint8_t s_refine_x[32];
+static uint8_t s_refine_best[32];
+static uint8_t s_refine_bestd[32];
+static uint8_t s_refine_lo[32];
+static uint8_t s_refine_hi[32];
+static uint8_t s_refine_matches[32];
 extern const uint8_t g_e1env_center_col_lut[1025];
 
 extern const uint8_t g_tsp_seam_mask_home[20];
@@ -312,52 +325,83 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 {
     uint8_t i,j;
 
+    /* Build a compact vertex -> true-X index for only the physical seams that
+     * exist this frame. The measured exact sweeps contain no duplicate vertex
+     * descriptors; if one ever appears, the last copy is equivalent because a
+     * physical vertex has one projected X. */
+    s_refine_active[0]=0u;
+    s_refine_active[1]=0u;
+    s_refine_active[2]=0u;
+    s_refine_active[3]=0u;
     for(i=0u;i<g_tspf_seam_desc_count;++i){
         uint8_t vid=g_tspf_seam_vid[i];
-        uint8_t x=g_tspf_seam_x[i];
-        uint8_t best=0xffu,bestd=0xffu,matches=0u;
-        uint8_t lo=0xffu,hi=0u,old;
-
+        uint8_t bi,bm;
         if(vid>=32u) continue;
-        old=g_tspf_seam_vertex_half[vid];
-        for(j=0u;j<run_count;++j){
-            uint8_t d=0xffu;
-            uint8_t h=seam_half_from_run(&g_runs[j],vid,x,&d);
-            if(h!=0xffu){
-                ++matches;
-                if(h<lo) lo=h;
-                if(h>hi) hi=h;
-                if(d<bestd){
-                    best=h;
-                    bestd=d;
-                }
+        bi=(uint8_t)(vid>>3);
+        bm=(uint8_t)(1u<<(vid&7u));
+        s_refine_active[bi]|=bm;
+        s_refine_x[vid]=g_tspf_seam_x[i];
+        s_refine_best[vid]=0xffu;
+        s_refine_bestd[vid]=0xffu;
+        s_refine_lo[vid]=0xffu;
+        s_refine_hi[vid]=0u;
+        s_refine_matches[vid]=0u;
+    }
+
+    /* Invert the former descriptor x run cross-product. Each run can offer at
+     * most its two endpoint vertices, so the common work is about 2R rather
+     * than D*R. seam_half_from_run() and the winner policy are unchanged. */
+    for(j=0u;j<run_count;++j){
+        TSPThinRun *r=&g_runs[j];
+        uint8_t k;
+        for(k=0u;k<2u;++k){
+            uint8_t vid=(uint8_t)(k ? r->v1 : r->v0);
+            uint8_t bi,bm,d,h;
+            if(vid>=32u) continue;
+            bi=(uint8_t)(vid>>3);
+            bm=(uint8_t)(1u<<(vid&7u));
+            if(!(s_refine_active[bi]&bm)) continue;
+
+            d=0xffu;
+            h=seam_half_from_run(r,vid,s_refine_x[vid],&d);
+            if(h==0xffu) continue;
+
+            ++s_refine_matches[vid];
+            if(h<s_refine_lo[vid]) s_refine_lo[vid]=h;
+            if(h>s_refine_hi[vid]) s_refine_hi[vid]=h;
+            if(d<s_refine_bestd[vid]){
+                s_refine_best[vid]=h;
+                s_refine_bestd[vid]=d;
             }
+        }
+    }
+
+    for(i=0u;i<g_tspf_seam_desc_count;++i){
+        uint8_t vid=g_tspf_seam_vid[i];
+        uint8_t best,matches,old;
+        if(vid>=32u) continue;
+
+        best=s_refine_best[vid];
+        if(best==0xffu) continue;
+        matches=s_refine_matches[vid];
+        old=g_tspf_seam_vertex_half[vid];
+
+        if(matches>1u && old!=0xffu){
+            /* Normally envelope_join_connected() already reconciles the two
+             * faces and its cached canonical Y is the best answer. There is
+             * one nasty exception: a wall plane closer than the 10-unit
+             * reciprocal near limit saturates BEFORE its oblique ray factor
+             * is applied. Then the two mathematically-equal corner estimates
+             * split badly. Only override when disagreement is extreme. */
+            if((uint8_t)(s_refine_hi[vid]-s_refine_lo[vid])>12u)
+                g_tspf_seam_vertex_half[vid]=s_refine_hi[vid];
+            continue;
         }
 
-        if(best!=0xffu){
-            if(matches>1u && old!=0xffu){
-                /* Normally envelope_join_connected() already reconciles the
-                 * two faces and its cached canonical Y is the best answer.
-                 * There is one nasty exception: a wall plane closer than the
-                 * 10-unit reciprocal near limit saturates BEFORE its oblique
-                 * ray factor is applied. Then the two mathematically-equal
-                 * corner estimates split badly (the rotation offenders were
-                 * almost exactly 2:1). On this E1M1 course there is no far
-                 * plane clamp, so the saturated near-plane estimate is the
-                 * smaller one. Only override when the disagreement is far
-                 * beyond ordinary quantization/subpixel error. */
-                if((uint8_t)(hi-lo)>12u)
-                    g_tspf_seam_vertex_half[vid]=hi;
-                continue;
-            }
-            /* With exactly one surviving face there is no competing
-             * canonical corner to protect. Matching the authored vertex AND
-             * landing within four pixels of this run boundary is already the
-             * locality proof. The old <=12 guard was backwards here: it kept
-             * precisely the largest collapsed-face Y errors (for example the
-             * 17.5px strafe miss at vertex 20). Trust the true-X evaluation. */
-            g_tspf_seam_vertex_half[vid]=best;
-        }
+        /* With exactly one surviving face there is no competing canonical
+         * corner to protect. The same true-X/locality test above is sufficient
+         * evidence, so keep the proven sole-face policy unchanged. */
+        g_tspf_seam_vertex_half[vid]=best;
     }
 }
 
