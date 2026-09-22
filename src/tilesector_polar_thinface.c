@@ -31,6 +31,31 @@ extern uint8_t g_tspf_seam_vertex_half[32];
 extern uint8_t g_tspf_seam_cur_cols[3];
 extern uint8_t g_e1env_program[];
 
+/* Mirror the renderer's RAM run record. The array itself is exported only so
+ * this banked post-pass can recover true physical-corner height without adding
+ * more code to the nearly-full renderer bank. */
+typedef struct TSPThinRun {
+    uint8_t sid;
+    uint8_t v0;
+    uint8_t v1;
+    uint8_t x0;
+    uint8_t x1;
+    uint8_t inv0;
+    uint8_t inv1;
+    uint8_t inv_mid;
+    uint8_t left_real;
+    uint8_t right_real;
+    uint8_t c0;
+    uint8_t c1;
+    uint8_t depth_plane;
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+    uint8_t right_connected;
+#endif
+    int16_t iq;
+    int16_t step;
+} TSPThinRun;
+extern TSPThinRun g_runs[];
+
 /* Horizontal seam retention is intentionally compact: descriptor identity/X
  * is enough to know whether a coarse tile column must be re-materialized.
  * Vertical motion is already handled by the retained top/bottom symmetric-
@@ -215,6 +240,85 @@ static int8_t floor_div8(int8_t v)
 {
     if(v>=0) return (int8_t)(v/8);
     return (int8_t)(-(((-v)+7)/8));
+}
+
+/* The coarse run depth field is linear in screen X, but the materializer's
+ * endpoint cache used the snapped 8-pixel ownership boundary as though it were
+ * the authored vertex. That is harmless for X and very wrong for Y on oblique
+ * faces: a corner four pixels inside the tile can differ by ~12 vertical
+ * pixels. Recover the half-height at the descriptor's TRUE pixel X from a
+ * surviving adjacent run. This is intentionally banked and runs once after
+ * all coarse columns, keeping the 68-byte renderer-bank margin intact. */
+static int16_t seam_step_subpx(int16_t step,uint8_t px)
+{
+    if(px==1u) return (int16_t)(step>>3);
+    if(px==2u) return (int16_t)(step>>2);
+    if(px==3u) return (int16_t)((step>>2)+(step>>3));
+    if(px>=4u) return (int16_t)(step>>1);
+    return 0;
+}
+
+static uint8_t seam_half_from_run(const TSPThinRun *r,uint8_t vid,uint8_t x,uint8_t *dist)
+{
+    int16_t dx,q,dq;
+    uint8_t ad,inv;
+
+    if(r->v0==vid){
+        dx=(int16_t)x-(int16_t)((uint16_t)r->c0<<3);
+        q=r->iq;
+    }else if(r->v1==vid){
+        dx=(int16_t)x-(int16_t)((uint16_t)(r->c1+1u)<<3);
+        /* inv1 is preserved as the exact coarse right-edge inverse depth even
+         * when inv_mid carries a canonical connected-corner half-height. */
+        q=(int16_t)((uint16_t)r->inv1<<6);
+    }else return 0xffu;
+
+    ad=(uint8_t)(dx<0 ? -dx : dx);
+    if(ad>4u) return 0xffu;
+    dq=seam_step_subpx(r->step,ad);
+    q=(int16_t)(dx<0 ? q-dq : q+dq);
+    if(q<0) inv=0u;
+    else if(q>=((int16_t)255<<6)) inv=255u;
+    else inv=(uint8_t)((q+32)>>6);
+    *dist=ad;
+    return (uint8_t)(inv>>1);
+}
+
+void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
+{
+    uint8_t i,j;
+
+    for(i=0u;i<g_tspf_seam_desc_count;++i){
+        uint8_t vid=g_tspf_seam_vid[i];
+        uint8_t x=g_tspf_seam_x[i];
+        uint8_t best=0xffu,bestd=0xffu;
+
+        if(vid>=32u) continue;
+        for(j=0u;j<run_count;++j){
+            uint8_t d=0xffu;
+            uint8_t h=seam_half_from_run(&g_runs[j],vid,x,&d);
+            if(h!=0xffu && d<bestd){
+                best=h;
+                bestd=d;
+                if(!d) break;
+            }
+        }
+
+        if(best!=0xffu){
+            uint8_t old=g_tspf_seam_vertex_half[vid];
+            if(old==0xffu){
+                g_tspf_seam_vertex_half[vid]=best;
+            }else{
+                uint8_t delta=(uint8_t)(best>old ? best-old : old-best);
+                /* The p24 edge vocabulary permits at most 24 pixels of top
+                 * change per 8 screen pixels, hence <=12 over the <=4px
+                 * ownership-to-physical correction. Larger disagreement means
+                 * this run is not the local face we should borrow from. */
+                if(delta<=12u)
+                    g_tspf_seam_vertex_half[vid]=best;
+            }
+        }
+    }
 }
 
 void tsp_polar_subcolumn_seams_fast(void) BANKED
