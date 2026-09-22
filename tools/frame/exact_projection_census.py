@@ -212,10 +212,11 @@ def main():
     print(f"EXACT_PROJECTION_CENSUS label={a.label} frames={len(frames)} vertices={len(vx)} surfaces={len(segs)}")
     xerr=[]; yerr=[]; ypixerr=[]; ycliperr=[]; yvisible=[]
     all_depth=[]
-    exact_events=matched=missing=extra=0
+    exact_events=matched=resolved_matched=missing=extra=0
     errors_by_depth=defaultdict(list)
     missing_by_depth=Counter(); events_by_depth=Counter()
     no_interior=one_interior=descriptor_total=descriptor_draw_miss=0
+    unresolved_half=unresolved_draw_miss=0
     capacity_blocked_desc=capacity_blocked_rows=0
     crowded_tiles=crowded_frames=0
     ghost_lines=ghost_coarse=strong_lines=0
@@ -234,11 +235,20 @@ def main():
         for s in cur:
             groups[s["x"]>>3].add(s["x"]&7)
             descriptor_total+=1
+            miss_line=(support.get(s["x"],0)==0)
+            if miss_line: descriptor_draw_miss+=1
+            # 0xff is the materializer's explicit "no surviving neighbouring
+            # coarse run supplied this physical vertex height" marker. The
+            # overlay returns immediately on it, so do not misclassify that as
+            # a tile-vocabulary capacity failure.
+            if s["half"]==0xff:
+                unresolved_half+=1
+                unresolved_draw_miss+=int(miss_line)
+                continue
             ir=interior_rows(s["half"])
             if ir==0: no_interior+=1
             elif ir==1: one_interior+=1
-            if support.get(s["x"],0)==0:
-                descriptor_draw_miss+=1
+            if miss_line:
                 # Diagnose the current two-line seam vocabulary. If a FULL tile
                 # already carries both snapped 0/7 borders, OR-ing one true-X
                 # seam creates three bits and seam_mask_to_code() rejects it.
@@ -297,14 +307,18 @@ def main():
             match_by_vid[e["vid"]]=(float(s["x"]),e["x"])
             xerr.append(dx); errors_by_depth[db].append(dx)
             # Continuous vertical reference at the same physical vertex.
-            half_exact=1280.0/e["depth"]
-            top_exact=71.5-half_exact
-            top_cur=71.0-float(s["half"])
-            yerr.append(abs(top_cur-top_exact))
-            ypixerr.append(abs(top_cur-round(top_exact)))
-            ycliperr.append(abs(max(0.0,min(143.0,top_cur))-max(0.0,min(143.0,top_exact))))
-            if 0.0<=top_exact<=143.0:
-                yvisible.append(abs(top_cur-top_exact))
+            # A descriptor can exist while its height cache is unresolved
+            # (0xff); that is a survival failure, not a 200+ pixel Y error.
+            if s["half"]!=0xff:
+                resolved_matched+=1
+                half_exact=1280.0/e["depth"]
+                top_exact=71.5-half_exact
+                top_cur=71.0-float(s["half"])
+                yerr.append(abs(top_cur-top_exact))
+                ypixerr.append(abs(top_cur-round(top_exact)))
+                ycliperr.append(abs(max(0.0,min(143.0,top_cur))-max(0.0,min(143.0,top_exact))))
+                if 0.0<=top_exact<=143.0:
+                    yvisible.append(abs(top_cur-top_exact))
         extra += max(0,len(cur)-len(used))
 
         # Visible segment lengths between adjacent connected-corner events.
@@ -338,7 +352,8 @@ def main():
                 if abs(dc)>=4.0 and abs(de)<2.0: coarse_jump+=1
         prev_widths=widths
 
-    print(f"corner_events exact={exact_events} matched={matched} missing={missing} recall={(100*matched/exact_events if exact_events else 0):.2f}% extra_descriptors={extra}")
+    print(f"corner_events exact={exact_events} descriptors={matched} missing={missing} descriptor_recall={(100*matched/exact_events if exact_events else 0):.2f}% "
+          f"resolved_height={resolved_matched} resolved_recall={(100*resolved_matched/exact_events if exact_events else 0):.2f}% extra_descriptors={extra}")
     stats("corner_x_abs_error",xerr,"px")
     stats("corner_top_abs_error_continuous",yerr,"px")
     stats("corner_top_error_vs_nearest_pixel",ypixerr,"px")
@@ -353,7 +368,10 @@ def main():
         if n:
             print(f"depth {db}: events={n} missing={m} recall={100*(n-m)/n:.2f}% x_p95={pct(errors_by_depth[db],.95):.3f}px")
 
-    print(f"overlay_descriptor_rows total={descriptor_total} no_FULL_interior={no_interior} ({100*no_interior/descriptor_total if descriptor_total else 0:.2f}%) "
+    valid_desc=descriptor_total-unresolved_half
+    print(f"overlay_descriptor_rows total={descriptor_total} unresolved_half_ff={unresolved_half} ({100*unresolved_half/descriptor_total if descriptor_total else 0:.2f}%) "
+          f"unresolved_draw_miss={unresolved_draw_miss} valid={valid_desc} "
+          f"no_FULL_interior={no_interior} ({100*no_interior/valid_desc if valid_desc else 0:.2f}%) "
           f"one_FULL_row={one_interior} draw_miss={descriptor_draw_miss} ({100*descriptor_draw_miss/descriptor_total if descriptor_total else 0:.2f}%)")
     print(f"tile_capacity crowded_tiles_3plus={crowded_tiles} crowded_frames={crowded_frames}/{len(frames)} "
           f"blocked_descriptors={capacity_blocked_desc} blocked_rows={capacity_blocked_rows}")
