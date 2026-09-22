@@ -85,6 +85,7 @@ void tsp_polar_ret_end_frame(void);
 void tsp_polar_ret_invalidate(void);
 #if TSPF_THIN_FACE_SURVIVAL
 void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) BANKED;
+void tsp_polar_seam_prepare_dirty(void) BANKED;
 void tsp_polar_subcolumn_seams_fast(void) BANKED;
 #endif
 #if TSPF_LOCAL_PROJECTION
@@ -1789,6 +1790,11 @@ e1full_candidates_ready:
     g_tspf_active_runs = count;
 #endif
     TSPF_SET_STAGE(3u); /* legacy stage marker; exact-envelope mode has no sort */
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+    /* One banked call turns previous/current physical seam descriptors into a
+     * 20-bit dirty-column set before front-to-back materialization begins. */
+    tsp_polar_seam_prepare_dirty();
+#endif
     TSPF_SET_STAGE(4u);
     TSPF_ENV_PHASE(4u);
     for (i = 0; i < count; ++i)

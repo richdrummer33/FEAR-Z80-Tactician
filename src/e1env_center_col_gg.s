@@ -207,8 +207,13 @@ _g_tsp_edge_border_b2_packed_home::
 _g_tsp_seam_mask_home::
         .db     1,2,4,8,3,5,9,17,33,65,129,6,10,18,34,66
         .db     12,20,36,24
+        ; Observed canonical 3+ seam masks, ranked by exact-projection census.
+        ; These nine cover every crowded row mask seen in rotate, strafe and
+        ; long-sightline sweeps while using only nine of the sixteen spare IDs.
+        .db     0x46,0x51,0x23,0x29,0x45,0x25,0x31,0x49,0x89
 
 _g_tsp_seam_reflect_home::
         .db     128,64,32,16,192,160,144,136,132,130,129,96,80,72,68,66
         .db     48,40,36,24
+        .db     0x62,0x8a,0xc4,0x94,0xa2,0xa4,0x8c,0x92,0x91
 

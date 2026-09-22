@@ -25,6 +25,8 @@
         .globl  _g_tspf_seam_vid
         .globl  _g_tspf_seam_vertex_half
         .globl  _g_tspf_seam_cur_cols
+        .globl  _g_tspf_seam_dirty_cols
+        .globl  _g_tspf_seam_history_valid
         .globl  _g_polar_run_left_anchor
         .globl  _g_polar_run_right_anchor
         .globl  _g_polar_run_owned
@@ -1729,9 +1731,10 @@ seam_cache_vertex_half$:
         pop     bc
         ret
 
-; Return NZ when the CURRENT materializer column held an overlay seam last
-; frame. Retained skip/patch paths must then force an ordinary raster first, or
-; a stale seam tile could survive when the physical boundary moves away.
+; Return NZ only when horizontal physical-seam ownership changed in the
+; CURRENT materializer column. The banked pre-pass compares previous/current
+; seam descriptors, so unchanged columns can keep using the retained Y patch;
+; changed/vacated columns fall back to the normal front-to-back raster.
 seam_prev_col_test$:
         push    bc
         push    de
@@ -1750,7 +1753,7 @@ seam_prev_col_test$:
         srl     a
         ld      e, a
         ld      d, #0
-        ld      hl, #seam_prev_cols$
+        ld      hl, #_g_tspf_seam_dirty_cols
         add     hl, de
         ld      a, (hl)
         and     b
@@ -1826,6 +1829,10 @@ ret_inval_r1$:
         ld      (#seam_cur_cols$+0), a
         ld      (#seam_cur_cols$+1), a
         ld      (#seam_cur_cols$+2), a
+        ld      (#_g_tspf_seam_dirty_cols+0), a
+        ld      (#_g_tspf_seam_dirty_cols+1), a
+        ld      (#_g_tspf_seam_dirty_cols+2), a
+        ld      (#_g_tspf_seam_history_valid), a
         pop     hl
         pop     bc
         ; fall through to clear live/poison and disable the direct path

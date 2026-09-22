@@ -17,7 +17,7 @@ FOCAL = 80.0
 TILE_MASK = 0x01ff
 HFLIP = 0x0200
 SEAM_BASE = 412
-SEAM_COUNT = 20
+SEAM_COUNT = 29
 
 def arr(text: str, name: str):
     m=re.search(r"static\s+const\s+[^;=]+?\b"+re.escape(name)+r"\s*\[[^\]]+\]\s*=\s*\{(.*?)\};",text,re.S)
@@ -131,7 +131,12 @@ def exact_chain(frame,vx,vy,segs):
         clean.append(e)
     return clean
 
+EXTRA_SEAM_MASKS=(0x46,0x51,0x23,0x29,0x45,0x25,0x31,0x49,0x89)
+
 def seam_mask_from_code(code):
+    if code>=20:
+        j=code-20
+        return EXTRA_SEAM_MASKS[j] if j<len(EXTRA_SEAM_MASKS) else 0
     if code<4: return 1<<code
     if code<=10:
         y=code-3; return (1<<0)|(1<<y)

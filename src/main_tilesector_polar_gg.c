@@ -201,7 +201,7 @@ static uint8_t read_input(void){
 #endif
 
 void main(void){
-    /* 432 generated 4-bpp patterns stay below the 0x3800 name-table boundary. Keep the
+    /* 441 generated 4-bpp patterns stay below the 0x3800 name-table boundary. Keep the
      * visible name table in the non-overlapping 0x3800 region. The row uploader
      * targets the matching 0x38xx addresses. */
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
