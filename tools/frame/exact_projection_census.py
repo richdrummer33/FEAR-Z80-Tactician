@@ -220,6 +220,7 @@ def main():
     capacity_blocked_desc=capacity_blocked_rows=0
     crowded_tiles=crowded_frames=0
     ghost_lines=ghost_coarse=strong_lines=0
+    crowded_mask_counts=Counter()
     width_err=[]; narrow_err=[]; narrow_total=narrow_missing=0
     temporal=[]; opposite=coarse_jump=0
     prev_widths={}
@@ -277,6 +278,21 @@ def main():
         bad=sum(1 for bits in groups.values() if len(bits)>2)
         crowded_tiles+=bad
         crowded_frames+=int(bad>0)
+
+        # Actual row-local physical seam masks. Canonicalize under HFLIP so the
+        # tile budget measures physical patterns rather than semantic mirrors.
+        row_masks=defaultdict(int)
+        for ss in cur:
+            if ss["half"]==0xff: continue
+            xx=ss["x"]; cc=xx>>3; bb=1<<(xx&7)
+            top=71-int(ss["half"]); tt=math.floor(top/8)
+            first=max(0,tt+1); last=min(17,16-tt)
+            for rr in range(first,last+1):
+                row_masks[(rr,cc)] |= bb
+        for mm in row_masks.values():
+            if mm.bit_count()>=3:
+                rev=sum(((mm>>b)&1)<<(7-b) for b in range(8))
+                crowded_mask_counts[min(mm,rev)] += 1
 
         # Decoded vertical line signal: anything strong but away from a true
         # visibility transition is a ghost/snap line.
@@ -375,6 +391,9 @@ def main():
           f"one_FULL_row={one_interior} draw_miss={descriptor_draw_miss} ({100*descriptor_draw_miss/descriptor_total if descriptor_total else 0:.2f}%)")
     print(f"tile_capacity crowded_tiles_3plus={crowded_tiles} crowded_frames={crowded_frames}/{len(frames)} "
           f"blocked_descriptors={capacity_blocked_desc} blocked_rows={capacity_blocked_rows}")
+    if crowded_mask_counts:
+        print("crowded_physical_masks="+",".join(
+            f"{m:02x}:{n}" for m,n in crowded_mask_counts.most_common(32)))
     print(f"decoded_vertical_lines strong={strong_lines} ghosts={ghost_lines} ({100*ghost_lines/strong_lines if strong_lines else 0:.2f}%) "
           f"ghosts_on_tile_edges={ghost_coarse}")
 
