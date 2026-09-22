@@ -85,7 +85,7 @@ void tsp_polar_ret_end_frame(void);
 void tsp_polar_ret_invalidate(void);
 #if TSPF_THIN_FACE_SURVIVAL
 void tsp_polar_record_subcolumn_seam(void);
-void tsp_polar_subcolumn_seams_fast(void);
+void tsp_polar_subcolumn_seams_fast(void) BANKED;
 #endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);

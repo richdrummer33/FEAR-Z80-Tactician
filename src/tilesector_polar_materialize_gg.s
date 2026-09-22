@@ -23,6 +23,11 @@
         .globl  _g_tspf_seam_pending_c0
         .globl  _g_tspf_seam_pending_dx
         .globl  _g_tspf_seam_pending_vid
+        .globl  _g_tspf_seam_desc_count
+        .globl  _g_tspf_seam_x
+        .globl  _g_tspf_seam_vid
+        .globl  _g_tspf_seam_vertex_half
+        .globl  _g_tspf_seam_cur_cols
         .globl  _g_polar_run_left_anchor
         .globl  _g_polar_run_right_anchor
         .globl  _g_polar_run_owned
@@ -1772,34 +1777,6 @@ seam_record_done$:
         pop     af
         ret
 
-; A=screen column 0..19. Mark this frame as containing a seam in that column.
-seam_mark_cur_col$:
-        push    bc
-        push    de
-        push    hl
-        ld      c, a
-        and     #7
-        ld      e, a
-        ld      d, #0
-        ld      hl, #polar_dirty_mask_lut$
-        add     hl, de
-        ld      b, (hl)
-        ld      a, c
-        srl     a
-        srl     a
-        srl     a
-        ld      e, a
-        ld      d, #0
-        ld      hl, #seam_cur_cols$
-        add     hl, de
-        ld      a, (hl)
-        or      b
-        ld      (hl), a
-        pop     hl
-        pop     de
-        pop     bc
-        ret
-
 ; Return NZ when the CURRENT materializer column held an overlay seam last
 ; frame. Retained skip/patch paths must then force an ordinary raster first, or
 ; a stale seam tile could survive when the physical boundary moves away.
@@ -1829,325 +1806,6 @@ seam_prev_col_test$:
         pop     de
         pop     bc
         ret
-
-; Post-materialization physical-X seam overlay. It intentionally touches only
-; FULL interior tiles (compact IDs 3..6) or its own seam tiles (412..431);
-; top/bottom EDGE silhouettes remain owned by the p24 raster vocabulary.
-_tsp_polar_subcolumn_seams_fast::
-        push    af
-        push    bc
-        push    de
-        push    hl
-        xor     a
-        ld      (#r_seam_i$), a
-
-seam_desc_loop$:
-        ld      a, (#r_seam_i$)
-        ld      c, a
-        ld      a, (#seam_desc_count$)
-        cp      c
-        jp      z, seam_overlay_done$
-
-        ; Resolve canonical height from any surviving neighbouring run.
-        ld      a, c
-        ld      e, a
-        ld      d, #0
-        ld      hl, #seam_vid$
-        add     hl, de
-        ld      a, (hl)
-        cp      #32
-        jp      nc, seam_next_desc$
-        ld      e, a
-        ld      d, #0
-        ld      hl, #seam_vertex_half$
-        add     hl, de
-        ld      a, (hl)
-        cp      #0xff
-        jp      z, seam_next_desc$
-        ld      (#r_seam_half$), a
-
-        ; Physical X and local-X bit.
-        ld      a, (#r_seam_i$)
-        ld      e, a
-        ld      d, #0
-        ld      hl, #seam_x$
-        add     hl, de
-        ld      a, (hl)
-        ld      (#r_seam_x$), a
-        and     #7
-        ld      e, a
-        ld      d, #0
-        ld      hl, #seam_bit_lut$
-        add     hl, de
-        ld      a, (hl)
-        ld      (#r_seam_mask$), a
-
-        ld      a, (#r_seam_x$)
-        srl     a
-        srl     a
-        srl     a
-        ld      (#r_seam_col$), a
-
-        ; FULL top = 71-half; bottom is exact physical mirror.
-        ld      a, #71
-        ld      c, a
-        ld      a, (#r_seam_half$)
-        ld      b, a
-        ld      a, c
-        sub     b
-        sra     a
-        sra     a
-        sra     a
-        ld      c, a                    ; signed top tile row
-
-        inc     a                       ; first interior row
-        bit     7, a
-        jr      z, seam_first_nonneg$
-        xor     a
-seam_first_nonneg$:
-        cp      #18
-        jp      nc, seam_next_desc$
-        ld      (#r_seam_row$), a
-
-        ld      a, #16                  ; bottom row - 1 = 16-top
-        sub     c
-        bit     7, a
-        jp      nz, seam_next_desc$
-        cp      #18
-        jr      c, seam_last_ready$
-        ld      a, #17
-seam_last_ready$:
-        ld      (#r_seam_last$), a
-        ld      c, a
-        ld      a, (#r_seam_row$)
-        cp      c
-        jr      c, seam_rows_valid$
-        jr      z, seam_rows_valid$
-        jp      seam_next_desc$
-seam_rows_valid$:
-        ld      a, (#r_seam_col$)
-        call    seam_mark_cur_col$
-
-seam_row_loop$:
-        ld      a, (#r_seam_col$)
-        ld      b, a
-        ld      a, (#r_seam_row$)
-        call    map_ptr_row_col$
-
-        ; Decode ordinary compact FULL-mid tile 3..6.
-        inc     hl
-        ld      a, (hl)
-        dec     hl
-        or      a
-        jr      z, seam_decode_full$
-        cp      #1
-        jr      z, seam_decode_special_canon$
-        cp      #3
-        jr      z, seam_decode_special_flip$
-        jr      seam_row_done$
-
-seam_decode_special_canon$:
-        ld      c, #0
-        jr      seam_decode_special$
-seam_decode_special_flip$:
-        ld      c, #1
-seam_decode_special$:
-        ld      a, (hl)
-        cp      #156                    ; 412 & 0xff
-        jr      c, seam_row_done$
-        cp      #176                    ; 432 & 0xff
-        jr      nc, seam_row_done$
-        sub     #156
-        ld      e, a
-        ld      d, #0
-        push    hl
-        ld      a, c
-        or      a
-        jr      nz, seam_special_reflected$
-        ld      hl, #_g_tsp_seam_mask_home
-        jr      seam_special_table$
-seam_special_reflected$:
-        ld      hl, #_g_tsp_seam_reflect_home
-seam_special_table$:
-        add     hl, de
-        ld      a, (hl)
-        pop     hl
-        jr      seam_have_base_mask$
-
-seam_decode_full$:
-        ld      a, (hl)
-        cp      #3
-        jr      c, seam_row_done$
-        cp      #7
-        jr      nc, seam_row_done$
-        sub     #3                      ; compact border bits 0..3
-        ld      e, #0
-        bit     0, a
-        jr      z, seam_no_left_old$
-        ld      e, #1
-seam_no_left_old$:
-        bit     1, a
-        jr      z, seam_full_mask_ready$
-        ld      a, e
-        or      #0x80
-        ld      e, a
-seam_full_mask_ready$:
-        ld      a, e
-
-seam_have_base_mask$:
-        ld      e, a
-        ld      a, (#r_seam_mask$)
-        or      e
-        ld      e, a
-
-        call    seam_mask_to_code$       ; E=one/two-line mask
-        cp      #0xff
-        jr      z, seam_row_done$
-        add     a, #156                  ; tile 412 low byte
-        ld      e, a
-
-        ld      a, (hl)
-        cp      e
-        jr      nz, seam_write_word$
-        inc     hl
-        ld      a, (hl)
-        cp      d
-        dec     hl
-        jr      z, seam_row_done$
-seam_write_word$:
-        ld      (hl), e
-        inc     hl
-        ld      (hl), d                 ; high 1, or 3 with HFLIP
-        dec     hl
-        ld      a, (#r_seam_row$)
-        call    polar_mark_dirty_fast$
-
-seam_row_done$:
-        ld      a, (#r_seam_row$)
-        ld      c, a
-        ld      a, (#r_seam_last$)
-        cp      c
-        jr      z, seam_next_desc$
-        ld      a, c
-        inc     a
-        ld      (#r_seam_row$), a
-        jp      seam_row_loop$
-
-seam_next_desc$:
-        ld      a, (#r_seam_i$)
-        inc     a
-        ld      (#r_seam_i$), a
-        jp      seam_desc_loop$
-
-seam_overlay_done$:
-        pop     hl
-        pop     de
-        pop     bc
-        pop     af
-        ret
-
-; E=physical local-X mask with one or two bits.
-; Return A=canonical seam index 0..19 and D=high word byte (1 or 3/HFLIP).
-seam_mask_to_code$:
-        push    bc
-        ld      a, e
-        or      a
-        jp      z, seam_code_invalid$
-        ld      c, #0
-seam_code_find_x$:
-        srl     a
-        jr      c, seam_code_x_found$
-        inc     c
-        jr      seam_code_find_x$
-seam_code_x_found$:
-        ld      e, a
-        ld      a, c
-        ld      (#r_seam_x0$), a
-        ld      a, e
-        or      a
-        jr      z, seam_code_single$
-
-        ld      e, a
-        ld      a, (#r_seam_x0$)
-        inc     a
-        ld      c, a
-        ld      a, e
-seam_code_find_y$:
-        srl     a
-        jr      c, seam_code_y_found$
-        inc     c
-        jr      seam_code_find_y$
-seam_code_y_found$:
-        ld      e, a
-        ld      a, c
-        ld      (#r_seam_y0$), a
-        ld      a, e
-        or      a
-        jp      nz, seam_code_invalid$
-
-        ld      a, #7
-        sub     c
-        ld      e, a
-        ld      a, (#r_seam_x0$)
-        cp      e
-        jr      c, seam_code_pair_canon$
-        jr      z, seam_code_pair_canon$
-        ld      d, #3
-        ld      a, (#r_seam_x0$)
-        ld      c, a
-        ld      a, #7
-        sub     c
-        ld      (#r_seam_y0$), a
-        ld      a, e
-        ld      (#r_seam_x0$), a
-        jr      seam_code_pair_index$
-
-seam_code_pair_canon$:
-        ld      d, #1
-seam_code_pair_index$:
-        ld      a, (#r_seam_x0$)
-        or      a
-        jr      nz, seam_code_pair_x1$
-        ld      a, (#r_seam_y0$)
-        add     a, #3
-        jr      seam_code_return$
-seam_code_pair_x1$:
-        dec     a
-        jr      nz, seam_code_pair_x2$
-        ld      a, (#r_seam_y0$)
-        add     a, #9
-        jr      seam_code_return$
-seam_code_pair_x2$:
-        dec     a
-        jr      nz, seam_code_pair_x3$
-        ld      a, (#r_seam_y0$)
-        add     a, #13
-        jr      seam_code_return$
-seam_code_pair_x3$:
-        ld      a, #19
-        jr      seam_code_return$
-
-seam_code_single$:
-        ld      a, (#r_seam_x0$)
-        cp      #4
-        jr      c, seam_code_single_canon$
-        ld      c, a
-        ld      a, #7
-        sub     c
-        ld      d, #3
-        jr      seam_code_return$
-seam_code_single_canon$:
-        ld      d, #1
-        jr      seam_code_return$
-seam_code_invalid$:
-        ld      a, #0xff
-        ld      d, #1
-seam_code_return$:
-        pop     bc
-        ret
-
-seam_bit_lut$:
-        .db     0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80
 
 ; ---------------------------------------------------------------------------
 ; Retained swept-boundary state (rung 26).
@@ -2946,16 +2604,21 @@ r_edge_local_raw$:
 r_edge_id_lo$:
         .ds     1
 ; Thin-face seam descriptors and endpoint-height cache.
+_g_tspf_seam_desc_count::
 seam_desc_count$:
         .ds     1
+_g_tspf_seam_x::
 seam_x$:
         .ds     32
+_g_tspf_seam_vid::
 seam_vid$:
         .ds     32
+_g_tspf_seam_vertex_half::
 seam_vertex_half$:
         .ds     32
 seam_prev_cols$:
         .ds     3
+_g_tspf_seam_cur_cols::
 seam_cur_cols$:
         .ds     3
 r_seam_i$:
