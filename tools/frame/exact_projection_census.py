@@ -216,6 +216,7 @@ def main():
 
     print(f"EXACT_PROJECTION_CENSUS label={a.label} frames={len(frames)} vertices={len(vx)} surfaces={len(segs)}")
     xerr=[]; yerr=[]; ypixerr=[]; ycliperr=[]; yvisible=[]
+    yvisible_detail=[]
     all_depth=[]
     exact_events=matched=resolved_matched=missing=extra=0
     errors_by_depth=defaultdict(list)
@@ -339,7 +340,12 @@ def main():
                 ypixerr.append(abs(top_cur-round(top_exact)))
                 ycliperr.append(abs(max(0.0,min(143.0,top_cur))-max(0.0,min(143.0,top_exact))))
                 if 0.0<=top_exact<=143.0:
-                    yvisible.append(abs(top_cur-top_exact))
+                    verr=abs(top_cur-top_exact)
+                    yvisible.append(verr)
+                    yvisible_detail.append((
+                        verr,fi,e["vid"],e["depth"],e["x"],float(s["x"]),
+                        top_exact,top_cur,int(s["half"]),
+                        int(fr["yaw"]),camx,camy,e["left"],e["right"]))
         extra += max(0,len(cur)-len(used))
 
         # Visible segment lengths between adjacent connected-corner events.
@@ -380,6 +386,11 @@ def main():
     stats("corner_top_error_vs_nearest_pixel",ypixerr,"px")
     stats("corner_top_abs_error_clipped_to_view",ycliperr,"px")
     stats("corner_top_abs_error_when_visible",yvisible,"px")
+    for rec in sorted(yvisible_detail,reverse=True)[:16]:
+        err,fi,vid,dep,ex,cx,te,tc,half,yaw,camx,camy,ls,rs=rec
+        print(f"YOFFENDER frame={fi} vid={vid} err={err:.3f}px depth={dep:.3f} "
+              f"exact_x={ex:.3f} desc_x={cx:.0f} exact_top={te:.3f} cur_top={tc:.0f} "
+              f"half={half} yaw={yaw} cam=({camx:.3f},{camy:.3f}) left={ls} right={rs}")
     if all_depth:
         print(f"exact_corner_depth_range min={min(all_depth):.3f} max={max(all_depth):.3f}")
     xs=[int(fr["x_q4"])/16.0 for fr in frames]; ys=[int(fr["y_q4"])/16.0 for fr in frames]; yaws=[int(fr["yaw"]) for fr in frames]
