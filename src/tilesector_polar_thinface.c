@@ -274,30 +274,29 @@ static int16_t seam_step_subpx(int16_t step,uint8_t px)
 
 static uint8_t seam_half_from_run(const TSPThinRun *r,uint8_t vid,uint8_t x,uint8_t *dist)
 {
-    int16_t dxl,dxr,dx,q,dq;
-    uint8_t adl,adr,ad,inv;
+    int16_t dx,q,dq;
+    uint8_t ad,inv;
 
-    if(r->v0!=vid && r->v1!=vid) return 0xffu;
-
-    /* Program v0/v1 are cyclic authored endpoints; after clipping/walking they
-     * are not a reliable statement that v0 is the LEFT screen endpoint. The
-     * previous version made exactly that assumption, which explains the few
-     * large strafe/far-rotate Y misses. A physical vertex must be close to one
-     * of this run's two snapped ownership boundaries, so select that boundary
-     * geometrically instead. */
-    dxl=(int16_t)x-(int16_t)((uint16_t)r->c0<<3);
-    dxr=(int16_t)x-(int16_t)((uint16_t)(r->c1+1u)<<3);
-    adl=(uint8_t)(dxl<0 ? -dxl : dxl);
-    adr=(uint8_t)(dxr<0 ? -dxr : dxr);
-    if(adl<=adr){
-        dx=dxl; ad=adl; q=r->iq;
-    }else{
-        dx=dxr; ad=adr;
+    /* v0/v1 name the envelope EVENT vertices, not necessarily endpoints of
+     * this owner surface. The packed physical-endpoint bits are the missing
+     * semantic guard: without them an occluding face can donate its unrelated
+     * depth to another wall's corner merely because that corner caused the
+     * first-hit ownership transition. Connected joins suppress the left run's
+     * duplicate right_real, but retain the right run's left_real, so every
+     * drawn physical seam still has at least one authoritative supplier. */
+    if(r->v0==vid && r->left_real){
+        dx=(int16_t)x-(int16_t)((uint16_t)r->c0<<3);
+        q=r->iq;
+    }else if(r->v1==vid && r->right_real){
+        dx=(int16_t)x-(int16_t)((uint16_t)(r->c1+1u)<<3);
         /* inv1 is preserved as the exact coarse right-edge inverse depth even
-         * when inv_mid carries a canonical connected-corner half-height. */
+         * when inv_mid carries a connected-corner half-height. */
         q=(int16_t)((uint16_t)r->inv1<<6);
+    }else{
+        return 0xffu;
     }
 
+    ad=(uint8_t)(dx<0 ? -dx : dx);
     if(ad>4u) return 0xffu;
     dq=seam_step_subpx(r->step,ad);
     q=(int16_t)(dx<0 ? q-dq : q+dq);
@@ -316,10 +315,9 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
         uint8_t vid=g_tspf_seam_vid[i];
         uint8_t x=g_tspf_seam_x[i];
         uint8_t best=0xffu,bestd=0xffu,matches=0u;
-        uint8_t lo=0xffu,hi=0u,old;
+        uint8_t lo=0xffu,hi=0u;
 
         if(vid>=32u) continue;
-        old=g_tspf_seam_vertex_half[vid];
         for(j=0u;j<run_count;++j){
             uint8_t d=0xffu;
             uint8_t h=seam_half_from_run(&g_runs[j],vid,x,&d);
@@ -335,28 +333,17 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
         }
 
         if(best!=0xffu){
-            if(matches>1u && old!=0xffu){
-                /* Both visible faces describe the SAME physical vertex, so
-                 * their true-X heights should agree to ordinary integer/Q6
-                 * quantization. A larger split means one plane has hit the
-                 * reciprocal near clamp before its oblique ray factor was
-                 * applied. That failure always biases half-height downward on
-                 * this course (there is no far clamp), so prefer the larger
-                 * candidate. The former >12 guard preserved several measured
-                 * 4..10 px errors simply because the last coarse face happened
-                 * to own the cache; >3 still leaves room for normal rounding
-                 * while treating a multi-pixel split as evidence, not noise. */
-                if((uint8_t)(hi-lo)>3u)
-                    g_tspf_seam_vertex_half[vid]=hi;
-                continue;
-            }
-            /* With exactly one surviving face there is no competing
-             * canonical corner to protect. Matching the authored vertex AND
-             * landing within four pixels of this run boundary is already the
-             * locality proof. The old <=12 guard was backwards here: it kept
-             * precisely the largest collapsed-face Y errors (for example the
-             * 17.5px strafe miss at vertex 20). Trust the true-X evaluation. */
-            g_tspf_seam_vertex_half[vid]=best;
+            /* Once suppliers are restricted to ACTUAL physical endpoints,
+             * the old assembly cache is no longer evidence: it can have been
+             * overwritten by a nonphysical visibility-event owner. Use the
+             * nearest authoritative face directly. Only the known reciprocal
+             * near-clamp split needs special handling; on this course that
+             * failure biases half-height downward, so a very large split uses
+             * the larger physical candidate. */
+            if(matches>1u && (uint8_t)(hi-lo)>12u)
+                g_tspf_seam_vertex_half[vid]=hi;
+            else
+                g_tspf_seam_vertex_half[vid]=best;
         }
     }
 }
