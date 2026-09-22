@@ -260,20 +260,30 @@ static int16_t seam_step_subpx(int16_t step,uint8_t px)
 
 static uint8_t seam_half_from_run(const TSPThinRun *r,uint8_t vid,uint8_t x,uint8_t *dist)
 {
-    int16_t dx,q,dq;
-    uint8_t ad,inv;
+    int16_t dxl,dxr,dx,q,dq;
+    uint8_t adl,adr,ad,inv;
 
-    if(r->v0==vid){
-        dx=(int16_t)x-(int16_t)((uint16_t)r->c0<<3);
-        q=r->iq;
-    }else if(r->v1==vid){
-        dx=(int16_t)x-(int16_t)((uint16_t)(r->c1+1u)<<3);
+    if(r->v0!=vid && r->v1!=vid) return 0xffu;
+
+    /* Program v0/v1 are cyclic authored endpoints; after clipping/walking they
+     * are not a reliable statement that v0 is the LEFT screen endpoint. The
+     * previous version made exactly that assumption, which explains the few
+     * large strafe/far-rotate Y misses. A physical vertex must be close to one
+     * of this run's two snapped ownership boundaries, so select that boundary
+     * geometrically instead. */
+    dxl=(int16_t)x-(int16_t)((uint16_t)r->c0<<3);
+    dxr=(int16_t)x-(int16_t)((uint16_t)(r->c1+1u)<<3);
+    adl=(uint8_t)(dxl<0 ? -dxl : dxl);
+    adr=(uint8_t)(dxr<0 ? -dxr : dxr);
+    if(adl<=adr){
+        dx=dxl; ad=adl; q=r->iq;
+    }else{
+        dx=dxr; ad=adr;
         /* inv1 is preserved as the exact coarse right-edge inverse depth even
          * when inv_mid carries a canonical connected-corner half-height. */
         q=(int16_t)((uint16_t)r->inv1<<6);
-    }else return 0xffu;
+    }
 
-    ad=(uint8_t)(dx<0 ? -dx : dx);
     if(ad>4u) return 0xffu;
     dq=seam_step_subpx(r->step,ad);
     q=(int16_t)(dx<0 ? q-dq : q+dq);
