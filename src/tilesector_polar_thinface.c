@@ -103,12 +103,27 @@ static void seam_dirty_col(uint8_t col)
  * per-boundary bank-switch cost. */
 void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) BANKED
 {
-    uint8_t count,owner,ni,code;
+    uint8_t count,owner,next_owner,ni,code;
     int16_t x;
 
     if(rel<=-512 || rel>=512) return;
     owner=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
-    if(!(owner&0x80u)) return;
+    ni=(uint8_t)(left_i+1u<n ? left_i+1u : 0u);
+    next_owner=g_e1env_program[(uint8_t)(2u+(uint8_t)(ni<<1))];
+
+    /* Do not limit the true-X overlay to corners physically shared by both
+     * owners (bit7). A visibility handoff can also be one wall ENDING at its
+     * authored endpoint and revealing a different wall/void behind, or a new
+     * wall BEGINNING at its endpoint in front of the previous owner. Those
+     * one-sided silhouettes are exactly where the remaining long snapped
+     * 0/7 tile-border ghosts come from.
+     *
+     * bit6 = left owner's right boundary is its physical endpoint.
+     * bit5 = next owner's left boundary is its physical endpoint.
+     * 0xff is NO_WALL, whose high bits must never be interpreted as flags. */
+    if(!((owner!=0xffu && (owner&0x40u)) ||
+         (next_owner!=0xffu && (next_owner&0x20u))))
+        return;
 
     count=g_tspf_seam_desc_count;
     if(count>=32u) return;
@@ -118,7 +133,6 @@ void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) B
       (int16_t)((int8_t)(code>>5)-4);
     if(x<0 || x>=160) return;
 
-    ni=(uint8_t)(left_i+1u<n ? left_i+1u : 0u);
     {
         uint8_t vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
         uint8_t ux=(uint8_t)x;
