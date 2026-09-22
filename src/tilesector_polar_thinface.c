@@ -291,21 +291,32 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
     for(i=0u;i<g_tspf_seam_desc_count;++i){
         uint8_t vid=g_tspf_seam_vid[i];
         uint8_t x=g_tspf_seam_x[i];
-        uint8_t best=0xffu,bestd=0xffu;
+        uint8_t best=0xffu,bestd=0xffu,matches=0u;
+        uint8_t old;
 
         if(vid>=32u) continue;
+        old=g_tspf_seam_vertex_half[vid];
         for(j=0u;j<run_count;++j){
             uint8_t d=0xffu;
             uint8_t h=seam_half_from_run(&g_runs[j],vid,x,&d);
-            if(h!=0xffu && d<bestd){
-                best=h;
-                bestd=d;
-                if(!d) break;
+            if(h!=0xffu){
+                ++matches;
+                if(d<bestd){
+                    best=h;
+                    bestd=d;
+                }
             }
         }
 
         if(best!=0xffu){
-            uint8_t old=g_tspf_seam_vertex_half[vid];
+            /* Two surviving runs sharing this vertex are the ordinary
+             * connected-corner case. envelope_join_connected() already
+             * reconciled that corner from BOTH faces; replacing its canonical
+             * half-height from one arbitrary side regressed the previously
+             * excellent depth sweep. The one-run case is precisely the thin
+             * face collapse we are here to repair. */
+            if(matches>1u && old!=0xffu)
+                continue;
             if(old==0xffu){
                 g_tspf_seam_vertex_half[vid]=best;
             }else{
