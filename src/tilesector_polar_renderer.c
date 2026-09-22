@@ -86,6 +86,7 @@ void tsp_polar_ret_invalidate(void);
 #if TSPF_THIN_FACE_SURVIVAL
 void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) BANKED;
 void tsp_polar_seam_prepare_dirty(void) BANKED;
+void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED;
 void tsp_polar_subcolumn_seams_fast(void) BANKED;
 #endif
 #if TSPF_LOCAL_PROJECTION
@@ -195,7 +196,7 @@ typedef struct PolarRun
     int16_t step;
 } PolarRun;
 
-static PolarRun g_runs[TSPF_MAX_ACTIVE];
+PolarRun g_runs[TSPF_MAX_ACTIVE];
 static uint8_t g_run_order[TSPF_MAX_ACTIVE];
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
@@ -1800,6 +1801,10 @@ e1full_candidates_ready:
     for (i = 0; i < count; ++i)
         draw_run(out_map, cols, &g_runs[g_run_order[i]], s);
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+    /* Coarse ownership ends on 8px boundaries; the physical seam can sit up
+     * to four pixels inside that tile. Re-evaluate its cached half-height on
+     * the adjacent run's linear depth field before the overlay consumes it. */
+    tsp_polar_refine_seam_heights(count);
     /* Same wall material on both faces means a sub-column face is visually
      * defined by its two physical corner seams. Apply them only after coarse
      * fills are complete, so a dropped 1..7px face no longer vanishes. */
