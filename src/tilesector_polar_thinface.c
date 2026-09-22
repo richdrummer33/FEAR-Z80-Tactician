@@ -115,13 +115,19 @@ void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) B
         if(vid<32u){
             if(g_tspf_seam_history_valid && (s_prev_seen[bi]&bm)){
                 uint8_t ox=s_prev_x[vid];
-                if(ox!=ux){
-                    seam_dirty_col((uint8_t)(ox>>3));
-                    seam_dirty_col(col);
-                }
-            } else {
-                seam_dirty_col(col);
+                uint8_t oc=(uint8_t)(ox>>3);
+                /* Moving inside one 8px tile needs no coarse re-render: the
+                 * post-pass directly replaces the old seam mask with the new
+                 * one, which is the cheapest possible delta-X in-paint for
+                 * this FULL/single-material benchmark. Only a tile the seam
+                 * LEAVES must be re-materialized so its old overlay disappears
+                 * and current front-to-back ownership is restored. */
+                if(oc!=col)
+                    seam_dirty_col(oc);
             }
+            /* A newly appearing seam likewise needs no coarse redraw: the
+             * current FULL tile is already the right owner/material and the
+             * overlay simply installs the physical line. */
             s_prev_x[vid]=ux;
             s_cur_seen[bi]|=bm;
         }
