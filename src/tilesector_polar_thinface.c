@@ -181,6 +181,17 @@ void tsp_polar_seam_prepare_dirty(void) BANKED
 {
     uint8_t bi;
 
+    /* Diagnostic correctness rung: force every CURRENT physical-seam column
+     * through the ordinary coarse materializer before the overlay is applied.
+     * Horizontal history alone cannot see a seam that stays in the same tile
+     * while its vertical extent shrinks; retained cells can therefore preserve
+     * last frame's taller line. If the exact census loses its tile-edge ghosts
+     * with this enabled, the missing state is specifically previous/current Y
+     * extent rather than another projection/ownership error. */
+    g_tspf_seam_dirty_cols[0] |= g_tspf_seam_cur_cols[0];
+    g_tspf_seam_dirty_cols[1] |= g_tspf_seam_cur_cols[1];
+    g_tspf_seam_dirty_cols[2] |= g_tspf_seam_cur_cols[2];
+
     if(g_tspf_seam_history_valid){
         for(bi=0u;bi<4u;++bi){
             uint8_t gone=(uint8_t)(s_prev_seen[bi] & (uint8_t)~s_cur_seen[bi]);
