@@ -292,7 +292,7 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
         uint8_t vid=g_tspf_seam_vid[i];
         uint8_t x=g_tspf_seam_x[i];
         uint8_t best=0xffu,bestd=0xffu,matches=0u;
-        uint8_t old;
+        uint8_t lo=0xffu,hi=0u,old;
 
         if(vid>=32u) continue;
         old=g_tspf_seam_vertex_half[vid];
@@ -301,6 +301,8 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
             uint8_t h=seam_half_from_run(&g_runs[j],vid,x,&d);
             if(h!=0xffu){
                 ++matches;
+                if(h<lo) lo=h;
+                if(h>hi) hi=h;
                 if(d<bestd){
                     best=h;
                     bestd=d;
@@ -309,14 +311,21 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
         }
 
         if(best!=0xffu){
-            /* Two surviving runs sharing this vertex are the ordinary
-             * connected-corner case. envelope_join_connected() already
-             * reconciled that corner from BOTH faces; replacing its canonical
-             * half-height from one arbitrary side regressed the previously
-             * excellent depth sweep. The one-run case is precisely the thin
-             * face collapse we are here to repair. */
-            if(matches>1u && old!=0xffu)
+            if(matches>1u && old!=0xffu){
+                /* Normally envelope_join_connected() already reconciles the
+                 * two faces and its cached canonical Y is the best answer.
+                 * There is one nasty exception: a wall plane closer than the
+                 * 10-unit reciprocal near limit saturates BEFORE its oblique
+                 * ray factor is applied. Then the two mathematically-equal
+                 * corner estimates split badly (the rotation offenders were
+                 * almost exactly 2:1). On this E1M1 course there is no far
+                 * plane clamp, so the saturated near-plane estimate is the
+                 * smaller one. Only override when the disagreement is far
+                 * beyond ordinary quantization/subpixel error. */
+                if((uint8_t)(hi-lo)>12u)
+                    g_tspf_seam_vertex_half[vid]=hi;
                 continue;
+            }
             if(old==0xffu){
                 g_tspf_seam_vertex_half[vid]=best;
             }else{
