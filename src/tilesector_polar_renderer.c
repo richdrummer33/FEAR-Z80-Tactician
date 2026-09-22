@@ -1393,8 +1393,21 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
 #endif
         g_polar_run_c0 = c0;
         g_polar_run_c1 = c1;
+#if TSPF_THIN_FACE_SURVIVAL
+        /* Physical endpoint borders are now represented by the true-X seam
+         * overlay. Emitting them here as well places the same corner at the
+         * snapped 8px ownership boundary, often in the adjacent tile. That is
+         * the measured source of almost every remaining 0/7 ghost line.
+         *
+         * Keep r->left_real/right_real themselves intact: envelope joining and
+         * canonical corner-Y reconstruction still need the topology. Only the
+         * coarse materializer's duplicate vertical-border emission is disabled. */
+        g_polar_run_left_real = 0u;
+        g_polar_run_right_real = 0u;
+#else
         g_polar_run_left_real = r->left_real;
         g_polar_run_right_real = r->right_real;
+#endif
         g_polar_run_iq = iq;
         g_polar_run_step = step;
         tsp_polar_run_geometry_fast();
