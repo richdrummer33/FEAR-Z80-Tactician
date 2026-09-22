@@ -158,7 +158,7 @@ struct Range { u16 lo, hi; Group g; };
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::fprintf(stderr, "usage: %s rom.gg rom.noi out.csv [frames=180] [warmup=8]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s rom.gg rom.noi out.csv [frames=180] [warmup=8] [map.bin] [seams.csv]\n", argv[0]);
         return 2;
     }
     const char* rom = argv[1];
@@ -167,6 +167,7 @@ int main(int argc, char** argv) {
     const unsigned target = argc > 4 ? (unsigned)std::strtoul(argv[4], nullptr, 0) : 180u;
     const unsigned warmup = argc > 5 ? (unsigned)std::strtoul(argv[5], nullptr, 0) : 8u;
     const char* map_dump_path = argc > 6 ? argv[6] : nullptr;
+    const char* seam_dump_path = argc > 7 ? argv[7] : nullptr;
 
     u16 s_phase = 0, s_loop = 0;
     if (!find_symbol(noi, "_g_ts_prof_phase", s_phase) && !find_symbol(noi, "g_ts_prof_phase", s_phase)) {
@@ -191,6 +192,13 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_tspf_join_anchor_count", s_join_count) || find_symbol(noi, "g_tspf_join_anchor_count", s_join_count)) &&
         (find_symbol(noi, "_g_tspf_join_anchor_max_px", s_join_max) || find_symbol(noi, "g_tspf_join_anchor_max_px", s_join_max)) &&
         (find_symbol(noi, "_g_tspf_join_anchor_sum_px", s_join_sum) || find_symbol(noi, "g_tspf_join_anchor_sum_px", s_join_sum));
+
+    u16 s_seam_count = 0, s_seam_x = 0, s_seam_vid = 0, s_seam_half = 0;
+    const bool have_seams =
+        (find_symbol(noi, "_g_tspf_seam_desc_count", s_seam_count) || find_symbol(noi, "g_tspf_seam_desc_count", s_seam_count)) &&
+        (find_symbol(noi, "_g_tspf_seam_x", s_seam_x) || find_symbol(noi, "g_tspf_seam_x", s_seam_x)) &&
+        (find_symbol(noi, "_g_tspf_seam_vid", s_seam_vid) || find_symbol(noi, "g_tspf_seam_vid", s_seam_vid)) &&
+        (find_symbol(noi, "_g_tspf_seam_vertex_half", s_seam_half) || find_symbol(noi, "g_tspf_seam_vertex_half", s_seam_half));
 
     /* PC ranges from the current link, one per fixed-bank symbol */
     unsigned rbank = 0;
@@ -252,6 +260,8 @@ int main(int argc, char** argv) {
         uint16_t vblank_bursts, vblank_missed;
         uint8_t join_anchor_count, join_anchor_max_px;
         uint16_t join_anchor_sum_px;
+        uint8_t seam_count;
+        uint8_t seam_x[32], seam_vid[32], seam_half[32];
     };
     std::vector<Frame> frames;
     std::vector<std::vector<uint8_t>> map_snaps;
@@ -316,6 +326,16 @@ int main(int argc, char** argv) {
                     last_vblank_bursts = vb;
                     last_vblank_missed = vm;
                 }
+                if (have_seams) {
+                    cur.seam_count = mem->DebugRetrieve(s_seam_count);
+                    if (cur.seam_count > 32u) cur.seam_count = 32u;
+                    for (unsigned si = 0; si < cur.seam_count; ++si) {
+                        const uint8_t vid = mem->DebugRetrieve((u16)(s_seam_vid + si));
+                        cur.seam_x[si] = mem->DebugRetrieve((u16)(s_seam_x + si));
+                        cur.seam_vid[si] = vid;
+                        cur.seam_half[si] = vid < 32u ? mem->DebugRetrieve((u16)(s_seam_half + vid)) : 0xffu;
+                    }
+                }
                 if (seen_loops >= warmup) {
                     if (have_dirty_min) {
                         for (unsigned dr = 0; dr < 18u; ++dr) {
@@ -372,6 +392,21 @@ int main(int argc, char** argv) {
             for (const auto& snap : map_snaps)
                 std::fwrite(snap.data(), 1, snap.size(), mf);
             std::fclose(mf);
+        }
+    }
+
+    if (seam_dump_path && have_seams) {
+        FILE* sf = std::fopen(seam_dump_path, "w");
+        if (sf) {
+            std::fprintf(sf, "frame,x_q4,y_q4,z_q4,yaw,seam_i,x,vid,half\n");
+            for (size_t fi = 0; fi < frames.size(); ++fi) {
+                const Frame& f = frames[fi];
+                for (unsigned si = 0; si < f.seam_count; ++si)
+                    std::fprintf(sf, "%zu,%d,%d,%d,%u,%u,%u,%u,%u\n",
+                        fi, (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
+                        si, (unsigned)f.seam_x[si], (unsigned)f.seam_vid[si], (unsigned)f.seam_half[si]);
+            }
+            std::fclose(sf);
         }
     }
 

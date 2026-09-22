@@ -29,6 +29,12 @@ TRACES = {
                hold(UP | SR, 12) + hold(RIGHT, 10) + hold(UP, 16) +
                hold(SL, 14) + hold(UP | LEFT, 18) + hold(SR, 14) + hold(UP | RIGHT, 18),
     # Not representative play: everything at once, to find the ceiling.
+    # Projection-oracle sweeps: isolate one camera degree of freedom at a time.
+    # The return leg is intentional: hysteresis / retained-state errors then show
+    # up as a different answer at the same geometric pose.
+    "proj_rotate": hold(RIGHT, 48) + hold(LEFT, 96) + hold(RIGHT, 48),
+    "proj_depth":  hold(DOWN, 40) + hold(UP, 80) + hold(DOWN, 40),
+    "proj_strafe": hold(SL, 40) + hold(SR, 80) + hold(SL, 40),
     "stress": alternate(UP | LEFT, UP | RIGHT, 120, 3) +
               alternate(UP | SL | LEFT, UP | SR | RIGHT, 120, 2),
 }
