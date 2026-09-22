@@ -576,7 +576,6 @@ seam_pair_done:
                     }
                 }
             }
-            }
         }
     }
 
