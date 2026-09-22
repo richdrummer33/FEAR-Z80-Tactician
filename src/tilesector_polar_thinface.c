@@ -40,7 +40,7 @@ uint8_t g_tspf_seam_history_valid;
 static uint8_t s_prev_x[32];
 static uint8_t s_prev_seen[4];
 static uint8_t s_cur_seen[4];
-static uint8_t s_row_mask[TSP_ROWS];
+static uint8_t s_overlay_touched[(TSP_MAP_CELLS+7u)/8u];
 extern const uint8_t g_e1env_center_col_lut[1025];
 
 extern const uint8_t g_tsp_seam_mask_home[20];
@@ -219,79 +219,92 @@ static int8_t floor_div8(int8_t v)
 
 void tsp_polar_subcolumn_seams_fast(void) BANKED
 {
-    uint8_t col,i,row;
+    uint8_t i,row;
 
-    /* Compose from CURRENT physical seams, never from the coarse tile's old
-     * left/right border bits. That is the correctness half of the delta-X
-     * design: the snapped 8-pixel answer is not another line to preserve.
-     *
-     * Work one coarse column at a time so the complete row-local seam set fits
-     * in only 18 scratch bytes. This also naturally handles multiple exact
-     * seams in the same tile without a 360-byte screen mask. */
-    for(col=0u;col<TSP_COLS;++col){
-        uint8_t cm=(uint8_t)(1u<<(col&7u));
-        if(!(g_tspf_seam_cur_cols[col>>3]&cm)) continue;
+    /* Descriptor-major compositor. The first current seam touching a cell
+     * REPLACES any previous/coarse border semantics; later current seams in
+     * that same cell merge with the mask written by this pass. A 360-bit
+     * touched set (45 bytes RAM) is much cheaper than a 360-byte screen mask
+     * and avoids rescanning every descriptor once per active coarse column. */
+    for(i=0u;i<(uint8_t)((TSP_MAP_CELLS+7u)/8u);++i)
+        s_overlay_touched[i]=0u;
 
-        for(row=0u;row<TSP_ROWS;++row) s_row_mask[row]=0u;
+    for(i=0u;i<g_tspf_seam_desc_count;++i){
+        uint8_t vid,half,x,col,bit,first,last;
+        int8_t top_tile;
+        uint16_t idx;
 
-        for(i=0u;i<g_tspf_seam_desc_count;++i){
-            uint8_t vid,half,x,bit,first,last;
-            int8_t top_tile;
+        x=g_tspf_seam_x[i];
+        col=(uint8_t)(x>>3);
+        if(col>=TSP_COLS) continue;
+        vid=g_tspf_seam_vid[i];
+        if(vid>=32u) continue;
+        half=g_tspf_seam_vertex_half[vid];
+        if(half==0xffu) continue;
 
-            x=g_tspf_seam_x[i];
-            if((x>>3)!=col) continue;
-            vid=g_tspf_seam_vid[i];
-            if(vid>=32u) continue;
-            half=g_tspf_seam_vertex_half[vid];
-            if(half==0xffu) continue;
-
-            bit=(uint8_t)(1u<<(x&7u));
-            top_tile=floor_div8((int8_t)(71-(int16_t)half));
-            {
-                int16_t f=(int16_t)top_tile+1;
-                int16_t l=16-(int16_t)top_tile;
-                if(f<0) f=0;
-                if(f>=18 || l<0) continue;
-                if(l>=18) l=17;
-                if(f>l) continue;
-                first=(uint8_t)f;
-                last=(uint8_t)l;
-            }
-            for(row=first;;++row){
-                s_row_mask[row]|=bit;
-                if(row==last) break;
-            }
+        bit=(uint8_t)(1u<<(x&7u));
+        top_tile=floor_div8((int8_t)(71-(int16_t)half));
+        {
+            int16_t f=(int16_t)top_tile+1;
+            int16_t l=16-(int16_t)top_tile;
+            if(f<0) f=0;
+            if(f>=18 || l<0) continue;
+            if(l>=18) l=17;
+            if(f>l) continue;
+            first=(uint8_t)f;
+            last=(uint8_t)l;
         }
 
-        for(row=0u;row<TSP_ROWS;++row){
-            uint8_t mask=s_row_mask[row],code;
-            uint16_t idx,old,id,attr=0u,nw;
-            if(!mask) continue;
+        idx=(uint16_t)((uint16_t)first*20u+col);
+        for(row=first;;++row,idx+=20u){
+            uint8_t tb=(uint8_t)(idx>>3);
+            uint8_t tm=(uint8_t)(1u<<(idx&7u));
+            uint16_t old=g_map[idx];
+            uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
+            uint8_t mask,code;
+            uint16_t attr=0u,nw;
 
-            idx=(uint16_t)row*TSP_COLS+col;
-            old=g_map[idx];
-            id=(uint16_t)(old&TSP_TILE_ID_MASK);
-
-            /* Physical seams live only through FULL interior material. A
-             * previously composed seam tile is also valid input because an
-             * unchanged retained column may not have been re-rasterized. */
-            if(!((id>=3u && id<7u) ||
-                 (id>=TSP_SEAM_TILE_BASE &&
-                  id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
-                continue;
+            if(!(s_overlay_touched[tb]&tm)){
+                /* First physical seam this frame: discard the old snapped
+                 * 0/7 border or last frame's seam mask entirely. The current
+                 * physical seam set is authoritative. */
+                if(!((id>=3u && id<7u) ||
+                     (id>=TSP_SEAM_TILE_BASE &&
+                      id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
+                    goto seam_row_done;
+                mask=bit;
+                s_overlay_touched[tb]|=tm;
+            } else {
+                /* This cell was already rewritten by a current descriptor.
+                 * Decode that small current mask, then add this seam. */
+                uint8_t ci;
+                if(id<TSP_SEAM_TILE_BASE ||
+                   id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
+                    goto seam_row_done;
+                ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
+                if(ci<TSP_SEAM_BASE_COUNT){
+                    mask=(old&TSP_ATTR_FLIPX) ?
+                         g_tsp_seam_reflect_home[ci] :
+                         g_tsp_seam_mask_home[ci];
+                } else {
+                    ci=(uint8_t)(ci-TSP_SEAM_BASE_COUNT);
+                    mask=(old&TSP_ATTR_FLIPX) ?
+                         k_extra_seam_reflect[ci] :
+                         k_extra_seam_mask[ci];
+                }
+                mask|=bit;
+            }
 
             code=seam_mask_to_code(mask,&attr);
             if(code==0xffu){
-                /* Defensive fallback for a future uncensused crowded mask:
-                 * preserve the two outer physical boundaries. This deliberately
-                 * drops an interior exact seam rather than resurrecting a fake
-                 * 8-pixel coarse border. */
+                /* Future uncensused crowd: retain the two outer CURRENT
+                 * physical boundaries, never resurrect a coarse tile edge. */
                 uint8_t lo=0u,hi=7u;
                 while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
                 while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
                 mask=(uint8_t)((1u<<lo)|(1u<<hi));
                 code=seam_mask_to_code(mask,&attr);
-                if(code==0xffu) continue;
+                if(code==0xffu) goto seam_row_done;
             }
 
             nw=(uint16_t)(TSP_SEAM_TILE_BASE+code+attr);
@@ -302,12 +315,14 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                 if(col>g_polar_nt_row_max[row])
                     g_polar_nt_row_max[row]=col;
             }
+
+seam_row_done:
+            if(row==last) break;
         }
     }
 
-    /* Coarse materialization has now consumed this frame's horizontal delta.
-     * Clear in bank 254 rather than spending precious fixed/HOME bytes in the
-     * per-frame begin routine. */
+    /* Coarse materialization has consumed this frame's horizontal delta.
+     * Clear here in bank 254 rather than spending fixed/HOME bytes. */
     g_tspf_seam_dirty_cols[0]=0u;
     g_tspf_seam_dirty_cols[1]=0u;
     g_tspf_seam_dirty_cols[2]=0u;
