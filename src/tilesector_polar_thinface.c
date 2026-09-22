@@ -72,7 +72,6 @@ static uint8_t s_overlay_touched[(TSP_MAP_CELLS+7u)/8u];
  * visit each run endpoint instead of testing every descriptor against every
  * run (D*R). This keeps the exact same candidate/reconciliation policy while
  * changing the search cost to O(D + R). */
-static uint8_t s_refine_active[4];
 static uint8_t s_refine_x[32];
 static uint8_t s_refine_best[32];
 static uint8_t s_refine_bestd[32];
@@ -305,17 +304,13 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
      * exist this frame. The measured exact sweeps contain no duplicate vertex
      * descriptors; if one ever appears, the last copy is equivalent because a
      * physical vertex has one projected X. */
-    s_refine_active[0]=0u;
-    s_refine_active[1]=0u;
-    s_refine_active[2]=0u;
-    s_refine_active[3]=0u;
+    /* 0xff is outside the 0..159 pixel aperture, so the X table doubles
+     * as the active-vertex map. Clearing 32 linear bytes is cheaper on Z80
+     * than rebuilding/test-shifting a four-byte bitset at every run endpoint. */
+    for(i=0u;i<32u;++i) s_refine_x[i]=0xffu;
     for(i=0u;i<g_tspf_seam_desc_count;++i){
         uint8_t vid=g_tspf_seam_vid[i];
-        uint8_t bi,bm;
         if(vid>=32u) continue;
-        bi=(uint8_t)(vid>>3);
-        bm=(uint8_t)(1u<<(vid&7u));
-        s_refine_active[bi]|=bm;
         s_refine_x[vid]=g_tspf_seam_x[i];
         s_refine_best[vid]=0xffu;
         s_refine_bestd[vid]=0xffu;
@@ -332,14 +327,13 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
         uint8_t k;
         for(k=0u;k<2u;++k){
             uint8_t vid=(uint8_t)(k ? r->v1 : r->v0);
-            uint8_t bi,bm,d,h;
+            uint8_t x,d,h;
             if(vid>=32u) continue;
-            bi=(uint8_t)(vid>>3);
-            bm=(uint8_t)(1u<<(vid&7u));
-            if(!(s_refine_active[bi]&bm)) continue;
+            x=s_refine_x[vid];
+            if(x==0xffu) continue;
 
             d=0xffu;
-            h=seam_half_from_run(r,vid,s_refine_x[vid],&d);
+            h=seam_half_from_run(r,vid,x,&d);
             if(h==0xffu) continue;
 
             ++s_refine_matches[vid];
