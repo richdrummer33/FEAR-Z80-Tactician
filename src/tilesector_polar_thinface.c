@@ -407,7 +407,7 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 
 void tsp_polar_subcolumn_seams_fast(void) BANKED
 {
-    uint8_t i,row;
+    uint8_t i,row,rowb;
 
     /* Descriptor-major compositor. The first current seam touching a cell
      * REPLACES any previous/coarse border semantics; later current seams in
@@ -464,74 +464,102 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
 
             idx=(uint16_t)((uint16_t)first*20u+col);
             {
-                /* idx advances by exactly 20 cells per screen row. Its touched
-                 * bit therefore advances by four bit positions, while the byte
-                 * index advances by 2 or 3. Carry that tiny state instead of
-                 * recomputing idx>>3 and 1<<(idx&7) in every cell. */
+                /* FULL walls are vertically symmetric around the 18-row
+                 * aperture: first+last is always 17. Every physical seam
+                 * therefore touches row pairs with identical current masks.
+                 * Compose one mask/tile word for the pair and store it to both
+                 * rows. This halves the hot overlay's mask/decode/control work
+                 * without changing the seam vocabulary or Y extent. */
+                uint16_t idxb=(uint16_t)((uint16_t)last*20u+col);
                 uint8_t tb=(uint8_t)(idx>>3);
                 uint8_t tm=(uint8_t)(1u<<(idx&7u));
+                uint8_t bb=(uint8_t)(idxb>>3);
+                uint8_t bm=(uint8_t)(1u<<(idxb&7u));
 
-                for(row=first;;++row){
-                uint16_t old=g_map[idx];
-                uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
-                uint16_t nw;
+                row=first;
+                rowb=last;
+                for(;;){
+                    uint16_t old=g_map[idx];
+                    uint16_t oldb=g_map[idxb];
+                    uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
+                    uint16_t idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
+                    uint16_t nw;
 
-                if(!(s_overlay_touched[tb]&tm)){
-                    /* First physical seam this frame: discard the old snapped
-                     * 0/7 border or last frame's seam mask entirely. The
-                     * current physical seam set is authoritative. */
-                    if(!((id>=3u && id<7u) ||
-                         (id>=TSP_SEAM_TILE_BASE &&
-                          id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
-                        goto seam_row_done;
-                    s_overlay_touched[tb]|=tm;
-                    nw=single_nw;
-                } else {
-                    /* This cell was already rewritten by a current descriptor.
-                     * Decode that small current mask, then add this seam. */
-                    uint8_t mask,code,ci;
-                    uint16_t attr=0u;
-                    if(id<TSP_SEAM_TILE_BASE ||
-                       id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
-                        goto seam_row_done;
-                    ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
-                    if(ci<TSP_SEAM_BASE_COUNT){
-                        mask=(old&TSP_ATTR_FLIPX) ?
-                             g_tsp_seam_reflect_home[ci] :
-                             g_tsp_seam_mask_home[ci];
+                    if(!(s_overlay_touched[tb]&tm)){
+                        /* Pair symmetry is an invariant of this FULL-only seam
+                         * path. Check both material cells before claiming them
+                         * so an unexpected asymmetric/non-wall pair is dropped
+                         * rather than painted through. */
+                        if(!((id>=3u && id<7u) ||
+                             (id>=TSP_SEAM_TILE_BASE &&
+                              id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
+                           !((idb>=3u && idb<7u) ||
+                             (idb>=TSP_SEAM_TILE_BASE &&
+                              idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
+                            goto seam_pair_done;
+                        s_overlay_touched[tb]|=tm;
+                        s_overlay_touched[bb]|=bm;
+                        nw=single_nw;
                     } else {
-                        ci=(uint8_t)(ci-TSP_SEAM_BASE_COUNT);
-                        mask=(old&TSP_ATTR_FLIPX) ?
-                             k_extra_seam_reflect[ci] :
-                             k_extra_seam_mask[ci];
-                    }
-                    mask|=bit;
+                        /* A prior symmetric descriptor touched both cells and
+                         * wrote the same seam word, so decode one side only. */
+                        uint8_t mask,code,ci;
+                        uint16_t attr=0u;
+                        if(!(s_overlay_touched[bb]&bm) ||
+                           id<TSP_SEAM_TILE_BASE ||
+                           id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT) ||
+                           idb<TSP_SEAM_TILE_BASE ||
+                           idb>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
+                            goto seam_pair_done;
+                        ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
+                        if(ci<TSP_SEAM_BASE_COUNT){
+                            mask=(old&TSP_ATTR_FLIPX) ?
+                                 g_tsp_seam_reflect_home[ci] :
+                                 g_tsp_seam_mask_home[ci];
+                        } else {
+                            ci=(uint8_t)(ci-TSP_SEAM_BASE_COUNT);
+                            mask=(old&TSP_ATTR_FLIPX) ?
+                                 k_extra_seam_reflect[ci] :
+                                 k_extra_seam_mask[ci];
+                        }
+                        mask|=bit;
 
-                    code=seam_mask_to_code(mask,&attr);
-                    if(code==0xffu){
-                        /* Future uncensused crowd: retain the two outer CURRENT
-                         * physical boundaries, never resurrect a coarse edge. */
-                        uint8_t lo=0u,hi=7u;
-                        while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
-                        while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
-                        mask=(uint8_t)((1u<<lo)|(1u<<hi));
                         code=seam_mask_to_code(mask,&attr);
-                        if(code==0xffu) goto seam_row_done;
+                        if(code==0xffu){
+                            uint8_t lo=0u,hi=7u;
+                            while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
+                            while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
+                            mask=(uint8_t)((1u<<lo)|(1u<<hi));
+                            code=seam_mask_to_code(mask,&attr);
+                            if(code==0xffu) goto seam_pair_done;
+                        }
+                        nw=(uint16_t)(TSP_SEAM_TILE_BASE+code+attr);
                     }
-                    nw=(uint16_t)(TSP_SEAM_TILE_BASE+code+attr);
-                }
 
-                if(nw!=old){
-                g_map[idx]=nw;
-                if(g_polar_nt_row_min[row]==0xffu || col<g_polar_nt_row_min[row])
-                    g_polar_nt_row_min[row]=col;
-                if(col>g_polar_nt_row_max[row])
-                    g_polar_nt_row_max[row]=col;
-                }
+                    if(nw!=old){
+                        g_map[idx]=nw;
+                        if(g_polar_nt_row_min[row]==0xffu ||
+                           col<g_polar_nt_row_min[row])
+                            g_polar_nt_row_min[row]=col;
+                        if(col>g_polar_nt_row_max[row])
+                            g_polar_nt_row_max[row]=col;
+                    }
+                    if(nw!=oldb){
+                        g_map[idxb]=nw;
+                        if(g_polar_nt_row_min[rowb]==0xffu ||
+                           col<g_polar_nt_row_min[rowb])
+                            g_polar_nt_row_min[rowb]=col;
+                        if(col>g_polar_nt_row_max[rowb])
+                            g_polar_nt_row_max[rowb]=col;
+                    }
 
-seam_row_done:
-                    if(row==last) break;
+seam_pair_done:
+                    if((uint8_t)(row+1u)>=rowb) break;
+                    ++row;
+                    --rowb;
                     idx=(uint16_t)(idx+20u);
+                    idxb=(uint16_t)(idxb-20u);
+
                     if(tm&0xf0u){
                         tm=(uint8_t)(tm>>4);
                         tb=(uint8_t)(tb+3u);
@@ -539,7 +567,15 @@ seam_row_done:
                         tm=(uint8_t)(tm<<4);
                         tb=(uint8_t)(tb+2u);
                     }
+                    if(bm&0xf0u){
+                        bm=(uint8_t)(bm>>4);
+                        bb=(uint8_t)(bb-2u);
+                    } else {
+                        bm=(uint8_t)(bm<<4);
+                        bb=(uint8_t)(bb-3u);
+                    }
                 }
+            }
             }
         }
     }
