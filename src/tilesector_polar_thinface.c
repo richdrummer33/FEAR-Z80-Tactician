@@ -29,12 +29,42 @@ extern uint8_t g_tspf_seam_x[32];
 extern uint8_t g_tspf_seam_vid[32];
 extern uint8_t g_tspf_seam_vertex_half[32];
 extern uint8_t g_tspf_seam_cur_cols[3];
+extern uint8_t g_e1env_program[];
+extern const uint8_t g_e1env_center_col_lut[1025];
 
 extern const uint8_t g_tsp_seam_mask_home[20];
 extern const uint8_t g_tsp_seam_reflect_home[20];
 
 #define TSP_SEAM_TILE_BASE 412u
 #define TSP_SEAM_TILE_COUNT 20u
+
+/* Capture one physical connected corner before coarse 8-pixel ownership can
+ * discard the face on either side. This used to live in HOME; banking it here
+ * restores the fixed-ROM safety margin. It is deliberately a correctness rung:
+ * once the visual result is proven we can batch these records to remove the
+ * per-boundary bank-switch cost. */
+void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) BANKED
+{
+    uint8_t count,owner,ni,code;
+    int16_t x;
+
+    if(rel<=-512 || rel>=512) return;
+    owner=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
+    if(!(owner&0x80u)) return;
+
+    count=g_tspf_seam_desc_count;
+    if(count>=32u) return;
+
+    code=g_e1env_center_col_lut[(uint16_t)(rel+512)];
+    x=(int16_t)((uint16_t)(code&31u)<<3) +
+      (int16_t)((int8_t)(code>>5)-4);
+    if(x<0 || x>=160) return;
+
+    ni=(uint8_t)(left_i+1u<n ? left_i+1u : 0u);
+    g_tspf_seam_x[count]=(uint8_t)x;
+    g_tspf_seam_vid[count]=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
+    g_tspf_seam_desc_count=(uint8_t)(count+1u);
+}
 
 /* Same canonical 20-pattern encoding as the former HOME assembly decoder.
  * Return 0xff when a cell somehow contains more than two physical seams. */

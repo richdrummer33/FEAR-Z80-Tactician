@@ -20,9 +20,6 @@
         .globl  _g_polar_run_sid
         .globl  _g_polar_run_v0
         .globl  _g_polar_run_v1
-        .globl  _g_tspf_seam_pending_c0
-        .globl  _g_tspf_seam_pending_dx
-        .globl  _g_tspf_seam_pending_vid
         .globl  _g_tspf_seam_desc_count
         .globl  _g_tspf_seam_x
         .globl  _g_tspf_seam_vid
@@ -46,7 +43,6 @@
         .globl  _g_tsp_edge_border_b2_packed_home
         .globl  _g_tsp_seam_mask_home
         .globl  _g_tsp_seam_reflect_home
-        .globl  _tsp_polar_record_subcolumn_seam
         .globl  _tsp_polar_subcolumn_seams_fast
         .globl  _tsp_probe_sym_edge_key
         .globl  _tsp_probe_edge_slope
@@ -1731,50 +1727,6 @@ seam_cache_vertex_half$:
         pop     hl
         pop     de
         pop     bc
-        ret
-
-; C bridge: pending_c0 + signed pending_dx is the physical boundary X;
-; pending_vid identifies the shared authored corner whose height is resolved
-; after all surviving runs have cached their endpoints.
-_tsp_polar_record_subcolumn_seam::
-        push    af
-        push    bc
-        push    de
-        push    hl
-        ld      a, (#seam_desc_count$)
-        cp      #32
-        jr      nc, seam_record_done$
-        ld      c, a
-
-        ld      a, (#_g_tspf_seam_pending_c0)
-        add     a, a
-        add     a, a
-        add     a, a
-        ld      b, a
-        ld      a, (#_g_tspf_seam_pending_dx)
-        add     a, b
-        cp      #160
-        jr      nc, seam_record_done$    ; also rejects wrapped negative X
-        ld      b, a
-
-        ld      e, c
-        ld      d, #0
-        ld      hl, #seam_x$
-        add     hl, de
-        ld      (hl), b
-        ld      hl, #seam_vid$
-        add     hl, de
-        ld      a, (#_g_tspf_seam_pending_vid)
-        ld      (hl), a
-
-        ld      a, c
-        inc     a
-        ld      (#seam_desc_count$), a
-seam_record_done$:
-        pop     hl
-        pop     de
-        pop     bc
-        pop     af
         ret
 
 ; Return NZ when the CURRENT materializer column held an overlay seam last

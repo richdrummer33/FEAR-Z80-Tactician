@@ -84,7 +84,7 @@ void tsp_polar_ret_begin_frame(void);
 void tsp_polar_ret_end_frame(void);
 void tsp_polar_ret_invalidate(void);
 #if TSPF_THIN_FACE_SURVIVAL
-void tsp_polar_record_subcolumn_seam(void);
+void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) BANKED;
 void tsp_polar_subcolumn_seams_fast(void) BANKED;
 #endif
 #if TSPF_LOCAL_PROJECTION
@@ -121,9 +121,6 @@ uint8_t g_polar_run_sid;
  * the pair of true-X corner seams supplied by their two neighbours. */
 uint8_t g_polar_run_v0;
 uint8_t g_polar_run_v1;
-uint8_t g_tspf_seam_pending_c0;
-int8_t g_tspf_seam_pending_dx;
-uint8_t g_tspf_seam_pending_vid;
 #endif
 /* Exact endpoint lock: the banked depth evaluator returns a compact Q6
  * start/step for interior columns plus the exact final FULL half-height.  The
@@ -200,7 +197,7 @@ typedef struct PolarRun
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
 static uint8_t g_run_order[TSPF_MAX_ACTIVE];
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
-static uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
+uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
 /* Retain the boundary vertex of the span containing camera yaw. Program IDs
  * can change every Q4 step, but this vertex usually survives into the next
  * cyclic envelope, giving the FOV walker a near-zero-cost starting point. */
@@ -1034,27 +1031,6 @@ static int8_t envelope_center_dx(int16_t rel)
     return (int8_t)((envelope_center_code(rel)>>5)-4);
 }
 
-#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
-/* Record a PHYSICAL connected boundary independently of coarse-column
- * ownership. This is the key thin-face change: even when the span on either
- * side owns no 8px centre sample, its real corner survives as a pixel-X seam.
- * Height is resolved later from endpoint halves cached by surviving neighbours. */
-static void envelope_record_connected_boundary(uint8_t left_i,uint8_t n,int16_t rel) NONBANKED
-{
-    uint8_t owner,ni,code;
-    if(rel<=-512 || rel>=512) return;
-    owner=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
-    if(!(owner&0x80u)) return;
-    ni=(uint8_t)(left_i+1u<n?left_i+1u:0u);
-    /* Fixed-ROM LUT is directly visible from HOME; keeping this helper
-     * nonbanked recovers renderer-bank bytes without a bank-switch call. */
-    code=g_e1env_center_col_lut[(uint16_t)(rel+512)];
-    g_tspf_seam_pending_c0=(uint8_t)(code&31u);
-    g_tspf_seam_pending_dx=(int8_t)((code>>5)-4);
-    g_tspf_seam_pending_vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
-    tsp_polar_record_subcolumn_seam();
-}
-#endif
 #else
 static uint8_t envelope_center_col(int16_t rel)
 {
@@ -1657,7 +1633,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
              * 0xff means there is not yet a visible run to join against. */
             if(q==0u) goto e1full_candidates_ready;
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
-            envelope_record_connected_boundary(focus,n,rel1);
+            tsp_polar_record_subcolumn_boundary(focus,n,rel1);
 #endif
             focus_run=(uint8_t)(q==1u ? count-1u : 0xffu);
 
@@ -1673,7 +1649,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(!len || len>=2048u) break;
                 nextrel=(int16_t)(rel1+(int16_t)len);
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
-                envelope_record_connected_boundary(i,n,nextrel);
+                tsp_polar_record_subcolumn_boundary(i,n,nextrel);
 #endif
                 c0=cend;
                 cend=(uint8_t)(nextrel>=512 ? TSP_COLS : envelope_center_col(nextrel));
@@ -1698,7 +1674,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(rel0<=-512) break;
                 i=(uint8_t)(i?i-1u:n-1u);
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
-                envelope_record_connected_boundary(i,n,rel0);
+                tsp_polar_record_subcolumn_boundary(i,n,rel0);
 #endif
                 nexta=bearing_vertex_q12(g_e1env_program[(uint8_t)(1u+(uint8_t)(i<<1))],s);
                 len=(uint16_t)((a0-nexta)&4095u);
