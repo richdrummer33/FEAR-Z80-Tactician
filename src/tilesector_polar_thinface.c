@@ -37,17 +37,39 @@ extern uint8_t g_e1env_program[];
  * difference path and by coverage reconciliation. */
 uint8_t g_tspf_seam_dirty_cols[3];
 uint8_t g_tspf_seam_history_valid;
-static uint8_t s_prev_count;
 static uint8_t s_prev_x[32];
-static uint8_t s_prev_vid[32];
+static uint8_t s_prev_seen[4];
+static uint8_t s_cur_seen[4];
 static uint8_t s_row_mask[TSP_ROWS];
 extern const uint8_t g_e1env_center_col_lut[1025];
 
-extern const uint8_t g_tsp_seam_mask_home[29];
-extern const uint8_t g_tsp_seam_reflect_home[29];
+extern const uint8_t g_tsp_seam_mask_home[20];
+extern const uint8_t g_tsp_seam_reflect_home[20];
 
 #define TSP_SEAM_TILE_BASE 412u
+#define TSP_SEAM_BASE_COUNT 20u
+#define TSP_SEAM_EXTRA_COUNT 9u
 #define TSP_SEAM_TILE_COUNT 29u
+
+/* The fixed bank was already within a few bytes of 16 KiB. Keep the rare
+ * crowded-mask extension here in bank 254 rather than spending HOME bytes.
+ * These are exactly the canonical 3+ masks observed by the projection census. */
+static const uint8_t k_extra_seam_mask[TSP_SEAM_EXTRA_COUNT] = {
+    0x46u,0x51u,0x23u,0x29u,0x45u,0x25u,0x31u,0x49u,0x89u
+};
+static const uint8_t k_extra_seam_reflect[TSP_SEAM_EXTRA_COUNT] = {
+    0x62u,0x8au,0xc4u,0x94u,0xa2u,0xa4u,0x8cu,0x92u,0x91u
+};
+
+uint8_t tsp_polar_extra_seam_mask(uint8_t i) BANKED
+{
+    return i<TSP_SEAM_EXTRA_COUNT ? k_extra_seam_mask[i] : 0u;
+}
+
+static void seam_dirty_col(uint8_t col)
+{
+    g_tspf_seam_dirty_cols[col>>3] |= (uint8_t)(1u<<(col&7u));
+}
 
 /* Capture one physical connected corner before coarse 8-pixel ownership can
  * discard the face on either side. This used to live in HOME; banking it here
@@ -72,73 +94,67 @@ void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) B
     if(x<0 || x>=160) return;
 
     ni=(uint8_t)(left_i+1u<n ? left_i+1u : 0u);
-    g_tspf_seam_x[count]=(uint8_t)x;
-    g_tspf_seam_vid[count]=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
-    g_tspf_seam_desc_count=(uint8_t)(count+1u);
-
-    /* Make the CURRENT physical seam columns visible before coarse
-     * materialization. The retained gate can then distinguish "same tile,
-     * seam merely moved/changed inside it" from a tile the seam vacated. */
     {
-        uint8_t col=(uint8_t)((uint8_t)x>>3);
+        uint8_t vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
+        uint8_t ux=(uint8_t)x;
+        uint8_t col=(uint8_t)(ux>>3);
+        uint8_t bi=(uint8_t)(vid>>3);
+        uint8_t bm=(uint8_t)(1u<<(vid&7u));
+
+        g_tspf_seam_x[count]=ux;
+        g_tspf_seam_vid[count]=vid;
+        g_tspf_seam_desc_count=(uint8_t)(count+1u);
+
+        /* Current exact seam coverage is known before any coarse column draws. */
         g_tspf_seam_cur_cols[col>>3] |= (uint8_t)(1u<<(col&7u));
+
+        /* Direct physical-vertex history turns the temporal comparison into
+         * O(1) per descriptor. On movement mark both old and new coarse tiles;
+         * those tiles alone are forced through the ordinary front-to-back
+         * owner/materializer path. */
+        if(vid<32u){
+            if(g_tspf_seam_history_valid && (s_prev_seen[bi]&bm)){
+                uint8_t ox=s_prev_x[vid];
+                if(ox!=ux){
+                    seam_dirty_col((uint8_t)(ox>>3));
+                    seam_dirty_col(col);
+                }
+            } else {
+                seam_dirty_col(col);
+            }
+            s_prev_x[vid]=ux;
+            s_cur_seen[bi]|=bm;
+        }
     }
 }
 
-/* Mark the old/new coarse columns touched by a horizontal physical-boundary
- * change. This is the tile-local form of the swept-delta-X idea: unchanged
- * seam columns stay eligible for retained/Y-only patching; a vacated or newly
- * entered column is forced through the normal front-to-back materializer once.
- * That ordinary pass resolves the current nearest owner, so no background
- * snapshot or reverse painter is required. */
+/* Finish the horizontal delta after every current seam has recorded itself.
+ * The common case has no disappearing vertex: four byte tests, no descriptor
+ * cross-product. A vanished seam dirties only its old tile so current
+ * front-to-back geometry can reclaim the released strip. */
 void tsp_polar_seam_prepare_dirty(void) BANKED
 {
-    uint8_t i,j,found;
+    uint8_t bi;
 
-    g_tspf_seam_dirty_cols[0]=0u;
-    g_tspf_seam_dirty_cols[1]=0u;
-    g_tspf_seam_dirty_cols[2]=0u;
-
-    if(!g_tspf_seam_history_valid){
-        s_prev_count=0u;
-        g_tspf_seam_history_valid=1u;
-    }
-
-    for(i=0u;i<s_prev_count;++i){
-        found=0u;
-        for(j=0u;j<g_tspf_seam_desc_count;++j){
-            if(s_prev_vid[i]==g_tspf_seam_vid[j]){
-                found=1u;
-                if(s_prev_x[i]!=g_tspf_seam_x[j]){
-                    uint8_t oc=(uint8_t)(s_prev_x[i]>>3);
-                    uint8_t nc=(uint8_t)(g_tspf_seam_x[j]>>3);
-                    g_tspf_seam_dirty_cols[oc>>3] |= (uint8_t)(1u<<(oc&7u));
-                    g_tspf_seam_dirty_cols[nc>>3] |= (uint8_t)(1u<<(nc&7u));
+    if(g_tspf_seam_history_valid){
+        for(bi=0u;bi<4u;++bi){
+            uint8_t gone=(uint8_t)(s_prev_seen[bi] & (uint8_t)~s_cur_seen[bi]);
+            if(gone){
+                uint8_t b;
+                for(b=0u;b<8u;++b){
+                    uint8_t bm=(uint8_t)(1u<<b);
+                    if(gone&bm)
+                        seam_dirty_col((uint8_t)(s_prev_x[(uint8_t)((bi<<3)+b)]>>3));
                 }
-                break;
             }
         }
-        if(!found){
-            uint8_t oc=(uint8_t)(s_prev_x[i]>>3);
-            g_tspf_seam_dirty_cols[oc>>3] |= (uint8_t)(1u<<(oc&7u));
-        }
     }
 
-    for(i=0u;i<g_tspf_seam_desc_count;++i){
-        found=0u;
-        for(j=0u;j<s_prev_count;++j)
-            if(g_tspf_seam_vid[i]==s_prev_vid[j]){ found=1u; break; }
-        if(!found){
-            uint8_t nc=(uint8_t)(g_tspf_seam_x[i]>>3);
-            g_tspf_seam_dirty_cols[nc>>3] |= (uint8_t)(1u<<(nc&7u));
-        }
+    for(bi=0u;bi<4u;++bi){
+        s_prev_seen[bi]=s_cur_seen[bi];
+        s_cur_seen[bi]=0u;
     }
-
-    s_prev_count=g_tspf_seam_desc_count;
-    for(i=0u;i<s_prev_count;++i){
-        s_prev_x[i]=g_tspf_seam_x[i];
-        s_prev_vid[i]=g_tspf_seam_vid[i];
-    }
+    g_tspf_seam_history_valid=1u;
 }
 
 /* Same canonical 20-pattern encoding as the former HOME assembly decoder.
@@ -168,9 +184,9 @@ static uint8_t seam_mask_to_code(uint8_t mask,uint16_t *attr)
          * the canonical 3+ masks observed by the projection census. Compare
          * against both stored and reflected semantics; no general bit-reverse
          * or 256-entry table is paid on the common one/two-line path. */
-        for(i=20u;i<TSP_SEAM_TILE_COUNT;++i){
-            if(mask==g_tsp_seam_mask_home[i]){ *attr=0u; return i; }
-            if(mask==g_tsp_seam_reflect_home[i]){ *attr=TSP_ATTR_FLIPX; return i; }
+        for(i=0u;i<TSP_SEAM_EXTRA_COUNT;++i){
+            if(mask==k_extra_seam_mask[i]){ *attr=0u; return (uint8_t)(TSP_SEAM_BASE_COUNT+i); }
+            if(mask==k_extra_seam_reflect[i]){ *attr=TSP_ATTR_FLIPX; return (uint8_t)(TSP_SEAM_BASE_COUNT+i); }
         }
         return 0xffu;
     }

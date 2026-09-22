@@ -14,13 +14,15 @@
 #define TSP_P99_EDGE_MAX 24u
 #define TSP_TILE_FULL_COMPACT_BASE 3u
 #define TSP_TILE_SEAM_BASE 412u
-#define TSP_SEAM_MASK_COUNT 29u
+#define TSP_SEAM_BASE_MASK_COUNT 20u
+#define TSP_SEAM_EXTRA_MASK_COUNT 9u
+#define TSP_SEAM_MASK_COUNT (TSP_SEAM_BASE_MASK_COUNT+TSP_SEAM_EXTRA_MASK_COUNT)
 #define TSP_P99_TILE_COUNT 441u
 /* 9-bit tile IDs packed as low bytes plus a high-bit bitmap.
  * Edge row = 37 low bytes + 5 bitmap bytes. Border table = 128 + 16. */
 extern const uint8_t g_tsp_edge_p99_packed_home[1050];
 extern const uint8_t g_tsp_edge_border_b1_packed_home[144];
 extern const uint8_t g_tsp_edge_border_b2_packed_home[144];
-extern const uint8_t g_tsp_seam_mask_home[TSP_SEAM_MASK_COUNT];
-extern const uint8_t g_tsp_seam_reflect_home[TSP_SEAM_MASK_COUNT];
+extern const uint8_t g_tsp_seam_mask_home[TSP_SEAM_BASE_MASK_COUNT];
+extern const uint8_t g_tsp_seam_reflect_home[TSP_SEAM_BASE_MASK_COUNT];
 #endif

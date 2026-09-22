@@ -144,7 +144,11 @@ static uint16_t p99_border_id(uint8_t side,uint8_t sem){
 }
 #endif
 static void emit_edge_p99_at(uint16_t id,int8_t off,uint8_t mag,uint8_t border){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){int8_t line=(int8_t)(off+(int8_t)k_edge_step_p99[mag][x]);uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:C_MID);if(side_border(border,x))c=C_BLACK;paint_pixel(x,y,c);}set_bkg_4bpp_data(id,1u,g_tile);}
-static void emit_seam_mask(uint8_t index){uint8_t x,y,mask=g_tsp_seam_mask_home[index];clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x)paint_pixel(x,y,(mask&(uint8_t)(1u<<x))?C_BLACK:C_MID);set_bkg_4bpp_data((uint16_t)(TSP_TILE_SEAM_BASE+index),1u,g_tile);}
+static void emit_seam_mask_at(uint16_t id,uint8_t mask){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x)paint_pixel(x,y,(mask&(uint8_t)(1u<<x))?C_BLACK:C_MID);set_bkg_4bpp_data(id,1u,g_tile);}
+static void emit_seam_mask(uint8_t index){emit_seam_mask_at((uint16_t)(TSP_TILE_SEAM_BASE+index),g_tsp_seam_mask_home[index]);}
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+uint8_t tsp_polar_extra_seam_mask(uint8_t i) BANKED;
+#endif
 static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();
 #if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
     int8_t off;uint16_t next_id=15u;
@@ -153,7 +157,12 @@ static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT
      * to an earlier ID, while first occurrences were assigned in ID order. */
     for(m=0u;m<=TSP_P99_EDGE_MAX;++m)for(o=0u;o<37u;++o){uint16_t id=p99_edge_id(m,o);if(id==next_id){off=(int8_t)o-28;emit_edge_p99_at(id,off,m,0u);++next_id;}}
     for(b=1u;b<3u;++b)for(o=0u;o<16u;++o)for(m=0u;m<8u;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=p99_border_id(b,sem);if(id==next_id){emit_edge_p99_at(id,(int8_t)o-7,m,b);++next_id;}}
-    for(m=0u;m<TSP_SEAM_MASK_COUNT;++m)emit_seam_mask(m);
+    for(m=0u;m<TSP_SEAM_BASE_MASK_COUNT;++m)emit_seam_mask(m);
+#if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
+    for(m=0u;m<TSP_SEAM_EXTRA_MASK_COUNT;++m)
+        emit_seam_mask_at((uint16_t)(TSP_TILE_SEAM_BASE+TSP_SEAM_BASE_MASK_COUNT+m),
+                          tsp_polar_extra_seam_mask(m));
+#endif
 #elif defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
     for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)s*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);emit_edge_at(id,s,o,m,0u);}
