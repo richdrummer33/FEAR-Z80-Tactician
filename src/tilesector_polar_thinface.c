@@ -43,11 +43,11 @@ static uint8_t s_prev_vid[32];
 static uint8_t s_row_mask[TSP_ROWS];
 extern const uint8_t g_e1env_center_col_lut[1025];
 
-extern const uint8_t g_tsp_seam_mask_home[20];
-extern const uint8_t g_tsp_seam_reflect_home[20];
+extern const uint8_t g_tsp_seam_mask_home[29];
+extern const uint8_t g_tsp_seam_reflect_home[29];
 
 #define TSP_SEAM_TILE_BASE 412u
-#define TSP_SEAM_TILE_COUNT 20u
+#define TSP_SEAM_TILE_COUNT 29u
 
 /* Capture one physical connected corner before coarse 8-pixel ownership can
  * discard the face on either side. This used to live in HOME; banking it here
