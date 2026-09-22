@@ -399,69 +399,89 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
             last=(uint8_t)l;
         }
 
-        idx=(uint16_t)((uint16_t)first*20u+col);
-        for(row=first;;++row,idx+=20u){
-            uint8_t tb=(uint8_t)(idx>>3);
-            uint8_t tm=(uint8_t)(1u<<(idx&7u));
-            uint16_t old=g_map[idx];
-            uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
-            uint8_t mask,code;
-            uint16_t attr=0u,nw;
+        {
+            /* The overwhelmingly common case is exactly one seam in a cell.
+             * Its tile word depends only on x&7, so compute it ONCE per
+             * descriptor instead of calling the general mask encoder for every
+             * vertical cell. Multi-seam cells still take the exact old merge
+             * path below. */
+            uint8_t sx=(uint8_t)(x&7u);
+            uint8_t single_code;
+            uint16_t single_attr,single_nw;
 
-            if(!(s_overlay_touched[tb]&tm)){
-                /* First physical seam this frame: discard the old snapped
-                 * 0/7 border or last frame's seam mask entirely. The current
-                 * physical seam set is authoritative. */
-                if(!((id>=3u && id<7u) ||
-                     (id>=TSP_SEAM_TILE_BASE &&
-                      id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
-                    goto seam_row_done;
-                mask=bit;
-                s_overlay_touched[tb]|=tm;
+            if(sx>=4u){
+                single_code=(uint8_t)(7u-sx);
+                single_attr=TSP_ATTR_FLIPX;
             } else {
-                /* This cell was already rewritten by a current descriptor.
-                 * Decode that small current mask, then add this seam. */
-                uint8_t ci;
-                if(id<TSP_SEAM_TILE_BASE ||
-                   id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
-                    goto seam_row_done;
-                ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
-                if(ci<TSP_SEAM_BASE_COUNT){
-                    mask=(old&TSP_ATTR_FLIPX) ?
-                         g_tsp_seam_reflect_home[ci] :
-                         g_tsp_seam_mask_home[ci];
+                single_code=sx;
+                single_attr=0u;
+            }
+            single_nw=(uint16_t)(TSP_SEAM_TILE_BASE+single_code+single_attr);
+
+            idx=(uint16_t)((uint16_t)first*20u+col);
+            for(row=first;;++row,idx+=20u){
+                uint8_t tb=(uint8_t)(idx>>3);
+                uint8_t tm=(uint8_t)(1u<<(idx&7u));
+                uint16_t old=g_map[idx];
+                uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
+                uint16_t nw;
+
+                if(!(s_overlay_touched[tb]&tm)){
+                    /* First physical seam this frame: discard the old snapped
+                     * 0/7 border or last frame's seam mask entirely. The
+                     * current physical seam set is authoritative. */
+                    if(!((id>=3u && id<7u) ||
+                         (id>=TSP_SEAM_TILE_BASE &&
+                          id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
+                        goto seam_row_done;
+                    s_overlay_touched[tb]|=tm;
+                    nw=single_nw;
                 } else {
-                    ci=(uint8_t)(ci-TSP_SEAM_BASE_COUNT);
-                    mask=(old&TSP_ATTR_FLIPX) ?
-                         k_extra_seam_reflect[ci] :
-                         k_extra_seam_mask[ci];
+                    /* This cell was already rewritten by a current descriptor.
+                     * Decode that small current mask, then add this seam. */
+                    uint8_t mask,code,ci;
+                    uint16_t attr=0u;
+                    if(id<TSP_SEAM_TILE_BASE ||
+                       id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
+                        goto seam_row_done;
+                    ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
+                    if(ci<TSP_SEAM_BASE_COUNT){
+                        mask=(old&TSP_ATTR_FLIPX) ?
+                             g_tsp_seam_reflect_home[ci] :
+                             g_tsp_seam_mask_home[ci];
+                    } else {
+                        ci=(uint8_t)(ci-TSP_SEAM_BASE_COUNT);
+                        mask=(old&TSP_ATTR_FLIPX) ?
+                             k_extra_seam_reflect[ci] :
+                             k_extra_seam_mask[ci];
+                    }
+                    mask|=bit;
+
+                    code=seam_mask_to_code(mask,&attr);
+                    if(code==0xffu){
+                        /* Future uncensused crowd: retain the two outer CURRENT
+                         * physical boundaries, never resurrect a coarse edge. */
+                        uint8_t lo=0u,hi=7u;
+                        while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
+                        while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
+                        mask=(uint8_t)((1u<<lo)|(1u<<hi));
+                        code=seam_mask_to_code(mask,&attr);
+                        if(code==0xffu) goto seam_row_done;
+                    }
+                    nw=(uint16_t)(TSP_SEAM_TILE_BASE+code+attr);
                 }
-                mask|=bit;
-            }
 
-            code=seam_mask_to_code(mask,&attr);
-            if(code==0xffu){
-                /* Future uncensused crowd: retain the two outer CURRENT
-                 * physical boundaries, never resurrect a coarse tile edge. */
-                uint8_t lo=0u,hi=7u;
-                while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
-                while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
-                mask=(uint8_t)((1u<<lo)|(1u<<hi));
-                code=seam_mask_to_code(mask,&attr);
-                if(code==0xffu) goto seam_row_done;
-            }
-
-            nw=(uint16_t)(TSP_SEAM_TILE_BASE+code+attr);
-            if(nw!=old){
+                if(nw!=old){
                 g_map[idx]=nw;
                 if(g_polar_nt_row_min[row]==0xffu || col<g_polar_nt_row_min[row])
                     g_polar_nt_row_min[row]=col;
                 if(col>g_polar_nt_row_max[row])
                     g_polar_nt_row_max[row]=col;
-            }
+                }
 
 seam_row_done:
-            if(row==last) break;
+                if(row==last) break;
+            }
         }
     }
 
