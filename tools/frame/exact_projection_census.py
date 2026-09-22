@@ -210,11 +210,13 @@ def main():
         raise SystemExit(f"short map dump: {len(mb)} < {expect}")
 
     print(f"EXACT_PROJECTION_CENSUS label={a.label} frames={len(frames)} vertices={len(vx)} surfaces={len(segs)}")
-    xerr=[]; yerr=[]; ypixerr=[]
+    xerr=[]; yerr=[]; ypixerr=[]; ycliperr=[]; yvisible=[]
+    all_depth=[]
     exact_events=matched=missing=extra=0
     errors_by_depth=defaultdict(list)
     missing_by_depth=Counter(); events_by_depth=Counter()
     no_interior=one_interior=descriptor_total=descriptor_draw_miss=0
+    capacity_blocked_desc=capacity_blocked_rows=0
     crowded_tiles=crowded_frames=0
     ghost_lines=ghost_coarse=strong_lines=0
     width_err=[]; narrow_err=[]; narrow_total=narrow_missing=0
@@ -235,7 +237,33 @@ def main():
             ir=interior_rows(s["half"])
             if ir==0: no_interior+=1
             elif ir==1: one_interior+=1
-            if support.get(s["x"],0)==0: descriptor_draw_miss+=1
+            if support.get(s["x"],0)==0:
+                descriptor_draw_miss+=1
+                # Diagnose the current two-line seam vocabulary. If a FULL tile
+                # already carries both snapped 0/7 borders, OR-ing one true-X
+                # seam creates three bits and seam_mask_to_code() rejects it.
+                col=s["x"]>>3; bit=1<<(s["x"]&7)
+                top=71-int(s["half"]); tt=math.floor(top/8)
+                first=max(0,tt+1); last=min(17,16-tt)
+                blocked=False
+                for rr in range(first,last+1):
+                    o=fi*COLS*ROWS*2+2*(rr*COLS+col)
+                    w=mb[o] | (mb[o+1]<<8); tid=w&TILE_MASK
+                    mask=0
+                    if 3<=tid<7:
+                        border=tid-3
+                        if border&1: mask|=0x01
+                        if border&2: mask|=0x80
+                    elif SEAM_BASE<=tid<SEAM_BASE+SEAM_COUNT:
+                        mask=seam_mask_from_code(tid-SEAM_BASE)
+                        if w&HFLIP:
+                            rm=0
+                            for bb in range(8):
+                                if mask&(1<<bb): rm|=1<<(7-bb)
+                            mask=rm
+                    if mask and not (mask&bit) and (mask|bit).bit_count()>2:
+                        capacity_blocked_rows+=1; blocked=True
+                capacity_blocked_desc+=int(blocked)
         bad=sum(1 for bits in groups.values() if len(bits)>2)
         crowded_tiles+=bad
         crowded_frames+=int(bad>0)
@@ -258,6 +286,7 @@ def main():
         for e in shared:
             exact_events+=1
             db=depth_bin(e["depth"]); events_by_depth[db]+=1
+            all_depth.append(e["depth"])
             candidates=[(abs(s["x"]-e["x"]),j,s) for j,s in enumerate(cur)
                         if j not in used and s["vid"]==e["vid"]]
             if not candidates:
@@ -273,6 +302,9 @@ def main():
             top_cur=71.0-float(s["half"])
             yerr.append(abs(top_cur-top_exact))
             ypixerr.append(abs(top_cur-round(top_exact)))
+            ycliperr.append(abs(max(0.0,min(143.0,top_cur))-max(0.0,min(143.0,top_exact))))
+            if 0.0<=top_exact<=143.0:
+                yvisible.append(abs(top_cur-top_exact))
         extra += max(0,len(cur)-len(used))
 
         # Visible segment lengths between adjacent connected-corner events.
@@ -310,6 +342,12 @@ def main():
     stats("corner_x_abs_error",xerr,"px")
     stats("corner_top_abs_error_continuous",yerr,"px")
     stats("corner_top_error_vs_nearest_pixel",ypixerr,"px")
+    stats("corner_top_abs_error_clipped_to_view",ycliperr,"px")
+    stats("corner_top_abs_error_when_visible",yvisible,"px")
+    if all_depth:
+        print(f"exact_corner_depth_range min={min(all_depth):.3f} max={max(all_depth):.3f}")
+    xs=[int(fr["x_q4"])/16.0 for fr in frames]; ys=[int(fr["y_q4"])/16.0 for fr in frames]; yaws=[int(fr["yaw"]) for fr in frames]
+    print(f"camera_range x={min(xs):.3f}..{max(xs):.3f} y={min(ys):.3f}..{max(ys):.3f} yaw={min(yaws)}..{max(yaws)}")
     for db in ("<16","16-32","32-64","64-96",">=96"):
         n=events_by_depth[db]; m=missing_by_depth[db]
         if n:
@@ -317,7 +355,8 @@ def main():
 
     print(f"overlay_descriptor_rows total={descriptor_total} no_FULL_interior={no_interior} ({100*no_interior/descriptor_total if descriptor_total else 0:.2f}%) "
           f"one_FULL_row={one_interior} draw_miss={descriptor_draw_miss} ({100*descriptor_draw_miss/descriptor_total if descriptor_total else 0:.2f}%)")
-    print(f"tile_capacity crowded_tiles_3plus={crowded_tiles} crowded_frames={crowded_frames}/{len(frames)}")
+    print(f"tile_capacity crowded_tiles_3plus={crowded_tiles} crowded_frames={crowded_frames}/{len(frames)} "
+          f"blocked_descriptors={capacity_blocked_desc} blocked_rows={capacity_blocked_rows}")
     print(f"decoded_vertical_lines strong={strong_lines} ghosts={ghost_lines} ({100*ghost_lines/strong_lines if strong_lines else 0:.2f}%) "
           f"ghosts_on_tile_edges={ghost_coarse}")
 
