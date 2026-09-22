@@ -304,6 +304,13 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
             }
         }
     }
+
+    /* Coarse materialization has now consumed this frame's horizontal delta.
+     * Clear in bank 254 rather than spending precious fixed/HOME bytes in the
+     * per-frame begin routine. */
+    g_tspf_seam_dirty_cols[0]=0u;
+    g_tspf_seam_dirty_cols[1]=0u;
+    g_tspf_seam_dirty_cols[2]=0u;
 }
 
 #endif
