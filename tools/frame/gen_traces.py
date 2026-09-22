@@ -35,6 +35,9 @@ TRACES = {
     "proj_rotate": hold(RIGHT, 48) + hold(LEFT, 96) + hold(RIGHT, 48),
     "proj_depth":  hold(DOWN, 40) + hold(UP, 80) + hold(DOWN, 40),
     "proj_strafe": hold(SL, 40) + hold(SR, 80) + hold(SL, 40),
+    # Move to both lateral corridor extremes, then rotate through a full turn.
+    # This deliberately seeks the longest sight-lines / thinnest distant faces.
+    "proj_far_rotate": hold(SL, 40) + hold(RIGHT, 64) + hold(SR, 80) + hold(RIGHT, 64),
     "stress": alternate(UP | LEFT, UP | RIGHT, 120, 3) +
               alternate(UP | SL | LEFT, UP | SR | RIGHT, 120, 2),
 }

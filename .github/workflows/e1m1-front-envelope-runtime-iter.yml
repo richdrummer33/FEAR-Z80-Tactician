@@ -352,7 +352,7 @@ jobs:
           ROOT="$PWD/build/e1env-iter"
           GEN="$ROOT/generated"
           ENVOBJS="$(cat "$ROOT/env-objs.txt")"
-          for spec in proj_rotate:192 proj_depth:160 proj_strafe:160; do
+          for spec in proj_rotate:192 proj_depth:160 proj_strafe:160 proj_far_rotate:248; do
             TRACE="${spec%%:*}"
             N="${spec##*:}"
             python3 tools/frame/gen_traces.py "$TRACE" build/frame_trace.c
