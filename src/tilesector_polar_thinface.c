@@ -336,17 +336,17 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 
         if(best!=0xffu){
             if(matches>1u && old!=0xffu){
-                /* Normally envelope_join_connected() already reconciles the
-                 * two faces and its cached canonical Y is the best answer.
-                 * There is one nasty exception: a wall plane closer than the
-                 * 10-unit reciprocal near limit saturates BEFORE its oblique
-                 * ray factor is applied. Then the two mathematically-equal
-                 * corner estimates split badly (the rotation offenders were
-                 * almost exactly 2:1). On this E1M1 course there is no far
-                 * plane clamp, so the saturated near-plane estimate is the
-                 * smaller one. Only override when the disagreement is far
-                 * beyond ordinary quantization/subpixel error. */
-                if((uint8_t)(hi-lo)>12u)
+                /* Both visible faces describe the SAME physical vertex, so
+                 * their true-X heights should agree to ordinary integer/Q6
+                 * quantization. A larger split means one plane has hit the
+                 * reciprocal near clamp before its oblique ray factor was
+                 * applied. That failure always biases half-height downward on
+                 * this course (there is no far clamp), so prefer the larger
+                 * candidate. The former >12 guard preserved several measured
+                 * 4..10 px errors simply because the last coarse face happened
+                 * to own the cache; >3 still leaves room for normal rounding
+                 * while treating a multi-pixel split as evidence, not noise. */
+                if((uint8_t)(hi-lo)>3u)
                     g_tspf_seam_vertex_half[vid]=hi;
                 continue;
             }
