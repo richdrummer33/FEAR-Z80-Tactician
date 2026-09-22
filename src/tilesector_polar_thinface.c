@@ -215,53 +215,29 @@ void tsp_polar_seam_prepare_dirty(void) BANKED
     g_tspf_seam_history_valid=1u;
 }
 
-/* Same canonical 20-pattern encoding as the former HOME assembly decoder.
- * Return 0xff when a cell somehow contains more than two physical seams. */
-static uint8_t seam_mask_to_code(uint8_t mask,uint16_t *attr)
-{
-    uint8_t x=0u,y,m;
-
-    if(!mask) return 0xffu;
-    m=mask;
-    while(!(m&1u)){ m>>=1; ++x; }
-    m>>=1;
-    if(!m){
-        if(x>=4u){
-            x=(uint8_t)(7u-x);
-            *attr=TSP_ATTR_FLIPX;
-        } else *attr=0u;
-        return x;
-    }
-
-    y=(uint8_t)(x+1u);
-    while(!(m&1u)){ m>>=1; ++y; }
-    m>>=1;
-    if(m){
-        uint8_t i;
-        /* Rare crowded-tile path. The 9 extra physical patterns are exactly
-         * the canonical 3+ masks observed by the projection census. Compare
-         * against both stored and reflected semantics; no general bit-reverse
-         * or 256-entry table is paid on the common one/two-line path. */
-        for(i=0u;i<TSP_SEAM_EXTRA_COUNT;++i){
-            if(mask==k_extra_seam_mask[i]){ *attr=0u; return (uint8_t)(TSP_SEAM_BASE_COUNT+i); }
-            if(mask==k_extra_seam_reflect[i]){ *attr=TSP_ATTR_FLIPX; return (uint8_t)(TSP_SEAM_BASE_COUNT+i); }
-        }
-        return 0xffu;
-    }
-
-    /* Reflect pair if that gives the canonical representative. */
-    if(x>(uint8_t)(7u-y)){
-        uint8_t ox=x;
-        x=(uint8_t)(7u-y);
-        y=(uint8_t)(7u-ox);
-        *attr=TSP_ATTR_FLIPX;
-    } else *attr=0u;
-
-    if(x==0u) return (uint8_t)(y+3u);
-    if(x==1u) return (uint8_t)(y+9u);
-    if(x==2u) return (uint8_t)(y+13u);
-    return 19u; /* only canonical x=3,y=4 remains */
-}
+/* Exact seam-mask encoder. Bits 0..4 are the tile code; bit 7 means
+ * horizontal reflection; 0xff means uncensused/unsupported. The first-touch
+ * single-line path never reaches this table, so the 256 ROM bytes buy O(1)
+ * encoding exactly where masks overlap and the former shift/scan loops were
+ * most expensive. */
+static const uint8_t k_seam_encode[256]={
+    0xffu, 0x00u, 0x01u, 0x04u, 0x02u, 0x05u, 0x0bu, 0xffu, 0x03u, 0x06u, 0x0cu, 0xffu, 0x10u, 0xffu, 0xffu, 0xffu,
+    0x83u, 0x07u, 0x0du, 0xffu, 0x11u, 0xffu, 0xffu, 0xffu, 0x13u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x82u, 0x08u, 0x0eu, 0x16u, 0x12u, 0x19u, 0xffu, 0xffu, 0x91u, 0x17u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x90u, 0x1au, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x81u, 0x09u, 0x0fu, 0xffu, 0x8eu, 0x18u, 0x14u, 0xffu, 0x8du, 0x1bu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x8cu, 0x15u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x8bu, 0xffu, 0x94u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x80u, 0x0au, 0x89u, 0xffu, 0x88u, 0xffu, 0xffu, 0xffu, 0x87u, 0x1cu, 0x95u, 0xffu, 0x9au, 0xffu, 0xffu, 0xffu,
+    0x86u, 0x9cu, 0x9bu, 0xffu, 0x97u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x85u, 0xffu, 0x98u, 0xffu, 0x99u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0x84u, 0xffu, 0xffu, 0xffu, 0x96u, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu,
+    0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu, 0xffu
+};
 
 static int8_t floor_div8(int8_t v)
 {
@@ -503,8 +479,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                     } else {
                         /* A prior symmetric descriptor touched both cells and
                          * wrote the same seam word, so decode one side only. */
-                        uint8_t mask,code,ci;
-                        uint16_t attr=0u;
+                        uint8_t mask,enc,ci;
                         if(!(s_overlay_touched[bb]&bm) ||
                            id<TSP_SEAM_TILE_BASE ||
                            id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT) ||
@@ -524,16 +499,17 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                         }
                         mask|=bit;
 
-                        code=seam_mask_to_code(mask,&attr);
-                        if(code==0xffu){
+                        enc=k_seam_encode[mask];
+                        if(enc==0xffu){
                             uint8_t lo=0u,hi=7u;
                             while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
                             while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
                             mask=(uint8_t)((1u<<lo)|(1u<<hi));
-                            code=seam_mask_to_code(mask,&attr);
-                            if(code==0xffu) goto seam_pair_done;
+                            enc=k_seam_encode[mask];
+                            if(enc==0xffu) goto seam_pair_done;
                         }
-                        nw=(uint16_t)(TSP_SEAM_TILE_BASE+code+attr);
+                        nw=(uint16_t)(TSP_SEAM_TILE_BASE+(enc&31u));
+                        if(enc&0x80u) nw=(uint16_t)(nw+TSP_ATTR_FLIPX);
                     }
 
                     if(nw!=old){
