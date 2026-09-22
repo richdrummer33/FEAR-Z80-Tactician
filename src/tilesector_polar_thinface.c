@@ -463,9 +463,15 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
             single_nw=(uint16_t)(TSP_SEAM_TILE_BASE+single_code+single_attr);
 
             idx=(uint16_t)((uint16_t)first*20u+col);
-            for(row=first;;++row,idx+=20u){
+            {
+                /* idx advances by exactly 20 cells per screen row. Its touched
+                 * bit therefore advances by four bit positions, while the byte
+                 * index advances by 2 or 3. Carry that tiny state instead of
+                 * recomputing idx>>3 and 1<<(idx&7) in every cell. */
                 uint8_t tb=(uint8_t)(idx>>3);
                 uint8_t tm=(uint8_t)(1u<<(idx&7u));
+
+                for(row=first;;++row){
                 uint16_t old=g_map[idx];
                 uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
                 uint16_t nw;
@@ -524,7 +530,16 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                 }
 
 seam_row_done:
-                if(row==last) break;
+                    if(row==last) break;
+                    idx=(uint16_t)(idx+20u);
+                    if(tm&0xf0u){
+                        tm=(uint8_t)(tm>>4);
+                        tb=(uint8_t)(tb+3u);
+                    } else {
+                        tm=(uint8_t)(tm<<4);
+                        tb=(uint8_t)(tb+2u);
+                    }
+                }
             }
         }
     }
