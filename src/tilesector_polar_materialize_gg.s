@@ -1851,6 +1851,11 @@ _tsp_polar_ret_begin_frame::
         ld      (#seam_cur_cols$+0), a
         ld      (#seam_cur_cols$+1), a
         ld      (#seam_cur_cols$+2), a
+        ; Horizontal seam-delta dirt is frame-local. It must survive until the
+        ; current coarse draw consumes it, then begin the next frame empty.
+        ld      (#_g_tspf_seam_dirty_cols+0), a
+        ld      (#_g_tspf_seam_dirty_cols+1), a
+        ld      (#_g_tspf_seam_dirty_cols+2), a
         ld      (#seam_desc_count$), a
 
         ; 0xff is impossible for FULL half-height (0..127), so it doubles as
