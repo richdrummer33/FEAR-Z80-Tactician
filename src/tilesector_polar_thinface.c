@@ -336,17 +336,13 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
                     g_tspf_seam_vertex_half[vid]=hi;
                 continue;
             }
-            if(old==0xffu){
-                g_tspf_seam_vertex_half[vid]=best;
-            }else{
-                uint8_t delta=(uint8_t)(best>old ? best-old : old-best);
-                /* The p24 edge vocabulary permits at most 24 pixels of top
-                 * change per 8 screen pixels, hence <=12 over the <=4px
-                 * ownership-to-physical correction. Larger disagreement means
-                 * this run is not the local face we should borrow from. */
-                if(delta<=12u)
-                    g_tspf_seam_vertex_half[vid]=best;
-            }
+            /* With exactly one surviving face there is no competing
+             * canonical corner to protect. Matching the authored vertex AND
+             * landing within four pixels of this run boundary is already the
+             * locality proof. The old <=12 guard was backwards here: it kept
+             * precisely the largest collapsed-face Y errors (for example the
+             * 17.5px strafe miss at vertex 20). Trust the true-X evaluation. */
+            g_tspf_seam_vertex_half[vid]=best;
         }
     }
 }
