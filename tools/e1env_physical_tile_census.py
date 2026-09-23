@@ -172,6 +172,9 @@ def main():
     outside_tile_samples=0
     multi_face_top_tiles=0
     multi_seam_top_tiles=0
+    joined_unique_per_frame=[]
+    joined_edge_unique_per_frame=[]
+    joined_sequence=[]
 
     for fi,row in enumerate(rows):
         xq=int(row['x_q4'])
@@ -182,6 +185,9 @@ def main():
         if not prog:
             continue
         frames_used+=1
+        frame_joined=set()
+        frame_joined_edge=set()
+        frame_joined_seq=[]
         n=len(prog)
         bcache={}
         for vid,_ in prog:
@@ -342,6 +348,11 @@ def main():
                     cat='edge'
                     edge_tile_samples+=1
                 folded_category[folded][cat]+=1
+                if cat=='joined':
+                    frame_joined.add(folded)
+                    frame_joined_seq.append(folded)
+                    if has_out and has_wall:
+                        frame_joined_edge.add(folded)
 
                 if len(face_ids)>=2 and has_out:
                     multi_face_top_tiles+=1
@@ -359,6 +370,10 @@ def main():
                         rm=min(mask,int(f'{mask:08b}'[::-1],2))
                         seam_row_masks[rm]+=1
 
+        joined_unique_per_frame.append(len(frame_joined))
+        joined_edge_unique_per_frame.append(len(frame_joined_edge))
+        joined_sequence.append(frame_joined_seq)
+
     category_unique=Counter()
     for pat,cats in folded_category.items():
         # Prefer the strongest interpretation when one pattern appears in
@@ -374,6 +389,30 @@ def main():
 
     unique=len(folded_patterns)
     cap=448
+
+    def pct(v,q):
+        if not v:
+            return 0
+        s=sorted(v)
+        return s[int((len(s)-1)*q)]
+
+    def lru_stats(capacity):
+        cache=[]
+        misses=[]
+        for seq in joined_sequence:
+            m=0
+            for p in seq:
+                if p in cache:
+                    cache.remove(p)
+                    cache.append(p)
+                else:
+                    m+=1
+                    if len(cache)>=capacity:
+                        cache.pop(0)
+                    cache.append(p)
+            misses.append(m)
+        return sum(misses), (sum(misses)/len(misses) if misses else 0), pct(misses,.95), max(misses,default=0)
+
     print('PHYSICAL_TILE_CENSUS')
     print(f'frames={len(rows)} used={frames_used} programs={len(progs)} intervals={total_intervals}')
     print(f'coverage_gaps_px={coverage_gaps} coverage_conflicts_px={coverage_conflicts}')
@@ -387,6 +426,14 @@ def main():
     print(f'sample_roles outside={outside_tile_samples} fill={fill_tile_samples} edge={edge_tile_samples} joined={joined_tile_samples}')
     print(f'multi_face_top_tile_samples={multi_face_top_tiles} multi_seam_top_tile_samples={multi_seam_top_tiles}')
     print(f'interior_seam_masks_hflip_unique={len(seam_row_masks)} masks='+','.join(f'{m:02x}:{c}' for m,c in seam_row_masks.most_common()))
+    print(f'live_joined_unique mean={sum(joined_unique_per_frame)/max(1,len(joined_unique_per_frame)):.2f} p95={pct(joined_unique_per_frame,.95)} max={max(joined_unique_per_frame,default=0)}')
+    print(f'live_joined_edge_unique mean={sum(joined_edge_unique_per_frame)/max(1,len(joined_edge_unique_per_frame)):.2f} p95={pct(joined_edge_unique_per_frame,.95)} max={max(joined_edge_unique_per_frame,default=0)}')
+    dedicated_border_slots=152
+    dynamic_slots=dedicated_border_slots-len(seam_row_masks)
+    print(f'BORDER_SLOT_REUSE dedicated_border_slots={dedicated_border_slots} static_seam_masks={len(seam_row_masks)} dynamic_slots={dynamic_slots} live_fit={int(max(joined_edge_unique_per_frame,default=0)<=dynamic_slots)}')
+    for cache_cap in (8,16,32,64,128,142):
+        total,mean,p95,worst=lru_stats(cache_cap)
+        print(f'JOINED_LRU cap={cache_cap} misses_total={total} misses_mean={mean:.2f} misses_p95={p95} misses_max={worst}')
     print(f'VDP_PATTERN_BUDGET required_top_family={unique} capacity={cap} headroom={cap-unique} fits={int(unique<=cap)}')
     print('top_folded_pattern_counts='+','.join(str(v) for _,v in folded_patterns.most_common(20)))
 
