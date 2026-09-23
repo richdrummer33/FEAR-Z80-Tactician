@@ -189,6 +189,20 @@ def encode_pattern(pattern):
     return "".join(f"{x:02x}" for x in b)
 
 
+def slots_for_coverage(counter, fraction):
+    """Minimum most-common novel patterns needed to cover fraction of uses."""
+    if not counter:
+        return 0
+    total = sum(counter.values())
+    target = total * fraction
+    accum = 0
+    for slots, (_, count) in enumerate(counter.most_common(), 1):
+        accum += count
+        if accum >= target:
+            return slots
+    return len(counter)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--map-inc", required=True)
@@ -306,11 +320,38 @@ def main():
     )
 
     if novel_occ:
+        total_novel_occ = sum(novel_occ.values())
+        slots50 = slots_for_coverage(novel_occ, 0.50)
+        slots90 = slots_for_coverage(novel_occ, 0.90)
+        slots99 = slots_for_coverage(novel_occ, 0.99)
+        slots100 = slots_for_coverage(novel_occ, 1.00)
+        covered_budget = sum(
+            n for _, n in novel_occ.most_common(RECLAIMABLE_PATTERN_SLOTS)
+        )
+        coverage_budget = 100.0 * covered_budget / total_novel_occ
+        print(
+            "novel_slots_for_occurrence_coverage "
+            f"p50={slots50} p90={slots90} p99={slots99} p100={slots100}"
+        )
+        print(
+            "novel_slot_budget "
+            f"slots={RECLAIMABLE_PATTERN_SLOTS} "
+            f"headroom={RECLAIMABLE_PATTERN_SLOTS-len(novel)} "
+            f"occurrence_coverage={coverage_budget:.3f}%"
+        )
         print(
             "novel_pattern_occurrences "
             + ",".join(
                 f"{encode_pattern(p)}:{n}" for p, n in novel_occ.most_common(64)
             )
+        )
+    else:
+        print(
+            "novel_slots_for_occurrence_coverage p50=0 p90=0 p99=0 p100=0"
+        )
+        print(
+            f"novel_slot_budget slots={RECLAIMABLE_PATTERN_SLOTS} "
+            f"headroom={RECLAIMABLE_PATTERN_SLOTS} occurrence_coverage=100.000%"
         )
 
 
