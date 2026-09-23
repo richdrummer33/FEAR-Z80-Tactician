@@ -65,7 +65,10 @@ uint8_t g_tspf_seam_history_valid;
 static uint8_t s_prev_x[32];
 static uint8_t s_prev_seen[4];
 static uint8_t s_cur_seen[4];
-static uint8_t s_overlay_touched[(TSP_MAP_CELLS+7u)/8u];
+/* FULL-only seam composition processes symmetric row pairs. Only the top
+ * member (rows 0..8) needs current-frame overlap state; its bottom partner is
+ * written at the same instant. */
+static uint8_t s_overlay_touched[(TSP_COLS*9u+7u)/8u];
 
 /* Seam-Y refinement is naturally vertex-major: a physical vertex appears at
  * one screen X per frame. Index the current descriptors by vertex once, then
@@ -384,7 +387,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
      * that same cell merge with the mask written by this pass. A 360-bit
      * touched set (45 bytes RAM) is much cheaper than a 360-byte screen mask
      * and avoids rescanning every descriptor once per active coarse column. */
-    for(i=0u;i<(uint8_t)((TSP_MAP_CELLS+7u)/8u);++i)
+    for(i=0u;i<(uint8_t)((TSP_COLS*9u+7u)/8u);++i)
         s_overlay_touched[i]=0u;
 
     for(i=0u;i<g_tspf_seam_desc_count;++i){
@@ -434,53 +437,42 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
 
             idx=(uint16_t)((uint16_t)first*20u+col);
             {
-                /* FULL walls are vertically symmetric around the 18-row
-                 * aperture: first+last is always 17. Every physical seam
-                 * therefore touches row pairs with identical current masks.
-                 * Compose one mask/tile word for the pair and store it to both
-                 * rows. This halves the hot overlay's mask/decode/control work
-                 * without changing the seam vocabulary or Y extent. */
+                /* FULL-only geometry is vertically contiguous. Validate the
+                 * two extreme cells once per descriptor; every inner row pair
+                 * lies between them and has the same wall ownership class.
+                 * This removes two 16-bit tile-ID masks/range tests from every
+                 * row-pair iteration. */
                 uint16_t idxb=(uint16_t)((uint16_t)last*20u+col);
+                uint16_t old=g_map[idx];
+                uint16_t oldb=g_map[idxb];
+                uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
+                uint16_t idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
                 uint8_t tb=(uint8_t)(idx>>3);
                 uint8_t tm=(uint8_t)(1u<<(idx&7u));
-                uint8_t bb=(uint8_t)(idxb>>3);
-                uint8_t bm=(uint8_t)(1u<<(idxb&7u));
+
+                if(!((id>=3u && id<7u) ||
+                     (id>=TSP_SEAM_TILE_BASE &&
+                      id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
+                   !((idb>=3u && idb<7u) ||
+                     (idb>=TSP_SEAM_TILE_BASE &&
+                      idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
+                    continue;
 
                 row=first;
                 rowb=last;
                 for(;;){
-                    uint16_t old=g_map[idx];
-                    uint16_t oldb=g_map[idxb];
-                    uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
-                    uint16_t idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
                     uint16_t nw;
 
                     if(!(s_overlay_touched[tb]&tm)){
-                        /* Pair symmetry is an invariant of this FULL-only seam
-                         * path. Check both material cells before claiming them
-                         * so an unexpected asymmetric/non-wall pair is dropped
-                         * rather than painted through. */
-                        if(!((id>=3u && id<7u) ||
-                             (id>=TSP_SEAM_TILE_BASE &&
-                              id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
-                           !((idb>=3u && idb<7u) ||
-                             (idb>=TSP_SEAM_TILE_BASE &&
-                              idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
-                            goto seam_pair_done;
                         s_overlay_touched[tb]|=tm;
-                        s_overlay_touched[bb]|=bm;
                         nw=single_nw;
                     } else {
-                        /* A prior symmetric descriptor touched both cells and
-                         * wrote the same seam word, so decode one side only. */
+                        /* Top-pair touched state is sufficient: the bottom
+                         * partner was written simultaneously. Therefore old is
+                         * guaranteed to be a seam word from this same pass and
+                         * needs no repeated class/range validation. */
                         uint8_t mask,enc,ci;
-                        if(!(s_overlay_touched[bb]&bm) ||
-                           id<TSP_SEAM_TILE_BASE ||
-                           id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT) ||
-                           idb<TSP_SEAM_TILE_BASE ||
-                           idb>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
-                            goto seam_pair_done;
-                        ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
+                        ci=(uint8_t)((old&TSP_TILE_ID_MASK)-TSP_SEAM_TILE_BASE);
                         if(ci<TSP_SEAM_BASE_COUNT){
                             mask=(old&TSP_ATTR_FLIPX) ?
                                  g_tsp_seam_reflect_home[ci] :
@@ -529,6 +521,8 @@ seam_pair_done:
                     --rowb;
                     idx=(uint16_t)(idx+20u);
                     idxb=(uint16_t)(idxb-20u);
+                    old=g_map[idx];
+                    oldb=g_map[idxb];
 
                     if(tm&0xf0u){
                         tm=(uint8_t)(tm>>4);
@@ -536,13 +530,6 @@ seam_pair_done:
                     } else {
                         tm=(uint8_t)(tm<<4);
                         tb=(uint8_t)(tb+2u);
-                    }
-                    if(bm&0xf0u){
-                        bm=(uint8_t)(bm>>4);
-                        bb=(uint8_t)(bb-2u);
-                    } else {
-                        bm=(uint8_t)(bm<<4);
-                        bb=(uint8_t)(bb-3u);
                     }
                 }
             }
