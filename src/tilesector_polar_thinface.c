@@ -1055,6 +1055,11 @@ void tsp_polar_boundary_apply(void) BANKED
 {
     uint8_t i;
 
+    /* The old seam probe symbols are only scratch for this pass; expose zero
+     * descriptors after rendering so existing diagnostics do not misread
+     * owner bytes as legacy seam half-heights. */
+    g_tspf_seam_desc_count=0u;
+
     if(s_prepared){
         for(i=0u;i<s_patch_count;++i){
             uint8_t pos=s_patch_pos[i];
