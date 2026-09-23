@@ -35,6 +35,7 @@ on:
       - tools/frame/frame_timeline.cpp
       - tools/frame/gen_traces.py
       - tools/frame/exact_projection_census.py
+      - tools/frame/boundary_runtime_census.py
       - tools/frame/boundary_composite_census.py
       - tools/frame/mat_census.cpp
       - tools/polar_function_profile_runner.cpp
@@ -365,8 +366,8 @@ jobs:
             make GBDK_HOME="$PWD/.toolchain/gbdk"               POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0               POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256               POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS"               TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_THIN_FACE_SURVIVAL=0 -DTSPF_BOUNDARY_COMPOSITE=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1"               gg-tilesector-polar
             cp build/gg-tilesector-polar.gg "$ROOT/$TRACE.gg"
             cp build/gg-tilesector-polar.noi "$ROOT/$TRACE.noi"
-            ./build/frame_timeline               "$ROOT/$TRACE.gg" "$ROOT/$TRACE.noi" "$ROOT/$TRACE.csv" "$N" 0               "$ROOT/$TRACE-map.bin" "$ROOT/$TRACE-seams.csv"               | tee "$ROOT/$TRACE-timeline.txt"
-            python3 tools/frame/exact_projection_census.py               --map-inc "$GEN/optimized_renderer_map_data.inc"               --frames "$ROOT/$TRACE.csv" --seams "$ROOT/$TRACE-seams.csv"               --map-bin "$ROOT/$TRACE-map.bin" --label "$TRACE"               | tee "$ROOT/$TRACE-exact.txt"
+            ./build/frame_timeline               "$ROOT/$TRACE.gg" "$ROOT/$TRACE.noi" "$ROOT/$TRACE.csv" "$N" 0               "$ROOT/$TRACE-map.bin" "$ROOT/$TRACE-boundaries.csv"               | tee "$ROOT/$TRACE-timeline.txt"
+            python3 tools/frame/boundary_runtime_census.py               --map-inc "$GEN/optimized_renderer_map_data.inc"               --frames "$ROOT/$TRACE.csv" --events "$ROOT/$TRACE-boundaries.csv"               --label "$TRACE"               | tee "$ROOT/$TRACE-boundary-runtime.txt"
           done
 
       - name: Census exact-X boundary composite vocabulary

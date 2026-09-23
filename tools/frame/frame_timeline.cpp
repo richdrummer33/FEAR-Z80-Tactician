@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
     u16 s_join_count = 0, s_join_max = 0, s_join_sum = 0;
     u16 s_bc_patterns = 0, s_bc_patches = 0, s_bc_skip = 0;
     u16 s_bc_crowded = 0, s_bc_local_fallbacks = 0;
-    u16 s_bc_any_dirty = 0, s_bc_pending = 0;
+    u16 s_bc_any_dirty = 0, s_bc_pending = 0, s_bc_vid = 0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
     const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
     const bool have_dirty_min =
@@ -211,6 +211,9 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_tspf_seam_x", s_seam_x) || find_symbol(noi, "g_tspf_seam_x", s_seam_x)) &&
         (find_symbol(noi, "_g_tspf_seam_vid", s_seam_vid) || find_symbol(noi, "g_tspf_seam_vid", s_seam_vid)) &&
         (find_symbol(noi, "_g_tspf_seam_vertex_half", s_seam_half) || find_symbol(noi, "g_tspf_seam_vertex_half", s_seam_half));
+    const bool have_boundary_events =
+        have_boundary_diag && have_seams &&
+        (find_symbol(noi, "_g_tspf_boundary_vid", s_bc_vid) || find_symbol(noi, "g_tspf_boundary_vid", s_bc_vid));
 
     /* PC ranges from the current link, one per fixed-bank symbol */
     unsigned rbank = 0;
@@ -275,6 +278,8 @@ int main(int argc, char** argv) {
         uint16_t join_anchor_sum_px;
         uint8_t bc_patterns, bc_patches, bc_skip, bc_crowded, bc_local_fallbacks;
         uint8_t bc_any_dirty, bc_pending;
+        uint8_t bc_event_count;
+        uint8_t bc_event_x[32], bc_event_vid[32], bc_event_left[32], bc_event_right[32];
         uint8_t seam_count;
         uint8_t seam_x[32], seam_vid[32], seam_half[32];
     };
@@ -352,7 +357,16 @@ int main(int argc, char** argv) {
                     cur.bc_any_dirty = mem->DebugRetrieve(s_bc_any_dirty);
                     cur.bc_pending = mem->DebugRetrieve(s_bc_pending);
                 }
-                if (have_seams) {
+                if (have_boundary_events) {
+                    cur.bc_event_count = mem->DebugRetrieve(s_seam_count);
+                    if (cur.bc_event_count > 32u) cur.bc_event_count = 32u;
+                    for (unsigned si = 0; si < cur.bc_event_count; ++si) {
+                        cur.bc_event_x[si] = mem->DebugRetrieve((u16)(s_seam_x + si));
+                        cur.bc_event_vid[si] = mem->DebugRetrieve((u16)(s_bc_vid + si));
+                        cur.bc_event_left[si] = mem->DebugRetrieve((u16)(s_seam_vid + si));
+                        cur.bc_event_right[si] = mem->DebugRetrieve((u16)(s_seam_half + si));
+                    }
+                } else if (have_seams) {
                     cur.seam_count = mem->DebugRetrieve(s_seam_count);
                     if (cur.seam_count > 32u) cur.seam_count = 32u;
                     for (unsigned si = 0; si < cur.seam_count; ++si) {
@@ -424,16 +438,28 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (seam_dump_path && have_seams) {
+    if (seam_dump_path && (have_boundary_events || have_seams)) {
         FILE* sf = std::fopen(seam_dump_path, "w");
         if (sf) {
-            std::fprintf(sf, "frame,x_q4,y_q4,z_q4,yaw,seam_i,x,vid,half\n");
-            for (size_t fi = 0; fi < frames.size(); ++fi) {
-                const Frame& f = frames[fi];
-                for (unsigned si = 0; si < f.seam_count; ++si)
-                    std::fprintf(sf, "%zu,%d,%d,%d,%u,%u,%u,%u,%u\n",
-                        fi, (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
-                        si, (unsigned)f.seam_x[si], (unsigned)f.seam_vid[si], (unsigned)f.seam_half[si]);
+            if (have_boundary_events) {
+                std::fprintf(sf, "frame,x_q4,y_q4,z_q4,yaw,event_i,x,vid,left,right\n");
+                for (size_t fi = 0; fi < frames.size(); ++fi) {
+                    const Frame& f = frames[fi];
+                    for (unsigned si = 0; si < f.bc_event_count; ++si)
+                        std::fprintf(sf, "%zu,%d,%d,%d,%u,%u,%u,%u,%u,%u\n",
+                            fi, (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
+                            si, (unsigned)f.bc_event_x[si], (unsigned)f.bc_event_vid[si],
+                            (unsigned)f.bc_event_left[si], (unsigned)f.bc_event_right[si]);
+                }
+            } else {
+                std::fprintf(sf, "frame,x_q4,y_q4,z_q4,yaw,seam_i,x,vid,half\n");
+                for (size_t fi = 0; fi < frames.size(); ++fi) {
+                    const Frame& f = frames[fi];
+                    for (unsigned si = 0; si < f.seam_count; ++si)
+                        std::fprintf(sf, "%zu,%d,%d,%d,%u,%u,%u,%u,%u\n",
+                            fi, (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
+                            si, (unsigned)f.seam_x[si], (unsigned)f.seam_vid[si], (unsigned)f.seam_half[si]);
+                }
             }
             std::fclose(sf);
         }

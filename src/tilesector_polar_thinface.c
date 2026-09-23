@@ -635,6 +635,11 @@ volatile uint8_t g_tspf_boundary_last_patches;
 volatile uint8_t g_tspf_boundary_skip_reason;
 volatile uint8_t g_tspf_boundary_last_crowded;
 volatile uint8_t g_tspf_boundary_last_local_fallbacks;
+#if TSPF_PROFILE_HOOKS
+/* Profile-only copy of the physical vertex identity for each exact-X event.
+ * The legacy seam vectors are reused for x/left-owner/right-owner. */
+uint8_t g_tspf_boundary_vid[32];
+#endif
 
 static uint8_t s_pattern_hash[TSP_BC_SLOTS];
 static uint8_t s_patch_pos[TSP_BC_PATCH_MAX];
@@ -1013,7 +1018,11 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         int16_t rel,x;
         uint8_t code,col;
 
-        if(left==right || left==0xffu || right==0xffu) continue;
+        if(left==0xffu || right==0xffu) continue;
+        /* Packed owner bytes also carry endpoint/connected flags.  A flag
+         * change is NOT an ownership handoff; only a surface-ID change can
+         * create a mixed exact-X tile. */
+        if((left&31u)==(right&31u)) continue;
         if(vid>=32u) continue;
         if(!(g_corner_bearing_valid[vid>>3]&(uint8_t)(1u<<(vid&7u)))) continue;
         rel=bc_rel(g_corner_bearing_q12[vid],yawq);
@@ -1025,6 +1034,9 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         g_tspf_seam_x[count]=(uint8_t)x;
         g_tspf_seam_vid[count]=left;
         g_tspf_seam_vertex_half[count]=right;
+#if TSPF_PROFILE_HOOKS
+        g_tspf_boundary_vid[count]=vid;
+#endif
         col=(uint8_t)((uint8_t)x>>3);
         bc_mark_col(s_cur_cols,col);
         g_tspf_boundary_dirty_by_col[col]=1u;
@@ -1113,10 +1125,12 @@ void tsp_polar_boundary_apply(void) BANKED
 {
     uint8_t i;
 
-    /* The old seam probe symbols are only scratch for this pass; expose zero
-     * descriptors after rendering so existing diagnostics do not misread
-     * owner bytes as legacy seam half-heights. */
+    /* Profile builds keep the event vectors alive until the loop-boundary
+     * sampler reads them. Zero-hook playables keep the old diagnostics
+     * quiescent; the next prepare resets the count either way. */
+#if !TSPF_PROFILE_HOOKS
     g_tspf_seam_desc_count=0u;
+#endif
 
     if(s_prepared){
         for(i=0u;i<s_patch_count;++i){
