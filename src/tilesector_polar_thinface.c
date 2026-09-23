@@ -1015,7 +1015,7 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         uint8_t right=g_e1env_program[(uint8_t)(2u+(uint8_t)(ni<<1))];
         uint8_t vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
         int16_t rel,x;
-        uint8_t code,col;
+        uint8_t code;
 
         if(left==0xffu || right==0xffu) continue;
         /* Packed owner bytes also carry endpoint/connected flags.  A flag
@@ -1036,8 +1036,6 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
 #if TSPF_PROFILE_HOOKS
         g_tspf_boundary_vid[count]=vid;
 #endif
-        col=(uint8_t)((uint8_t)x>>3);
-        (void)col;
         ++count;
     }
     g_tspf_seam_desc_count=count;
