@@ -181,10 +181,14 @@ jobs:
         run: |
           set -euo pipefail
           ROOT=build/e1env-iter
-          ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 "$ROOT/pvs-map.bin" \
+          echo "PVS_TIMELINE_START"
+          timeout 60s ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 "$ROOT/pvs-map.bin" \
             | tee "$ROOT/pvs-timeline.txt"
-          ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 "$ROOT/focused-map.bin" \
+          echo "PVS_TIMELINE_DONE"
+          echo "FOCUS_TIMELINE_START"
+          timeout 60s ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 "$ROOT/focused-map.bin" \
             | tee "$ROOT/focused-timeline.txt"
+          echo "FOCUS_TIMELINE_DONE"
 
       - name: Census edge plus vertical-border vocabulary
         shell: bash
