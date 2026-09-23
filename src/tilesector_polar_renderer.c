@@ -1248,14 +1248,11 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
          * This is deliberately NOT a post-pass.  The authoritative projected
          * boundary is consumed while the two physical faces are still present.
          */
-        if(dx==-1){
-            r->left_real=0u;            /* left run's right border is exact */
-        }else if(dx==0){
-            l->right_real=0u;           /* right run's left border is exact */
-        }else{
-            l->right_real=0u;
-            r->left_real=0u;            /* unrepresentable at coarse tile edge */
-        }
+        /* Each existing border is valid only when the true corner lands on
+         * that exact raster pixel.  These two stores also suppress both sides
+         * for every genuinely sub-column position. */
+        l->right_real=(uint8_t)(dx==-1);
+        r->left_real=(uint8_t)(dx==0);
 #else
         /* Legacy coarse handoff: always keep the right run's left tile border. */
         l->right_real=0u;
