@@ -78,10 +78,12 @@ static uint8_t s_refine_bestd[32];
 static uint8_t s_refine_lo[32];
 static uint8_t s_refine_hi[32];
 static uint8_t s_refine_matches[32];
-/* Connected two-face corners already get their canonical physical Y from
- * envelope_join_connected() and the materializer endpoint cache. Only a
- * one-sided physical silhouette still needs the slower true-X reconstruction. */
+/* Candidate seam vertices that may still need true-X Y reconstruction.
+ * A clean two-face corner can use the endpoint solution already produced by
+ * envelope_join_connected(); anything one-sided, multi-face, or mixed falls
+ * back to the proven reconciliation path. */
 static uint8_t s_refine_needed[4];
+static uint8_t s_refine_noncanonical[4];
 extern const uint8_t g_e1env_center_col_lut[1025];
 
 extern const uint8_t g_tsp_seam_mask_home[20];
@@ -320,26 +322,48 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 {
     uint8_t i,j;
 
-    /* The common connected-corner case is already solved by the original
-     * top/bottom edge path. depth_plane bit 0/1 marks a run endpoint whose
-     * physical Y was produced by envelope_join_connected(), so first remove
-     * those vertices from the slow worklist. A narrow dropped neighbour never
-     * received that flag and therefore remains correctly eligible. */
     if(!(s_refine_needed[0]|s_refine_needed[1]|
          s_refine_needed[2]|s_refine_needed[3]))
         return;
 
+    s_refine_noncanonical[0]=0u;
+    s_refine_noncanonical[1]=0u;
+    s_refine_noncanonical[2]=0u;
+    s_refine_noncanonical[3]=0u;
+
+    /* Cheap classification pass. A normal shared corner appears as exactly
+     * two run endpoints and BOTH endpoints carry the canonical-Y flag written
+     * by envelope_join_connected(). Only that narrow, proven case may bypass
+     * the true-X reconstruction. A vertex with one endpoint, three or more
+     * endpoints, or any uncanonical contribution keeps the old exact path. */
     for(j=0u;j<run_count;++j){
         TSPThinRun *r=&g_runs[j];
         uint8_t k;
         for(k=0u;k<2u;++k){
             uint8_t vid=(uint8_t)(k ? r->v1 : r->v0);
             uint8_t bi,bm,canonical=(uint8_t)(k ? 2u : 1u);
-            if(vid>=32u || !(r->depth_plane&canonical)) continue;
+            if(vid>=32u) continue;
             bi=(uint8_t)(vid>>3);
             bm=(uint8_t)(1u<<(vid&7u));
-            s_refine_needed[bi]&=(uint8_t)~bm;
+            if(!(s_refine_needed[bi]&bm)) continue;
+            if(s_refine_matches[vid]<3u) ++s_refine_matches[vid];
+            if(!(r->depth_plane&canonical))
+                s_refine_noncanonical[bi]|=bm;
         }
+    }
+
+    for(i=0u;i<g_tspf_seam_desc_count;++i){
+        uint8_t vid=g_tspf_seam_vid[i];
+        uint8_t bi,bm;
+        if(vid>=32u) continue;
+        bi=(uint8_t)(vid>>3);
+        bm=(uint8_t)(1u<<(vid&7u));
+        if(!(s_refine_needed[bi]&bm)) continue;
+        if(s_refine_matches[vid]==2u &&
+           !(s_refine_noncanonical[bi]&bm))
+            s_refine_needed[bi]&=(uint8_t)~bm;
+        /* Reuse the existing byte as the exact-candidate counter below. */
+        s_refine_matches[vid]=0u;
     }
 
     if(!(s_refine_needed[0]|s_refine_needed[1]|
@@ -398,8 +422,6 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
         }
     }
 
-    /* Per-frame worklist. Zero it here so a later frame with no seam
-     * descriptors cannot inherit stale refinement requests. */
     s_refine_needed[0]=0u;
     s_refine_needed[1]=0u;
     s_refine_needed[2]=0u;
