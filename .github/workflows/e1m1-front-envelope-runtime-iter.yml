@@ -11,6 +11,7 @@ on:
       - experiment/e1m1-corner-edge-vocabulary
       - experiment/e1m1-p99-steep-edges
       - experiment/e1m1-direct-physical-endpoints
+      - experiment/e1m1-direct-physical-endpoints-r2
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
