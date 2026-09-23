@@ -585,6 +585,7 @@ extern uint8_t g_polar_nt_cov_cur[60];
 extern uint8_t g_polar_nt_row_min[TSP_ROWS];
 extern uint8_t g_polar_nt_row_max[TSP_ROWS];
 extern uint8_t g_tspf_boundary_dirty_by_col[TSP_COLS];
+extern uint8_t g_tspf_boundary_any_dirty;
 extern uint8_t g_e1env_program[];
 extern uint16_t g_corner_bearing_q12[32];
 extern uint8_t g_corner_bearing_valid[4];
@@ -941,6 +942,7 @@ void tsp_polar_boundary_reset(void) BANKED
     bc_clear3(s_prev_cols);
     s_bank_used[0]=s_bank_used[1]=0u;
     s_bank_released[0]=s_bank_released[1]=0u;
+    g_tspf_boundary_any_dirty=0u;
     for(i=0u;i<TSP_COLS;++i) g_tspf_boundary_dirty_by_col[i]=0u;
 }
 
@@ -964,9 +966,14 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
 
     /* Previous exact columns and current exact columns are deliberately forced
      * through the normal raster on this correctness rung.  It guarantees a
-     * valid coarse substrate even if the small dynamic cache cannot answer. */
-    for(i=0u;i<TSP_COLS;++i)
+     * valid coarse substrate even if the small dynamic cache cannot answer.
+     * Keep a one-byte OR gate for the materializer's overwhelmingly common
+     * no-boundary path; only then does it pay the per-column indexed lookup. */
+    g_tspf_boundary_any_dirty=0u;
+    for(i=0u;i<TSP_COLS;++i){
         g_tspf_boundary_dirty_by_col[i]=bc_col_marked(s_prev_cols,i)?1u:0u;
+        if(g_tspf_boundary_dirty_by_col[i]) g_tspf_boundary_any_dirty=1u;
+    }
 
 #if defined(TSPF_OPTIMIZED_MAP)
     if(s->z_q4!=TSP_OPT_EYE_Q4){
@@ -1009,6 +1016,7 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         col=(uint8_t)((uint8_t)x>>3);
         bc_mark_col(s_cur_cols,col);
         g_tspf_boundary_dirty_by_col[col]=1u;
+        g_tspf_boundary_any_dirty=1u;
         ++count;
     }
     g_tspf_seam_desc_count=count;

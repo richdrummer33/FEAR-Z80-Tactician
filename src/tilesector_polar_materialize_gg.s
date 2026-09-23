@@ -90,6 +90,7 @@
         .globl  _tsp_probe_ret_skip
         .globl  _g_ts_vblank_pending
         .globl  _g_tspf_boundary_dirty_by_col
+        .globl  _g_tspf_boundary_any_dirty
         .globl  _tsp_polar_service_vblank
 
 ; Explicit polar materializer bridge. No C struct offsets and no argument-register
@@ -1690,11 +1691,17 @@ p99_attrs$:
 ; seam descriptors, so unchanged columns can keep using the retained Y patch;
 ; changed/vacated columns fall back to the normal front-to-back raster.
 seam_prev_col_test$:
+        ; Macro-off / no-boundary common case: avoid paying the indexed lookup
+        ; on every retained-column probe.  The boundary pre-pass raises this
+        ; byte only when at least one previous/current exact-X column needs
+        ; forced coarse materialization.
+        ld      a, (#_g_tspf_boundary_any_dirty)
+        or      a
+        ret     z
+
         ; Exact-X boundary composites live in the ordinary name table, so a
         ; retained coarse column must not answer for a tile that the boundary
         ; pass is about to replace (or that held a composite last frame).
-        ; The banked prepare pass expands that rare set to one byte/column;
-        ; this hot test is therefore just an indexed byte load.
         push    de
         push    hl
         ld      a, (#_g_polar_mat_col)
@@ -2487,6 +2494,8 @@ seam_desc_count$:
         .ds     1
 _g_tspf_boundary_dirty_by_col::
         .ds     20
+_g_tspf_boundary_any_dirty::
+        .ds     1
 _g_tspf_seam_x::
 seam_x$:
         .ds     32
