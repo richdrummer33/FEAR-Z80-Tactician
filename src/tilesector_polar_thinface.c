@@ -65,11 +65,7 @@ uint8_t g_tspf_seam_history_valid;
 static uint8_t s_prev_x[32];
 static uint8_t s_prev_seen[4];
 static uint8_t s_cur_seen[4];
-/* Final seam composition is accumulated once per symmetric row-pair/cell.
- * 18 screen rows collapse to 9 pairs, so 20*9 bytes are enough to merge all
- * current physical seams before touching g_map. This removes the old
- * descriptor-major read/decode/rewrite cycle for overlapping seams. */
-static uint8_t s_overlay_pair_mask[TSP_COLS*9u];
+static uint8_t s_overlay_touched[(TSP_MAP_CELLS+7u)/8u];
 
 /* Seam-Y refinement is naturally vertex-major: a physical vertex appears at
  * one screen X per frame. Index the current descriptors by vertex once, then
@@ -381,19 +377,20 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 
 void tsp_polar_subcolumn_seams_fast(void) BANKED
 {
-    uint8_t i,row,col;
+    uint8_t i,row,rowb;
 
-    /* Merge current seam bits in RAM first. A cell's final seam word depends
-     * only on the OR of every physical X crossing that symmetric row pair.
-     * The previous descriptor-major compositor repeatedly read, decoded and
-     * rewrote g_map when two or more descriptors shared a cell. */
-    for(i=0u;i<(uint8_t)(TSP_COLS*9u);++i)
-        s_overlay_pair_mask[i]=0u;
+    /* Descriptor-major compositor. The first current seam touching a cell
+     * REPLACES any previous/coarse border semantics; later current seams in
+     * that same cell merge with the mask written by this pass. A 360-bit
+     * touched set (45 bytes RAM) is much cheaper than a 360-byte screen mask
+     * and avoids rescanning every descriptor once per active coarse column. */
+    for(i=0u;i<(uint8_t)((TSP_MAP_CELLS+7u)/8u);++i)
+        s_overlay_touched[i]=0u;
 
     for(i=0u;i<g_tspf_seam_desc_count;++i){
-        uint8_t vid,half,x,bit,first;
+        uint8_t vid,half,x,col,bit,first,last;
         int8_t top_tile;
-        uint16_t mi;
+        uint16_t idx;
 
         x=g_tspf_seam_x[i];
         col=(uint8_t)(x>>3);
@@ -403,6 +400,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
         half=g_tspf_seam_vertex_half[vid];
         if(half==0xffu) continue;
 
+        bit=(uint8_t)(1u<<(x&7u));
         top_tile=floor_div8((int8_t)(71-(int16_t)half));
         {
             int16_t f=(int16_t)top_tile+1;
@@ -412,84 +410,142 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
             if(l>=18) l=17;
             if(f>l) continue;
             first=(uint8_t)f;
+            last=(uint8_t)l;
         }
 
-        /* FULL geometry is symmetric: first+last is always 17 after clipping.
-         * Therefore only the top member of each row pair needs a mask slot. */
-        if(first>=9u) continue;
-        bit=(uint8_t)(1u<<(x&7u));
-        mi=(uint16_t)((uint16_t)first*20u+col);
-        for(row=first;row<9u;++row){
-            s_overlay_pair_mask[mi]|=bit;
-            mi=(uint16_t)(mi+20u);
-        }
-    }
+        {
+            /* The overwhelmingly common case is exactly one seam in a cell.
+             * Its tile word depends only on x&7, so compute it ONCE per
+             * descriptor instead of calling the general mask encoder for every
+             * vertical cell. Multi-seam cells still take the exact old merge
+             * path below. */
+            uint8_t sx=(uint8_t)(x&7u);
+            uint8_t single_code;
+            uint16_t single_attr,single_nw;
 
-    /* Consume each composed cell exactly once. Top/bottom cells receive the
-     * same seam word, preserving the proven FULL-wall symmetry while avoiding
-     * all old touched-bit bookkeeping and seam-tile decode work. */
-    {
-        uint16_t idx=0u;
-        uint16_t idxb=340u; /* row 17, col 0 */
-        for(row=0u;row<9u;++row){
-            uint16_t ti=idx;
-            uint16_t bi=idxb;
-            for(col=0u;col<TSP_COLS;++col,++ti,++bi){
-                uint8_t mask=s_overlay_pair_mask[ti];
-                uint8_t enc;
-                uint16_t old,oldb,id,idb,nw;
-                if(!mask) continue;
+            if(sx>=4u){
+                single_code=(uint8_t)(7u-sx);
+                single_attr=TSP_ATTR_FLIPX;
+            } else {
+                single_code=sx;
+                single_attr=0u;
+            }
+            single_nw=(uint16_t)(TSP_SEAM_TILE_BASE+single_code+single_attr);
 
-                old=g_map[ti];
-                oldb=g_map[bi];
-                id=(uint16_t)(old&TSP_TILE_ID_MASK);
-                idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
+            idx=(uint16_t)((uint16_t)first*20u+col);
+            {
+                /* FULL walls are vertically symmetric around the 18-row
+                 * aperture: first+last is always 17. Every physical seam
+                 * therefore touches row pairs with identical current masks.
+                 * Compose one mask/tile word for the pair and store it to both
+                 * rows. This halves the hot overlay's mask/decode/control work
+                 * without changing the seam vocabulary or Y extent. */
+                uint16_t idxb=(uint16_t)((uint16_t)last*20u+col);
+                uint8_t tb=(uint8_t)(idx>>3);
+                uint8_t tm=(uint8_t)(1u<<(idx&7u));
+                uint8_t bb=(uint8_t)(idxb>>3);
+                uint8_t bm=(uint8_t)(1u<<(idxb&7u));
 
-                /* Coarse FULL material or a retained seam tile are the only
-                 * legal substrates. Unexpected asymmetric/non-wall pairs are
-                 * left untouched exactly as in the previous compositor. */
-                if(!((id>=3u && id<7u) ||
-                     (id>=TSP_SEAM_TILE_BASE &&
-                      id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
-                   !((idb>=3u && idb<7u) ||
-                     (idb>=TSP_SEAM_TILE_BASE &&
-                      idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
-                    continue;
+                row=first;
+                rowb=last;
+                for(;;){
+                    uint16_t old=g_map[idx];
+                    uint16_t oldb=g_map[idxb];
+                    uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
+                    uint16_t idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
+                    uint16_t nw;
 
-                enc=k_seam_encode[mask];
-                if(enc==0xffu){
-                    uint8_t lo=0u,hi=7u;
-                    while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
-                    while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
-                    mask=(uint8_t)((1u<<lo)|(1u<<hi));
-                    enc=k_seam_encode[mask];
-                    if(enc==0xffu) continue;
-                }
-                nw=(uint16_t)(TSP_SEAM_TILE_BASE+(enc&31u));
-                if(enc&0x80u) nw=(uint16_t)(nw+TSP_ATTR_FLIPX);
+                    if(!(s_overlay_touched[tb]&tm)){
+                        /* Pair symmetry is an invariant of this FULL-only seam
+                         * path. Check both material cells before claiming them
+                         * so an unexpected asymmetric/non-wall pair is dropped
+                         * rather than painted through. */
+                        if(!((id>=3u && id<7u) ||
+                             (id>=TSP_SEAM_TILE_BASE &&
+                              id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
+                           !((idb>=3u && idb<7u) ||
+                             (idb>=TSP_SEAM_TILE_BASE &&
+                              idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
+                            goto seam_pair_done;
+                        s_overlay_touched[tb]|=tm;
+                        s_overlay_touched[bb]|=bm;
+                        nw=single_nw;
+                    } else {
+                        /* A prior symmetric descriptor touched both cells and
+                         * wrote the same seam word, so decode one side only. */
+                        uint8_t mask,enc,ci;
+                        if(!(s_overlay_touched[bb]&bm) ||
+                           id<TSP_SEAM_TILE_BASE ||
+                           id>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT) ||
+                           idb<TSP_SEAM_TILE_BASE ||
+                           idb>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
+                            goto seam_pair_done;
+                        ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
+                        if(ci<TSP_SEAM_BASE_COUNT){
+                            mask=(old&TSP_ATTR_FLIPX) ?
+                                 g_tsp_seam_reflect_home[ci] :
+                                 g_tsp_seam_mask_home[ci];
+                        } else {
+                            ci=(uint8_t)(ci-TSP_SEAM_BASE_COUNT);
+                            mask=(old&TSP_ATTR_FLIPX) ?
+                                 k_extra_seam_reflect[ci] :
+                                 k_extra_seam_mask[ci];
+                        }
+                        mask|=bit;
 
-                if(nw!=old){
-                    g_map[ti]=nw;
-                    if(g_polar_nt_row_min[row]==0xffu ||
-                       col<g_polar_nt_row_min[row])
-                        g_polar_nt_row_min[row]=col;
-                    if(col>g_polar_nt_row_max[row])
-                        g_polar_nt_row_max[row]=col;
-                }
-                {
-                    uint8_t rowb=(uint8_t)(17u-row);
+                        enc=k_seam_encode[mask];
+                        if(enc==0xffu){
+                            uint8_t lo=0u,hi=7u;
+                            while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
+                            while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
+                            mask=(uint8_t)((1u<<lo)|(1u<<hi));
+                            enc=k_seam_encode[mask];
+                            if(enc==0xffu) goto seam_pair_done;
+                        }
+                        nw=(uint16_t)(TSP_SEAM_TILE_BASE+(enc&31u));
+                        if(enc&0x80u) nw=(uint16_t)(nw+TSP_ATTR_FLIPX);
+                    }
+
+                    if(nw!=old){
+                        g_map[idx]=nw;
+                        if(g_polar_nt_row_min[row]==0xffu ||
+                           col<g_polar_nt_row_min[row])
+                            g_polar_nt_row_min[row]=col;
+                        if(col>g_polar_nt_row_max[row])
+                            g_polar_nt_row_max[row]=col;
+                    }
                     if(nw!=oldb){
-                        g_map[bi]=nw;
+                        g_map[idxb]=nw;
                         if(g_polar_nt_row_min[rowb]==0xffu ||
                            col<g_polar_nt_row_min[rowb])
                             g_polar_nt_row_min[rowb]=col;
                         if(col>g_polar_nt_row_max[rowb])
                             g_polar_nt_row_max[rowb]=col;
                     }
+
+seam_pair_done:
+                    if((uint8_t)(row+1u)>=rowb) break;
+                    ++row;
+                    --rowb;
+                    idx=(uint16_t)(idx+20u);
+                    idxb=(uint16_t)(idxb-20u);
+
+                    if(tm&0xf0u){
+                        tm=(uint8_t)(tm>>4);
+                        tb=(uint8_t)(tb+3u);
+                    } else {
+                        tm=(uint8_t)(tm<<4);
+                        tb=(uint8_t)(tb+2u);
+                    }
+                    if(bm&0xf0u){
+                        bm=(uint8_t)(bm>>4);
+                        bb=(uint8_t)(bb-2u);
+                    } else {
+                        bm=(uint8_t)(bm<<4);
+                        bb=(uint8_t)(bb-3u);
+                    }
                 }
             }
-            idx=(uint16_t)(idx+20u);
-            idxb=(uint16_t)(idxb-20u);
         }
     }
 
