@@ -458,12 +458,13 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                          * coarse cells are wall/seam material. Once claimed,
                          * later descriptors can trust the current-pass seam
                          * word without repeating this class test. */
-                        if(!((id>=3u && id<7u) ||
-                             (id>=TSP_SEAM_TILE_BASE &&
-                              id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
-                           !((idb>=3u && idb<7u) ||
-                             (idb>=TSP_SEAM_TILE_BASE &&
-                              idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
+                        /* Unsigned range subtraction folds each closed
+                         * lower/upper test into one compare while preserving
+                         * exactly the same accepted tile-ID sets. */
+                        if(!((uint16_t)(id-TSP_TILE_FULL_BASE)<4u ||
+                             (uint16_t)(id-TSP_SEAM_TILE_BASE)<TSP_SEAM_TILE_COUNT) ||
+                           !((uint16_t)(idb-TSP_TILE_FULL_BASE)<4u ||
+                             (uint16_t)(idb-TSP_SEAM_TILE_BASE)<TSP_SEAM_TILE_COUNT))
                             goto seam_pair_done;
                         s_overlay_touched[tb]|=tm;
                         nw=single_nw;
