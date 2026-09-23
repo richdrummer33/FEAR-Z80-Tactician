@@ -946,7 +946,9 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
     s_prepared=0u;
     s_patch_count=0u;
     s_target_bank=0xffu;
-    g_tspf_boundary_pattern_count=0u;
+    /* Do NOT clear pattern_count while a previous render is still waiting for
+     * its safe-VBlank pattern upload. That count belongs to the queued staging
+     * buffer until tsp_polar_boundary_upload() consumes it. */
     g_tspf_boundary_last_patterns=0u;
     g_tspf_boundary_last_patches=0u;
     g_tspf_boundary_skip_reason=0u;
@@ -1021,11 +1023,14 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         g_tspf_seam_vertex_half[j]=r;
     }
 
-    /* Never overwrite a staging buffer that has not reached VRAM yet. */
+    /* Never overwrite a staging buffer that has not reached VRAM yet.
+     * Current/previous boundary columns are already marked dirty above, so the
+     * normal coarse path safely removes stale composites for this update. */
     if(g_tspf_boundary_patterns_pending){
         g_tspf_boundary_skip_reason=4u;
         return;
     }
+    g_tspf_boundary_pattern_count=0u;
     target=bc_choose_bank();
     if(target==0xffu){
         g_tspf_boundary_skip_reason=5u;
