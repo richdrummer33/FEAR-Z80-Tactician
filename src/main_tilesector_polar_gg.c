@@ -85,10 +85,6 @@ volatile uint16_t g_ts_dirty_words;
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
 void tsp_polar_nt_upload_dirty_budgeted(void);
-#if defined(TSPF_BOUNDARY_COMPOSITE) && TSPF_BOUNDARY_COMPOSITE
-void tsp_polar_boundary_upload(void) BANKED;
-#endif
-
 /* Cooperative VBlank publisher.
  *
  * The VBL ISR itself only raises a byte flag.  Rendering reaches safe yield
@@ -102,14 +98,13 @@ void tsp_polar_boundary_upload(void) BANKED;
  * margin inside the ~4.3 ms post-effective-area safe interval even when the
  * renderer notices VBlank a little late. */
 volatile uint8_t g_ts_vblank_pending;
-volatile uint8_t g_ts_vblank_generation;
 #if TSPF_BOUNDARY_COMPOSITE
 volatile uint8_t g_tspf_boundary_publish_tick;
 extern volatile uint8_t g_tspf_boundary_patterns_pending;
 extern uint16_t g_tspf_boundary_pattern_base;
 extern uint8_t g_tspf_boundary_pattern_count;
-extern uint8_t g_tspf_boundary_pattern_data[];
 void tsp_polar_boundary_reset(void) BANKED;
+void tsp_polar_boundary_upload(void) BANKED;
 #endif
 #if TSPF_PROFILE_HOOKS
 volatile uint16_t g_ts_vblank_bursts;
@@ -122,7 +117,7 @@ static void tsp_vblank_mark(void) NONBANKED {
 
 void tsp_polar_service_vblank(void) NONBANKED {
     if(!g_ts_vblank_pending) return;
-    g_ts_vblank_pending=0u;g_ts_vblank_generation=0u;
+    g_ts_vblank_pending=0u;
     if(VCOUNTER<0xC0u){
 #if TSPF_PROFILE_HOOKS
         ++g_ts_vblank_missed;
@@ -134,10 +129,7 @@ void tsp_polar_service_vblank(void) NONBANKED {
      * row may publish a reference to them. A pattern burst therefore owns this
      * VBlank; row publication resumes on the next safe burst. */
     if(g_tspf_boundary_patterns_pending){
-        set_bkg_4bpp_data(g_tspf_boundary_pattern_base,
-                          g_tspf_boundary_pattern_count,
-                          g_tspf_boundary_pattern_data);
-        g_tspf_boundary_patterns_pending=0u;
+        tsp_polar_boundary_upload();
 #if TSPF_PROFILE_HOOKS
         ++g_ts_vblank_bursts;
 #endif
@@ -254,7 +246,11 @@ void main(void){
 #if TSPF_BOUNDARY_COMPOSITE
     g_tspf_boundary_publish_tick=0u;tsp_polar_boundary_reset();
 #endif
-    tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
+    tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
+#if TSPF_BOUNDARY_COMPOSITE
+    tsp_polar_boundary_upload();
+#endif
+    upload_dirty_map();
     g_ts_vblank_pending=0u;
 #if TSPF_PROFILE_HOOKS
     g_ts_vblank_bursts=0u;g_ts_vblank_missed=0u;
