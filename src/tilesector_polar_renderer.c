@@ -93,8 +93,13 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED;
 void tsp_polar_subcolumn_seams_fast(void) BANKED;
 #endif
 #if TSPF_BOUNDARY_COMPOSITE
+void tsp_polar_boundary_reset(void) BANKED;
 void tsp_polar_boundary_prepare(const TSPState *s) BANKED;
 void tsp_polar_boundary_apply(void) BANKED;
+extern uint8_t g_tspf_seam_desc_count;
+extern uint8_t g_tspf_seam_x[32];
+extern uint8_t g_tspf_seam_vid[32];
+extern uint8_t g_tspf_seam_vertex_half[32];
 #endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
@@ -399,6 +404,9 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #ifdef __SDCC
     tsp_polar_ret_invalidate();
+#if TSPF_BOUNDARY_COMPOSITE
+    tsp_polar_boundary_reset();
+#endif
 #endif
 #ifndef __SDCC
     g_map_ready = 0u;
@@ -1217,6 +1225,20 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
        l->right_real && r->left_real &&
        l->right_connected)
     {
+#if TSPF_BOUNDARY_COMPOSITE
+        /* Exact-X composite record: the renderer already has both adjacent
+         * runs and the physical sub-column displacement here, so recording it
+         * costs only three byte stores and no bank switch. */
+        if(g_tspf_seam_desc_count<32u){
+            int16_t bx=(int16_t)(((uint16_t)r->c0<<3)+(int16_t)dx);
+            if(bx>=0 && bx<160){
+                uint8_t bi=g_tspf_seam_desc_count++;
+                g_tspf_seam_x[bi]=(uint8_t)bx;
+                g_tspf_seam_vid[bi]=li;
+                g_tspf_seam_vertex_half[bi]=ri;
+            }
+        }
+#endif
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
         /* The real authored corner lies up to four pixels either side of the
          * snapped 8px ownership boundary.  Inverse depth is linear in screen X
@@ -1399,12 +1421,7 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
 #endif
         g_polar_run_c0 = c0;
         g_polar_run_c1 = c1;
-#if TSPF_BOUNDARY_COMPOSITE
-        /* Exact-X composite tiles own physical horizontal handoffs. Never emit
-         * a knowingly snapped 0/7 coarse border underneath them. */
-        g_polar_run_left_real = 0u;
-        g_polar_run_right_real = 0u;
-#elif TSPF_THIN_FACE_SURVIVAL
+#if TSPF_THIN_FACE_SURVIVAL
         /* Physical endpoint borders are now represented by the true-X seam
          * overlay. Emitting them here as well places the same corner at the
          * snapped 8px ownership boundary, often in the adjacent tile. That is
@@ -1607,6 +1624,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         restore_touched(out_map);
     if (cols)
         memset(cols, 0, sizeof(TSPColumn) * TSP_COLS);
+#endif
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+    g_tspf_seam_desc_count=0u; /* boundary-composite records */
 #endif
     TSPF_SET_STAGE(2u);
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
