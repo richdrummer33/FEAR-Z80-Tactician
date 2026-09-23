@@ -437,12 +437,9 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
 
             idx=(uint16_t)((uint16_t)first*20u+col);
             {
-                /* The exact-envelope descriptor plus refined physical
-                 * corner height already defines the visible FULL-wall seam
-                 * interval. Treat that descriptor as authoritative here rather
-                 * than re-deriving visibility from coarse 8px material cells.
-                 * This also avoids dropping a valid seam merely because its
-                 * extreme coarse cell is an edge/cap rather than FULL. */
+                /* Pair-local material validation happens only on first
+                 * touch below. Overlaps are already current-pass seam words,
+                 * so they no longer need duplicate ID/range checks. */
                 uint16_t idxb=(uint16_t)((uint16_t)last*20u+col);
                 uint16_t old=g_map[idx];
                 uint16_t oldb=g_map[idxb];
@@ -455,6 +452,19 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                     uint16_t nw;
 
                     if(!(s_overlay_touched[tb]&tm)){
+                        uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
+                        uint16_t idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
+                        /* First touch still has to prove that BOTH symmetric
+                         * coarse cells are wall/seam material. Once claimed,
+                         * later descriptors can trust the current-pass seam
+                         * word without repeating this class test. */
+                        if(!((id>=3u && id<7u) ||
+                             (id>=TSP_SEAM_TILE_BASE &&
+                              id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
+                           !((idb>=3u && idb<7u) ||
+                             (idb>=TSP_SEAM_TILE_BASE &&
+                              idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
+                            goto seam_pair_done;
                         s_overlay_touched[tb]|=tm;
                         nw=single_nw;
                     } else {
