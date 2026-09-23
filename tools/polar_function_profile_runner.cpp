@@ -21,6 +21,9 @@ struct Range {
     uint64_t cycles=0;
     uint64_t instructions=0;
     uint64_t entries=0;
+    /* 0xff = fixed/any mapped bank. For 0x4000..0x7fff code this is
+       the Sega mapper bank that must be active for the range to match. */
+    uint8_t bank=0xffu;
 };
 
 struct OwnershipProbe {
@@ -48,6 +51,7 @@ struct SourceLineRange {
 struct SourceProfile {
     std::string function;
     u16 lo=0,hi=0;
+    uint8_t bank=0xffu;
     std::vector<SourceLineRange> lines;
 };
 
@@ -90,6 +94,49 @@ static std::vector<std::pair<u16,std::string>> load_fixed_symbols(const char* pa
     return out;
 }
 
+/* The CPU only exposes a 16-bit PC, so code in switchable ROM banks aliases
+ * the renderer's 0x4000..0x7fff addresses. The old profiler therefore charged
+ * all bank-254 thin-face work to whichever bank-1 renderer symbol occupied the
+ * same PC range (usually clamp_s8). Parse the thin-face bank from NoICE and
+ * keep that bank identity alongside each PC range. */
+static std::vector<Range> load_thinface_ranges(const char* noi) {
+    std::ifstream f(noi);
+    std::string line;
+    struct Start { unsigned long raw; std::string name; };
+    std::vector<Start> starts;
+    std::regex local_re("^DEF Ftilesector_polar_thinface\\$([^$]+)\\$0\\$0 0x([0-9A-Fa-f]+)");
+    std::regex global_re("^DEF G\\$(tsp_polar_(?:extra_seam_mask|record_subcolumn_boundary|seam_prepare_dirty|refine_seam_heights|subcolumn_seams_fast))\\$0\\$0 0x([0-9A-Fa-f]+)");
+    std::regex end_re("^DEF XG\\$tsp_polar_subcolumn_seams_fast\\$0\\$0 0x([0-9A-Fa-f]+)");
+    std::smatch m;
+    unsigned long final_end=0;
+    while(std::getline(f,line)) {
+        if(std::regex_search(line,m,local_re)) {
+            const unsigned long raw=std::strtoul(m[2].str().c_str(),nullptr,16);
+            starts.push_back({raw,"thinface/"+m[1].str()});
+        } else if(std::regex_search(line,m,global_re)) {
+            const unsigned long raw=std::strtoul(m[2].str().c_str(),nullptr,16);
+            starts.push_back({raw,"thinface/"+m[1].str()});
+        } else if(std::regex_search(line,m,end_re)) {
+            final_end=std::strtoul(m[1].str().c_str(),nullptr,16);
+        }
+    }
+    std::sort(starts.begin(),starts.end(),[](const Start&a,const Start&b){return a.raw<b.raw;});
+    starts.erase(std::unique(starts.begin(),starts.end(),[](const Start&a,const Start&b){return a.raw==b.raw;}),starts.end());
+
+    std::vector<Range> out;
+    for(size_t i=0;i<starts.size();++i) {
+        const unsigned long raw=starts[i].raw;
+        const uint8_t bank=(uint8_t)(raw>>16);
+        if(bank==0u || bank==0xffu) continue;
+        unsigned long next=(i+1<starts.size())?starts[i+1].raw:final_end;
+        if((next>>16)!=bank || next<=raw) continue;
+        Range r{(u16)raw,(u16)next,starts[i].name,0,0,0};
+        r.bank=bank;
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
 static std::vector<SourceLineRange> load_source_lines(const char* noi,u16 fn_lo,u16 fn_hi) {
     std::ifstream f(noi);
     std::string line;
@@ -125,8 +172,9 @@ static std::vector<SourceLineRange> load_source_lines(const char* noi,u16 fn_lo,
     return out;
 }
 
-static bool source_profile_tick(SourceProfile& sp,u16 pc,uint64_t dt) {
+static bool source_profile_tick(SourceProfile& sp,u16 pc,uint8_t mapped_bank,uint64_t dt) {
     if(pc<sp.lo || pc>=sp.hi || sp.lines.empty()) return false;
+    if(sp.bank!=0xffu && sp.bank!=mapped_bank) return false;
     size_t lo=0,hi=sp.lines.size();
     while(lo<hi) {
         const size_t m=(lo+hi)>>1;
@@ -168,10 +216,17 @@ static std::vector<Range> load_polar_ranges(const char* noi,const char* sym) {
     for(size_t i=0;i<starts.size();++i) {
         u16 lo=starts[i].first;
         u16 hi=(i+1<starts.size())?starts[i+1].first:render_start;
-        if(hi>lo) out.push_back({lo,hi,starts[i].second,0,0});
+        if(hi>lo) {
+            Range r{lo,hi,starts[i].second,0,0,0};
+            r.bank=1u;
+            out.push_back(std::move(r));
+        }
     }
-    if(render_start && render_end>render_start)
-        out.push_back({render_start,render_end,"tsp_polar_render(self)",0,0});
+    if(render_start && render_end>render_start) {
+        Range r{render_start,render_end,"tsp_polar_render(self)",0,0,0};
+        r.bank=1u;
+        out.push_back(std::move(r));
+    }
 
     // Fixed-bank attribution must follow the CURRENT link. The previous profiler
     // hardcoded addresses from an older ROM and eventually mislabeled unrelated
@@ -195,6 +250,8 @@ static std::vector<Range> load_polar_ranges(const char* noi,const char* sym) {
         }
         if(hi>lo) out.push_back({lo,hi,name.substr(1),0,0});
     }
+    auto thin=load_thinface_ranges(noi);
+    out.insert(out.end(),thin.begin(),thin.end());
     return out;
 }
 
@@ -222,7 +279,7 @@ int main(int argc,char**argv) {
         for(const auto &r:ranges) {
             if(r.name==wanted) {
                 SourceProfile sp;
-                sp.function=wanted; sp.lo=r.lo; sp.hi=r.hi;
+                sp.function=wanted; sp.lo=r.lo; sp.hi=r.hi; sp.bank=r.bank;
                 sp.lines=load_source_lines(noi,r.lo,r.hi);
                 if(!sp.lines.empty()) source_profiles.push_back(std::move(sp));
                 break;
@@ -273,6 +330,11 @@ int main(int argc,char**argv) {
 
         if(p_before==2u && loops>=warmup) {
             const uint8_t reg_a=(uint8_t)(st->AF->GetValue()>>8);
+            /* Sega mapper slot 1 (0x4000..0x7fff) is selected by 0xfffe.
+               Reading the mirrored mapper register lets the host distinguish
+               bank-1 renderer code from bank-254 thin-face code at the same PC. */
+            const uint8_t mapped_bank=(pc>=0x4000u && pc<0x8000u) ?
+                                      mem->DebugRetrieve(0xfffeu) : 0xffu;
             for(auto &p:ownership) if(p.found && pc==p.addr) {
                 ++p.checks;
                 if(reg_a==0u) ++p.rejected;
@@ -280,13 +342,13 @@ int main(int argc,char**argv) {
             total_render_cycles+=dt; ++total_render_ins;
             bool hit=false;
             for(auto &r:ranges) {
-                if(pc>=r.lo && pc<r.hi) {
+                if(pc>=r.lo && pc<r.hi && (r.bank==0xffu || r.bank==mapped_bank)) {
                     r.cycles+=dt; ++r.instructions;
                     if(pc==r.lo) ++r.entries;
                     hit=true; break;
                 }
             }
-            for(auto &sp:source_profiles) source_profile_tick(sp,pc,dt);
+            for(auto &sp:source_profiles) source_profile_tick(sp,pc,mapped_bank,dt);
             if(!hit) { unassigned_cycles+=dt; ++unassigned_ins; }
         }
 
