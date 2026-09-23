@@ -54,7 +54,7 @@ def main():
     for fi,fr in enumerate(frames):
         ev=[
             e for e in exact_chain(fr,vx,vy,segs)
-            if e["vid"] is not None and e["left"] is not None and e["right"] is not None
+            if e["left"] is not None and e["right"] is not None
             and 0.0 <= e["x"] < 160.0 and e["left"] != e["right"]
             # The runtime intentionally emits no dynamic event when the
             # physical handoff quantizes onto an ordinary 8px hardware edge.
@@ -80,14 +80,20 @@ def main():
         for e in ev:
             candidates=[]
             for j,r in enumerate(rt):
-                if j in used or r["vid"]!=e["vid"]:
+                if j in used:
                     continue
                 owner_ok=(r["left"]==e["left"] and r["right"]==e["right"])
-                candidates.append((0 if owner_ok else 1,abs(r["x"]-e["x"]),j,r))
+                # Shared authored corners have an unambiguous vertex ID; a
+                # one-sided silhouette/occlusion handoff does not, so match it
+                # by owner ordering and X instead of calling it an "extra".
+                vid_bad=(e["vid"] is not None and r["vid"]!=e["vid"])
+                candidates.append((0 if owner_ok else 1,0 if not vid_bad else 1,
+                                   abs(r["x"]-e["x"]),j,r))
+            
             if not candidates:
                 missing+=1
                 continue
-            bad,dx,j,r=min(candidates)
+            bad,vbad,dx,j,r=min(candidates)
             used.add(j)
             matched+=1
             fm+=1
