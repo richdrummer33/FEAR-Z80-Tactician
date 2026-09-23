@@ -1040,8 +1040,8 @@ interior_multi$:
         ld      (#r_full_tile$), a
         ld      a, (#r_occluded$)
         or      a
-        jr      z, direct_interior_loop_open$
-        jr      direct_interior_loop$
+        jp      z, direct_interior_loop_open$
+        jp      direct_interior_loop$
 interior_plain_tile$:
         call    full_tile_low$
         ld      (#r_full_tile$), a
