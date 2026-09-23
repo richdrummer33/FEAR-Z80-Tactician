@@ -12,6 +12,7 @@ on:
       - experiment/e1m1-p99-steep-edges
       - experiment/e1m1-thin-face-survival
       - experiment/e1m1-silhouette-borders
+      - experiment/e1m1-boundary-composite
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
@@ -34,6 +35,7 @@ on:
       - tools/frame/frame_timeline.cpp
       - tools/frame/gen_traces.py
       - tools/frame/exact_projection_census.py
+      - tools/frame/boundary_composite_census.py
       - tools/frame/mat_census.cpp
       - tools/polar_function_profile_runner.cpp
       - tools/build_gearsystem_tools.sh
@@ -365,6 +367,19 @@ jobs:
             ./build/frame_timeline               "$ROOT/$TRACE.gg" "$ROOT/$TRACE.noi" "$ROOT/$TRACE.csv" "$N" 0               "$ROOT/$TRACE-map.bin" "$ROOT/$TRACE-seams.csv"               | tee "$ROOT/$TRACE-timeline.txt"
             python3 tools/frame/exact_projection_census.py               --map-inc "$GEN/optimized_renderer_map_data.inc"               --frames "$ROOT/$TRACE.csv" --seams "$ROOT/$TRACE-seams.csv"               --map-bin "$ROOT/$TRACE-map.bin" --label "$TRACE"               | tee "$ROOT/$TRACE-exact.txt"
           done
+
+      - name: Census exact-X boundary composite vocabulary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          python3 tools/frame/boundary_composite_census.py \
+            --map-inc "$GEN/optimized_renderer_map_data.inc" \
+            --frames "$ROOT/proj_rotate.csv" "$ROOT/proj_depth.csv" \
+                     "$ROOT/proj_strafe.csv" "$ROOT/proj_far_rotate.csv" \
+            --label all_projection_sweeps \
+            | tee "$ROOT/boundary-composite-census.txt"
 
       - name: Bottom-up focused-envelope profile
         shell: bash
