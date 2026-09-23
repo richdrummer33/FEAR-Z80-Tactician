@@ -437,26 +437,17 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
 
             idx=(uint16_t)((uint16_t)first*20u+col);
             {
-                /* FULL-only geometry is vertically contiguous. Validate the
-                 * two extreme cells once per descriptor; every inner row pair
-                 * lies between them and has the same wall ownership class.
-                 * This removes two 16-bit tile-ID masks/range tests from every
-                 * row-pair iteration. */
+                /* The exact-envelope descriptor plus refined physical
+                 * corner height already defines the visible FULL-wall seam
+                 * interval. Treat that descriptor as authoritative here rather
+                 * than re-deriving visibility from coarse 8px material cells.
+                 * This also avoids dropping a valid seam merely because its
+                 * extreme coarse cell is an edge/cap rather than FULL. */
                 uint16_t idxb=(uint16_t)((uint16_t)last*20u+col);
                 uint16_t old=g_map[idx];
                 uint16_t oldb=g_map[idxb];
-                uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
-                uint16_t idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
                 uint8_t tb=(uint8_t)(idx>>3);
                 uint8_t tm=(uint8_t)(1u<<(idx&7u));
-
-                if(!((id>=3u && id<7u) ||
-                     (id>=TSP_SEAM_TILE_BASE &&
-                      id<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))) ||
-                   !((idb>=3u && idb<7u) ||
-                     (idb>=TSP_SEAM_TILE_BASE &&
-                      idb<(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))))
-                    continue;
 
                 row=first;
                 rowb=last;
