@@ -56,6 +56,11 @@ def main():
             e for e in exact_chain(fr,vx,vy,segs)
             if e["vid"] is not None and e["left"] is not None and e["right"] is not None
             and 0.0 <= e["x"] < 160.0 and e["left"] != e["right"]
+            # The runtime intentionally emits no dynamic event when the
+            # physical handoff quantizes onto an ordinary 8px hardware edge.
+            # Treat a continuous corner within half a pixel of that edge as
+            # already represented by the coarse handoff.
+            and abs(e["x"]-round(e["x"]/8.0)*8.0) > 0.5
         ]
         rt=runtime.get(fi,[])
         exact_total += len(ev)
@@ -90,7 +95,8 @@ def main():
             xerr.append(dx)
             # Distance to the exact event's sub-tile phase is the quantity that
             # would turn a smooth 1px handoff back into an 8px ownership snap.
-            phase_err.append(abs((r["x"]&7)-(e["x"]%8.0)))
+            pd=abs((r["x"]&7)-(e["x"]%8.0))
+            phase_err.append(min(pd,8.0-pd))
             worst.append((dx,fi,e["vid"],e["x"],r["x"],e["left"],e["right"],r["left"],r["right"]))
         extra += len(rt)-len(used)
         per_frame_recall.append(100.0*fm/len(ev) if ev else 100.0)
