@@ -146,6 +146,18 @@ def main():
         out=(q*sr+64)>>7
         return min(255,out)
 
+    def vertex_inv(vid,xq,yq,yaw):
+        # Authoritative physical corner projection. bearing_vertex_q12() already
+        # provides X; Y comes from the SAME authored world vertex transformed
+        # onto the camera-forward axis. This deliberately does not ask either
+        # adjacent wall plane to reconstruct the shared endpoint.
+        dxq=(vx[vid]<<4)-xq
+        dyq=(vy[vid]<<4)-yq
+        sn=sin[yaw]
+        cs=sin[(yaw+64)&255]
+        forward_q4=shr0(dxq*cs+dyq*sn,7)
+        return inv_for_abs_q4(abs(forward_q4)),forward_q4
+
     def top_for(sid,xq,yq,yaw,rel):
         return 71-(eval_inv(sid,xq,yq,yaw,rel)>>1)
 
@@ -159,6 +171,9 @@ def main():
     seam_local=Counter()
     seam_count_per_col=Counter()
     corner_y_disagree=Counter()
+    left_vs_vertex_y=Counter()
+    right_vs_vertex_y=Counter()
+    vertex_forward_q4=Counter()
     seam_row_masks=Counter()
     frames_used=0
     total_intervals=0
@@ -224,7 +239,7 @@ def main():
             cend=20 if hi>=512 else (lut[hi+512]&31)
             sid=owner&31
             spans[i]={
-                'sid':sid,'owner':owner,'st':st,'en':en,'lo':lo,'hi':hi,
+                'sid':sid,'owner':owner,'v0':v0,'v1':v1,'st':st,'en':en,'lo':lo,'hi':hi,
                 'x0':x0,'x1':x1,'c0':c0,'cend':cend,
                 'left_unclip':st>=-512,'right_unclip':en<=512,
             }
@@ -275,11 +290,15 @@ def main():
                 continue
             il=eval_inv(sp['sid'],xq,yq,yaw,rel)
             ir=eval_inv(rp['sid'],xq,yq,yaw,rel)
+            iv,fwd=vertex_inv(sp['v1'],xq,yq,yaw)
             tl=71-(il>>1)
             tr=71-(ir>>1)
+            tv=71-(iv>>1)
             corner_y_disagree[abs(tl-tr)]+=1
-            inv=(il+ir+1)>>1
-            cy=71-(inv>>1)
+            left_vs_vertex_y[abs(tl-tv)]+=1
+            right_vs_vertex_y[abs(tr-tv)]+=1
+            vertex_forward_q4[fwd]+=1
+            cy=tv
             seams.append((sx,cy,sp['sid'],rp['sid']))
             seam_local[sx&7]+=1
 
@@ -419,6 +438,9 @@ def main():
     print(f'positive_sub8_spans={positive_sub8} coarse_dropped_positive_spans={coarse_dropped}')
     print('span_width_hist='+','.join(f'{k}:{v}' for k,v in sorted(span_widths.items()) if k<=16))
     print('corner_y_disagreement_px='+','.join(f'{k}:{v}' for k,v in sorted(corner_y_disagree.items())))
+    print('left_vs_vertex_y_px='+','.join(f'{k}:{v}' for k,v in sorted(left_vs_vertex_y.items())))
+    print('right_vs_vertex_y_px='+','.join(f'{k}:{v}' for k,v in sorted(right_vs_vertex_y.items())))
+    print(f'vertex_forward_q4 min={min(vertex_forward_q4) if vertex_forward_q4 else 0} max={max(vertex_forward_q4) if vertex_forward_q4 else 0} nonpositive={sum(v for k,v in vertex_forward_q4.items() if k<=0)}')
     print('seam_local_x='+','.join(f'{k}:{v}' for k,v in sorted(seam_local.items())))
     print('seams_per_column='+','.join(f'{k}:{v}' for k,v in sorted(seam_count_per_col.items())))
     print(f'pattern_samples={sum(raw_patterns.values())} raw_unique={len(raw_patterns)} hflip_unique={unique}')
