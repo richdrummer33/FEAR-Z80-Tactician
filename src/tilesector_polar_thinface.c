@@ -391,7 +391,7 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 
 void tsp_polar_subcolumn_seams_fast(void) BANKED
 {
-    uint8_t i,row,rowb;
+    uint8_t i;
 
     /* Descriptor-major compositor. The first current seam touching a cell
      * REPLACES any previous/coarse border semantics; later current seams in
@@ -457,10 +457,13 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                 uint16_t old=*mapt;
                 uint16_t oldb=*mapb;
                 uint8_t *touch=&s_overlay_touched[idx>>3];
+                uint8_t *mint=&g_polar_nt_row_min[first];
+                uint8_t *maxt=&g_polar_nt_row_max[first];
+                uint8_t *minb=&g_polar_nt_row_min[last];
+                uint8_t *maxb=&g_polar_nt_row_max[last];
+                uint8_t pairs=(uint8_t)(((last-first)>>1)+1u);
                 uint8_t tm=(uint8_t)(1u<<(idx&7u));
 
-                row=first;
-                rowb=last;
                 for(;;){
                     uint16_t nw;
 
@@ -508,25 +511,21 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
 
                     if(nw!=old){
                         *mapt=nw;
-                        if(g_polar_nt_row_min[row]==0xffu ||
-                           col<g_polar_nt_row_min[row])
-                            g_polar_nt_row_min[row]=col;
-                        if(col>g_polar_nt_row_max[row])
-                            g_polar_nt_row_max[row]=col;
+                        if(*mint==0xffu || col<*mint) *mint=col;
+                        if(col>*maxt) *maxt=col;
                     }
                     if(nw!=oldb){
                         *mapb=nw;
-                        if(g_polar_nt_row_min[rowb]==0xffu ||
-                           col<g_polar_nt_row_min[rowb])
-                            g_polar_nt_row_min[rowb]=col;
-                        if(col>g_polar_nt_row_max[rowb])
-                            g_polar_nt_row_max[rowb]=col;
+                        if(*minb==0xffu || col<*minb) *minb=col;
+                        if(col>*maxb) *maxb=col;
                     }
 
 seam_pair_done:
-                    if((uint8_t)(row+1u)>=rowb) break;
-                    ++row;
-                    --rowb;
+                    if(--pairs==0u) break;
+                    ++mint;
+                    ++maxt;
+                    --minb;
+                    --maxb;
                     mapt+=20u;
                     mapb-=20u;
                     old=*mapt;
