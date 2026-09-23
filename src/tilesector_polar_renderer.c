@@ -44,6 +44,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_E1M1_PLANE_META
 #define TSPF_E1M1_PLANE_META 0
 #endif
+#ifndef TSPF_DIRECT_PHYSICAL_ENDPOINTS
+#define TSPF_DIRECT_PHYSICAL_ENDPOINTS 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -1227,8 +1230,36 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
             r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
         }
 #endif
-        /* Preserve the existing single visible vertical seam on the right run. */
+#if TSPF_DIRECT_PHYSICAL_ENDPOINTS
+        /* Direct physical-endpoint rung.
+         *
+         * dx is the TRUE projected corner pixel relative to the snapped
+         * 8-pixel handoff.  Do not manufacture a vertical line at that coarse
+         * handoff when the physical corner is somewhere else.
+         *
+         * Existing tiles can represent the corner exactly in two cases:
+         *   dx == -1 : last pixel of the left run's final tile
+         *   dx ==  0 : first pixel of the right run's first tile
+         * Keep exactly that one border.  For dx -4..-2 or +1..+3 neither
+         * coarse border is physical, so suppress both.  A later direct
+         * sub-column composite can fill those cases without first having to
+         * erase a knowingly-wrong tile-edge seam.
+         *
+         * This is deliberately NOT a post-pass.  The authoritative projected
+         * boundary is consumed while the two physical faces are still present.
+         */
+        if(dx==-1){
+            r->left_real=0u;            /* left run's right border is exact */
+        }else if(dx==0){
+            l->right_real=0u;           /* right run's left border is exact */
+        }else{
+            l->right_real=0u;
+            r->left_real=0u;            /* unrepresentable at coarse tile edge */
+        }
+#else
+        /* Legacy coarse handoff: always keep the right run's left tile border. */
         l->right_real=0u;
+#endif
     }
 }
 #endif
