@@ -91,6 +91,17 @@ extern const uint8_t g_tsp_seam_reflect_home[20];
 #define TSP_SEAM_EXTRA_COUNT 9u
 #define TSP_SEAM_TILE_COUNT 29u
 
+/* Classify the raw nametable word without first materializing a 9-bit tile
+ * ID. Attributes start at bit 9, so bit 8 selects the only two substrate
+ * ranges accepted by this FULL-only compositor: IDs 3..6 when clear and
+ * seam IDs 412..440 (low byte 156..184) when set. The low-byte subtraction
+ * is therefore exact over the 0..511 tile-ID domain and avoids repeated
+ * 16-bit masks/subtracts in the hottest row-pair path. */
+#define TSP_SEAM_SUBSTRATE_WORD(w) \
+    (((w)&0x0100u) ? \
+     ((uint8_t)((uint8_t)(w)-(uint8_t)TSP_SEAM_TILE_BASE)<TSP_SEAM_TILE_COUNT) : \
+     ((uint8_t)((uint8_t)(w)-(uint8_t)TSP_TILE_FULL_BASE)<4u))
+
 /* The fixed bank was already within a few bytes of 16 KiB. Keep the rare
  * crowded-mask extension here in bank 254 rather than spending HOME bytes.
  * These are exactly the canonical 3+ masks observed by the projection census. */
@@ -452,19 +463,12 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                     uint16_t nw;
 
                     if(!(s_overlay_touched[tb]&tm)){
-                        uint16_t id=(uint16_t)(old&TSP_TILE_ID_MASK);
-                        uint16_t idb=(uint16_t)(oldb&TSP_TILE_ID_MASK);
                         /* First touch still has to prove that BOTH symmetric
                          * coarse cells are wall/seam material. Once claimed,
                          * later descriptors can trust the current-pass seam
                          * word without repeating this class test. */
-                        /* Unsigned range subtraction folds each closed
-                         * lower/upper test into one compare while preserving
-                         * exactly the same accepted tile-ID sets. */
-                        if(!((uint16_t)(id-TSP_TILE_FULL_BASE)<4u ||
-                             (uint16_t)(id-TSP_SEAM_TILE_BASE)<TSP_SEAM_TILE_COUNT) ||
-                           !((uint16_t)(idb-TSP_TILE_FULL_BASE)<4u ||
-                             (uint16_t)(idb-TSP_SEAM_TILE_BASE)<TSP_SEAM_TILE_COUNT))
+                        if(!TSP_SEAM_SUBSTRATE_WORD(old) ||
+                           !TSP_SEAM_SUBSTRATE_WORD(oldb))
                             goto seam_pair_done;
                         s_overlay_touched[tb]|=tm;
                         nw=single_nw;
