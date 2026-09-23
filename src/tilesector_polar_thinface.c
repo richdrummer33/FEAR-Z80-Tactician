@@ -887,7 +887,14 @@ static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
                 uint8_t split=(uint8_t)(g_tspf_seam_x[e]&7u);
                 if(split && (line_mask&(uint8_t)(1u<<split))){
                     uint8_t a=sem[(uint8_t)(split-1u)],b=sem[split];
-                    if((a==0u && b==1u)||(a==1u && b==0u))
+                    /* A non-connected authored endpoint is an EXTERNAL
+                     * silhouette, not merely a top-edge discontinuity.  The
+                     * old true-X seam rung drew that line through ordinary
+                     * wall rows; preserve the same visual rule here at the
+                     * exact pixel X.  Do not extend it into ceiling above both
+                     * faces, and let the existing horizontal top edge own the
+                     * exact edge pixel itself. */
+                    if(a==1u || b==1u)
                         sem[split]=2u;
                 }
             }
@@ -1045,12 +1052,20 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         while((uint8_t)(last+1u)<count &&
               (uint8_t)(g_tspf_seam_x[(uint8_t)(last+1u)]>>3)==col)
             ++last;
-        if(!bc_build_tile(first,last,col,s)){
-            g_tspf_boundary_pattern_count=0u;
-            s_patch_count=0u;
-            s_target_bank=0xffu;
-            g_tspf_boundary_skip_reason=6u;
-            return;
+
+        /* First shipping-shaped rung: exact 0..2 ownership transitions per
+         * hardware tile.  The census says that class dominates; crowded 3+
+         * transition tiles stay on the known-correct coarse fallback instead
+         * of consuming a disproportionate share of the 18-slot dynamic bank.
+         * Other, ordinary boundary tiles in the same frame remain exact. */
+        if((uint8_t)(last-first)<2u){
+            if(!bc_build_tile(first,last,col,s)){
+                g_tspf_boundary_pattern_count=0u;
+                s_patch_count=0u;
+                s_target_bank=0xffu;
+                g_tspf_boundary_skip_reason=6u;
+                return;
+            }
         }
         i=(uint8_t)(last+1u);
     }
