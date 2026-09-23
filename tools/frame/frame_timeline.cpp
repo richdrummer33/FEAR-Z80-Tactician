@@ -179,6 +179,9 @@ int main(int argc, char** argv) {
     u16 s_state = 0, s_map = 0, s_env_phase = 0;
     u16 s_dirty_min = 0, s_vblank_bursts = 0, s_vblank_missed = 0;
     u16 s_join_count = 0, s_join_max = 0, s_join_sum = 0;
+    u16 s_bc_patterns = 0, s_bc_patches = 0, s_bc_skip = 0;
+    u16 s_bc_crowded = 0, s_bc_local_fallbacks = 0;
+    u16 s_bc_any_dirty = 0, s_bc_pending = 0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
     const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
     const bool have_dirty_min =
@@ -192,6 +195,15 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_tspf_join_anchor_count", s_join_count) || find_symbol(noi, "g_tspf_join_anchor_count", s_join_count)) &&
         (find_symbol(noi, "_g_tspf_join_anchor_max_px", s_join_max) || find_symbol(noi, "g_tspf_join_anchor_max_px", s_join_max)) &&
         (find_symbol(noi, "_g_tspf_join_anchor_sum_px", s_join_sum) || find_symbol(noi, "g_tspf_join_anchor_sum_px", s_join_sum));
+    const bool have_boundary_diag =
+        (find_symbol(noi, "_g_tspf_boundary_last_patterns", s_bc_patterns) || find_symbol(noi, "g_tspf_boundary_last_patterns", s_bc_patterns)) &&
+        (find_symbol(noi, "_g_tspf_boundary_last_patches", s_bc_patches) || find_symbol(noi, "g_tspf_boundary_last_patches", s_bc_patches)) &&
+        (find_symbol(noi, "_g_tspf_boundary_skip_reason", s_bc_skip) || find_symbol(noi, "g_tspf_boundary_skip_reason", s_bc_skip)) &&
+        (find_symbol(noi, "_g_tspf_boundary_last_crowded", s_bc_crowded) || find_symbol(noi, "g_tspf_boundary_last_crowded", s_bc_crowded)) &&
+        (find_symbol(noi, "_g_tspf_boundary_last_local_fallbacks", s_bc_local_fallbacks) || find_symbol(noi, "g_tspf_boundary_last_local_fallbacks", s_bc_local_fallbacks));
+    const bool have_boundary_state =
+        (find_symbol(noi, "_g_tspf_boundary_any_dirty", s_bc_any_dirty) || find_symbol(noi, "g_tspf_boundary_any_dirty", s_bc_any_dirty)) &&
+        (find_symbol(noi, "_g_tspf_boundary_patterns_pending", s_bc_pending) || find_symbol(noi, "g_tspf_boundary_patterns_pending", s_bc_pending));
 
     u16 s_seam_count = 0, s_seam_x = 0, s_seam_vid = 0, s_seam_half = 0;
     const bool have_seams =
@@ -247,10 +259,11 @@ int main(int argc, char** argv) {
     Processor* cpu = core.GetProcessor();
 
     /* phase 1 input+motion, 2 render, 3 vsync, 4 VRAM upload, 5 loop tail */
-    static const unsigned ENV_PHASE_COUNT = 7;
+    static const unsigned ENV_PHASE_COUNT = 9;
     static const char* ENV_PHASE_NAME[ENV_PHASE_COUNT] = {
         "env_idle", "env_fetch", "env_focus", "env_walk",
-        "env_draw", "env_ret_end", "env_nt_end"
+        "env_draw", "env_ret_end", "env_nt_end",
+        "env_boundary_prepare", "env_boundary_apply"
     };
     struct Frame {
         uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t envph[ENV_PHASE_COUNT]; uint64_t total;
@@ -260,6 +273,8 @@ int main(int argc, char** argv) {
         uint16_t vblank_bursts, vblank_missed;
         uint8_t join_anchor_count, join_anchor_max_px;
         uint16_t join_anchor_sum_px;
+        uint8_t bc_patterns, bc_patches, bc_skip, bc_crowded, bc_local_fallbacks;
+        uint8_t bc_any_dirty, bc_pending;
         uint8_t seam_count;
         uint8_t seam_x[32], seam_vid[32], seam_half[32];
     };
@@ -326,6 +341,17 @@ int main(int argc, char** argv) {
                     last_vblank_bursts = vb;
                     last_vblank_missed = vm;
                 }
+                if (have_boundary_diag) {
+                    cur.bc_patterns = mem->DebugRetrieve(s_bc_patterns);
+                    cur.bc_patches = mem->DebugRetrieve(s_bc_patches);
+                    cur.bc_skip = mem->DebugRetrieve(s_bc_skip);
+                    cur.bc_crowded = mem->DebugRetrieve(s_bc_crowded);
+                    cur.bc_local_fallbacks = mem->DebugRetrieve(s_bc_local_fallbacks);
+                }
+                if (have_boundary_state) {
+                    cur.bc_any_dirty = mem->DebugRetrieve(s_bc_any_dirty);
+                    cur.bc_pending = mem->DebugRetrieve(s_bc_pending);
+                }
                 if (have_seams) {
                     cur.seam_count = mem->DebugRetrieve(s_seam_count);
                     if (cur.seam_count > 32u) cur.seam_count = 32u;
@@ -368,7 +394,7 @@ int main(int argc, char** argv) {
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
         if (have_env_phase)
             for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%s",ENV_PHASE_NAME[e]);
-        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px\n");
+        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px,boundary_patterns,boundary_patches,boundary_skip,boundary_crowded,boundary_local_fallbacks,boundary_any_dirty,boundary_pending\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -378,11 +404,14 @@ int main(int argc, char** argv) {
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
             if (have_env_phase)
                 for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%llu",(unsigned long long)f.envph[e]);
-            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u\n",
+            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
                 (unsigned long long)f.map_fnv64,
                 (unsigned)f.dirty_rows_pending, (unsigned)f.vblank_bursts, (unsigned)f.vblank_missed,
-                (unsigned)f.join_anchor_count, (unsigned)f.join_anchor_max_px, (unsigned)f.join_anchor_sum_px);
+                (unsigned)f.join_anchor_count, (unsigned)f.join_anchor_max_px, (unsigned)f.join_anchor_sum_px,
+                (unsigned)f.bc_patterns, (unsigned)f.bc_patches, (unsigned)f.bc_skip,
+                (unsigned)f.bc_crowded, (unsigned)f.bc_local_fallbacks,
+                (unsigned)f.bc_any_dirty, (unsigned)f.bc_pending);
         }
         std::fclose(csv);
     }
@@ -453,6 +482,32 @@ int main(int argc, char** argv) {
                     "prelock_worst=%upx updates_with_mismatch=%.1f%%\n",
                     (double)joins/frames.size(), joins ? (double)sum_px/joins : 0.0,
                     worst_px, 100.0*nonzero/frames.size());
+    }
+    if (have_boundary_diag) {
+        std::vector<uint64_t> pats, patches;
+        unsigned exact_updates=0u, crowded=0u, local_fb=0u, dirty_updates=0u, pending_updates=0u;
+        unsigned skip_hist[8] = {0};
+        double pat_mean=0.0, patch_mean=0.0;
+        for (const auto& f : frames) {
+            pats.push_back(f.bc_patterns); patches.push_back(f.bc_patches);
+            pat_mean += f.bc_patterns; patch_mean += f.bc_patches;
+            if (f.bc_patterns) ++exact_updates;
+            crowded += f.bc_crowded;
+            local_fb += f.bc_local_fallbacks;
+            if (f.bc_any_dirty) ++dirty_updates;
+            if (f.bc_pending) ++pending_updates;
+            if (f.bc_skip < 8u) ++skip_hist[f.bc_skip];
+        }
+        pat_mean/=frames.size(); patch_mean/=frames.size();
+        std::printf("boundary composite: exact_updates=%.1f%% patterns mean=%.2f p95=%.0f worst=%.0f "
+                    "patches mean=%.2f p95=%.0f worst=%.0f crowded_tiles=%u local_fallback_tiles=%u "
+                    "dirty_updates=%.1f%% pending_updates=%.1f%%\n",
+                    100.0*exact_updates/frames.size(), pat_mean, pct(pats,.95), pct(pats,1.0),
+                    patch_mean, pct(patches,.95), pct(patches,1.0), crowded, local_fb,
+                    100.0*dirty_updates/frames.size(), 100.0*pending_updates/frames.size());
+        std::printf("boundary skips: none=%u eye=%u appearance=%u event_overflow=%u pending=%u bank_reuse=%u build_capacity=%u other=%u\n",
+                    skip_hist[0],skip_hist[1],skip_hist[2],skip_hist[3],
+                    skip_hist[4],skip_hist[5],skip_hist[6],skip_hist[7]);
     }
     std::printf("frame timeline: %zu frames (warmup %u discarded)\n", frames.size(), warmup);
     std::printf("Game Gear budget at 60 Hz is %.0f T-states a frame, %.0f at 30 Hz\n\n",

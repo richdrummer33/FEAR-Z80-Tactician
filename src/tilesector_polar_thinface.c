@@ -633,6 +633,8 @@ uint8_t g_tspf_boundary_pattern_count;
 volatile uint8_t g_tspf_boundary_last_patterns;
 volatile uint8_t g_tspf_boundary_last_patches;
 volatile uint8_t g_tspf_boundary_skip_reason;
+volatile uint8_t g_tspf_boundary_last_crowded;
+volatile uint8_t g_tspf_boundary_last_local_fallbacks;
 
 static uint8_t s_pattern_hash[TSP_BC_SLOTS];
 static uint8_t s_patch_pos[TSP_BC_PATCH_MAX];
@@ -640,6 +642,10 @@ static uint16_t s_patch_word[TSP_BC_PATCH_MAX];
 static uint8_t s_patch_count;
 static uint8_t s_work[32];
 static uint8_t s_cur_cols[3];
+/* Only columns that actually received dynamic words need forced coarse
+ * restoration next update. Candidate/crowded columns are allowed to remain on
+ * the normal retained coarse path. */
+static uint8_t s_exact_cols[3];
 static uint8_t s_prev_cols[3];
 static uint8_t s_bank_used[2];
 static uint8_t s_bank_released[2];
@@ -935,10 +941,13 @@ void tsp_polar_boundary_reset(void) BANKED
     g_tspf_boundary_last_patterns=0u;
     g_tspf_boundary_last_patches=0u;
     g_tspf_boundary_skip_reason=0u;
+    g_tspf_boundary_last_crowded=0u;
+    g_tspf_boundary_last_local_fallbacks=0u;
     s_prev_bank=0xffu;
     s_target_bank=0xffu;
     s_prepared=0u;
     bc_clear3(s_cur_cols);
+    bc_clear3(s_exact_cols);
     bc_clear3(s_prev_cols);
     s_bank_used[0]=s_bank_used[1]=0u;
     s_bank_released[0]=s_bank_released[1]=0u;
@@ -961,8 +970,11 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
     g_tspf_boundary_last_patterns=0u;
     g_tspf_boundary_last_patches=0u;
     g_tspf_boundary_skip_reason=0u;
+    g_tspf_boundary_last_crowded=0u;
+    g_tspf_boundary_last_local_fallbacks=0u;
     g_tspf_seam_desc_count=0u;
     bc_clear3(s_cur_cols);
+    bc_clear3(s_exact_cols);
 
     /* Previous exact columns and current exact columns are deliberately forced
      * through the normal raster on this correctness rung.  It guarantees a
@@ -1067,13 +1079,23 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
          * of consuming a disproportionate share of the 18-slot dynamic bank.
          * Other, ordinary boundary tiles in the same frame remain exact. */
         if((uint8_t)(last-first)<2u){
+            uint8_t pattern_before=g_tspf_boundary_pattern_count;
+            uint8_t patch_before=s_patch_count;
+
+            /* Capacity pressure is TILE-local, not frame-fatal. Roll this tile
+             * back to the coarse substrate and keep exact composites already
+             * built for other columns. Counts are the ownership boundary:
+             * stale staging bytes/hash entries beyond pattern_count are
+             * unreachable and the next allocation overwrites them. */
             if(!bc_build_tile(first,last,col,s)){
-                g_tspf_boundary_pattern_count=0u;
-                s_patch_count=0u;
-                s_target_bank=0xffu;
-                g_tspf_boundary_skip_reason=6u;
-                return;
+                g_tspf_boundary_pattern_count=pattern_before;
+                s_patch_count=patch_before;
+                ++g_tspf_boundary_last_local_fallbacks;
+            }else if(s_patch_count!=patch_before){
+                bc_mark_col(s_exact_cols,col);
             }
+        }else{
+            ++g_tspf_boundary_last_crowded;
         }
         i=(uint8_t)(last+1u);
     }
@@ -1126,9 +1148,12 @@ void tsp_polar_boundary_apply(void) BANKED
         s_bank_used[s_target_bank]=1u;
         s_bank_released[s_target_bank]=0u;
         s_prev_bank=s_target_bank;
-        s_prev_cols[0]=s_cur_cols[0];
-        s_prev_cols[1]=s_cur_cols[1];
-        s_prev_cols[2]=s_cur_cols[2];
+        /* Do not make a crowded/coarse-only candidate pay restoration next
+         * frame. Only cells that actually reference this dynamic bank need the
+         * forced coarse erase before a new exact overlay can be installed. */
+        s_prev_cols[0]=s_exact_cols[0];
+        s_prev_cols[1]=s_exact_cols[1];
+        s_prev_cols[2]=s_exact_cols[2];
     }else{
         /* The forced coarse raster has removed every previous dynamic cell.
          * Release its pattern bank only now, then forget the old boundary set. */

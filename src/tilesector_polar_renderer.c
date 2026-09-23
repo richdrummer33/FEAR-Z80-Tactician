@@ -1812,9 +1812,12 @@ e1full_candidates_ready:
 #endif
     TSPF_SET_STAGE(3u); /* legacy stage marker; exact-envelope mode has no sort */
 #if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
-    /* Build exact-X boundary tile descriptors before the coarse walker. This
-     * also flags the handful of columns whose retained answer must be rebuilt. */
+    /* Bank 254 aliases the renderer's 8000h window, so PC-only attribution is
+     * ambiguous. The phase byte gives the profiler an exact cost bucket across
+     * the bank switch. */
+    TSPF_ENV_PHASE(7u);
     tsp_polar_boundary_prepare(s);
+    TSPF_ENV_PHASE(3u);
 #endif
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
     /* One banked call turns previous/current physical seam descriptors into a
@@ -1828,7 +1831,9 @@ e1full_candidates_ready:
 #if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
     /* The coarse columns are now stable. Replace only the exact mixed-owner
      * cells prepared above; ordinary columns never enter this path. */
+    TSPF_ENV_PHASE(8u);
     tsp_polar_boundary_apply();
+    TSPF_ENV_PHASE(4u);
 #endif
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
     /* Coarse ownership ends on 8px boundaries; the physical seam can sit up
