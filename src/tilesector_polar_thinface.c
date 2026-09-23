@@ -160,13 +160,13 @@ void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) B
         g_tspf_seam_vid[count]=vid;
         g_tspf_seam_desc_count=(uint8_t)(count+1u);
 
-        /* Shared physical corners already receive canonical Y in the envelope
-         * join and are cached by the normal top/bottom endpoint solver. Do not
-         * rediscover them in the banked post-pass. Only a one-sided begin/end
-         * silhouette needs the slower true-X height reconstruction. */
-        if(vid<32u &&
-           !((owner!=0xffu && (owner&0x40u)) &&
-             (next_owner!=0xffu && (next_owner&0x20u)))){
+        /* Start each physical seam as a possible Y-refinement candidate. The
+         * post-pass will cheaply clear vertices whose surviving runs carry the
+         * canonical endpoint flag set by envelope_join_connected(). This is
+         * stricter than guessing from topology here: if a neighbouring face
+         * collapsed below one coarse sample, no join occurred and the seam
+         * still needs true-X reconstruction. */
+        if(vid<32u){
             s_refine_needed[bi]|=bm;
             s_refine_x[vid]=ux;
             s_refine_best[vid]=0xffu;
@@ -321,12 +321,35 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
     uint8_t i,j;
 
     /* The common connected-corner case is already solved by the original
-     * top/bottom edge path. Only one-sided physical silhouettes are indexed in
-     * s_refine_needed by the recorder, so the expensive post-pass no longer
-     * walks every seam against the run endpoints. */
+     * top/bottom edge path. depth_plane bit 0/1 marks a run endpoint whose
+     * physical Y was produced by envelope_join_connected(), so first remove
+     * those vertices from the slow worklist. A narrow dropped neighbour never
+     * received that flag and therefore remains correctly eligible. */
     if(!(s_refine_needed[0]|s_refine_needed[1]|
          s_refine_needed[2]|s_refine_needed[3]))
         return;
+
+    for(j=0u;j<run_count;++j){
+        TSPThinRun *r=&g_runs[j];
+        uint8_t k;
+        for(k=0u;k<2u;++k){
+            uint8_t vid=(uint8_t)(k ? r->v1 : r->v0);
+            uint8_t bi,bm,canonical=(uint8_t)(k ? 2u : 1u);
+            if(vid>=32u || !(r->depth_plane&canonical)) continue;
+            bi=(uint8_t)(vid>>3);
+            bm=(uint8_t)(1u<<(vid&7u));
+            s_refine_needed[bi]&=(uint8_t)~bm;
+        }
+    }
+
+    if(!(s_refine_needed[0]|s_refine_needed[1]|
+         s_refine_needed[2]|s_refine_needed[3])){
+        s_refine_needed[0]=0u;
+        s_refine_needed[1]=0u;
+        s_refine_needed[2]=0u;
+        s_refine_needed[3]=0u;
+        return;
+    }
 
     for(j=0u;j<run_count;++j){
         TSPThinRun *r=&g_runs[j];
