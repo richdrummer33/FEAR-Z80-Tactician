@@ -148,6 +148,12 @@ static uint16_t p99_border_id(uint8_t side,uint8_t sem){
 }
 #endif
 static void emit_edge_p99_at(uint16_t id,int8_t off,uint8_t mag,uint8_t border){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){int8_t line=(int8_t)(off+(int8_t)k_edge_step_p99[mag][x]);uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:C_MID);if(side_border(border,x))c=C_BLACK;paint_pixel(x,y,c);}set_bkg_4bpp_data(id,1u,g_tile);}
+#if defined(TSPF_DIRECT_PHYSICAL_ENDPOINTS) && TSPF_DIRECT_PHYSICAL_ENDPOINTS
+/* Direct endpoint tiles are ordinary MID wall fill plus one/two black physical
+ * corner pixels. All 36 masks are stored explicitly, so the runtime never
+ * needs HFLIP attributes or a seam-mask compositor. */
+static void emit_direct_seam_at(uint16_t id,uint8_t mask){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x)paint_pixel(x,y,(mask&(uint8_t)(1u<<x))?C_BLACK:C_MID);set_bkg_4bpp_data(id,1u,g_tile);}
+#endif
 static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT);emit_solid(TSP_TILE_FLOOR,C_FLOOR);emit_horizon();
 #if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
     int8_t off;uint16_t next_id=15u;
@@ -156,6 +162,17 @@ static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT
      * to an earlier ID, while first occurrences were assigned in ID order. */
     for(m=0u;m<=TSP_P99_EDGE_MAX;++m)for(o=0u;o<37u;++o){uint16_t id=p99_edge_id(m,o);if(id==next_id){off=(int8_t)o-28;emit_edge_p99_at(id,off,m,0u);++next_id;}}
     for(b=1u;b<3u;++b)for(o=0u;o<16u;++o)for(m=0u;m<8u;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=p99_border_id(b,sem);if(id==next_id){emit_edge_p99_at(id,(int8_t)o-7,m,b);++next_id;}}
+#if defined(TSPF_DIRECT_PHYSICAL_ENDPOINTS) && TSPF_DIRECT_PHYSICAL_ENDPOINTS
+    /* 8 single-line masks, then all 28 unordered pairs. The reclaimed IDs are
+     * contiguous immediately after the compact edge+border vocabulary. */
+    {
+        uint8_t x,y;
+        uint16_t id=TSP_DIRECT_SEAM_BASE;
+        for(x=0u;x<8u;++x) emit_direct_seam_at(id++,(uint8_t)(1u<<x));
+        for(x=0u;x<7u;++x)for(y=(uint8_t)(x+1u);y<8u;++y)
+            emit_direct_seam_at(id++,(uint8_t)((1u<<x)|(1u<<y)));
+    }
+#endif
 #elif defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
     for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)s*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);emit_edge_at(id,s,o,m,0u);}
