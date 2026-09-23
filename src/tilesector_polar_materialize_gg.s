@@ -18,15 +18,11 @@
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
         .globl  _g_polar_run_sid
-        .globl  _g_polar_run_v0
-        .globl  _g_polar_run_v1
         .globl  _g_tspf_seam_desc_count
         .globl  _g_tspf_seam_x
         .globl  _g_tspf_seam_vid
         .globl  _g_tspf_seam_vertex_half
         .globl  _g_tspf_seam_cur_cols
-        .globl  _g_tspf_seam_dirty_cols
-        .globl  _g_tspf_seam_history_valid
         .globl  _g_polar_run_left_anchor
         .globl  _g_polar_run_right_anchor
         .globl  _g_polar_run_owned
@@ -45,7 +41,6 @@
         .globl  _g_tsp_edge_border_b2_packed_home
         .globl  _g_tsp_seam_mask_home
         .globl  _g_tsp_seam_reflect_home
-        .globl  _tsp_polar_subcolumn_seams_fast
         .globl  _tsp_probe_sym_edge_key
         .globl  _tsp_probe_edge_slope
         .globl  _tsp_probe_local_index
@@ -145,20 +140,6 @@ run_left_ready$:
         ld      (#r_run_halfl$), a
         ld      (#_g_polar_mat_top_l), hl
 
-        ; Cache the physical left endpoint height once. A span that later
-        ; collapses below one coarse column can still recover this vertex from
-        ; its surviving neighbour.
-        ld      a, (#r_run_col$)
-        ld      c, a
-        ld      a, (#_g_polar_run_c0)
-        cp      c
-        jr      nz, run_left_vertex_cached$
-        ld      a, (#r_run_halfl$)
-        ld      b, a
-        ld      a, (#_g_polar_run_v0)
-        call    seam_cache_vertex_half$
-run_left_vertex_cached$:
-
         ; R94 endpoint lock. Interior right edges use the compact Q6 step,
         ; but the LAST right edge uses the exact b endpoint already calculated
         ; by the depth bank. This removes accumulated reciprocal/step error at
@@ -184,17 +165,6 @@ run_right_ready$:
         ld      a, c
         ld      (#r_run_halfr$), a
         ld      (#_g_polar_mat_top_r), hl
-
-        ld      a, (#r_run_col$)
-        ld      c, a
-        ld      a, (#_g_polar_run_c1)
-        cp      c
-        jr      nz, run_right_vertex_cached$
-        ld      a, (#r_run_halfr$)
-        ld      b, a
-        ld      a, (#_g_polar_run_v1)
-        call    seam_cache_vertex_half$
-run_right_vertex_cached$:
 
         ; Physical-chain border bits: 1 at the true left endpoint, 2 at the
         ; true right endpoint. Interior coarse columns carry no border bits.
@@ -1714,52 +1684,12 @@ p99_attrs$:
 ; lines are sufficient to keep a 1..7px face visibly distinct.
 ; ---------------------------------------------------------------------------
 
-; A=vertex id 0..31, B=FULL half-height. Preserves BC/DE/HL.
-seam_cache_vertex_half$:
-        cp      #32
-        ret     nc
-        push    bc
-        push    de
-        push    hl
-        ld      e, a
-        ld      d, #0
-        ld      hl, #seam_vertex_half$
-        add     hl, de
-        ld      (hl), b
-        pop     hl
-        pop     de
-        pop     bc
-        ret
-
 ; Return NZ only when horizontal physical-seam ownership changed in the
 ; CURRENT materializer column. The banked pre-pass compares previous/current
 ; seam descriptors, so unchanged columns can keep using the retained Y patch;
 ; changed/vacated columns fall back to the normal front-to-back raster.
 seam_prev_col_test$:
-        push    bc
-        push    de
-        push    hl
-        ld      a, (#_g_polar_mat_col)
-        ld      c, a
-        and     #7
-        ld      e, a
-        ld      d, #0
-        ld      hl, #polar_dirty_mask_lut$
-        add     hl, de
-        ld      b, (hl)
-        ld      a, c
-        srl     a
-        srl     a
-        srl     a
-        ld      e, a
-        ld      d, #0
-        ld      hl, #_g_tspf_seam_dirty_cols
-        add     hl, de
-        ld      a, (hl)
-        and     b
-        pop     hl
-        pop     de
-        pop     bc
+        xor     a
         ret
 
 ; ---------------------------------------------------------------------------
@@ -1829,39 +1759,12 @@ ret_inval_r1$:
         ld      (#seam_cur_cols$+0), a
         ld      (#seam_cur_cols$+1), a
         ld      (#seam_cur_cols$+2), a
-        ld      (#_g_tspf_seam_dirty_cols+0), a
-        ld      (#_g_tspf_seam_dirty_cols+1), a
-        ld      (#_g_tspf_seam_dirty_cols+2), a
-        ld      (#_g_tspf_seam_history_valid), a
         pop     hl
         pop     bc
         ; fall through to clear live/poison and disable the direct path
 _tsp_polar_ret_begin_frame::
         push    bc
         push    hl
-
-        ; Preserve exactly which columns contained an overlay last frame.
-        ld      a, (#seam_cur_cols$+0)
-        ld      (#seam_prev_cols$+0), a
-        ld      a, (#seam_cur_cols$+1)
-        ld      (#seam_prev_cols$+1), a
-        ld      a, (#seam_cur_cols$+2)
-        ld      (#seam_prev_cols$+2), a
-        xor     a
-        ld      (#seam_cur_cols$+0), a
-        ld      (#seam_cur_cols$+1), a
-        ld      (#seam_cur_cols$+2), a
-        ld      (#seam_desc_count$), a
-
-        ; 0xff is impossible for FULL half-height (0..127), so it doubles as
-        ; an inexpensive per-vertex validity marker.
-        ld      hl, #seam_vertex_half$
-        ld      b, #32
-        ld      a, #0xff
-seam_vertex_clear$:
-        ld      (hl), a
-        inc     hl
-        djnz    seam_vertex_clear$
 
         xor     a
         ld      (#polar_ret_live$+0), a
