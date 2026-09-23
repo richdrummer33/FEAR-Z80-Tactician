@@ -44,7 +44,10 @@ def parse_center_lut(path):
     except IndexError: raise RuntimeError('missing center LUT symbol')
     vals=[]
     for line in body.splitlines():
-        if '.db' in line: vals += nums(line.split('.db',1)[1])
+        if '.db' in line:
+            vals += nums(line.split('.db',1)[1])
+            if len(vals) >= 1025:
+                break
     if len(vals)!=1025: raise RuntimeError(f'center LUT expected 1025, got {len(vals)}')
     return vals
 
