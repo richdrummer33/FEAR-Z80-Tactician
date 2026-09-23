@@ -452,8 +452,10 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                  * touch below. Overlaps are already current-pass seam words,
                  * so they no longer need duplicate ID/range checks. */
                 uint16_t idxb=(uint16_t)((uint16_t)last*20u+col);
-                uint16_t old=g_map[idx];
-                uint16_t oldb=g_map[idxb];
+                uint16_t *mapt=&g_map[idx];
+                uint16_t *mapb=&g_map[idxb];
+                uint16_t old=*mapt;
+                uint16_t oldb=*mapb;
                 uint8_t tb=(uint8_t)(idx>>3);
                 uint8_t tm=(uint8_t)(1u<<(idx&7u));
 
@@ -505,7 +507,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                     }
 
                     if(nw!=old){
-                        g_map[idx]=nw;
+                        *mapt=nw;
                         if(g_polar_nt_row_min[row]==0xffu ||
                            col<g_polar_nt_row_min[row])
                             g_polar_nt_row_min[row]=col;
@@ -513,7 +515,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                             g_polar_nt_row_max[row]=col;
                     }
                     if(nw!=oldb){
-                        g_map[idxb]=nw;
+                        *mapb=nw;
                         if(g_polar_nt_row_min[rowb]==0xffu ||
                            col<g_polar_nt_row_min[rowb])
                             g_polar_nt_row_min[rowb]=col;
@@ -525,10 +527,10 @@ seam_pair_done:
                     if((uint8_t)(row+1u)>=rowb) break;
                     ++row;
                     --rowb;
-                    idx=(uint16_t)(idx+20u);
-                    idxb=(uint16_t)(idxb-20u);
-                    old=g_map[idx];
-                    oldb=g_map[idxb];
+                    mapt+=20u;
+                    mapb-=20u;
+                    old=*mapt;
+                    oldb=*mapb;
 
                     if(tm&0xf0u){
                         tm=(uint8_t)(tm>>4);
