@@ -78,6 +78,10 @@ static uint8_t s_refine_bestd[32];
 static uint8_t s_refine_lo[32];
 static uint8_t s_refine_hi[32];
 static uint8_t s_refine_matches[32];
+/* Connected two-face corners already get their canonical physical Y from
+ * envelope_join_connected() and the materializer endpoint cache. Only a
+ * one-sided physical silhouette still needs the slower true-X reconstruction. */
+static uint8_t s_refine_needed[4];
 extern const uint8_t g_e1env_center_col_lut[1025];
 
 extern const uint8_t g_tsp_seam_mask_home[20];
@@ -155,6 +159,22 @@ void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) B
         g_tspf_seam_x[count]=ux;
         g_tspf_seam_vid[count]=vid;
         g_tspf_seam_desc_count=(uint8_t)(count+1u);
+
+        /* Shared physical corners already receive canonical Y in the envelope
+         * join and are cached by the normal top/bottom endpoint solver. Do not
+         * rediscover them in the banked post-pass. Only a one-sided begin/end
+         * silhouette needs the slower true-X height reconstruction. */
+        if(vid<32u &&
+           !((owner!=0xffu && (owner&0x40u)) &&
+             (next_owner!=0xffu && (next_owner&0x20u)))){
+            s_refine_needed[bi]|=bm;
+            s_refine_x[vid]=ux;
+            s_refine_best[vid]=0xffu;
+            s_refine_bestd[vid]=0xffu;
+            s_refine_lo[vid]=0xffu;
+            s_refine_hi[vid]=0u;
+            s_refine_matches[vid]=0u;
+        }
 
         /* Current exact seam coverage is known before any coarse column draws. */
         g_tspf_seam_cur_cols[col>>3] |= (uint8_t)(1u<<(col&7u));
@@ -300,37 +320,25 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 {
     uint8_t i,j;
 
-    /* Build a compact vertex -> true-X index for only the physical seams that
-     * exist this frame. The measured exact sweeps contain no duplicate vertex
-     * descriptors; if one ever appears, the last copy is equivalent because a
-     * physical vertex has one projected X. */
-    /* 0xff is outside the 0..159 pixel aperture, so the X table doubles
-     * as the active-vertex map. Clearing 32 linear bytes is cheaper on Z80
-     * than rebuilding/test-shifting a four-byte bitset at every run endpoint. */
-    for(i=0u;i<32u;++i) s_refine_x[i]=0xffu;
-    for(i=0u;i<g_tspf_seam_desc_count;++i){
-        uint8_t vid=g_tspf_seam_vid[i];
-        if(vid>=32u) continue;
-        s_refine_x[vid]=g_tspf_seam_x[i];
-        s_refine_best[vid]=0xffu;
-        s_refine_bestd[vid]=0xffu;
-        s_refine_lo[vid]=0xffu;
-        s_refine_hi[vid]=0u;
-        s_refine_matches[vid]=0u;
-    }
+    /* The common connected-corner case is already solved by the original
+     * top/bottom edge path. Only one-sided physical silhouettes are indexed in
+     * s_refine_needed by the recorder, so the expensive post-pass no longer
+     * walks every seam against the run endpoints. */
+    if(!(s_refine_needed[0]|s_refine_needed[1]|
+         s_refine_needed[2]|s_refine_needed[3]))
+        return;
 
-    /* Invert the former descriptor x run cross-product. Each run can offer at
-     * most its two endpoint vertices, so the common work is about 2R rather
-     * than D*R. seam_half_from_run() and the winner policy are unchanged. */
     for(j=0u;j<run_count;++j){
         TSPThinRun *r=&g_runs[j];
         uint8_t k;
         for(k=0u;k<2u;++k){
             uint8_t vid=(uint8_t)(k ? r->v1 : r->v0);
-            uint8_t x,d,h;
+            uint8_t x,d,h,bi,bm;
             if(vid>=32u) continue;
+            bi=(uint8_t)(vid>>3);
+            bm=(uint8_t)(1u<<(vid&7u));
+            if(!(s_refine_needed[bi]&bm)) continue;
             x=s_refine_x[vid];
-            if(x==0xffu) continue;
 
             d=0xffu;
             h=seam_half_from_run(r,vid,x,&d);
@@ -348,8 +356,11 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
 
     for(i=0u;i<g_tspf_seam_desc_count;++i){
         uint8_t vid=g_tspf_seam_vid[i];
-        uint8_t best,matches,old;
+        uint8_t bi,bm,best,matches,old;
         if(vid>=32u) continue;
+        bi=(uint8_t)(vid>>3);
+        bm=(uint8_t)(1u<<(vid&7u));
+        if(!(s_refine_needed[bi]&bm)) continue;
 
         best=s_refine_best[vid];
         if(best==0xffu) continue;
@@ -357,22 +368,19 @@ void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED
         old=g_tspf_seam_vertex_half[vid];
 
         if(matches>1u && old!=0xffu){
-            /* Normally envelope_join_connected() already reconciles the two
-             * faces and its cached canonical Y is the best answer. There is
-             * one nasty exception: a wall plane closer than the 10-unit
-             * reciprocal near limit saturates BEFORE its oblique ray factor
-             * is applied. Then the two mathematically-equal corner estimates
-             * split badly. Only override when disagreement is extreme. */
             if((uint8_t)(s_refine_hi[vid]-s_refine_lo[vid])>12u)
                 g_tspf_seam_vertex_half[vid]=s_refine_hi[vid];
-            continue;
+        } else {
+            g_tspf_seam_vertex_half[vid]=best;
         }
-
-        /* With exactly one surviving face there is no competing canonical
-         * corner to protect. The same true-X/locality test above is sufficient
-         * evidence, so keep the proven sole-face policy unchanged. */
-        g_tspf_seam_vertex_half[vid]=best;
     }
+
+    /* Per-frame worklist. Zero it here so a later frame with no seam
+     * descriptors cannot inherit stale refinement requests. */
+    s_refine_needed[0]=0u;
+    s_refine_needed[1]=0u;
+    s_refine_needed[2]=0u;
+    s_refine_needed[3]=0u;
 }
 
 void tsp_polar_subcolumn_seams_fast(void) BANKED
@@ -481,27 +489,22 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                            idb>=(TSP_SEAM_TILE_BASE+TSP_SEAM_TILE_COUNT))
                             goto seam_pair_done;
                         ci=(uint8_t)(id-TSP_SEAM_TILE_BASE);
-                        if(ci<TSP_SEAM_BASE_COUNT){
-                            mask=(old&TSP_ATTR_FLIPX) ?
-                                 g_tsp_seam_reflect_home[ci] :
-                                 g_tsp_seam_mask_home[ci];
-                        } else {
-                            ci=(uint8_t)(ci-TSP_SEAM_BASE_COUNT);
-                            mask=(old&TSP_ATTR_FLIPX) ?
-                                 k_extra_seam_reflect[ci] :
-                                 k_extra_seam_mask[ci];
-                        }
-                        mask|=bit;
+                        /* This experiment deliberately supports at most two
+                         * exact vertical seams in an 8px cell. Crowded 3+
+                         * geometry is ignored for now instead of entering the
+                         * expensive general/fallback compositor. */
+                        if(ci>=TSP_SEAM_BASE_COUNT)
+                            goto seam_pair_done;
+                        mask=(old&TSP_ATTR_FLIPX) ?
+                             g_tsp_seam_reflect_home[ci] :
+                             g_tsp_seam_mask_home[ci];
+                        if(mask&bit)
+                            goto seam_pair_done;
 
+                        mask|=bit;
                         enc=k_seam_encode[mask];
-                        if(enc==0xffu){
-                            uint8_t lo=0u,hi=7u;
-                            while(lo<8u && !(mask&(uint8_t)(1u<<lo))) ++lo;
-                            while(hi>lo && !(mask&(uint8_t)(1u<<hi))) --hi;
-                            mask=(uint8_t)((1u<<lo)|(1u<<hi));
-                            enc=k_seam_encode[mask];
-                            if(enc==0xffu) goto seam_pair_done;
-                        }
+                        if(enc==0xffu || (uint8_t)(enc&31u)>=TSP_SEAM_BASE_COUNT)
+                            goto seam_pair_done;
                         nw=(uint16_t)(TSP_SEAM_TILE_BASE+(enc&31u));
                         if(enc&0x80u) nw=(uint16_t)(nw+TSP_ATTR_FLIPX);
                     }
