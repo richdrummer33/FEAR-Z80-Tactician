@@ -13,6 +13,7 @@ on:
       - experiment/e1m1-thin-face-survival
       - experiment/e1m1-silhouette-borders
       - experiment/e1m1-boundary-composite
+      - experiment/e1m1-boundary-sprite-census
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
@@ -36,6 +37,7 @@ on:
       - tools/frame/gen_traces.py
       - tools/frame/exact_projection_census.py
       - tools/frame/boundary_composite_census.py
+      - tools/frame/boundary_sprite_census.py
       - tools/frame/mat_census.cpp
       - tools/polar_function_profile_runner.cpp
       - tools/build_gearsystem_tools.sh
@@ -380,6 +382,19 @@ jobs:
                      "$ROOT/proj_strafe.csv" "$ROOT/proj_far_rotate.csv" \
             --label all_projection_sweeps \
             | tee "$ROOT/boundary-composite-census.txt"
+
+      - name: Census pixel-positioned boundary sprite overlays
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          python3 tools/frame/boundary_sprite_census.py \
+            --map-inc "$GEN/optimized_renderer_map_data.inc" \
+            --frames "$ROOT/proj_rotate.csv" "$ROOT/proj_depth.csv" \
+                     "$ROOT/proj_strafe.csv" "$ROOT/proj_far_rotate.csv" \
+            --label all_projection_sweeps \
+            | tee "$ROOT/boundary-sprite-census.txt"
 
       - name: Bottom-up focused-envelope profile
         shell: bash
