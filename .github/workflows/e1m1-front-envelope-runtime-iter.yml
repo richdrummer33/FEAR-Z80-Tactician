@@ -34,6 +34,7 @@ on:
       - tools/frame/gen_traces.py
       - tools/frame/exact_projection_census.py
       - tools/frame/mat_census.cpp
+      - tools/polar_function_profile_runner.cpp
       - tools/build_gearsystem_tools.sh
       - .github/actions/gearsystem-tools/action.yml
   workflow_dispatch:
