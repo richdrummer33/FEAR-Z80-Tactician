@@ -106,12 +106,11 @@ uint8_t g_polar_run_c1;
 uint8_t g_polar_run_profile;
 uint8_t g_polar_run_left_real;
 uint8_t g_polar_run_right_real;
-#if TSPF_DIRECT_PHYSICAL_ENDPOINTS
 /* Low byte of a 9-bit direct-seam tile ID for the run's first/last coarse
- * column; 0xff means ordinary FULL fill. Seam IDs are all 0x1xx. */
+ * column; 0xff means ordinary FULL fill. Kept in the bridge even when the
+ * experiment is disabled so the fixed assembly object links unchanged. */
 uint8_t g_polar_run_left_seam_tile;
 uint8_t g_polar_run_right_seam_tile;
-#endif
 int16_t g_polar_run_iq;
 int16_t g_polar_run_step;
 /* Identity of the surface this run projects. The retained swept-boundary
@@ -1467,6 +1466,9 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
         g_polar_run_right_real = r->right_real;
 #if TSPF_DIRECT_PHYSICAL_ENDPOINTS
         direct_run_seam_tiles(r,&g_polar_run_left_seam_tile,&g_polar_run_right_seam_tile);
+#else
+        g_polar_run_left_seam_tile=0xffu;
+        g_polar_run_right_seam_tile=0xffu;
 #endif
         g_polar_run_iq = iq;
         g_polar_run_step = step;
