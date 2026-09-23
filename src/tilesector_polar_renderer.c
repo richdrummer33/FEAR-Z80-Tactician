@@ -47,6 +47,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_THIN_FACE_SURVIVAL
 #define TSPF_THIN_FACE_SURVIVAL 0
 #endif
+#ifndef TSPF_BOUNDARY_COMPOSITE
+#define TSPF_BOUNDARY_COMPOSITE 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -88,6 +91,10 @@ void tsp_polar_record_subcolumn_boundary(uint8_t left_i,uint8_t n,int16_t rel) B
 void tsp_polar_seam_prepare_dirty(void) BANKED;
 void tsp_polar_refine_seam_heights(uint8_t run_count) BANKED;
 void tsp_polar_subcolumn_seams_fast(void) BANKED;
+#endif
+#if TSPF_BOUNDARY_COMPOSITE
+void tsp_polar_boundary_prepare(const TSPState *s) BANKED;
+void tsp_polar_boundary_apply(void) BANKED;
 #endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
@@ -256,7 +263,7 @@ uint16_t g_corner_bearing_q12[32];
  * envelope already supplies an 8-bit vertex mask shape, so this reuses the
  * same byte+bit calculation as the LBF fallback mask instead of paying a
  * 32-byte stamp array + epoch compare on every bearing request. */
-static uint8_t g_corner_bearing_valid[4];
+uint8_t g_corner_bearing_valid[4];
 /* World-space corner bearings depend on player X/Y, not yaw. Keep solved
  * values across pure rotation frames; translation clears only four bytes. */
 static int16_t g_corner_bearing_x_q4;
@@ -1392,7 +1399,12 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
 #endif
         g_polar_run_c0 = c0;
         g_polar_run_c1 = c1;
-#if TSPF_THIN_FACE_SURVIVAL
+#if TSPF_BOUNDARY_COMPOSITE
+        /* Exact-X composite tiles own physical horizontal handoffs. Never emit
+         * a knowingly snapped 0/7 coarse border underneath them. */
+        g_polar_run_left_real = 0u;
+        g_polar_run_right_real = 0u;
+#elif TSPF_THIN_FACE_SURVIVAL
         /* Physical endpoint borders are now represented by the true-X seam
          * overlay. Emitting them here as well places the same corner at the
          * snapped 8px ownership boundary, often in the adjacent tile. That is
@@ -1803,6 +1815,11 @@ e1full_candidates_ready:
     g_tspf_active_runs = count;
 #endif
     TSPF_SET_STAGE(3u); /* legacy stage marker; exact-envelope mode has no sort */
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+    /* Build exact-X boundary tile descriptors before the coarse walker. This
+     * also flags the handful of columns whose retained answer must be rebuilt. */
+    tsp_polar_boundary_prepare(s);
+#endif
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
     /* One banked call turns previous/current physical seam descriptors into a
      * 20-bit dirty-column set before front-to-back materialization begins. */
@@ -1812,6 +1829,11 @@ e1full_candidates_ready:
     TSPF_ENV_PHASE(4u);
     for (i = 0; i < count; ++i)
         draw_run(out_map, cols, &g_runs[g_run_order[i]], s);
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+    /* The coarse columns are now stable. Replace only the exact mixed-owner
+     * cells prepared above; ordinary columns never enter this path. */
+    tsp_polar_boundary_apply();
+#endif
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
     /* Coarse ownership ends on 8px boundaries; the physical seam can sit up
      * to four pixels inside that tile. Re-evaluate its cached half-height on
