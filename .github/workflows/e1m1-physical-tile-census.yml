@@ -1,0 +1,61 @@
+name: E1M1 physical shared-corner tile census
+
+on:
+  push:
+    branches:
+      - experiment/e1m1-shared-corner-raster
+    paths:
+      - tools/e1env_subcolumn_census.py
+      - tools/e1env_physical_tile_census.py
+      - .github/workflows/e1m1-physical-tile-census.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  census:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore immutable Run 124 artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/run124
+          for attempt in 1 2 3 4; do
+            if gh run download 35665606595 \
+              -n GG-E1M1-Exact-Q4-FocusedEnvelope \
+              -D build/run124; then
+              break
+            fi
+            test "$attempt" -lt 4
+            sleep $((attempt * 3))
+          done
+          test -f build/run124/focused.csv
+          test -f build/run124/generated/e1env_generated.h
+          test -f build/run124/generated/optimized_renderer_map_data.inc
+
+      - name: Census physical one-pass tile vocabulary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/e1env_physical_tile_census.py \
+            --generated-dir build/run124/generated \
+            --center-lut src/e1env_center_col_gg.s \
+            --trace-csv build/run124/focused.csv \
+            | tee build/run124/physical-tile-census.txt
+          grep -q '^PHYSICAL_TILE_CENSUS$' build/run124/physical-tile-census.txt
+          grep -q 'coverage_conflicts_px=0' build/run124/physical-tile-census.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: E1M1-Physical-Shared-Corner-Census
+          path: build/run124/physical-tile-census.txt
+          if-no-files-found: error
+          retention-days: 30
