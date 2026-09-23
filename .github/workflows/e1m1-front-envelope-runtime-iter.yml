@@ -28,6 +28,7 @@ on:
       - tools/e1env_depth_edges_bank.py
       - tools/e1env_local_bearing_field.py
       - tools/e1env_plane_meta.py
+      - tools/e1env_vertex_depth_bank.py
       - src/e1env_local_bearing_eval_gg.s
       - tools/frame/frame_timeline.cpp
       - tools/frame/mat_census.cpp
@@ -94,9 +95,10 @@ jobs:
           DEPTH_BASE=$((BEARING_BASE+8))
           LBF_BASE=$((DEPTH_BASE+2))
           LBF_DISPATCH=$((LBF_BASE+56))
-          test "$LBF_DISPATCH" -lt 255
-          printf 'envelope_last_bank=%s\nbearing_base=%s\ndepth_base=%s\nlbf_base=%s\nlbf_dispatch=%s\n' \
-            "$LAST_BANK" "$BEARING_BASE" "$DEPTH_BASE" "$LBF_BASE" "$LBF_DISPATCH" \
+          VERTEX_BANK=$((LBF_DISPATCH+1))
+          test "$VERTEX_BANK" -lt 255
+          printf 'envelope_last_bank=%s\nbearing_base=%s\ndepth_base=%s\nlbf_base=%s\nlbf_dispatch=%s\nvertex_bank=%s\n' \
+            "$LAST_BANK" "$BEARING_BASE" "$DEPTH_BASE" "$LBF_BASE" "$LBF_DISPATCH" "$VERTEX_BANK" \
             | tee "$ROOT/perf-bank-plan.txt"
           python3 tools/e1env_bearing_lut.py \
             --map-inc "$GEN/optimized_renderer_map_data.inc" \
@@ -115,6 +117,10 @@ jobs:
             --map-inc "$GEN/optimized_renderer_map_data.inc" \
             --out "$GEN/e1env_plane_meta.h" | tee "$ROOT/plane-meta.txt"
           grep -q 'E1ENV_PLANE_META' "$ROOT/plane-meta.txt"
+          python3 tools/e1env_vertex_depth_bank.py \
+            --map-inc "$GEN/optimized_renderer_map_data.inc" \
+            --out-dir "$GEN" --bank "$VERTEX_BANK" | tee "$ROOT/vertex-depth.txt"
+          grep -q 'E1ENV_VERTEX_DEPTH' "$ROOT/vertex-depth.txt"
 
       - name: Install GBDK 4.5.0
         shell: bash
@@ -136,7 +142,7 @@ jobs:
           GEN="$ROOT/generated"
           LCC="$PWD/.toolchain/gbdk/bin/lcc"
           : > "$ROOT/env-objs.txt"
-          for src in "$GEN"/e1env_dispatch.c "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c "$GEN"/e1env_bearing_*.c "$GEN"/e1env_depth_edges_*.c "$GEN"/e1env_local_bearing_dispatch.c; do
+          for src in "$GEN"/e1env_dispatch.c "$GEN"/e1env_idx_*.c "$GEN"/e1env_prog_*.c "$GEN"/e1env_bearing_*.c "$GEN"/e1env_depth_edges_*.c "$GEN"/e1env_local_bearing_dispatch.c "$GEN"/e1env_vertex_depth.c; do
             base="$(basename "${src%.c}")"
             obj="$ROOT/${base}.o"
             "$LCC" -mz80:gg -c -Wf--opt-code-speed -I"$GEN" -o "$obj" "$src"
@@ -169,7 +175,7 @@ jobs:
             POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
             POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
             POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
-            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_VERTEX_DEPTH=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/build.txt"
           cp build/gg-tilesector-polar.gg "$ROOT/focused.gg"
           cp build/gg-tilesector-polar.noi "$ROOT/focused.noi"
