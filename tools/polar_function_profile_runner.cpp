@@ -137,7 +137,7 @@ static std::vector<Range> load_thinface_ranges(const char* noi) {
     return out;
 }
 
-static std::vector<SourceLineRange> load_source_lines(const char* noi,u16 fn_lo,u16 fn_hi) {
+static std::vector<SourceLineRange> load_source_lines(const char* noi,u16 fn_lo,u16 fn_hi,uint8_t bank) {
     std::ifstream f(noi);
     std::string line;
     std::vector<std::pair<u16,unsigned>> starts;
@@ -149,6 +149,7 @@ static std::vector<SourceLineRange> load_source_lines(const char* noi,u16 fn_lo,
         if(!std::regex_search(line,m,re)) continue;
         const unsigned src_line=(unsigned)std::strtoul(m[1].str().c_str(),nullptr,10);
         const unsigned long raw=std::strtoul(m[2].str().c_str(),nullptr,16);
+        if(bank!=0xffu && (uint8_t)(raw>>16)!=bank) continue;
         const u16 a=(u16)raw;
         if(a>=fn_lo && a<fn_hi) starts.push_back({a,src_line});
     }
@@ -273,14 +274,18 @@ int main(int argc,char**argv) {
     auto ranges=load_polar_ranges(noi,sym);
     std::vector<SourceProfile> source_profiles;
     const char* source_targets[] = {
-        "project_envelope_span", "envelope_focus_span", "envelope_add_span", "draw_run"
+        "project_envelope_span", "envelope_focus_span", "envelope_add_span", "draw_run",
+        "thinface/tsp_polar_record_subcolumn_boundary",
+        "thinface/tsp_polar_refine_seam_heights",
+        "thinface/seam_half_from_run",
+        "thinface/tsp_polar_subcolumn_seams_fast"
     };
     for(const char* wanted:source_targets) {
         for(const auto &r:ranges) {
             if(r.name==wanted) {
                 SourceProfile sp;
                 sp.function=wanted; sp.lo=r.lo; sp.hi=r.hi; sp.bank=r.bank;
-                sp.lines=load_source_lines(noi,r.lo,r.hi);
+                sp.lines=load_source_lines(noi,r.lo,r.hi,r.bank);
                 if(!sp.lines.empty()) source_profiles.push_back(std::move(sp));
                 break;
             }
