@@ -190,6 +190,7 @@ def main():
     joined_unique_per_frame=[]
     joined_edge_unique_per_frame=[]
     joined_sequence=[]
+    worst_vertex=[]
 
     for fi,row in enumerate(rows):
         xq=int(row['x_q4'])
@@ -298,6 +299,12 @@ def main():
             left_vs_vertex_y[abs(tl-tv)]+=1
             right_vs_vertex_y[abs(tr-tv)]+=1
             vertex_forward_q4[fwd]+=1
+            worst_vertex.append((
+                max(abs(tl-tv),abs(tr-tv)), fi, sp['v1'], sp['sid'], rp['sid'],
+                rel, sx, fwd, il, ir, iv, tl, tr, tv,
+                dq4_for_sid(sp['sid'],xq,yq),dq4_for_sid(rp['sid'],xq,yq),
+                xq,yq,yaw,
+            ))
             cy=tv
             seams.append((sx,cy,sp['sid'],rp['sid']))
             seam_local[sx&7]+=1
@@ -441,6 +448,9 @@ def main():
     print('left_vs_vertex_y_px='+','.join(f'{k}:{v}' for k,v in sorted(left_vs_vertex_y.items())))
     print('right_vs_vertex_y_px='+','.join(f'{k}:{v}' for k,v in sorted(right_vs_vertex_y.items())))
     print(f'vertex_forward_q4 min={min(vertex_forward_q4) if vertex_forward_q4 else 0} max={max(vertex_forward_q4) if vertex_forward_q4 else 0} nonpositive={sum(v for k,v in vertex_forward_q4.items() if k<=0)}')
+    for w in sorted(worst_vertex,reverse=True)[:12]:
+        err,fi,vid,ls,rs,rel,sx,fwd,il,ir,iv,tl,tr,tv,dl,dr,xq,yq,yaw=w
+        print(f'VERTEX_OUTLIER err={err} frame={fi} vid={vid} v=({vx[vid]},{vy[vid]}) faces={ls}/{rs} rel={rel} sx={sx} fwd_q4={fwd} inv={il}/{ir}/{iv} top={tl}/{tr}/{tv} plane_dq4={dl}/{dr} pose_q4=({xq},{yq}) yaw={yaw}')
     print('seam_local_x='+','.join(f'{k}:{v}' for k,v in sorted(seam_local.items())))
     print('seams_per_column='+','.join(f'{k}:{v}' for k,v in sorted(seam_count_per_col.items())))
     print(f'pattern_samples={sum(raw_patterns.values())} raw_unique={len(raw_patterns)} hflip_unique={unique}')
