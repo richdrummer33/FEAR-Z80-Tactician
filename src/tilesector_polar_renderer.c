@@ -106,6 +106,12 @@ uint8_t g_polar_run_c1;
 uint8_t g_polar_run_profile;
 uint8_t g_polar_run_left_real;
 uint8_t g_polar_run_right_real;
+#if TSPF_DIRECT_PHYSICAL_ENDPOINTS
+/* Low byte of a 9-bit direct-seam tile ID for the run's first/last coarse
+ * column; 0xff means ordinary FULL fill. Seam IDs are all 0x1xx. */
+uint8_t g_polar_run_left_seam_tile;
+uint8_t g_polar_run_right_seam_tile;
+#endif
 int16_t g_polar_run_iq;
 int16_t g_polar_run_step;
 /* Identity of the surface this run projects. The retained swept-boundary
@@ -178,6 +184,12 @@ typedef struct PolarRun
     uint8_t depth_plane;
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
     uint8_t right_connected;
+#endif
+#if TSPF_DIRECT_PHYSICAL_ENDPOINTS
+    /* 0..7 = true physical X inside the endpoint's coarse tile; 0xff = the
+     * endpoint is already representable by the ordinary x0/x7 border path. */
+    uint8_t left_seam_x;
+    uint8_t right_seam_x;
 #endif
     int16_t iq;
     int16_t step;
@@ -1166,6 +1178,10 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
     r->right_connected=(uint8_t)((owner&0x80u)!=0u);
     r->depth_plane=0u;
     r->c0=c0; r->c1=c1;
+#if TSPF_DIRECT_PHYSICAL_ENDPOINTS
+    r->left_seam_x=0xffu;
+    r->right_seam_x=0xffu;
+#endif
 
     g_run_order[idx]=idx;
     *count=(uint8_t)(idx+1u);
@@ -1253,10 +1269,61 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
          * for every genuinely sub-column position. */
         l->right_real=(uint8_t)(dx==-1);
         r->left_real=(uint8_t)(dx==0);
+        /* If the corner is genuinely inside a coarse tile, attach its true
+         * local X directly to the run that owns that pixel. No descriptor,
+         * history search or post-hoc seam recovery is required. */
+        if(dx < -1)
+            l->right_seam_x=(uint8_t)(8+dx); /* dx -4..-2 -> local x 4..6 */
+        else if(dx > 0)
+            r->left_seam_x=(uint8_t)dx;      /* dx +1..+3 -> local x 1..3 */
 #else
         /* Legacy coarse handoff: always keep the right run's left tile border. */
         l->right_real=0u;
 #endif
+    }
+}
+#endif
+
+#if TSPF_DIRECT_PHYSICAL_ENDPOINTS
+/* IDs 412..419 are x0..x7 singles; 420..447 are the 28 x<y pairs in
+ * lexicographic order. Returning only the low byte is intentional: every
+ * direct seam pattern lives in VDP tile page 1, and the assembly seam fill
+ * supplies that high ID bit. */
+static const uint8_t k_direct_pair_base[8]={0u,7u,13u,18u,22u,25u,27u,28u};
+
+static uint8_t direct_seam_tile_low(uint8_t mask)
+{
+    uint8_t x=0u,y;
+    while(x<8u && !(mask&(uint8_t)(1u<<x))) ++x;
+    mask=(uint8_t)(mask & (uint8_t)~(uint8_t)(1u<<x));
+    if(!mask)
+        return (uint8_t)(((uint16_t)TSP_DIRECT_SEAM_BASE+x)&255u);
+    y=(uint8_t)(x+1u);
+    while(y<8u && !(mask&(uint8_t)(1u<<y))) ++y;
+    return (uint8_t)(((uint16_t)TSP_DIRECT_SEAM_BASE+8u+
+                      k_direct_pair_base[x]+(uint8_t)(y-x-1u))&255u);
+}
+
+static void direct_run_seam_tiles(const PolarRun *r,uint8_t *left,uint8_t *right)
+{
+    *left=0xffu; *right=0xffu;
+    if(r->c0==r->c1){
+        uint8_t mask=0u,sub=0u;
+        if(r->left_seam_x!=0xffu){
+            mask|=(uint8_t)(1u<<r->left_seam_x); sub=1u;
+        }else if(r->left_real) mask|=1u;
+        if(r->right_seam_x!=0xffu){
+            mask|=(uint8_t)(1u<<r->right_seam_x); sub=1u;
+        }else if(r->right_real) mask|=0x80u;
+        /* Keep the ordinary x0/x7 FULL/EDGE vocabulary when both endpoints
+         * already land on tile edges; direct seam tiles are only for a true
+         * sub-column endpoint. */
+        if(sub) *left=direct_seam_tile_low(mask);
+    }else{
+        if(r->left_seam_x!=0xffu)
+            *left=direct_seam_tile_low((uint8_t)(1u<<r->left_seam_x));
+        if(r->right_seam_x!=0xffu)
+            *right=direct_seam_tile_low((uint8_t)(1u<<r->right_seam_x));
     }
 }
 #endif
@@ -1398,6 +1465,9 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
         g_polar_run_c1 = c1;
         g_polar_run_left_real = r->left_real;
         g_polar_run_right_real = r->right_real;
+#if TSPF_DIRECT_PHYSICAL_ENDPOINTS
+        direct_run_seam_tiles(r,&g_polar_run_left_seam_tile,&g_polar_run_right_seam_tile);
+#endif
         g_polar_run_iq = iq;
         g_polar_run_step = step;
         tsp_polar_run_geometry_fast();
