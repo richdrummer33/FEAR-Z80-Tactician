@@ -623,7 +623,7 @@ extern TSPBoundaryRun g_runs[];
 
 /* VBlank-facing staging ABI.  Pattern IDs 412..447 are split into two banks;
  * the old seam tiles are deliberately not uploaded in this build. */
-uint8_t g_tspf_boundary_pattern_data[TSP_BC_SLOTS * 32u];
+uint8_t g_tspf_boundary_pattern_data[TSP_BC_SLOTS * 16u];
 volatile uint8_t g_tspf_boundary_patterns_pending;
 uint16_t g_tspf_boundary_pattern_base;
 uint8_t g_tspf_boundary_pattern_count;
@@ -766,37 +766,45 @@ static void bc_fill_top(uint8_t owner,uint8_t col,const TSPState *s,
 
 static uint8_t bc_pattern_index(uint8_t *flip_out)
 {
+    uint8_t packed[16];
     uint8_t i,j,h=0x5du,flip=0u;
     uint8_t count=g_tspf_boundary_pattern_count;
 
-    /* Canonicalize under free VDP HFLIP without allocating a second 32-byte
-     * work tile.  HFLIP is just bit reversal of each planar row byte. */
-    for(i=0u;i<32u;++i){
-        uint8_t r=bc_rev8(s_work[i]);
-        if(r==s_work[i]) continue;
-        flip=(uint8_t)(r<s_work[i]);
+    /* Geometry-only dynamic tiles use only color 1 (OUT) and color 4 (MID).
+     * Keep just those two active bitplanes in WRAM: 16 bytes/tile rather than
+     * native 32-byte 4bpp. VBlank expands them immediately before VRAM upload. */
+    for(i=0u;i<8u;++i){
+        packed[(uint8_t)(i+i)]=s_work[(uint8_t)(i*4u)];
+        packed[(uint8_t)(i+i+1u)]=s_work[(uint8_t)(i*4u+2u)];
+    }
+
+    /* Canonicalize under free VDP HFLIP. */
+    for(i=0u;i<16u;++i){
+        uint8_t r=bc_rev8(packed[i]);
+        if(r==packed[i]) continue;
+        flip=(uint8_t)(r<packed[i]);
         break;
     }
     if(flip)
-        for(i=0u;i<32u;++i) s_work[i]=bc_rev8(s_work[i]);
+        for(i=0u;i<16u;++i) packed[i]=bc_rev8(packed[i]);
 
-    for(i=0u;i<32u;++i)
-        h=(uint8_t)((h<<1)|(h>>7))^s_work[i];
+    for(i=0u;i<16u;++i)
+        h=(uint8_t)((h<<1)|(h>>7))^packed[i];
 
     for(j=0u;j<count;++j){
         uint8_t *p;
         if(s_pattern_hash[j]!=h) continue;
-        p=&g_tspf_boundary_pattern_data[(uint16_t)j<<5];
-        for(i=0u;i<32u && p[i]==s_work[i];++i) {}
-        if(i==32u){
+        p=&g_tspf_boundary_pattern_data[(uint16_t)j<<4];
+        for(i=0u;i<16u && p[i]==packed[i];++i) {}
+        if(i==16u){
             *flip_out=flip;
             return j;
         }
     }
     if(count>=TSP_BC_SLOTS) return 0xffu;
     {
-        uint8_t *p=&g_tspf_boundary_pattern_data[(uint16_t)count<<5];
-        for(i=0u;i<32u;++i) p[i]=s_work[i];
+        uint8_t *p=&g_tspf_boundary_pattern_data[(uint16_t)count<<4];
+        for(i=0u;i<16u;++i) p[i]=packed[i];
     }
     s_pattern_hash[count]=h;
     g_tspf_boundary_pattern_count=(uint8_t)(count+1u);
@@ -1107,403 +1115,24 @@ void tsp_polar_boundary_apply(void) BANKED
     s_prepared=0u;
 }
 
-#endif /* __SDCC && TSPF_BOUNDARY_COMPOSITE */
-
-
-#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
-
-/*
- * Exact-X FULL-wall boundary compositor.
- *
- * The ordinary renderer remains coarse-column based.  Connected front-envelope
- * handoffs record only (left run, right run, exact screen X).  After the coarse
- * columns have been rebuilt, this pass replaces only the 8x8 cells whose pixels
- * actually differ across that physical X.
- *
- * Dynamic patterns use the 36 slots formerly occupied by the seam vocabulary:
- * two 18-tile banks at IDs 412..447.  One bank is staged while the other may
- * still be visible.  A bank is not recycled until three successful VBlank
- * publications have elapsed; on pressure we leave the correct coarse tile in
- * place rather than overwrite a pattern that might still be on screen.
- *
- * Staging is compact: current geometry-only colors need only two bitplanes
- * (OUT=color 1 and MID=color 4), so each 8x8 tile is 16 bytes in WRAM and is
- * expanded to native 4bpp only while uploading in VBlank.
- */
-
-#define BC_TILE_BASE       412u
-#define BC_SLOTS_PER_BANK   18u
-#define BC_BANK_COUNT        2u
-#define BC_SAFE_VBLANK_AGE   3u
-
-typedef struct TSPBoundaryRun {
-    uint8_t sid;
-    uint8_t v0;
-    uint8_t v1;
-    uint8_t x0;
-    uint8_t x1;
-    uint8_t inv0;
-    uint8_t inv1;
-    uint8_t inv_mid;
-    uint8_t left_real;
-    uint8_t right_real;
-    uint8_t c0;
-    uint8_t c1;
-    uint8_t depth_plane;
-#if defined(TSPF_E1M1_FRONT_ENVELOPE)
-    uint8_t right_connected;
-#endif
-    int16_t iq;
-    int16_t step;
-} TSPBoundaryRun;
-
-extern TSPBoundaryRun g_runs[];
-extern uint16_t g_map[TSP_MAP_CELLS];
-extern uint8_t g_polar_nt_row_min[TSP_ROWS];
-extern uint8_t g_polar_nt_row_max[TSP_ROWS];
-
-/* Reuse the seam descriptor storage which is otherwise dead in this build:
- * seam_x = exact screen X, seam_vid = left run index,
- * seam_vertex_half = right run index. */
-extern uint8_t g_tspf_seam_desc_count;
-extern uint8_t g_tspf_seam_x[32];
-extern uint8_t g_tspf_seam_vid[32];
-extern uint8_t g_tspf_seam_vertex_half[32];
-extern uint8_t g_tspf_boundary_dirty_by_col[TSP_COLS];
-extern volatile uint8_t g_ts_vblank_generation;
-
-volatile uint16_t g_tspf_boundary_slot_overflow;
-volatile uint16_t g_tspf_boundary_reuse_stall;
-
-/* [slot][row*2 + {OUT-mask,MID-mask}] */
-static uint8_t s_bc_stage[BC_SLOTS_PER_BANK][16];
-static uint8_t s_bc_build_count;
-static uint8_t s_bc_build_bank;
-static uint8_t s_bc_build_ok;
-static uint8_t s_bc_pending_count;
-static uint8_t s_bc_pending_bank;
-static uint8_t s_bc_next_bank;
-static uint8_t s_bc_bank_valid[BC_BANK_COUNT];
-static uint8_t s_bc_bank_generation[BC_BANK_COUNT];
-static uint8_t s_bc_prev_cols[3];
-
-static const uint8_t k_bc_rev4[16] = {
-    0x0u,0x8u,0x4u,0xcu,0x2u,0xau,0x6u,0xeu,
-    0x1u,0x9u,0x5u,0xdu,0x3u,0xbu,0x7u,0xfu
-};
-
-/* Same positive-slope raster trajectory used by the P99 edge vocabulary. */
-static const uint8_t k_bc_edge_step[25][8] = {
-    {0,0,0,0,0,0,0,0},
-    {0,0,0,0,1,1,1,1},
-    {0,0,1,1,1,1,2,2},
-    {0,0,1,1,2,2,3,3},
-    {0,1,1,2,2,3,3,4},
-    {0,1,1,2,3,4,4,5},
-    {0,1,2,3,3,4,5,6},
-    {0,1,2,3,4,5,6,7},
-    {0,1,2,3,5,6,7,8},
-    {0,1,3,4,5,6,8,9},
-    {0,1,3,4,6,7,9,10},
-    {0,2,3,5,6,8,9,11},
-    {0,2,3,5,7,9,10,12},
-    {0,2,4,6,7,9,11,13},
-    {0,2,4,6,8,10,12,14},
-    {0,2,4,6,9,11,13,15},
-    {0,2,5,7,9,11,14,16},
-    {0,2,5,7,10,12,15,17},
-    {0,3,5,8,10,13,15,18},
-    {0,3,5,8,11,14,16,19},
-    {0,3,6,9,11,14,17,20},
-    {0,3,6,9,12,15,18,21},
-    {0,3,6,9,13,16,19,22},
-    {0,3,7,10,13,16,20,23},
-    {0,3,7,10,14,17,21,24}
-};
-
-static uint8_t bc_reverse8(uint8_t v)
-{
-    return (uint8_t)((k_bc_rev4[v&15u]<<4)|k_bc_rev4[v>>4]);
-}
-
-static uint8_t bc_pattern_uniform(const uint8_t p[16])
-{
-    uint8_t y;
-    for(y=0u;y<8u;++y){
-        uint8_t o=p[(uint8_t)(y+y)];
-        uint8_t m=p[(uint8_t)(y+y+1u)];
-        if(!((o==0u || o==0xffu) && (m==0u || m==0xffu)))
-            return 0u;
-    }
-    return 1u;
-}
-
-static uint8_t bc_equal16(const uint8_t *a,const uint8_t *b)
-{
-    uint8_t i;
-    for(i=0u;i<16u;++i) if(a[i]!=b[i]) return 0u;
-    return 1u;
-}
-
-static int16_t bc_q_at_tile_left(const TSPBoundaryRun *r,uint8_t col)
-{
-    int16_t q=r->iq;
-    int8_t d=(int8_t)col-(int8_t)r->c0;
-    while(d>0){q=(int16_t)(q+r->step);--d;}
-    while(d<0){q=(int16_t)(q-r->step);++d;}
-    return q;
-}
-
-static int16_t bc_top_from_q(int16_t q)
-{
-    int16_t inv=(int16_t)((q+32)>>6);
-    if(inv<0) inv=0;
-    if(inv>255) inv=255;
-    return (int16_t)(71-(inv>>1));
-}
-
-static void bc_line_for_run(const TSPBoundaryRun *r,uint8_t col,int16_t out[8])
-{
-    int16_t q0=bc_q_at_tile_left(r,col);
-    int16_t yl=bc_top_from_q(q0);
-    int16_t yr=bc_top_from_q((int16_t)(q0+r->step));
-    int16_t dy=(int16_t)(yr-yl);
-    uint8_t x,mag;
-
-    if(dy>=0){
-        mag=(uint8_t)(dy>24 ? 24 : dy);
-        for(x=0u;x<8u;++x)
-            out[x]=(int16_t)(yl+k_bc_edge_step[mag][x]);
-    }else{
-        int16_t om=(int16_t)-dy;
-        mag=(uint8_t)(om>24 ? 24 : om);
-        /* Match the current negative-slope HFLIP construction: its base is
-         * the real right endpoint even when the representable slope saturates. */
-        for(x=0u;x<8u;++x)
-            out[x]=(int16_t)(yr+k_bc_edge_step[mag][(uint8_t)(7u-x)]);
-    }
-}
-
-static void bc_make_pattern(const TSPBoundaryRun *l,const TSPBoundaryRun *r,
-                            uint8_t x,uint8_t row,uint8_t outp[16],
-                            uint8_t substrate[16])
-{
-    int16_t ll[8],rr[8];
-    uint8_t lx,ly,split=(uint8_t)(x&7u);
-    uint8_t col=(uint8_t)(x>>3);
-    uint8_t coarse_left=(uint8_t)(col<=l->c1);
-
-    bc_line_for_run(l,col,ll);
-    bc_line_for_run(r,col,rr);
-
-    for(ly=0u;ly<8u;++ly){
-        uint8_t om=0u,mm=0u,so=0u,sm=0u;
-        int16_t yy=(int16_t)((int16_t)row*8+(int16_t)ly);
-        for(lx=0u;lx<8u;++lx){
-            uint8_t bit=(uint8_t)(0x80u>>lx);
-            int16_t line=(lx<split)?ll[lx]:rr[lx];
-            int16_t sline=coarse_left?ll[lx]:rr[lx];
-
-            if(yy<line) om|=bit;
-            else if(yy>line) mm|=bit;
-            /* yy==line is black: neither color plane is set. */
-
-            if(yy<sline) so|=bit;
-            else if(yy>sline) sm|=bit;
-        }
-        outp[(uint8_t)(ly+ly)]=om;
-        outp[(uint8_t)(ly+ly+1u)]=mm;
-        substrate[(uint8_t)(ly+ly)]=so;
-        substrate[(uint8_t)(ly+ly+1u)]=sm;
-    }
-}
-
-/* Canonicalize under hardware HFLIP and return/allocate a slot. */
-static uint8_t bc_slot_for(uint8_t p[16],uint16_t *attr)
-{
-    uint8_t rev[16];
-    uint8_t y,i,use_rev=0u;
-
-    for(y=0u;y<8u;++y){
-        rev[(uint8_t)(y+y)]=bc_reverse8(p[(uint8_t)(y+y)]);
-        rev[(uint8_t)(y+y+1u)]=bc_reverse8(p[(uint8_t)(y+y+1u)]);
-    }
-    for(i=0u;i<16u;++i){
-        if(rev[i]<p[i]){use_rev=1u;break;}
-        if(rev[i]>p[i]) break;
-    }
-    if(use_rev){
-        for(i=0u;i<16u;++i) p[i]=rev[i];
-        *attr=TSP_ATTR_FLIPX;
-    }else *attr=0u;
-
-    for(i=0u;i<s_bc_build_count;++i)
-        if(bc_equal16(s_bc_stage[i],p)) return i;
-
-    if(s_bc_build_count>=BC_SLOTS_PER_BANK){
-        ++g_tspf_boundary_slot_overflow;
-        return 0xffu;
-    }
-    i=s_bc_build_count++;
-    {
-        uint8_t j;
-        for(j=0u;j<16u;++j) s_bc_stage[i][j]=p[j];
-    }
-    return i;
-}
-
-static void bc_put(uint8_t row,uint8_t col,uint16_t word)
-{
-    uint16_t idx=(uint16_t)((uint16_t)row*TSP_COLS+col);
-    if(g_map[idx]==word) return;
-    g_map[idx]=word;
-    if(g_polar_nt_row_min[row]==0xffu || col<g_polar_nt_row_min[row])
-        g_polar_nt_row_min[row]=col;
-    if(col>g_polar_nt_row_max[row])
-        g_polar_nt_row_max[row]=col;
-}
-
-void tsp_polar_boundary_reset(void) BANKED
-{
-    uint8_t i;
-    g_tspf_boundary_slot_overflow=0u;
-    g_tspf_boundary_reuse_stall=0u;
-    g_tspf_seam_desc_count=0u;
-    s_bc_build_count=0u;
-    s_bc_build_ok=0u;
-    s_bc_pending_count=0u;
-    s_bc_pending_bank=0u;
-    s_bc_next_bank=0u;
-    for(i=0u;i<BC_BANK_COUNT;++i){
-        s_bc_bank_valid[i]=0u;
-        s_bc_bank_generation[i]=0u;
-    }
-    for(i=0u;i<3u;++i) s_bc_prev_cols[i]=0u;
-    for(i=0u;i<TSP_COLS;++i) g_tspf_boundary_dirty_by_col[i]=0u;
-}
-
-void tsp_polar_boundary_prepare(const TSPState *s) BANKED
-{
-    uint8_t cur[3]={0u,0u,0u};
-    uint8_t i,col,b,tryb;
-    (void)s;
-
-    for(i=0u;i<g_tspf_seam_desc_count;++i){
-        uint8_t x=g_tspf_seam_x[i];
-        uint8_t split=(uint8_t)(x&7u);
-        if(!split) continue; /* exact hardware-tile edge: coarse ownership is exact */
-        col=(uint8_t)(x>>3);
-        cur[col>>3]|=(uint8_t)(1u<<(col&7u));
-    }
-
-    for(col=0u;col<TSP_COLS;++col){
-        uint8_t bit=(uint8_t)(1u<<(col&7u));
-        uint8_t bi=(uint8_t)(col>>3);
-        g_tspf_boundary_dirty_by_col[col]=(uint8_t)(((cur[bi]|s_bc_prev_cols[bi])&bit)!=0u);
-    }
-    s_bc_prev_cols[0]=cur[0];
-    s_bc_prev_cols[1]=cur[1];
-    s_bc_prev_cols[2]=cur[2];
-
-    s_bc_build_count=0u;
-    s_bc_build_ok=0u;
-
-    /* The single compact staging buffer must survive until its VBlank upload. */
-    if(s_bc_pending_count){
-        ++g_tspf_boundary_reuse_stall;
-        return;
-    }
-
-    b=s_bc_next_bank;
-    for(tryb=0u;tryb<2u;++tryb){
-        uint8_t age;
-        uint8_t cand=(uint8_t)((b+tryb)&1u);
-        if(!s_bc_bank_valid[cand]){
-            s_bc_build_bank=cand;
-            s_bc_build_ok=1u;
-            return;
-        }
-        age=(uint8_t)(g_ts_vblank_generation-s_bc_bank_generation[cand]);
-        if(age>=BC_SAFE_VBLANK_AGE){
-            s_bc_build_bank=cand;
-            s_bc_build_ok=1u;
-            return;
-        }
-    }
-    ++g_tspf_boundary_reuse_stall;
-}
-
-void tsp_polar_boundary_apply(void) BANKED
-{
-    uint8_t i;
-    if(!s_bc_build_ok) return;
-
-    for(i=0u;i<g_tspf_seam_desc_count;++i){
-        uint8_t x=g_tspf_seam_x[i];
-        uint8_t split=(uint8_t)(x&7u);
-        uint8_t col,row,li,ri;
-        TSPBoundaryRun *l,*r;
-
-        if(!split) continue;
-        col=(uint8_t)(x>>3);
-        li=g_tspf_seam_vid[i];
-        ri=g_tspf_seam_vertex_half[i];
-        l=&g_runs[li];
-        r=&g_runs[ri];
-
-        for(row=0u;row<9u;++row){
-            uint8_t p[16],substrate[16];
-            uint8_t slot;
-            uint16_t attr,id,topw,botw;
-
-            bc_make_pattern(l,r,x,row,p,substrate);
-            if(bc_equal16(p,substrate)) continue;
-            /* Deep FULL/ceiling rows with no horizontal structure need no
-             * dynamic tile even if the two geometric owners differ. */
-            if(bc_pattern_uniform(p) && bc_pattern_uniform(substrate)) continue;
-
-            slot=bc_slot_for(p,&attr);
-            if(slot==0xffu) continue; /* safe coarse fallback */
-
-            id=(uint16_t)(BC_TILE_BASE+
-                (uint16_t)s_bc_build_bank*BC_SLOTS_PER_BANK+slot);
-            topw=(uint16_t)(id|attr);
-            botw=(uint16_t)(id|attr|TSP_ATTR_FLIPY|TSP_ATTR_PALETTE);
-            bc_put(row,col,topw);
-            bc_put((uint8_t)(17u-row),col,botw);
-        }
-    }
-
-    if(s_bc_build_count){
-        s_bc_pending_count=s_bc_build_count;
-        s_bc_pending_bank=s_bc_build_bank;
-        s_bc_bank_valid[s_bc_build_bank]=1u;
-        s_bc_bank_generation[s_bc_build_bank]=g_ts_vblank_generation;
-        s_bc_next_bank=(uint8_t)(s_bc_build_bank^1u);
-    }
-}
-
-/* Called only from the cooperative safe-VBlank publisher, before any name-table
- * row can expose the new pattern IDs. */
 void tsp_polar_boundary_upload(void) BANKED
 {
     uint8_t slot,y;
-    if(!s_bc_pending_count) return;
+    uint8_t tile[32];
 
-    for(slot=0u;slot<s_bc_pending_count;++slot){
-        uint8_t tile[32];
+    if(!g_tspf_boundary_patterns_pending) return;
+
+    for(slot=0u;slot<g_tspf_boundary_pattern_count;++slot){
+        const uint8_t *p=&g_tspf_boundary_pattern_data[(uint16_t)slot<<4];
         for(y=0u;y<8u;++y){
-            tile[(uint8_t)(y*4u+0u)]=s_bc_stage[slot][(uint8_t)(y+y)];
+            tile[(uint8_t)(y*4u)]=p[(uint8_t)(y+y)];       /* color bit 0 */
             tile[(uint8_t)(y*4u+1u)]=0u;
-            tile[(uint8_t)(y*4u+2u)]=s_bc_stage[slot][(uint8_t)(y+y+1u)];
+            tile[(uint8_t)(y*4u+2u)]=p[(uint8_t)(y+y+1u)];/* color bit 2 */
             tile[(uint8_t)(y*4u+3u)]=0u;
         }
-        set_bkg_4bpp_data(
-            (uint16_t)(BC_TILE_BASE+
-                (uint16_t)s_bc_pending_bank*BC_SLOTS_PER_BANK+slot),
-            1u,tile);
+        set_bkg_4bpp_data((uint16_t)(g_tspf_boundary_pattern_base+slot),1u,tile);
     }
-    s_bc_pending_count=0u;
+    g_tspf_boundary_patterns_pending=0u;
 }
 
 #endif /* __SDCC && TSPF_BOUNDARY_COMPOSITE */
