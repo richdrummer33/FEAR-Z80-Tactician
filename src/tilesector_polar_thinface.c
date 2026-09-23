@@ -646,7 +646,6 @@ static uint8_t s_patch_pos[TSP_BC_PATCH_MAX];
 static uint16_t s_patch_word[TSP_BC_PATCH_MAX];
 static uint8_t s_patch_count;
 static uint8_t s_work[32];
-static uint8_t s_cur_cols[3];
 /* Only columns that actually received dynamic words need forced coarse
  * restoration next update. Candidate/crowded columns are allowed to remain on
  * the normal retained coarse path. */
@@ -951,7 +950,6 @@ void tsp_polar_boundary_reset(void) BANKED
     s_prev_bank=0xffu;
     s_target_bank=0xffu;
     s_prepared=0u;
-    bc_clear3(s_cur_cols);
     bc_clear3(s_exact_cols);
     bc_clear3(s_prev_cols);
     s_bank_used[0]=s_bank_used[1]=0u;
@@ -978,14 +976,15 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
     g_tspf_boundary_last_crowded=0u;
     g_tspf_boundary_last_local_fallbacks=0u;
     g_tspf_seam_desc_count=0u;
-    bc_clear3(s_cur_cols);
     bc_clear3(s_exact_cols);
 
-    /* Previous exact columns and current exact columns are deliberately forced
-     * through the normal raster on this correctness rung.  It guarantees a
-     * valid coarse substrate even if the small dynamic cache cannot answer.
-     * Keep a one-byte OR gate for the materializer's overwhelmingly common
-     * no-boundary path; only then does it pay the per-column indexed lookup. */
+    /* Only PREVIOUS dynamic columns require forced coarse restoration. A new
+     * exact-X tile sits on top of the ordinary retained coarse answer: rows
+     * where the two owners look identical are deliberately left coarse, while
+     * every row that depends on the sub-tile handoff is replaced below. Thus a
+     * current-only boundary does not justify throwing away a valid retained
+     * substrate. The one-byte OR gate keeps even this previous-column check out
+     * of the overwhelmingly common no-boundary path. */
     g_tspf_boundary_any_dirty=0u;
     for(i=0u;i<TSP_COLS;++i){
         g_tspf_boundary_dirty_by_col[i]=bc_col_marked(s_prev_cols,i)?1u:0u;
@@ -1038,9 +1037,7 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         g_tspf_boundary_vid[count]=vid;
 #endif
         col=(uint8_t)((uint8_t)x>>3);
-        bc_mark_col(s_cur_cols,col);
-        g_tspf_boundary_dirty_by_col[col]=1u;
-        g_tspf_boundary_any_dirty=1u;
+        (void)col;
         ++count;
     }
     g_tspf_seam_desc_count=count;
