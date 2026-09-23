@@ -15,6 +15,10 @@
 #define C_MID   4u
 #define C_NEAR  5u
 
+#ifndef TSPF_BOUNDARY_COMPOSITE
+#define TSPF_BOUNDARY_COMPOSITE 0
+#endif
+
 static const palette_color_t k_palettes[32] = {
     RGB(0,0,0),RGB(1,1,3),RGB(2,2,3),RGB(3,4,6),RGB(6,7,9),RGB(10,11,13),
     RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),RGB(0,0,0),
@@ -95,6 +99,14 @@ void tsp_polar_nt_upload_dirty_budgeted(void);
  * margin inside the ~4.3 ms post-effective-area safe interval even when the
  * renderer notices VBlank a little late. */
 volatile uint8_t g_ts_vblank_pending;
+#if TSPF_BOUNDARY_COMPOSITE
+volatile uint8_t g_tspf_boundary_publish_tick;
+extern volatile uint8_t g_tspf_boundary_patterns_pending;
+extern uint16_t g_tspf_boundary_pattern_base;
+extern uint8_t g_tspf_boundary_pattern_count;
+extern uint8_t g_tspf_boundary_pattern_data[];
+void tsp_polar_boundary_reset(void) BANKED;
+#endif
 #if TSPF_PROFILE_HOOKS
 volatile uint16_t g_ts_vblank_bursts;
 volatile uint16_t g_ts_vblank_missed;
@@ -113,7 +125,25 @@ void tsp_polar_service_vblank(void) NONBANKED {
 #endif
         return;
     }
+#if TSPF_BOUNDARY_COMPOSITE
+    /* Dynamic exact-X patterns must exist in VRAM before a dirty name-table
+     * row may publish a reference to them. A pattern burst therefore owns this
+     * VBlank; row publication resumes on the next safe burst. */
+    if(g_tspf_boundary_patterns_pending){
+        set_bkg_4bpp_data(g_tspf_boundary_pattern_base,
+                          g_tspf_boundary_pattern_count,
+                          g_tspf_boundary_pattern_data);
+        g_tspf_boundary_patterns_pending=0u;
+#if TSPF_PROFILE_HOOKS
+        ++g_ts_vblank_bursts;
+#endif
+        return;
+    }
+#endif
     tsp_polar_nt_upload_dirty_budgeted();
+#if TSPF_BOUNDARY_COMPOSITE
+    ++g_tspf_boundary_publish_tick;
+#endif
 #if TSPF_PROFILE_HOOKS
     ++g_ts_vblank_bursts;
 #endif
@@ -157,7 +187,9 @@ static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT
      * to an earlier ID, while first occurrences were assigned in ID order. */
     for(m=0u;m<=TSP_P99_EDGE_MAX;++m)for(o=0u;o<37u;++o){uint16_t id=p99_edge_id(m,o);if(id==next_id){off=(int8_t)o-28;emit_edge_p99_at(id,off,m,0u);++next_id;}}
     for(b=1u;b<3u;++b)for(o=0u;o<16u;++o)for(m=0u;m<8u;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=p99_border_id(b,sem);if(id==next_id){emit_edge_p99_at(id,(int8_t)o-7,m,b);++next_id;}}
+#if !TSPF_BOUNDARY_COMPOSITE
     for(m=0u;m<TSP_SEAM_BASE_MASK_COUNT;++m)emit_seam_mask(m);
+#endif
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
     for(m=0u;m<TSP_SEAM_EXTRA_MASK_COUNT;++m)
         emit_seam_mask_at((uint16_t)(TSP_TILE_SEAM_BASE+TSP_SEAM_BASE_MASK_COUNT+m),
@@ -214,7 +246,11 @@ void main(void){
      * visible name table in the non-overlapping 0x3800 region. The row uploader
      * targets the matching 0x38xx addresses. */
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
-    tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
+    tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();
+#if TSPF_BOUNDARY_COMPOSITE
+    g_tspf_boundary_publish_tick=0u;tsp_polar_boundary_reset();
+#endif
+    tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
     g_ts_vblank_pending=0u;
 #if TSPF_PROFILE_HOOKS
     g_ts_vblank_bursts=0u;g_ts_vblank_missed=0u;
