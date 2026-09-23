@@ -453,9 +453,16 @@ polar_endpoint_rows_ready$:
         ; A foreground FULL wall whose top edge moved a row or two needs a few
         ; tile writes, not a column rebuild. Try that before paying for the
         ; ownership mask and the generic raster.
+        ; A direct physical seam is not represented by the legacy retained
+        ; patch key. Never let an old patch answer for a column whose true X is
+        ; live this frame; take the normal raster path and invalidate it below.
+        ld      a, (#r_direct_seam_tile$)
+        cp      #0xff
+        jr      nz, ret_patch_bypass_direct_seam$
         call    ret_try_patch$
 _tsp_probe_patch_hit::
         jp      z, raster_done$
+ret_patch_bypass_direct_seam$:
 
         ; Signed min/max for top endpoints.
         ld      a, (#r_top_l_row$)
