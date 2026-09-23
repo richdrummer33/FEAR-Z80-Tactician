@@ -85,6 +85,9 @@ volatile uint16_t g_ts_dirty_words;
 void tsp_polar_nt_init(void);
 void tsp_polar_nt_upload_dirty(void);
 void tsp_polar_nt_upload_dirty_budgeted(void);
+#if defined(TSPF_BOUNDARY_COMPOSITE) && TSPF_BOUNDARY_COMPOSITE
+void tsp_polar_boundary_upload(void) BANKED;
+#endif
 
 /* Cooperative VBlank publisher.
  *
@@ -99,6 +102,7 @@ void tsp_polar_nt_upload_dirty_budgeted(void);
  * margin inside the ~4.3 ms post-effective-area safe interval even when the
  * renderer notices VBlank a little late. */
 volatile uint8_t g_ts_vblank_pending;
+volatile uint8_t g_ts_vblank_generation;
 #if TSPF_BOUNDARY_COMPOSITE
 volatile uint8_t g_tspf_boundary_publish_tick;
 extern volatile uint8_t g_tspf_boundary_patterns_pending;
@@ -118,7 +122,7 @@ static void tsp_vblank_mark(void) NONBANKED {
 
 void tsp_polar_service_vblank(void) NONBANKED {
     if(!g_ts_vblank_pending) return;
-    g_ts_vblank_pending=0u;
+    g_ts_vblank_pending=0u;g_ts_vblank_generation=0u;
     if(VCOUNTER<0xC0u){
 #if TSPF_PROFILE_HOOKS
         ++g_ts_vblank_missed;
