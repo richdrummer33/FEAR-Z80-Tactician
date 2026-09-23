@@ -552,3 +552,554 @@ seam_pair_done:
 }
 
 #endif
+
+
+/* ------------------------------------------------------------------------- */
+/* Exact-X boundary composite experiment.
+ *
+ * The front envelope has already solved visibility.  This pass preserves that
+ * answer at 1px X only in the hardware tile(s) containing a visible ownership
+ * handoff.  Ordinary columns stay on the existing coarse/retained fast path.
+ *
+ * Preparation happens before coarse materialization: it computes the small
+ * mixed-owner tile vocabulary for this frame and flags current/previous
+ * boundary columns so retained tiles cannot hide stale composites.  Apply runs
+ * after coarse materialization and replaces only the mixed cells.
+ */
+#ifndef TSPF_BOUNDARY_COMPOSITE
+#define TSPF_BOUNDARY_COMPOSITE 0
+#endif
+
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+#include "e1env_depth_edges_bank.h"
+#include "e1env_plane_meta.h"
+
+#define TSP_BC_SLOTS 18u
+#define TSP_BC_PATCH_MAX 32u
+#define TSP_BC_BASE0 412u
+#define TSP_BC_BASE1 430u
+#define TSP_BC_SAFE_PUBLISHES 3u
+
+extern uint16_t g_map[TSP_MAP_CELLS];
+extern uint8_t g_polar_nt_cov_cur[60];
+extern uint8_t g_polar_nt_row_min[TSP_ROWS];
+extern uint8_t g_polar_nt_row_max[TSP_ROWS];
+extern uint8_t g_tspf_boundary_dirty_by_col[TSP_COLS];
+extern uint8_t g_e1env_program[];
+extern uint16_t g_corner_bearing_q12[32];
+extern uint8_t g_corner_bearing_valid[4];
+extern const uint8_t g_e1env_center_col_lut[1025];
+extern volatile uint8_t g_tspf_appearance_mode;
+extern volatile uint8_t g_tspf_boundary_publish_tick;
+
+/* Reuse the old, currently dead seam descriptor arena as three 32-byte event
+ * vectors while preparing.  No seam post-pass is linked in this experiment. */
+extern uint8_t g_tspf_seam_desc_count;
+extern uint8_t g_tspf_seam_x[32];
+extern uint8_t g_tspf_seam_vid[32];
+extern uint8_t g_tspf_seam_vertex_half[32];
+
+typedef struct TSPBoundaryRun {
+    uint8_t sid;
+    uint8_t v0;
+    uint8_t v1;
+    uint8_t x0;
+    uint8_t x1;
+    uint8_t inv0;
+    uint8_t inv1;
+    uint8_t inv_mid;
+    uint8_t left_real;
+    uint8_t right_real;
+    uint8_t c0;
+    uint8_t c1;
+    uint8_t depth_plane;
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+    uint8_t right_connected;
+#endif
+    int16_t iq;
+    int16_t step;
+} TSPBoundaryRun;
+extern TSPBoundaryRun g_runs[];
+
+/* VBlank-facing staging ABI.  Pattern IDs 412..447 are split into two banks;
+ * the old seam tiles are deliberately not uploaded in this build. */
+uint8_t g_tspf_boundary_pattern_data[TSP_BC_SLOTS * 32u];
+volatile uint8_t g_tspf_boundary_patterns_pending;
+uint16_t g_tspf_boundary_pattern_base;
+uint8_t g_tspf_boundary_pattern_count;
+
+/* Tiny diagnostics visible to Gearsystem/debuggers. */
+volatile uint8_t g_tspf_boundary_last_patterns;
+volatile uint8_t g_tspf_boundary_last_patches;
+volatile uint8_t g_tspf_boundary_skip_reason;
+
+static uint8_t s_pattern_hash[TSP_BC_SLOTS];
+static uint8_t s_patch_pos[TSP_BC_PATCH_MAX];
+static uint16_t s_patch_word[TSP_BC_PATCH_MAX];
+static uint8_t s_patch_count;
+static uint8_t s_work[32];
+static uint8_t s_cur_cols[3];
+static uint8_t s_prev_cols[3];
+static uint8_t s_bank_used[2];
+static uint8_t s_bank_released[2];
+static uint8_t s_bank_release_tick[2];
+static uint8_t s_prev_bank=0xffu;
+static uint8_t s_target_bank=0xffu;
+static uint8_t s_prepared;
+
+/* Exact copy of the p99 line stepping used by the normal top-edge vocabulary.
+ * The compositor uses it only for the few mixed-owner tiles. */
+static const uint8_t k_bc_edge_step[25][8] = {
+    {0,0,0,0,0,0,0,0},
+    {0,0,0,0,1,1,1,1},
+    {0,0,1,1,1,1,2,2},
+    {0,0,1,1,2,2,3,3},
+    {0,1,1,2,2,3,3,4},
+    {0,1,1,2,3,4,4,5},
+    {0,1,2,3,3,4,5,6},
+    {0,1,2,3,4,5,6,7},
+    {0,1,2,3,5,6,7,8},
+    {0,1,3,4,5,6,8,9},
+    {0,1,3,4,6,7,9,10},
+    {0,2,3,5,6,8,9,11},
+    {0,2,3,5,7,9,10,12},
+    {0,2,4,6,7,9,11,13},
+    {0,2,4,6,8,10,12,14},
+    {0,2,4,6,9,11,13,15},
+    {0,2,5,7,9,11,14,16},
+    {0,2,5,7,10,12,15,17},
+    {0,3,5,8,10,13,15,18},
+    {0,3,5,8,11,14,16,19},
+    {0,3,6,9,11,14,17,20},
+    {0,3,6,9,12,15,18,21},
+    {0,3,6,9,13,16,19,22},
+    {0,3,7,10,13,16,20,23},
+    {0,3,7,10,14,17,21,24}
+};
+
+static const uint8_t k_bc_rev4[16] = {
+    0x0,0x8,0x4,0xc,0x2,0xa,0x6,0xe,0x1,0x9,0x5,0xd,0x3,0xb,0x7,0xf
+};
+
+static uint8_t bc_rev8(uint8_t x)
+{
+    return (uint8_t)((k_bc_rev4[x&15u]<<4)|k_bc_rev4[x>>4]);
+}
+
+static void bc_clear3(uint8_t *p)
+{
+    p[0]=0u; p[1]=0u; p[2]=0u;
+}
+
+static void bc_mark_col(uint8_t bits[3],uint8_t col)
+{
+    bits[col>>3] |= (uint8_t)(1u<<(col&7u));
+}
+
+static uint8_t bc_col_marked(const uint8_t bits[3],uint8_t col)
+{
+    return (uint8_t)(bits[col>>3]&(uint8_t)(1u<<(col&7u)));
+}
+
+static int16_t bc_rel(uint16_t bearing,uint16_t yawq)
+{
+    uint16_t d=(uint16_t)((bearing-yawq)&4095u);
+    return (int16_t)(d>=2048u ? (int16_t)d-4096 : (int16_t)d);
+}
+
+static uint8_t bc_choose_bank(void)
+{
+    uint8_t c,t=g_tspf_boundary_publish_tick;
+    for(c=0u;c<2u;++c){
+        if(c==s_prev_bank) continue;
+        if(!s_bank_used[c]) return c;
+        if(s_bank_released[c] &&
+           (uint8_t)(t-s_bank_release_tick[c])>=TSP_BC_SAFE_PUBLISHES)
+            return c;
+    }
+    return 0xffu;
+}
+
+static uint8_t bc_inv_from_q6(int16_t q)
+{
+    int16_t v=(int16_t)((q+32)>>6);
+    if(v<0) return 0u;
+    if(v>255) return 255u;
+    return (uint8_t)v;
+}
+
+static void bc_fill_top(uint8_t owner,uint8_t col,const TSPState *s,
+                        uint8_t x0,uint8_t x1,int8_t top[8])
+{
+    uint8_t x,sid,axis,il,ir,mag;
+    int16_t dq4,tl,tr,d;
+
+    if(owner==0xffu){
+        for(x=x0;x<=x1;++x) top[x]=127;
+        return;
+    }
+    sid=(uint8_t)(owner&31u);
+    if(sid>=30u){
+        for(x=x0;x<=x1;++x) top[x]=127;
+        return;
+    }
+    axis=k_e1env_depth_axis[sid];
+    dq4=(int16_t)(k_e1env_plane_c[sid]-(axis?s->y_q4:s->x_q4));
+    if(axis==0u) e1env_depth_edges_0(s->yaw,col,col,dq4);
+    else         e1env_depth_edges_1(s->yaw,col,col,dq4);
+
+    il=bc_inv_from_q6(g_e1env_depth_iq);
+    ir=g_e1env_depth_end_inv;
+    tl=(int16_t)(71-(int16_t)(il>>1));
+    tr=(int16_t)(71-(int16_t)(ir>>1));
+    d=(int16_t)(tr-tl);
+    mag=(uint8_t)(d<0 ? -d : d);
+    if(mag>24u) mag=24u;
+    if(d>=0){
+        for(x=x0;x<=x1;++x)
+            top[x]=(int8_t)(tl+(int16_t)k_bc_edge_step[mag][x]);
+    }else{
+        for(x=x0;x<=x1;++x)
+            top[x]=(int8_t)(tr+(int16_t)k_bc_edge_step[mag][(uint8_t)(7u-x)]);
+    }
+}
+
+static uint8_t bc_pattern_index(uint8_t *flip_out)
+{
+    uint8_t i,j,h=0x5du,flip=0u;
+    uint8_t count=g_tspf_boundary_pattern_count;
+
+    /* Canonicalize under free VDP HFLIP without allocating a second 32-byte
+     * work tile.  HFLIP is just bit reversal of each planar row byte. */
+    for(i=0u;i<32u;++i){
+        uint8_t r=bc_rev8(s_work[i]);
+        if(r==s_work[i]) continue;
+        flip=(uint8_t)(r<s_work[i]);
+        break;
+    }
+    if(flip)
+        for(i=0u;i<32u;++i) s_work[i]=bc_rev8(s_work[i]);
+
+    for(i=0u;i<32u;++i)
+        h=(uint8_t)((h<<1)|(h>>7))^s_work[i];
+
+    for(j=0u;j<count;++j){
+        uint8_t *p;
+        if(s_pattern_hash[j]!=h) continue;
+        p=&g_tspf_boundary_pattern_data[(uint16_t)j<<5];
+        for(i=0u;i<32u && p[i]==s_work[i];++i) {}
+        if(i==32u){
+            *flip_out=flip;
+            return j;
+        }
+    }
+    if(count>=TSP_BC_SLOTS) return 0xffu;
+    {
+        uint8_t *p=&g_tspf_boundary_pattern_data[(uint16_t)count<<5];
+        for(i=0u;i<32u;++i) p[i]=s_work[i];
+    }
+    s_pattern_hash[count]=h;
+    g_tspf_boundary_pattern_count=(uint8_t)(count+1u);
+    *flip_out=flip;
+    return count;
+}
+
+static uint8_t bc_add_patch(uint8_t row,uint8_t col,uint16_t word)
+{
+    uint8_t n=s_patch_count;
+    if(n>=TSP_BC_PATCH_MAX) return 0u;
+    s_patch_pos[n]=(uint8_t)(row*20u+col);
+    s_patch_word[n]=word;
+    s_patch_count=(uint8_t)(n+1u);
+    return 1u;
+}
+
+static void bc_dirty_row(uint8_t row,uint8_t col)
+{
+    if(g_polar_nt_row_min[row]==0xffu || col<g_polar_nt_row_min[row])
+        g_polar_nt_row_min[row]=col;
+    if(col>g_polar_nt_row_max[row])
+        g_polar_nt_row_max[row]=col;
+}
+
+static void bc_own_cell(uint8_t row,uint8_t col)
+{
+    g_polar_nt_cov_cur[(uint8_t)(col+col+col+(row>>3))] |=
+        (uint8_t)(1u<<(row&7u));
+}
+
+static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
+                             const TSPState *s)
+{
+    uint8_t owner[8],line_mask=0u,lx,e,row,ly;
+    int8_t top[8];
+
+    for(lx=0u;lx<8u;++lx) owner[lx]=g_tspf_seam_vid[first];
+
+    for(e=first;e<=last;++e){
+        uint8_t split=(uint8_t)(g_tspf_seam_x[e]&7u);
+        uint8_t lo=g_tspf_seam_vid[e], ro=g_tspf_seam_vertex_half[e];
+        uint8_t connected=(uint8_t)(lo!=0xffu && ro!=0xffu && (lo&0x80u));
+        uint8_t physical=(uint8_t)((lo!=0xffu && (lo&0x40u)) ||
+                                   (ro!=0xffu && (ro&0x20u)));
+        if(!split) continue;
+        for(lx=split;lx<8u;++lx) owner[lx]=ro;
+        if(physical && !connected) line_mask|=(uint8_t)(1u<<split);
+    }
+
+    /* This first rung deliberately handles wall<->wall handoffs only.  E1M1's
+     * enclosed projection sweeps are entirely in that class.  A void handoff
+     * needs a special row-9 horizon composite rather than blindly VFLIPing row
+     * 8, so leave it on the proven coarse fallback for now. */
+    for(lx=0u;lx<8u;++lx)
+        if(owner[lx]==0xffu) return 1u;
+
+    lx=0u;
+    while(lx<8u){
+        uint8_t x1=lx;
+        while(x1<7u && owner[(uint8_t)(x1+1u)]==owner[lx]) ++x1;
+        bc_fill_top(owner[lx],col,s,lx,x1,top);
+        lx=(uint8_t)(x1+1u);
+    }
+
+    for(row=0u;row<9u;++row){
+        uint8_t all_out=1u,all_wall=1u,flip,index;
+        for(ly=0u;ly<8u;++ly){
+            uint8_t y=(uint8_t)(row*8u+ly);
+            uint8_t sem[8],outm=0u,wallm=0u;
+            for(lx=0u;lx<8u;++lx){
+                int8_t ty=top[lx];
+                uint8_t v;
+                if((int16_t)y<(int16_t)ty) v=0u;       /* ceiling */
+                else if((int16_t)y==(int16_t)ty) v=2u; /* black top edge */
+                else v=1u;                              /* wall */
+                sem[lx]=v;
+            }
+            for(e=first;e<=last;++e){
+                uint8_t split=(uint8_t)(g_tspf_seam_x[e]&7u);
+                if(split && (line_mask&(uint8_t)(1u<<split))){
+                    uint8_t a=sem[(uint8_t)(split-1u)],b=sem[split];
+                    if((a==0u && b==1u)||(a==1u && b==0u))
+                        sem[split]=2u;
+                }
+            }
+            for(lx=0u;lx<8u;++lx){
+                uint8_t bit=(uint8_t)(0x80u>>lx);
+                if(sem[lx]==0u) outm|=bit;
+                else if(sem[lx]==1u) wallm|=bit;
+                if(sem[lx]!=0u) all_out=0u;
+                if(sem[lx]!=1u) all_wall=0u;
+            }
+            s_work[(uint8_t)(ly*4u+0u)]=outm;
+            s_work[(uint8_t)(ly*4u+1u)]=0u;
+            s_work[(uint8_t)(ly*4u+2u)]=wallm;
+            s_work[(uint8_t)(ly*4u+3u)]=0u;
+        }
+
+        /* Coarse materialization was forced for this column. Pure ceiling or
+         * pure wall cells are already correct and need no dynamic tile. */
+        if(all_out || all_wall) continue;
+
+        index=bc_pattern_index(&flip);
+        if(index==0xffu) return 0u;
+        {
+            uint16_t word=(uint16_t)(g_tspf_boundary_pattern_base+index);
+            if(flip) word|=TSP_ATTR_FLIPX;
+            if(!bc_add_patch(row,col,word)) return 0u;
+        }
+    }
+    return 1u;
+}
+
+void tsp_polar_boundary_reset(void) BANKED
+{
+    uint8_t i;
+    g_tspf_boundary_patterns_pending=0u;
+    g_tspf_boundary_pattern_count=0u;
+    g_tspf_boundary_last_patterns=0u;
+    g_tspf_boundary_last_patches=0u;
+    g_tspf_boundary_skip_reason=0u;
+    s_prev_bank=0xffu;
+    s_target_bank=0xffu;
+    s_prepared=0u;
+    bc_clear3(s_cur_cols);
+    bc_clear3(s_prev_cols);
+    s_bank_used[0]=s_bank_used[1]=0u;
+    s_bank_released[0]=s_bank_released[1]=0u;
+    for(i=0u;i<TSP_COLS;++i) g_tspf_boundary_dirty_by_col[i]=0u;
+}
+
+void tsp_polar_boundary_prepare(const TSPState *s) BANKED
+{
+    uint8_t i,n,count=0u;
+    uint16_t yawq;
+    uint8_t target;
+
+    s_prepared=0u;
+    s_patch_count=0u;
+    s_target_bank=0xffu;
+    g_tspf_boundary_pattern_count=0u;
+    g_tspf_boundary_last_patterns=0u;
+    g_tspf_boundary_last_patches=0u;
+    g_tspf_boundary_skip_reason=0u;
+    g_tspf_seam_desc_count=0u;
+    bc_clear3(s_cur_cols);
+
+    /* Previous exact columns and current exact columns are deliberately forced
+     * through the normal raster on this correctness rung.  It guarantees a
+     * valid coarse substrate even if the small dynamic cache cannot answer. */
+    for(i=0u;i<TSP_COLS;++i)
+        g_tspf_boundary_dirty_by_col[i]=bc_col_marked(s_prev_cols,i)?1u:0u;
+
+#if defined(TSPF_OPTIMIZED_MAP)
+    if(s->z_q4!=TSP_OPT_EYE_Q4){
+        g_tspf_boundary_skip_reason=1u;
+        return;
+    }
+#endif
+    if(g_tspf_appearance_mode!=0u){
+        g_tspf_boundary_skip_reason=2u;
+        return;
+    }
+
+    n=g_e1env_program[0];
+    if(!n || n>31u) return;
+    yawq=(uint16_t)s->yaw<<4;
+
+    /* Record the visible sub-tile ownership transitions.  Exact tile-edge
+     * transitions need no composite: the ordinary c0/c1 handoff is already at
+     * the right raster X. */
+    for(i=0u;i<n;++i){
+        uint8_t ni=(uint8_t)(i+1u<n?i+1u:0u);
+        uint8_t left=g_e1env_program[(uint8_t)(2u+(uint8_t)(i<<1))];
+        uint8_t right=g_e1env_program[(uint8_t)(2u+(uint8_t)(ni<<1))];
+        uint8_t vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
+        int16_t rel,x;
+        uint8_t code,col;
+
+        if(left==right || left==0xffu || right==0xffu) continue;
+        if(vid>=32u) continue;
+        if(!(g_corner_bearing_valid[vid>>3]&(uint8_t)(1u<<(vid&7u)))) continue;
+        rel=bc_rel(g_corner_bearing_q12[vid],yawq);
+        if(rel<=-512 || rel>=512) continue;
+        code=g_e1env_center_col_lut[(uint16_t)(rel+512)];
+        x=(int16_t)(((uint16_t)(code&31u)<<3)+(int16_t)((int8_t)(code>>5)-4));
+        if(x<0 || x>=160 || (((uint8_t)x&7u)==0u)) continue;
+        if(count>=32u){ g_tspf_boundary_skip_reason=3u; return; }
+        g_tspf_seam_x[count]=(uint8_t)x;
+        g_tspf_seam_vid[count]=left;
+        g_tspf_seam_vertex_half[count]=right;
+        col=(uint8_t)((uint8_t)x>>3);
+        bc_mark_col(s_cur_cols,col);
+        g_tspf_boundary_dirty_by_col[col]=1u;
+        ++count;
+    }
+    g_tspf_seam_desc_count=count;
+    if(!count) return;
+
+    /* Insertion sort: at most a few visible handoffs, and doing it here means
+     * the tile builder consumes one left->right edge record at a time. */
+    for(i=1u;i<count;++i){
+        uint8_t x=g_tspf_seam_x[i],l=g_tspf_seam_vid[i],
+                r=g_tspf_seam_vertex_half[i],j=i;
+        while(j && g_tspf_seam_x[(uint8_t)(j-1u)]>x){
+            g_tspf_seam_x[j]=g_tspf_seam_x[(uint8_t)(j-1u)];
+            g_tspf_seam_vid[j]=g_tspf_seam_vid[(uint8_t)(j-1u)];
+            g_tspf_seam_vertex_half[j]=g_tspf_seam_vertex_half[(uint8_t)(j-1u)];
+            --j;
+        }
+        g_tspf_seam_x[j]=x;
+        g_tspf_seam_vid[j]=l;
+        g_tspf_seam_vertex_half[j]=r;
+    }
+
+    /* Never overwrite a staging buffer that has not reached VRAM yet. */
+    if(g_tspf_boundary_patterns_pending){
+        g_tspf_boundary_skip_reason=4u;
+        return;
+    }
+    target=bc_choose_bank();
+    if(target==0xffu){
+        g_tspf_boundary_skip_reason=5u;
+        return;
+    }
+    s_target_bank=target;
+    g_tspf_boundary_pattern_base=(uint16_t)(target?TSP_BC_BASE1:TSP_BC_BASE0);
+
+    i=0u;
+    while(i<count){
+        uint8_t first=i,last=i,col=(uint8_t)(g_tspf_seam_x[i]>>3);
+        while((uint8_t)(last+1u)<count &&
+              (uint8_t)(g_tspf_seam_x[(uint8_t)(last+1u)]>>3)==col)
+            ++last;
+        if(!bc_build_tile(first,last,col,s)){
+            g_tspf_boundary_pattern_count=0u;
+            s_patch_count=0u;
+            s_target_bank=0xffu;
+            g_tspf_boundary_skip_reason=6u;
+            return;
+        }
+        i=(uint8_t)(last+1u);
+    }
+
+    if(!s_patch_count || !g_tspf_boundary_pattern_count) return;
+    s_prepared=1u;
+    g_tspf_boundary_last_patterns=g_tspf_boundary_pattern_count;
+    g_tspf_boundary_last_patches=s_patch_count;
+    /* Pattern upload is always published before any dirty name-table row, so
+     * a name-table reference can never race an uninitialized dynamic tile. */
+    g_tspf_boundary_patterns_pending=1u;
+}
+
+void tsp_polar_boundary_apply(void) BANKED
+{
+    uint8_t i;
+
+    if(s_prepared){
+        for(i=0u;i<s_patch_count;++i){
+            uint8_t pos=s_patch_pos[i];
+            uint8_t row=(uint8_t)(pos/20u);
+            uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
+            uint8_t brow=(uint8_t)(17u-row);
+            uint16_t word=s_patch_word[i];
+            uint16_t idx=(uint16_t)pos;
+            uint16_t bidx=(uint16_t)((uint16_t)brow*20u+col);
+            uint16_t bword=(uint16_t)(word|TSP_ATTR_FLIPY|TSP_ATTR_PALETTE);
+
+            if(g_map[idx]!=word){
+                g_map[idx]=word;
+                bc_dirty_row(row,col);
+            }
+            if(g_map[bidx]!=bword){
+                g_map[bidx]=bword;
+                bc_dirty_row(brow,col);
+            }
+            bc_own_cell(row,col);
+            bc_own_cell(brow,col);
+        }
+
+        if(s_prev_bank!=0xffu && s_prev_bank!=s_target_bank){
+            s_bank_released[s_prev_bank]=1u;
+            s_bank_release_tick[s_prev_bank]=g_tspf_boundary_publish_tick;
+        }
+        s_bank_used[s_target_bank]=1u;
+        s_bank_released[s_target_bank]=0u;
+        s_prev_bank=s_target_bank;
+        s_prev_cols[0]=s_cur_cols[0];
+        s_prev_cols[1]=s_cur_cols[1];
+        s_prev_cols[2]=s_cur_cols[2];
+    }else{
+        /* The forced coarse raster has removed every previous dynamic cell.
+         * Release its pattern bank only now, then forget the old boundary set. */
+        if(s_prev_bank!=0xffu){
+            s_bank_released[s_prev_bank]=1u;
+            s_bank_release_tick[s_prev_bank]=g_tspf_boundary_publish_tick;
+        }
+        s_prev_bank=0xffu;
+        bc_clear3(s_prev_cols);
+    }
+
+    s_prepared=0u;
+}
+
+#endif /* __SDCC && TSPF_BOUNDARY_COMPOSITE */
