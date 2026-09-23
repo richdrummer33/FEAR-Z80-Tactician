@@ -1046,20 +1046,29 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
     for(i=1u;i<count;++i){
         uint8_t x=g_tspf_seam_x[i],l=g_tspf_seam_vid[i],
                 r=g_tspf_seam_vertex_half[i],j=i;
+#if TSPF_PROFILE_HOOKS
+        uint8_t v=g_tspf_boundary_vid[i];
+#endif
         while(j && g_tspf_seam_x[(uint8_t)(j-1u)]>x){
             g_tspf_seam_x[j]=g_tspf_seam_x[(uint8_t)(j-1u)];
             g_tspf_seam_vid[j]=g_tspf_seam_vid[(uint8_t)(j-1u)];
             g_tspf_seam_vertex_half[j]=g_tspf_seam_vertex_half[(uint8_t)(j-1u)];
+#if TSPF_PROFILE_HOOKS
+            g_tspf_boundary_vid[j]=g_tspf_boundary_vid[(uint8_t)(j-1u)];
+#endif
             --j;
         }
         g_tspf_seam_x[j]=x;
         g_tspf_seam_vid[j]=l;
         g_tspf_seam_vertex_half[j]=r;
+#if TSPF_PROFILE_HOOKS
+        g_tspf_boundary_vid[j]=v;
+#endif
     }
 
     /* Never overwrite a staging buffer that has not reached VRAM yet.
-     * Current/previous boundary columns are already marked dirty above, so the
-     * normal coarse path safely removes stale composites for this update. */
+     * Previous dynamic columns are already forced coarse above, so stale
+     * composites are removed even when this update falls back. */
     if(g_tspf_boundary_patterns_pending){
         g_tspf_boundary_skip_reason=4u;
         return;
