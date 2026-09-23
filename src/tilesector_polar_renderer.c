@@ -44,6 +44,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_E1M1_PLANE_META
 #define TSPF_E1M1_PLANE_META 0
 #endif
+#ifndef TSPF_E1M1_VERTEX_DEPTH
+#define TSPF_E1M1_VERTEX_DEPTH 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -61,6 +64,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #endif
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_PLANE_META
 #include "e1env_plane_meta.h"
+#endif
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_VERTEX_DEPTH
+#include "e1env_vertex_depth.h"
 #endif
 
 #if defined(TSPF_E1M1_FULL_ONLY)
@@ -1174,60 +1180,37 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
  * authored walls. Suppress one of the two black borders only when BOTH spans
  * actually own adjacent coarse columns; a sub-column neighbor must not steal
  * the sole visible corner line. */
-static int16_t scale_step_subpx(int16_t step,uint8_t px)
-{
-    /* px is only 0..4. Avoid a signed multiply/helper call: exact fractions
-     * of one 8-pixel coarse-column step are enough for the canonical corner
-     * height, and the final result is quantized to an integer screen pixel. */
-    if(px==1u) return shr_signed(step,3u);
-    if(px==2u) return shr_signed(step,2u);
-    if(px==3u) return (int16_t)(shr_signed(step,2u)+shr_signed(step,3u));
-    if(px>=4u) return shr_signed(step,1u);
-    return 0;
-}
-
-static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
+static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx,const TSPState *s)
 {
     PolarRun *l=&g_runs[li], *r=&g_runs[ri];
+    (void)dx;
     if((uint8_t)(l->c1+1u)==r->c0 &&
        l->right_real && r->left_real &&
        l->right_connected)
     {
-#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
-        /* The real authored corner lies up to four pixels either side of the
-         * snapped 8px ownership boundary.  Inverse depth is linear in screen X
-         * across a straight wall, so recover the corner from whichever face
-         * actually contains that pixel: exact left-run END when dx<0, exact
-         * right-run START when dx>=0.  Both faces then consume the same
-         * canonical half-height at the coarse handoff.
+#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_VERTEX_DEPTH
+        /* The shared authored vertex is the authority for BOTH faces.
          *
-         * This fixes the remaining moderate-angle Y overshoot without needing
-         * a sub-tile two-face compositor yet. X is still coarse-snapped; only
-         * the corner's physically correct projected HEIGHT is restored here. */
-        int16_t q;
-        uint8_t px=(uint8_t)(dx<0 ? -dx : dx);
-        uint8_t inv,half,orig,d;
-        if(dx<0){
-            q=(int16_t)((uint16_t)l->inv1<<6);
-            q=(int16_t)(q-scale_step_subpx(l->step,px));
-        }else{
-            q=r->iq;
-            q=(int16_t)(q+scale_step_subpx(r->step,px));
-        }
-        inv=clamp_u8i((int16_t)((q+32)>>6),255u);
-        half=(uint8_t)(inv>>1);
-        orig=(uint8_t)(l->inv1>>1);
-        d=(uint8_t)(half>orig ? half-orig : orig-half);
-
-        /* At grazing angles a true sub-column correction can exceed what the
-         * current +/-7 edge vocabulary can draw in one tile. Leave those for
-         * the steep-edge rung rather than manufacture a spike here. */
+         * The previous rung reconstructed corner Y from a wall-plane inverse
+         * depth after the perpendicular distance had already passed through
+         * the near clamp. At a grazing corner that operation is not reversible:
+         * e.g. a 9-Q4 plane distance saturates to 255 before the small normal
+         * dot is applied, even when the physical vertex is ~21 Q4 forward.
+         * That produced observed 74-pixel face/corner disagreements.
+         *
+         * Project the actual v1 once instead. Keep the old <=4px acceptance
+         * gate for this cost/isolation rung because X is still coarse-snapped;
+         * the following true-X compositor will consume the full endpoint.
+         */
+        uint8_t half=e1env_vertex_half(l->v1,s->x_q4,s->y_q4,s->yaw);
+        uint8_t orig=(uint8_t)(l->inv1>>1);
+        uint8_t d=(uint8_t)(half>orig ? half-orig : orig-half);
         if(d<=4u){
-            l->inv_mid=half; l->depth_plane|=2u; /* canonical right endpoint */
-            r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
+            l->inv_mid=half; l->depth_plane|=2u;
+            r->inv0=half;    r->depth_plane|=1u;
         }
 #endif
-        /* Preserve the existing single visible vertical seam on the right run. */
+        /* Preserve one coarse seam until true-X composition replaces borders. */
         l->right_real=0u;
     }
 }
@@ -1630,7 +1613,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(last,cur,envelope_center_dx(rel1));
+                    if(last!=0xffu) envelope_join_connected(last,cur,envelope_center_dx(rel1),s);
                     last=cur;
                 }
                 a1=nexta;
@@ -1656,7 +1639,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(q==0u) break;
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(cur,last,envelope_center_dx(rel0));
+                    if(last!=0xffu) envelope_join_connected(cur,last,envelope_center_dx(rel0),s);
                     last=cur;
                 }
                 a0=nexta;
