@@ -11,6 +11,7 @@ on:
       - experiment/e1m1-corner-edge-vocabulary
       - experiment/e1m1-p99-steep-edges
       - experiment/e1m1-thin-face-survival
+      - experiment/e1m1-silhouette-borders
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c
