@@ -15,6 +15,8 @@
         .globl  _g_polar_run_profile
         .globl  _g_polar_run_left_real
         .globl  _g_polar_run_right_real
+        .globl  _g_polar_run_left_seam_tile
+        .globl  _g_polar_run_right_seam_tile
         .globl  _g_polar_run_iq
         .globl  _g_polar_run_step
         .globl  _g_polar_run_sid
@@ -158,6 +160,30 @@ run_right_ready$:
         ld      a, c
         ld      (#r_run_halfr$), a
         ld      (#_g_polar_mat_top_r), hl
+
+        ; Select an authoritative sub-column seam tile for this coarse column.
+        ; 0xff is the common no-seam case. C has already combined both physical
+        ; endpoints when a one-column run needs two vertical lines.
+        ld      a, #0xff
+        ld      (#r_direct_seam_tile$), a
+        ld      a, (#r_run_col$)
+        ld      c, a
+        ld      a, (#_g_polar_run_c0)
+        cp      c
+        jr      nz, run_no_left_seam$
+        ld      a, (#_g_polar_run_left_seam_tile)
+        cp      #0xff
+        jr      z, run_no_left_seam$
+        ld      (#r_direct_seam_tile$), a
+run_no_left_seam$:
+        ld      a, (#_g_polar_run_c1)
+        cp      c
+        jr      nz, run_seam_done$
+        ld      a, (#_g_polar_run_right_seam_tile)
+        cp      #0xff
+        jr      z, run_seam_done$
+        ld      (#r_direct_seam_tile$), a
+run_seam_done$:
 
         ; Physical-chain border bits: 1 at the true left endpoint, 2 at the
         ; true right endpoint. Interior coarse columns carry no border bits.
@@ -552,6 +578,11 @@ ret_gate_live$:
         ; cells it would write already hold the answer, so the whole raster
         ; is dead work. Coverage is already marked above, so nt_end_frame
         ; still sees this column as owned and will not restore it.
+        ; A sub-column seam may move while the old retained depth/border key
+        ; remains unchanged. Never let that stale key hide authoritative X.
+        ld      a, (#r_direct_seam_tile$)
+        cp      #0xff
+        jr      nz, polar_cov_done$
         call    ret_column_gate$
 _tsp_probe_ret_skip::
         jp      z, raster_done$
@@ -564,6 +595,14 @@ polar_cov_done$:
 polar_draw_symfull$:
         call    prepare_symfull_edges$
         call    draw_plain_interior$
+        ld      a, (#r_direct_seam_tile$)
+        cp      #0xff
+        jr      z, polar_record_clean$
+        ; Seam X is not part of the legacy retained key, so leave this column
+        ; invalid for reuse rather than carrying a knowingly incomplete key.
+        call    ret_column_kill$
+        jr      raster_done$
+polar_record_clean$:
         call    ret_record_clean$
         jr      raster_done$
 
@@ -623,14 +662,14 @@ _tsp_h_prepare_symfull_edges::
         ld      a, l
         bit     7, a
         jr      nz, sym_slope_negative$
-        cp      #29
+        cp      #25
         jr      c, sym_slope_store$
-        ld      a, #28
+        ld      a, #24
         jr      sym_slope_store$
 sym_slope_negative$:
-        cp      #0xE4
+        cp      #0xE8
         jr      nc, sym_slope_store$
-        ld      a, #0xE4
+        ld      a, #0xE8
 sym_slope_store$:
         ld      (#r_edge_slope$), a
         ld      a, (#r_top_min$)
@@ -782,14 +821,14 @@ prep_slope$:
         ld      a, l                    ; signed slope, clamp exactly like C
         bit     7, a
         jr      nz, slope_negative$
-        cp      #29
+        cp      #25
         jr      c, slope_store$
-        ld      a, #28
+        ld      a, #24
         jr      slope_store$
 slope_negative$:
-        cp      #0xE4                  ; -28
+        cp      #0xE8                  ; -24
         jr      nc, slope_store$
-        ld      a, #0xE4
+        ld      a, #0xE8
 slope_store$:
         ld      (#r_edge_slope$), a
         ; Polar path may cross more than two tile rows at steep/near
@@ -995,6 +1034,15 @@ interior_multi$:
         ld      a, (#r_fill_first$)
         ld      (#r_row$), a
         call    map_ptr_row_col$
+        ld      a, (#r_direct_seam_tile$)
+        cp      #0xff
+        jr      z, interior_plain_tile$
+        ld      (#r_full_tile$), a
+        ld      a, (#r_occluded$)
+        or      a
+        jr      z, direct_interior_loop_open$
+        jr      direct_interior_loop$
+interior_plain_tile$:
         call    full_tile_low$
         ld      (#r_full_tile$), a
         ld      a, (#r_occluded$)
@@ -1037,6 +1085,74 @@ polar_interior_done$:
         jr      nz, interior_loop$
         ret
 _tsp_probe_end_fill::
+
+; Direct physical seam interior. These patterns live at tile IDs 0x19c..0x1bf.
+; r_full_tile$ holds the low byte; the VDP tile-ID high bit is always one.
+; Top/bottom EDGE rows deliberately stay on the exact edge vocabulary.
+direct_interior_loop$:
+        push    hl
+        ld      a, (#r_row$)
+        call    polar_row_unclaimed_fast$
+        pop     hl
+        jr      z, direct_interior_done$
+        ld      a, (#r_full_tile$)
+        ld      e, a
+        ld      a, (hl)
+        cp      e
+        jr      nz, direct_interior_changed$
+        inc     hl
+        ld      a, (hl)
+        cp      #1
+        dec     hl
+        jr      z, direct_interior_done$
+direct_interior_changed$:
+        ld      (hl), e
+        inc     hl
+        ld      (hl), #1
+        dec     hl
+        push    hl
+        ld      a, (#r_row$)
+        call    polar_mark_dirty_fast$
+        pop     hl
+direct_interior_done$:
+        ld      de, #40
+        add     hl, de
+        ld      a, (#r_row$)
+        inc     a
+        ld      (#r_row$), a
+        dec     c
+        jr      nz, direct_interior_loop$
+        ret
+
+direct_interior_loop_open$:
+        ld      a, (#r_full_tile$)
+        ld      e, a
+        ld      a, (hl)
+        cp      e
+        jr      nz, direct_open_changed$
+        inc     hl
+        ld      a, (hl)
+        cp      #1
+        dec     hl
+        jr      z, direct_open_done$
+direct_open_changed$:
+        ld      (hl), e
+        inc     hl
+        ld      (hl), #1
+        dec     hl
+        push    hl
+        ld      a, (#r_row$)
+        call    polar_mark_dirty_fast$
+        pop     hl
+direct_open_done$:
+        ld      de, #40
+        add     hl, de
+        ld      a, (#r_row$)
+        inc     a
+        ld      (#r_row$), a
+        dec     c
+        jr      nz, direct_interior_loop_open$
+        ret
 
 ; Open-interior fill. Reached when no row of this span was already claimed, so
 ; every interior row is this surface's to write and the per-row ownership query
@@ -1519,9 +1635,9 @@ p99_mag_pos$:
         ld      b, a
 p99_mag_clamp$:
         ld      a, b
-        cp      #29
+        cp      #25
         jr      c, p99_moderate_test$
-        ld      b, #28
+        ld      b, #24
 
 p99_moderate_test$:
         ; Preserve real vertical seams through ordinary sloped EDGE tiles.
@@ -1602,7 +1718,7 @@ p99_bmask_ready$:
         jr      p99_attrs$
 
 p99_plain$:
-        ; Exact p99 silhouette: magnitude 0..28, canonical offset -28..+8.
+        ; Exact p99 silhouette: magnitude 0..24, canonical offset -28..+8.
         ld      a, c
         bit     7, a
         jr      z, p99_off_pos$
@@ -2449,6 +2565,8 @@ r_cap_delta$:
         .ds     1
 r_fill_first$:
 _tsp_probe_fill_first::
+        .ds     1
+r_direct_seam_tile$:
         .ds     1
 r_full_tile$:
 _tsp_probe_full_tile::
