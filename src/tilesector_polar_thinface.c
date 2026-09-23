@@ -456,7 +456,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                 uint16_t *mapb=&g_map[idxb];
                 uint16_t old=*mapt;
                 uint16_t oldb=*mapb;
-                uint8_t tb=(uint8_t)(idx>>3);
+                uint8_t *touch=&s_overlay_touched[idx>>3];
                 uint8_t tm=(uint8_t)(1u<<(idx&7u));
 
                 row=first;
@@ -464,7 +464,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                 for(;;){
                     uint16_t nw;
 
-                    if(!(s_overlay_touched[tb]&tm)){
+                    if(!(*touch&tm)){
                         /* First touch still has to prove that BOTH symmetric
                          * coarse cells are wall/seam material. Once claimed,
                          * later descriptors can trust the current-pass seam
@@ -472,7 +472,7 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED
                         if(!TSP_SEAM_SUBSTRATE_WORD(old) ||
                            !TSP_SEAM_SUBSTRATE_WORD(oldb))
                             goto seam_pair_done;
-                        s_overlay_touched[tb]|=tm;
+                        *touch|=tm;
                         nw=single_nw;
                     } else {
                         /* Top-pair touched state is sufficient: the bottom
@@ -534,10 +534,10 @@ seam_pair_done:
 
                     if(tm&0xf0u){
                         tm=(uint8_t)(tm>>4);
-                        tb=(uint8_t)(tb+3u);
+                        touch+=3u;
                     } else {
                         tm=(uint8_t)(tm<<4);
-                        tb=(uint8_t)(tb+2u);
+                        touch+=2u;
                     }
                 }
             }
