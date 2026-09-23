@@ -170,7 +170,7 @@ jobs:
           GEN="$ROOT/generated"
           ENVOBJS="$(cat "$ROOT/env-objs.txt")"
           rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
-            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_thinface_gg.o build/tilesector_polar_ntstate_gg.o \
             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
             build/frame_trace_gg.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" \
@@ -400,7 +400,7 @@ jobs:
           GEN="$ROOT/generated"
           ENVOBJS="$(cat "$ROOT/env-objs.txt")"
           rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
-            build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_thinface_gg.o build/tilesector_polar_ntstate_gg.o \
             build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
             build/frame_trace_gg.o build/gg-tilesector-polar.*
           make GBDK_HOME="$PWD/.toolchain/gbdk" \
