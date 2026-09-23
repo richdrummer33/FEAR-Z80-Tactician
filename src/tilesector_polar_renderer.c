@@ -47,6 +47,9 @@ BANKREF(tilesector_polar_renderer_bank)
 #ifndef TSPF_THIN_FACE_SURVIVAL
 #define TSPF_THIN_FACE_SURVIVAL 0
 #endif
+#ifndef TSPF_SILHOUETTE_BORDERS
+#define TSPF_SILHOUETTE_BORDERS 0
+#endif
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
 #include "tilesector_polar_projection_meta.h"
 #endif
@@ -1208,7 +1211,7 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
     PolarRun *l=&g_runs[li], *r=&g_runs[ri];
     if((uint8_t)(l->c1+1u)==r->c0 &&
        l->right_real && r->left_real &&
-       l->right_connected)
+       l->right_connected && l->v1==r->v0)
     {
 #if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
         /* The real authored corner lies up to four pixels either side of the
@@ -1239,7 +1242,7 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
         /* With the p24 vocabulary, a vertex displaced by at most four screen
          * pixels can legitimately differ by up to ~12 vertical pixels. Keep
          * the guard, but match it to the representation we now actually own. */
-#if TSPF_THIN_FACE_SURVIVAL
+#if TSPF_THIN_FACE_SURVIVAL || TSPF_SILHOUETTE_BORDERS
         if(d<=12u){
 #else
         if(d<=4u){
@@ -1248,8 +1251,17 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
             r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
         }
 #endif
+#if TSPF_SILHOUETTE_BORDERS
+        /* Silhouette-only rule: an authored corner shared by two visible,
+         * directly-adjacent envelope spans is an interior junction, not a
+         * black vertical edge. Keep only the outer bounds of the visible
+         * connected series (including the two outside bounds of a pillar). */
+        l->right_real=0u;
+        r->left_real=0u;
+#else
         /* Preserve the existing single visible vertical seam on the right run. */
         l->right_real=0u;
+#endif
     }
 }
 #endif
