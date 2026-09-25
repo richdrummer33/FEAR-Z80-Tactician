@@ -99,7 +99,6 @@ void tsp_polar_nt_upload_dirty_budgeted(void);
  * renderer notices VBlank a little late. */
 volatile uint8_t g_ts_vblank_pending;
 #if TSPF_BOUNDARY_COMPOSITE
-volatile uint8_t g_tspf_boundary_publish_tick;
 extern volatile uint8_t g_tspf_boundary_patterns_pending;
 extern uint16_t g_tspf_boundary_pattern_base;
 extern uint8_t g_tspf_boundary_pattern_count;
@@ -137,9 +136,6 @@ void tsp_polar_service_vblank(void) NONBANKED {
     }
 #endif
     tsp_polar_nt_upload_dirty_budgeted();
-#if TSPF_BOUNDARY_COMPOSITE
-    ++g_tspf_boundary_publish_tick;
-#endif
 #if TSPF_PROFILE_HOOKS
     ++g_ts_vblank_bursts;
 #endif
@@ -244,7 +240,7 @@ void main(void){
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
     tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();
 #if TSPF_BOUNDARY_COMPOSITE
-    g_tspf_boundary_publish_tick=0u;tsp_polar_boundary_reset();
+    tsp_polar_boundary_reset();
 #endif
     tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
 #if TSPF_BOUNDARY_COMPOSITE
