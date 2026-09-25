@@ -26,6 +26,7 @@ uint8_t g_tspf_mixed_skip[TSP_COLS*3u];
  * materializer once. This restores stale dynamic tile IDs even when retained
  * geometry is otherwise bit-identical. */
 uint8_t g_tspf_mixed_force_col[TSP_COLS];
+uint8_t g_tspf_mixed_force_any;
 /* Per authored surface: bit0 suppress snapped LEFT endpoint, bit1 RIGHT.
  * Keying this by surface endpoint rather than coarse X is crucial: crowded
  * cells can also contain a legitimate physical corner exactly on the nearby
@@ -145,12 +146,14 @@ static uint8_t publication_pending(void){
 }
 static void prepare_restore_cols(void){
     uint8_t i;
+    g_tspf_mixed_force_any=0u;
     for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
     for(i=0u;i<s_prev_count;++i){
         uint8_t pos=s_prev_pos[i];
         uint8_t row=(uint8_t)(pos/20u);
         uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
         g_tspf_mixed_force_col[col]=1u;
+        g_tspf_mixed_force_any=1u;
     }
 }
 static uint8_t row_is_direct(uint8_t row,uint8_t col){
@@ -162,13 +165,16 @@ static void refine_restore_cols(void){
     /* If every previous dynamic word in a column is itself replaced by a new
      * direct word this frame, there is no stale dynamic ID for coarse to erase.
      * Avoid throwing the rest of that column off the retained fast path. */
+    g_tspf_mixed_force_any=0u;
     for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
     for(i=0u;i<s_prev_count;++i){
         uint8_t pos=s_prev_pos[i];
         uint8_t row=(uint8_t)(pos/20u);
         uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
-        if(!row_is_direct(row,col))
+        if(!row_is_direct(row,col)){
             g_tspf_mixed_force_col[col]=1u;
+            g_tspf_mixed_force_any=1u;
+        }
     }
 }
 static void mark_skip(uint8_t row,uint8_t col){
@@ -179,6 +185,7 @@ static void mark_skip(uint8_t row,uint8_t col){
 static void hold_previous_cells(void){
     uint8_t i;
     clear_skip_bits();
+    g_tspf_mixed_force_any=0u;
     for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
     for(i=0u;i<s_prev_count;++i){
         uint8_t pos=s_prev_pos[i];
@@ -639,6 +646,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_event_count=0u;
     g_tspf_mixed_event_overflow=0u;
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
+    g_tspf_mixed_force_any=0u;
     for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
     for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
     for(i=0u;i<TSP_ROWS;++i)g_tspf_mixed_publish_rows[i]=0u;

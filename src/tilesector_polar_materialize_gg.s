@@ -25,6 +25,7 @@
         .globl  _g_tspf_mixed_any
         .globl  _g_tspf_mixed_skip
         .globl  _g_tspf_mixed_force_col
+        .globl  _g_tspf_mixed_force_any
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
         .globl  _g_map
@@ -436,8 +437,11 @@ polar_endpoint_rows_ready$:
         ld      (#r_force_col$), a
 
         ; A previous dynamic tile may still be the literal word in g_map.
-        ; Force that coarse column through one true raster this frame even when
-        ; retained geometry says "unchanged".
+        ; The overwhelmingly common path has none, so gate the indexed lookup
+        ; behind one byte just like current direct ownership.
+        ld      a, (#_g_tspf_mixed_force_any)
+        or      a
+        jr      z, ret_check_current_mixed$
         ld      a, b
         ld      e, a
         ld      d, #0
