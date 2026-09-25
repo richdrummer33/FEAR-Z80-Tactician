@@ -10,6 +10,7 @@ on:
       - experiment/e1m1-subcolumn-corner-height
       - experiment/e1m1-corner-edge-vocabulary
       - experiment/e1m1-p99-steep-edges
+      - experiment/e1m1-direct-mixed-cells
     paths:
       - src/main_tilesector_polar_gg.c
       - src/tilesector_polar_renderer.c

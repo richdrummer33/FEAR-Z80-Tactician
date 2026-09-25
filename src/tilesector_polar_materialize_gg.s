@@ -623,14 +623,14 @@ _tsp_h_prepare_symfull_edges::
         ld      a, l
         bit     7, a
         jr      nz, sym_slope_negative$
-        cp      #29
+        cp      #25
         jr      c, sym_slope_store$
-        ld      a, #28
+        ld      a, #24
         jr      sym_slope_store$
 sym_slope_negative$:
-        cp      #0xE4
+        cp      #0xE8
         jr      nc, sym_slope_store$
-        ld      a, #0xE4
+        ld      a, #0xE8
 sym_slope_store$:
         ld      (#r_edge_slope$), a
         ld      a, (#r_top_min$)
@@ -782,14 +782,14 @@ prep_slope$:
         ld      a, l                    ; signed slope, clamp exactly like C
         bit     7, a
         jr      nz, slope_negative$
-        cp      #29
+        cp      #25
         jr      c, slope_store$
-        ld      a, #28
+        ld      a, #24
         jr      slope_store$
 slope_negative$:
-        cp      #0xE4                  ; -28
+        cp      #0xE8                  ; -24
         jr      nc, slope_store$
-        ld      a, #0xE4
+        ld      a, #0xE8
 slope_store$:
         ld      (#r_edge_slope$), a
         ; Polar path may cross more than two tile rows at steep/near
@@ -1519,9 +1519,9 @@ p99_mag_pos$:
         ld      b, a
 p99_mag_clamp$:
         ld      a, b
-        cp      #29
+        cp      #25
         jr      c, p99_moderate_test$
-        ld      b, #28
+        ld      b, #24
 
 p99_moderate_test$:
         ; Preserve real vertical seams through ordinary sloped EDGE tiles.
@@ -1606,9 +1606,9 @@ p99_plain$:
         ld      a, c
         bit     7, a
         jr      z, p99_off_pos$
-        cp      #0xE4
+        cp      #0xE8
         jr      nc, p99_off_ok$
-        ld      a, #0xE4
+        ld      a, #0xE8
         jr      p99_off_ok$
 p99_off_pos$:
         cp      #9
