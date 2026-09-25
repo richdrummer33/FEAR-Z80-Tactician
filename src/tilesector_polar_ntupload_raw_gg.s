@@ -5,6 +5,8 @@
         .globl _g_map
         .globl _g_polar_nt_row_min
         .globl _g_polar_nt_row_max
+        .globl _g_tspf_boundary_retire_bank0
+        .globl _g_tspf_boundary_retire_bank1
 
 ; POLAR_STAGE20_ROW_EXTENTS
 ; Dirty state is already shaped like the VDP transaction: one first/last
@@ -117,6 +119,20 @@ pe_row_loop$:
         otir
         ei
 
+        ; Exact dynamic-pattern lifetime acknowledgement. If this row used to
+        ; reference either reclaimed pattern bank, the successful OTIR above
+        ; has now replaced that screen state with the authoritative g_map row.
+        ; Clear both bank fences for this physical row.
+        ld      a, (#pe_row$)
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_tspf_boundary_retire_bank0
+        add     hl, de
+        ld      (hl), #0
+        ld      hl, #_g_tspf_boundary_retire_bank1
+        add     hl, de
+        ld      (hl), #0
+
         ld      a, (#pe_budget$)
         dec     a
         ld      (#pe_budget$), a
@@ -171,6 +187,10 @@ pe_vdp_rows$:
         .dw 0x38CC,0x390C,0x394C,0x398C,0x39CC,0x3A0C
         .dw 0x3A4C,0x3A8C,0x3ACC,0x3B0C,0x3B4C,0x3B8C
         .dw 0x3BCC,0x3C0C,0x3C4C,0x3C8C,0x3CCC,0x3D0C
+
+        .area _BSS
+_g_tspf_boundary_retire_bank0:: .ds 18
+_g_tspf_boundary_retire_bank1:: .ds 18
 
         .area _DATA
 pe_row$:   .ds 1

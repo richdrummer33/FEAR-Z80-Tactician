@@ -578,7 +578,6 @@ seam_pair_done:
 #define TSP_BC_PATCH_MAX 32u
 #define TSP_BC_BASE0 412u
 #define TSP_BC_BASE1 430u
-#define TSP_BC_SAFE_PUBLISHES 3u
 
 extern uint16_t g_map[TSP_MAP_CELLS];
 extern uint8_t g_polar_nt_cov_cur[60];
@@ -588,7 +587,11 @@ extern uint8_t g_tspf_boundary_dirty_by_col[TSP_COLS];
 extern uint8_t g_tspf_boundary_any_dirty;
 extern uint8_t g_e1env_program[];
 extern volatile uint8_t g_tspf_appearance_mode;
-extern volatile uint8_t g_tspf_boundary_publish_tick;
+/* The VBlank row uploader clears these bytes only AFTER that physical row has
+ * actually been rewritten on screen. They are therefore an exact bank-lifetime
+ * fence rather than the old conservative "wait three publishes" heuristic. */
+extern uint8_t g_tspf_boundary_retire_bank0[TSP_ROWS];
+extern uint8_t g_tspf_boundary_retire_bank1[TSP_ROWS];
 
 /* Reuse the old, currently dead seam descriptor arena as three 32-byte event
  * vectors while preparing.  No seam post-pass is linked in this experiment. */
@@ -648,9 +651,8 @@ static uint8_t s_work[16];
  * the normal retained coarse path. */
 static uint8_t s_exact_cols[3];
 static uint8_t s_prev_cols[3];
+static uint8_t s_prev_rows[TSP_ROWS];
 static uint8_t s_bank_used[2];
-static uint8_t s_bank_released[2];
-static uint8_t s_bank_release_tick[2];
 static uint8_t s_prev_bank=0xffu;
 static uint8_t s_target_bank=0xffu;
 static uint8_t s_prepared;
@@ -709,15 +711,31 @@ static uint8_t bc_col_marked(const uint8_t bits[3],uint8_t col)
     return (uint8_t)(bits[col>>3]&(uint8_t)(1u<<(col&7u)));
 }
 
+static uint8_t bc_bank_retired(uint8_t bank)
+{
+    uint8_t i;
+    uint8_t *p=bank ? g_tspf_boundary_retire_bank1 : g_tspf_boundary_retire_bank0;
+    for(i=0u;i<TSP_ROWS;++i)
+        if(p[i]) return 0u;
+    return 1u;
+}
+
+static void bc_retire_previous_bank(void)
+{
+    uint8_t i;
+    uint8_t *p;
+    if(s_prev_bank==0xffu) return;
+    p=s_prev_bank ? g_tspf_boundary_retire_bank1 : g_tspf_boundary_retire_bank0;
+    for(i=0u;i<TSP_ROWS;++i)
+        if(s_prev_rows[i]) p[i]=1u;
+}
+
 static uint8_t bc_choose_bank(void)
 {
-    uint8_t c,t=g_tspf_boundary_publish_tick;
+    uint8_t c;
     for(c=0u;c<2u;++c){
         if(c==s_prev_bank) continue;
-        if(!s_bank_used[c]) return c;
-        if(s_bank_released[c] &&
-           (uint8_t)(t-s_bank_release_tick[c])>=TSP_BC_SAFE_PUBLISHES)
-            return c;
+        if(!s_bank_used[c] || bc_bank_retired(c)) return c;
     }
     return 0xffu;
 }
@@ -951,9 +969,13 @@ void tsp_polar_boundary_reset(void) BANKED
     bc_clear3(s_exact_cols);
     bc_clear3(s_prev_cols);
     s_bank_used[0]=s_bank_used[1]=0u;
-    s_bank_released[0]=s_bank_released[1]=0u;
     g_tspf_boundary_any_dirty=0u;
     for(i=0u;i<TSP_COLS;++i) g_tspf_boundary_dirty_by_col[i]=0u;
+    for(i=0u;i<TSP_ROWS;++i){
+        s_prev_rows[i]=0u;
+        g_tspf_boundary_retire_bank0[i]=0u;
+        g_tspf_boundary_retire_bank1[i]=0u;
+    }
 }
 
 void tsp_polar_boundary_prepare(const TSPState *s) BANKED
@@ -1099,6 +1121,13 @@ void tsp_polar_boundary_apply(void) BANKED
 #endif
 
     if(s_prepared){
+        /* The old bank can be overwritten as soon as every row that referenced
+         * it has actually been republished. Record exactly those rows now; the
+         * HOME VBlank uploader clears them one by one after OTIR completes. */
+        if(s_prev_bank!=0xffu && s_prev_bank!=s_target_bank)
+            bc_retire_previous_bank();
+        for(i=0u;i<TSP_ROWS;++i) s_prev_rows[i]=0u;
+
         for(i=0u;i<s_patch_count;++i){
             uint8_t pos=s_patch_pos[i];
             uint8_t row=(uint8_t)(pos/20u);
@@ -1119,14 +1148,11 @@ void tsp_polar_boundary_apply(void) BANKED
             }
             bc_own_cell(row,col);
             bc_own_cell(brow,col);
+            s_prev_rows[row]=1u;
+            s_prev_rows[brow]=1u;
         }
 
-        if(s_prev_bank!=0xffu && s_prev_bank!=s_target_bank){
-            s_bank_released[s_prev_bank]=1u;
-            s_bank_release_tick[s_prev_bank]=g_tspf_boundary_publish_tick;
-        }
         s_bank_used[s_target_bank]=1u;
-        s_bank_released[s_target_bank]=0u;
         s_prev_bank=s_target_bank;
         /* Do not make a crowded/coarse-only candidate pay restoration next
          * frame. Only cells that actually reference this dynamic bank need the
@@ -1136,13 +1162,11 @@ void tsp_polar_boundary_apply(void) BANKED
         s_prev_cols[2]=s_exact_cols[2];
     }else{
         /* The forced coarse raster has removed every previous dynamic cell.
-         * Release its pattern bank only now, then forget the old boundary set. */
-        if(s_prev_bank!=0xffu){
-            s_bank_released[s_prev_bank]=1u;
-            s_bank_release_tick[s_prev_bank]=g_tspf_boundary_publish_tick;
-        }
+         * Its bank is still unsafe until those exact rows reach the VDP. */
+        bc_retire_previous_bank();
         s_prev_bank=0xffu;
         bc_clear3(s_prev_cols);
+        for(i=0u;i<TSP_ROWS;++i) s_prev_rows[i]=0u;
     }
 
     s_prepared=0u;
