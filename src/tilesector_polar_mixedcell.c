@@ -271,9 +271,27 @@ static uint8_t add_patch(uint8_t row,uint8_t col,uint16_t word){
     return 1u;
 }
 
-/* 1=exact tile built, 2=unsupported wall/void first rung, 0=capacity. */
+static uint8_t same_owner(uint8_t a,uint8_t b){
+    if(a==0xffu || b==0xffu)return (uint8_t)(a==b);
+    return (uint8_t)((a&31u)==(b&31u));
+}
+
+/* 1=exact tile built, 2=unsupported wall/void first rung,
+ * 3=inconsistent quantized event chain, 0=capacity. */
 static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState *s){
     uint8_t line_mask=0u,lx,e,row,ly;
+
+    /* Multiple visibility transitions can quantize into one 8px tile. Never
+     * invent a pixel ownership order if their streamed left->right chain does
+     * not join. This is especially important when two sub-pixel spans collapse
+     * onto the same integer X and the focus-outward walk supplied equal-X
+     * events in the opposite append order. Coarse is the safe local fallback;
+     * a later census can justify a dedicated equal-X chain reorder if needed. */
+    for(e=first;e<last;++e)
+        if(!same_owner(g_tspf_mixed_event_right[e],
+                       g_tspf_mixed_event_left[(uint8_t)(e+1u)]))
+            return 3u;
+
     for(lx=0u;lx<8u;++lx)s_owner[lx]=g_tspf_mixed_event_left[first];
     for(e=first;e<=last;++e){
         uint8_t split=(uint8_t)(g_tspf_mixed_event_x[e]&7u);
