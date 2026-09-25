@@ -80,6 +80,18 @@ void tsp_polar_run_geometry_fast(void);
 void tsp_polar_ret_begin_frame(void);
 void tsp_polar_ret_end_frame(void);
 void tsp_polar_ret_invalidate(void);
+#if TSPF_DIRECT_MIXED
+void tsp_polar_mixed_reset(void) BANKED;
+void tsp_polar_mixed_begin_frame(void) BANKED;
+void tsp_polar_mixed_prepare(const TSPState *s) BANKED;
+void tsp_polar_mixed_apply(void) BANKED;
+extern uint8_t g_tspf_mixed_event_count;
+extern uint8_t g_tspf_mixed_event_overflow;
+extern uint8_t g_tspf_mixed_event_x[32];
+extern uint8_t g_tspf_mixed_event_left[32];
+extern uint8_t g_tspf_mixed_event_right[32];
+extern uint8_t g_tspf_mixed_event_vid[32];
+#endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
 #endif
@@ -376,6 +388,9 @@ void tsp_polar_renderer_reset(void) BANKED
 #endif
 #ifdef __SDCC
     tsp_polar_ret_invalidate();
+#if TSPF_DIRECT_MIXED
+    tsp_polar_mixed_reset();
+#endif
 #endif
 #ifndef __SDCC
     g_map_ready = 0u;
@@ -1016,6 +1031,41 @@ static int8_t envelope_center_dx(int16_t rel)
 {
     return (int8_t)((envelope_center_code(rel)>>5)-4);
 }
+
+#if TSPF_DIRECT_MIXED
+/* The bake has already solved first-visible ownership. While the monotonic
+ * envelope walk has each boundary bearing live, stream the exact pixel-X
+ * handoff and its two owners into the direct mixed-cell builder. */
+static void envelope_record_mixed_boundary(uint8_t left_i,uint8_t n,int16_t rel)
+{
+    uint8_t ni,left,right,vid,code,bi;
+    int16_t x;
+
+    if(rel<=-512 || rel>=512) return;
+    ni=(uint8_t)(left_i+1u<n?left_i+1u:0u);
+    left=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
+    right=g_e1env_program[(uint8_t)(2u+(uint8_t)(ni<<1))];
+    if(left==right) return;
+    if(left!=0xffu && right!=0xffu && (left&31u)==(right&31u)) return;
+
+    code=envelope_center_code(rel);
+    x=(int16_t)(((uint16_t)(code&31u)<<3)+(int16_t)((int8_t)(code>>5)-4));
+    /* Exact hardware-tile edges already have a perfect ordinary handoff. */
+    if(x<0 || x>=160 || (((uint8_t)x&7u)==0u)) return;
+
+    bi=g_tspf_mixed_event_count;
+    if(bi>=32u){
+        g_tspf_mixed_event_overflow=1u;
+        return;
+    }
+    vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
+    g_tspf_mixed_event_x[bi]=(uint8_t)x;
+    g_tspf_mixed_event_left[bi]=left;
+    g_tspf_mixed_event_right[bi]=right;
+    g_tspf_mixed_event_vid[bi]=vid;
+    g_tspf_mixed_event_count=(uint8_t)(bi+1u);
+}
+#endif
 #else
 static uint8_t envelope_center_col(int16_t rel)
 {
@@ -1550,6 +1600,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #ifdef __SDCC
     tsp_polar_nt_begin_frame();
     tsp_polar_ret_begin_frame();
+#if TSPF_DIRECT_MIXED
+    tsp_polar_mixed_begin_frame();
+#endif
     (void)cols;
 #else
     if (!g_map_ready)
@@ -1609,6 +1662,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
              * 8-pixel column-centre sample. Keep walking both directions;
              * 0xff means there is not yet a visible run to join against. */
             if(q==0u) goto e1full_candidates_ready;
+#if defined(__SDCC) && TSPF_DIRECT_MIXED
+            envelope_record_mixed_boundary(focus,n,rel1);
+#endif
             focus_run=(uint8_t)(q==1u ? count-1u : 0xffu);
 
             last=focus_run;
@@ -1628,6 +1684,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                                      (uint8_t)(rel1>=-512),
                                      (uint8_t)(nextrel<=512),s,&count);
                 if(q==0u) break;
+#if defined(__SDCC) && TSPF_DIRECT_MIXED
+                envelope_record_mixed_boundary(i,n,nextrel);
+#endif
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
                     if(last!=0xffu) envelope_join_connected(last,cur,envelope_center_dx(rel1));
@@ -1654,6 +1713,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                                      (uint8_t)(nextrel>=-512),
                                      (uint8_t)(rel0<=512),s,&count);
                 if(q==0u) break;
+#if defined(__SDCC) && TSPF_DIRECT_MIXED
+                envelope_record_mixed_boundary(i,n,rel0);
+#endif
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
                     if(last!=0xffu) envelope_join_connected(cur,last,envelope_center_dx(rel0));
@@ -1699,6 +1761,10 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #endif /* !TSPF_E1M1_FRONT_ENVELOPE_EXACT */
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 e1full_candidates_ready:
+#if defined(__SDCC) && TSPF_DIRECT_MIXED
+    TSPF_ENV_PHASE(7u);
+    tsp_polar_mixed_prepare(s);
+#endif
     TSPF_ENV_PHASE(0u);
 #endif
 #else
@@ -1763,6 +1829,10 @@ e1full_candidates_ready:
         draw_run(out_map, cols, &g_runs[g_run_order[i]], s);
 done:
 #ifdef __SDCC
+#if TSPF_DIRECT_MIXED
+    TSPF_ENV_PHASE(8u);
+    tsp_polar_mixed_apply();
+#endif
     /* Retained keys are only trusted one frame deep; settle which surfaces
      * earned that trust before the restore pass can move any cell. */
     TSPF_ENV_PHASE(5u);

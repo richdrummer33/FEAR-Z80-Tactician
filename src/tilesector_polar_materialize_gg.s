@@ -22,6 +22,8 @@
         .globl  _g_polar_run_right_anchor
         .globl  _g_polar_run_owned
         .globl  _g_polar_nt_cov_cur
+        .globl  _g_tspf_mixed_any
+        .globl  _g_tspf_mixed_skip
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
         .globl  _g_map
@@ -546,6 +548,18 @@ _tsp_polar_p_span::
         call    ret_column_kill$        ; wholly occluded: nothing written here
         jp      raster_done$
 ret_gate_live$:
+        ; Direct mixed cells are already final-owned before this coarse pass.
+        ; Keep ordinary coverage intact, but remove those rows from this run's
+        ; WRITE mask so no coarse word is emitted and then repaired afterward.
+        ld      a, (#_g_tspf_mixed_any)
+        or      a
+        jr      z, ret_gate_mixed_ready$
+        call    mixed_mask_unclaimed$
+        or      a
+        jr      nz, ret_gate_mixed_ready$
+        call    ret_column_kill$
+        jp      raster_done$
+ret_gate_mixed_ready$:
         ; Retained swept boundary: this surface's contribution to this coarse
         ; column is fully determined by (invl, invr, border, unclaimed[3]).
         ; If that key is bit-identical to the one it produced last frame, the
@@ -1386,6 +1400,59 @@ polar_open_2$:
         ld      c, a
         ld      a, (#r_unclaimed2$)
         or      c                       ; return NZ if anything new is visible
+        ret
+
+; Remove direct-mixed rows from the current column's coarse write mask.
+; Coverage was already committed above, so this affects materialization only.
+; Returns A=OR of the remaining unclaimed bytes.
+mixed_mask_unclaimed$:
+        push    bc
+        push    de
+        push    hl
+
+        ld      a, (#_g_polar_mat_col)
+        ld      e, a
+        add     a, a
+        add     a, e                    ; A=column*3
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_tspf_mixed_skip
+        add     hl, de
+
+        ld      a, (hl)
+        cpl
+        ld      c, a
+        ld      a, (#r_unclaimed0$)
+        and     c
+        ld      (#r_unclaimed0$), a
+        inc     hl
+
+        ld      a, (hl)
+        cpl
+        ld      c, a
+        ld      a, (#r_unclaimed1$)
+        and     c
+        ld      (#r_unclaimed1$), a
+        inc     hl
+
+        ld      a, (hl)
+        cpl
+        ld      c, a
+        ld      a, (#r_unclaimed2$)
+        and     c
+        ld      (#r_unclaimed2$), a
+
+        ld      a, (#r_unclaimed0$)
+        ld      c, a
+        ld      a, (#r_unclaimed1$)
+        or      c
+        ld      c, a
+        ld      a, (#r_unclaimed2$)
+        or      c
+
+        pop     hl
+        pop     de
+        pop     bc
         ret
 
 ; A=row 0..17. Return A!=0/Z=0 only when this row was unclaimed before the
