@@ -22,6 +22,10 @@
 
 /* Always-exported assembly bridge. Ordinary builds leave it zero. */
 uint8_t g_tspf_mixed_skip[TSP_COLS*3u];
+/* Previous-frame dynamic cells force their coarse column through the real
+ * materializer once. This restores stale dynamic tile IDs even when retained
+ * geometry is otherwise bit-identical. */
+uint8_t g_tspf_mixed_force_col[TSP_COLS];
 /* Per authored surface: bit0 suppress snapped LEFT endpoint, bit1 RIGHT.
  * Keying this by surface endpoint rather than coarse X is crucial: crowded
  * cells can also contain a legitimate physical corner exactly on the nearby
@@ -120,6 +124,16 @@ static void clear_skip(void){
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
     for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
     g_tspf_mixed_any=0u;
+}
+static void prepare_restore_cols(void){
+    uint8_t i;
+    for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
+    for(i=0u;i<s_prev_count;++i){
+        uint8_t pos=s_prev_pos[i];
+        uint8_t row=(uint8_t)(pos/20u);
+        uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
+        g_tspf_mixed_force_col[col]=1u;
+    }
 }
 static void mark_skip(uint8_t row,uint8_t col){
     g_tspf_mixed_skip[(uint8_t)(col+col+col+(row>>3))]|=
@@ -328,6 +342,7 @@ void tsp_polar_mixed_reset(void) BANKED{
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
     s_bank_used[0]=s_bank_used[1]=0u;
     clear_skip();
+    prepare_restore_cols();
     for(i=0u;i<TSP_ROWS;++i){
         g_tspf_mixed_retire_bank0[i]=0u;
         g_tspf_mixed_retire_bank1[i]=0u;
@@ -347,6 +362,11 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_unsupported_tiles=0u;
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
     clear_skip();
+    /* Old dynamic IDs are still authoritative g_map contents at frame start.
+     * Even if this frame cannot prepare a new direct tile (pending upload,
+     * bank pressure, no event, etc.), these columns must not be skipped by the
+     * retained fast path. */
+    prepare_restore_cols();
 }
 
 void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
@@ -506,6 +526,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_event_count=0u;
     g_tspf_mixed_event_overflow=0u;
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
+    for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
     for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
 }
 void tsp_polar_mixed_prepare(const TSPState *s) BANKED{(void)s;}

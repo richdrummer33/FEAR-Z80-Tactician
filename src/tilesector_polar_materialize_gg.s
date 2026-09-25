@@ -24,6 +24,7 @@
         .globl  _g_polar_nt_cov_cur
         .globl  _g_tspf_mixed_any
         .globl  _g_tspf_mixed_skip
+        .globl  _g_tspf_mixed_force_col
         .globl  _g_polar_nt_row_min
         .globl  _g_polar_nt_row_max
         .globl  _g_map
@@ -432,9 +433,25 @@ polar_endpoint_rows_ready$:
         ; one-byte column flag and reuse it after coverage is marked.
         xor     a
         ld      (#r_mixed_col$), a
+        ld      (#r_force_col$), a
+
+        ; A previous dynamic tile may still be the literal word in g_map.
+        ; Force that coarse column through one true raster this frame even when
+        ; retained geometry says "unchanged".
+        ld      a, b
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_tspf_mixed_force_col
+        add     hl, de
+        ld      a, (hl)
+        or      a
+        jr      z, ret_check_current_mixed$
+        ld      (#r_force_col$), a
+
+ret_check_current_mixed$:
         ld      a, (#_g_tspf_mixed_any)
         or      a
-        jr      z, ret_patch_allowed$
+        jr      z, ret_patch_force_test$
 
         ld      a, b
         ld      e, a
@@ -449,10 +466,15 @@ polar_endpoint_rows_ready$:
         or      (hl)
         inc     hl
         or      (hl)
-        jr      z, ret_patch_allowed$
+        jr      z, ret_patch_force_test$
         ld      a, #1
         ld      (#r_mixed_col$), a
         jr      ret_patch_done$
+
+ret_patch_force_test$:
+        ld      a, (#r_force_col$)
+        or      a
+        jr      nz, ret_patch_done$
 
 ret_patch_allowed$:
         ; A foreground FULL wall whose top edge moved a row or two needs a few
@@ -594,11 +616,13 @@ ret_gate_live$:
 ret_gate_mixed_ready$:
         ; Retained swept boundary: this surface's contribution to this coarse
         ; column is fully determined by (invl, invr, border, unclaimed[3]).
-        ; If that key is bit-identical to the one it produced last frame, the
-        ; cells it would write already hold the answer, so the whole raster
-        ; is dead work. Coverage is already marked above, so nt_end_frame
-        ; still sees this column as owned and will not restore it.
+        ; A forced previous-dynamic column still updates the retained key, but
+        ; ignores an "identical" result and rasterizes so the stale dynamic tile
+        ; ID is actually replaced in g_map.
         call    ret_column_gate$
+        ld      a, (#r_force_col$)
+        or      a
+        jr      nz, polar_cov_done$
 _tsp_probe_ret_skip::
         jp      z, raster_done$
 polar_cov_done$:
@@ -2493,6 +2517,8 @@ r_run_halfr$:
 r_clip_first$:
         .ds     1
 r_mixed_col$:
+        .ds     1
+r_force_col$:
         .ds     1
 r_clip_last$:
         .ds     1
