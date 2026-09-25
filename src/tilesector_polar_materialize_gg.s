@@ -426,12 +426,42 @@ _tsp_polar_surface_column_fast::
         ; constructing the pixel endpoints. Bottom rows are always 17-top.
 polar_endpoint_rows_ready$:
 
+        ; Resolve direct ownership ONCE for this coarse column. A direct-owned
+        ; row must not pass through the retained patch fast path, because that
+        ; would write the coarse cell first and then replace it later. Keep a
+        ; one-byte column flag and reuse it after coverage is marked.
+        xor     a
+        ld      (#r_mixed_col$), a
+        ld      a, (#_g_tspf_mixed_any)
+        or      a
+        jr      z, ret_patch_allowed$
+
+        ld      a, b
+        ld      e, a
+        add     a, a
+        add     a, e                    ; A=column*3
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_tspf_mixed_skip
+        add     hl, de
+        ld      a, (hl)
+        inc     hl
+        or      (hl)
+        inc     hl
+        or      (hl)
+        jr      z, ret_patch_allowed$
+        ld      a, #1
+        ld      (#r_mixed_col$), a
+        jr      ret_patch_done$
+
+ret_patch_allowed$:
         ; A foreground FULL wall whose top edge moved a row or two needs a few
         ; tile writes, not a column rebuild. Try that before paying for the
         ; ownership mask and the generic raster.
         call    ret_try_patch$
 _tsp_probe_patch_hit::
         jp      z, raster_done$
+ret_patch_done$:
 
         ; Signed min/max for top endpoints.
         ld      a, (#r_top_l_row$)
@@ -551,7 +581,9 @@ ret_gate_live$:
         ; Direct mixed cells are already final-owned before this coarse pass.
         ; Keep ordinary coverage intact, but remove those rows from this run's
         ; WRITE mask so no coarse word is emitted and then repaired afterward.
-        ld      a, (#_g_tspf_mixed_any)
+        ; r_mixed_col$ was resolved before retained-patch dispatch, so ordinary
+        ; columns do not rescan the three-byte skip mask here.
+        ld      a, (#r_mixed_col$)
         or      a
         jr      z, ret_gate_mixed_ready$
         call    mixed_mask_unclaimed$
@@ -2454,6 +2486,8 @@ r_run_halfl$:
 r_run_halfr$:
         .ds     1
 r_clip_first$:
+        .ds     1
+r_mixed_col$:
         .ds     1
 r_clip_last$:
         .ds     1
