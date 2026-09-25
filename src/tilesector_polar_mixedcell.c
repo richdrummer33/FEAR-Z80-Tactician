@@ -40,6 +40,9 @@ uint8_t g_tspf_mixed_event_right[32];
 uint8_t g_tspf_mixed_event_vid[32];
 uint8_t g_tspf_mixed_retire_bank0[TSP_ROWS];
 uint8_t g_tspf_mixed_retire_bank1[TSP_ROWS];
+/* Current-generation publication fence. The row uploader clears one byte only
+ * after the authoritative row has actually reached the VDP. */
+uint8_t g_tspf_mixed_publish_rows[TSP_ROWS];
 volatile uint8_t g_tspf_mixed_patterns_pending;
 
 #if TSPF_DIRECT_MIXED
@@ -87,6 +90,7 @@ static uint8_t s_bank_used[2];
 static uint8_t s_prev_bank=0xffu;
 static uint8_t s_target_bank=0xffu;
 static uint8_t s_prepared;
+static uint8_t s_hold_previous;
 
 /* Dynamic mixed tiles are not constrained by the static p24 vocabulary.
  * Preserve the measured full steep-edge range (max |dy|=36) here; it costs
@@ -119,11 +123,21 @@ static const uint8_t k_rev4[16]={
 static uint8_t rev8(uint8_t x){
     return (uint8_t)((k_rev4[x&15u]<<4)|k_rev4[x>>4]);
 }
-static void clear_skip(void){
+static void clear_skip_bits(void){
     uint8_t i;
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
-    for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
     g_tspf_mixed_any=0u;
+}
+static void clear_skip(void){
+    uint8_t i;
+    clear_skip_bits();
+    for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
+}
+static uint8_t publication_pending(void){
+    uint8_t i;
+    if(g_tspf_mixed_patterns_pending)return 1u;
+    for(i=0u;i<TSP_ROWS;++i)if(g_tspf_mixed_publish_rows[i])return 1u;
+    return 0u;
 }
 static void prepare_restore_cols(void){
     uint8_t i;
@@ -139,6 +153,18 @@ static void mark_skip(uint8_t row,uint8_t col){
     g_tspf_mixed_skip[(uint8_t)(col+col+col+(row>>3))]|=
         (uint8_t)(1u<<(row&7u));
     g_tspf_mixed_any=1u;
+}
+static void hold_previous_cells(void){
+    uint8_t i;
+    clear_skip_bits();
+    for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
+    for(i=0u;i<s_prev_count;++i){
+        uint8_t pos=s_prev_pos[i];
+        uint8_t row=(uint8_t)(pos/20u);
+        uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
+        mark_skip(row,col);
+        mark_skip((uint8_t)(17u-row),col);
+    }
 }
 static void own_cell(uint8_t row,uint8_t col){
     g_polar_nt_cov_cur[(uint8_t)(col+col+col+(row>>3))]|=
@@ -340,12 +366,14 @@ void tsp_polar_mixed_reset(void) BANKED{
     g_tspf_mixed_local_fallbacks=0u;
     g_tspf_mixed_unsupported_tiles=0u;
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
+    s_hold_previous=0u;
     s_bank_used[0]=s_bank_used[1]=0u;
     clear_skip();
     prepare_restore_cols();
     for(i=0u;i<TSP_ROWS;++i){
         g_tspf_mixed_retire_bank0[i]=0u;
         g_tspf_mixed_retire_bank1[i]=0u;
+        g_tspf_mixed_publish_rows[i]=0u;
     }
 }
 
@@ -361,12 +389,21 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_local_fallbacks=0u;
     g_tspf_mixed_unsupported_tiles=0u;
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
-    clear_skip();
-    /* Old dynamic IDs are still authoritative g_map contents at frame start.
-     * Even if this frame cannot prepare a new direct tile (pending upload,
-     * bank pressure, no event, etc.), these columns must not be skipped by the
-     * retained fast path. */
-    prepare_restore_cols();
+    s_hold_previous=publication_pending();
+    if(s_hold_previous){
+        /* A staged generation is not disposable merely because another CPU
+         * update began. Preserve its exact cells (and previous endpoint-border
+         * suppression) until the VDP has both its patterns and row references.
+         * This prevents a fast logical update from erasing a direct frame
+         * before that frame ever becomes visible. */
+        hold_previous_cells();
+    }else{
+        clear_skip();
+        /* Publication finished. Now and only now may stale dynamic IDs be
+         * forced back through the coarse raster or replaced by a new direct
+         * generation. */
+        prepare_restore_cols();
+    }
 }
 
 void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
@@ -376,7 +413,9 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
 #endif
     if(g_tspf_appearance_mode!=0u){g_tspf_mixed_skip_reason=2u;return;}
     if(g_tspf_mixed_event_overflow){g_tspf_mixed_skip_reason=3u;return;}
+    if(s_hold_previous){g_tspf_mixed_skip_reason=6u;return;}
     if(!count)return;
+    /* Defensive: publication_pending() should have made this a held frame. */
     if(g_tspf_mixed_patterns_pending){g_tspf_mixed_skip_reason=4u;return;}
 
     for(i=1u;i<count;++i){
@@ -456,6 +495,23 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
 
 void tsp_polar_mixed_apply(void) BANKED{
     uint8_t i;
+
+    if(s_hold_previous){
+        /* Keep the CPU map and coverage coherent with the still-being-published
+         * direct generation. Coarse materialization skipped these exact cells
+         * above; ownership here prevents nt_end_frame from restoring them as
+         * stale while the VDP publication fence is outstanding. */
+        for(i=0u;i<s_prev_count;++i){
+            uint8_t pos=s_prev_pos[i];
+            uint8_t row=(uint8_t)(pos/20u);
+            uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
+            own_cell(row,col);
+            own_cell((uint8_t)(17u-row),col);
+        }
+        s_prepared=0u;
+        return;
+    }
+
     /* No cooperative VBlank service occurs inside this banked commit. Fence
      * the old bank NOW, then re-dirty every old dynamic position. Therefore a
      * retire bit can clear only after an authoritative post-fence row upload. */
@@ -474,6 +530,8 @@ void tsp_polar_mixed_apply(void) BANKED{
             if(g_map[idx]!=word){g_map[idx]=word;dirty_cell(row,col);}
             if(g_map[bidx]!=bword){g_map[bidx]=bword;dirty_cell(brow,col);}
             own_cell(row,col);own_cell(brow,col);
+            g_tspf_mixed_publish_rows[row]=1u;
+            g_tspf_mixed_publish_rows[brow]=1u;
             s_prev_pos[i]=pos;
         }
         s_prev_count=s_patch_count;
@@ -484,6 +542,11 @@ void tsp_polar_mixed_apply(void) BANKED{
         s_prev_count=0u;
     }
     s_prepared=0u;
+}
+
+void tsp_polar_mixed_boot_published(void) BANKED{
+    uint8_t i;
+    for(i=0u;i<TSP_ROWS;++i)g_tspf_mixed_publish_rows[i]=0u;
 }
 
 void tsp_polar_mixed_upload(void) BANKED{
@@ -528,9 +591,11 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
     for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
     for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
+    for(i=0u;i<TSP_ROWS;++i)g_tspf_mixed_publish_rows[i]=0u;
 }
 void tsp_polar_mixed_prepare(const TSPState *s) BANKED{(void)s;}
 void tsp_polar_mixed_apply(void) BANKED{}
+void tsp_polar_mixed_boot_published(void) BANKED{}
 void tsp_polar_mixed_upload(void) BANKED{g_tspf_mixed_patterns_pending=0u;}
 
 #endif

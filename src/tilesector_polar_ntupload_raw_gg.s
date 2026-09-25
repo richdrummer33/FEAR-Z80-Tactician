@@ -7,6 +7,7 @@
         .globl _g_polar_nt_row_max
         .globl _g_tspf_mixed_retire_bank0
         .globl _g_tspf_mixed_retire_bank1
+        .globl _g_tspf_mixed_publish_rows
 
 ; POLAR_STAGE20_ROW_EXTENTS
 ; Dirty state is already shaped like the VDP transaction: one first/last
@@ -129,6 +130,9 @@ pe_row_loop$:
         add     hl, de
         ld      (hl), #0
         ld      hl, #_g_tspf_mixed_retire_bank1
+        add     hl, de
+        ld      (hl), #0
+        ld      hl, #_g_tspf_mixed_publish_rows
         add     hl, de
         ld      (hl), #0
 

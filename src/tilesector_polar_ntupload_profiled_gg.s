@@ -7,6 +7,7 @@
         .globl _g_polar_nt_row_max
         .globl _g_tspf_mixed_retire_bank0
         .globl _g_tspf_mixed_retire_bank1
+        .globl _g_tspf_mixed_publish_rows
         .globl _g_ts_dirty_words
 
 ; POLAR_STAGE20_ROW_EXTENTS
@@ -144,6 +145,9 @@ pe_count_ready$:
         add     hl, de
         ld      (hl), #0
         ld      hl, #_g_tspf_mixed_retire_bank1
+        add     hl, de
+        ld      (hl), #0
+        ld      hl, #_g_tspf_mixed_publish_rows
         add     hl, de
         ld      (hl), #0
 

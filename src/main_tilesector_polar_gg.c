@@ -98,6 +98,7 @@ volatile uint8_t g_ts_vblank_pending;
 #if TSPF_DIRECT_MIXED
 extern volatile uint8_t g_tspf_mixed_patterns_pending;
 void tsp_polar_mixed_upload(void) BANKED;
+void tsp_polar_mixed_boot_published(void) BANKED;
 #endif
 #if TSPF_PROFILE_HOOKS
 volatile uint16_t g_ts_vblank_bursts;
@@ -225,6 +226,9 @@ void main(void){
     while(g_tspf_mixed_patterns_pending)tsp_polar_mixed_upload();
 #endif
     upload_dirty_map();
+#if TSPF_DIRECT_MIXED
+    tsp_polar_mixed_boot_published();
+#endif
     g_ts_vblank_pending=0u;
 #if TSPF_PROFILE_HOOKS
     g_ts_vblank_bursts=0u;g_ts_vblank_missed=0u;
