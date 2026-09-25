@@ -90,7 +90,9 @@ extern uint8_t g_tspf_mixed_event_overflow;
 extern uint8_t g_tspf_mixed_event_x[32];
 extern uint8_t g_tspf_mixed_event_left[32];
 extern uint8_t g_tspf_mixed_event_right[32];
+#if TSPF_PROFILE_HOOKS
 extern uint8_t g_tspf_mixed_event_vid[32];
+#endif
 /* Per surface: bit0 suppress its snapped LEFT endpoint, bit1 RIGHT. */
 extern uint8_t g_tspf_mixed_border_clear_sid[32];
 #endif
@@ -1040,7 +1042,10 @@ static int8_t envelope_center_dx(int16_t rel)
  * handoff and its two owners into the direct mixed-cell builder. */
 static void envelope_record_mixed_boundary(uint8_t left_i,uint8_t n,int16_t rel)
 {
-    uint8_t ni,left,right,vid,code,bi;
+    uint8_t ni,left,right,code,bi;
+#if TSPF_PROFILE_HOOKS
+    uint8_t vid;
+#endif
     int16_t x;
 
     if(rel<=-512 || rel>=512) return;
@@ -1060,11 +1065,13 @@ static void envelope_record_mixed_boundary(uint8_t left_i,uint8_t n,int16_t rel)
         g_tspf_mixed_event_overflow=1u;
         return;
     }
-    vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
     g_tspf_mixed_event_x[bi]=(uint8_t)x;
     g_tspf_mixed_event_left[bi]=left;
     g_tspf_mixed_event_right[bi]=right;
+#if TSPF_PROFILE_HOOKS
+    vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
     g_tspf_mixed_event_vid[bi]=vid;
+#endif
     g_tspf_mixed_event_count=(uint8_t)(bi+1u);
 }
 #endif
