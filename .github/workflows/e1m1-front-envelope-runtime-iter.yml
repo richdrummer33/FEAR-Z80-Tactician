@@ -97,8 +97,11 @@ jobs:
           DEPTH_BASE=$((BEARING_BASE+8))
           LBF_BASE=$((DEPTH_BASE+2))
           LBF_DISPATCH=$((LBF_BASE+56))
-          test "$LBF_DISPATCH" -lt 255
-          printf 'envelope_last_bank=%s\nbearing_base=%s\ndepth_base=%s\nlbf_base=%s\nlbf_dispatch=%s\n' \
+          # Bank 255 is the renderer; bank 254 is reserved for the direct
+          # mixed-cell builder. Fail before compilation if generated envelope
+          # data ever grows into either fixed code bank.
+          test "$LBF_DISPATCH" -lt 254
+          printf 'envelope_last_bank=%s\nbearing_base=%s\ndepth_base=%s\nlbf_base=%s\nlbf_dispatch=%s\nmixed_bank=254\nrenderer_bank=255\n' \
             "$LAST_BANK" "$BEARING_BASE" "$DEPTH_BASE" "$LBF_BASE" "$LBF_DISPATCH" \
             | tee "$ROOT/perf-bank-plan.txt"
           python3 tools/e1env_bearing_lut.py \

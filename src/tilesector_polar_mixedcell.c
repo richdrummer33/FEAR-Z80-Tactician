@@ -6,7 +6,12 @@
  * coarse Z80 kernel never writes them. It is intentionally not a seam overlay.
  */
 #if defined(__SDCC)
+#if defined(TSPF_DIRECT_MIXED) && TSPF_DIRECT_MIXED
+/* Bank 254 is intentionally reserved by the exact-envelope workflow below.
+ * Feature-off builds stay autobanked so ordinary small-ROM targets do not
+ * inherit an impossible high-bank requirement from this experiment. */
 #pragma bank 254
+#endif
 #include <gbdk/platform.h>
 #endif
 
