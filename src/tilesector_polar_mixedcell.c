@@ -75,6 +75,7 @@ volatile uint8_t g_tspf_mixed_last_patterns;
 volatile uint8_t g_tspf_mixed_last_patches;
 volatile uint8_t g_tspf_mixed_skip_reason;
 volatile uint8_t g_tspf_mixed_local_fallbacks;
+volatile uint8_t g_tspf_mixed_chain_fallbacks;
 volatile uint8_t g_tspf_mixed_unsupported_tiles;
 
 static uint8_t s_pattern_hash[TSP_MIX_SLOTS];
@@ -411,6 +412,7 @@ void tsp_polar_mixed_reset(void) BANKED{
     g_tspf_mixed_last_patches=0u;
     g_tspf_mixed_skip_reason=0u;
     g_tspf_mixed_local_fallbacks=0u;
+    g_tspf_mixed_chain_fallbacks=0u;
     g_tspf_mixed_unsupported_tiles=0u;
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
     s_hold_previous=0u;
@@ -434,6 +436,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_last_patches=0u;
     g_tspf_mixed_skip_reason=0u;
     g_tspf_mixed_local_fallbacks=0u;
+    g_tspf_mixed_chain_fallbacks=0u;
     g_tspf_mixed_unsupported_tiles=0u;
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
     s_hold_previous=publication_pending();
@@ -529,7 +532,10 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
             g_tspf_mixed_pattern_count=n0;
             s_patch_count=p0;
             if(result==2u)++g_tspf_mixed_unsupported_tiles;
-            else ++g_tspf_mixed_local_fallbacks;
+            else{
+                ++g_tspf_mixed_local_fallbacks;
+                if(result==3u)++g_tspf_mixed_chain_fallbacks;
+            }
         }
         i=(uint8_t)(last+1u);
     }
