@@ -642,7 +642,7 @@ static uint8_t s_pattern_hash[TSP_BC_SLOTS];
 static uint8_t s_patch_pos[TSP_BC_PATCH_MAX];
 static uint16_t s_patch_word[TSP_BC_PATCH_MAX];
 static uint8_t s_patch_count;
-static uint8_t s_work[32];
+static uint8_t s_work[16];
 /* Only columns that actually received dynamic words need forced coarse
  * restoration next update. Candidate/crowded columns are allowed to remain on
  * the normal retained coarse path. */
@@ -768,36 +768,29 @@ static void bc_fill_top(uint8_t owner,uint8_t col,const TSPState *s,
 
 static uint8_t bc_pattern_index(uint8_t *flip_out)
 {
-    uint8_t packed[16];
     uint8_t i,j,h=0x5du,flip=0u;
     uint8_t count=g_tspf_boundary_pattern_count;
 
-    /* Geometry-only dynamic tiles use only color 1 (OUT) and color 4 (MID).
-     * Keep just those two active bitplanes in WRAM: 16 bytes/tile rather than
-     * native 32-byte 4bpp. VBlank expands them immediately before VRAM upload. */
-    for(i=0u;i<8u;++i){
-        packed[(uint8_t)(i+i)]=s_work[(uint8_t)(i*4u)];
-        packed[(uint8_t)(i+i+1u)]=s_work[(uint8_t)(i*4u+2u)];
-    }
-
-    /* Canonicalize under free VDP HFLIP. */
+    /* s_work is already the compact two-plane representation:
+     * [row0 OUT,row0 MID, row1 OUT,row1 MID, ...]. Avoid building a second
+     * 16-byte temporary for every dynamic tile. */
     for(i=0u;i<16u;++i){
-        uint8_t r=bc_rev8(packed[i]);
-        if(r==packed[i]) continue;
-        flip=(uint8_t)(r<packed[i]);
+        uint8_t r=bc_rev8(s_work[i]);
+        if(r==s_work[i]) continue;
+        flip=(uint8_t)(r<s_work[i]);
         break;
     }
     if(flip)
-        for(i=0u;i<16u;++i) packed[i]=bc_rev8(packed[i]);
+        for(i=0u;i<16u;++i) s_work[i]=bc_rev8(s_work[i]);
 
     for(i=0u;i<16u;++i)
-        h=(uint8_t)((h<<1)|(h>>7))^packed[i];
+        h=(uint8_t)((h<<1)|(h>>7))^s_work[i];
 
     for(j=0u;j<count;++j){
         uint8_t *p;
         if(s_pattern_hash[j]!=h) continue;
         p=&g_tspf_boundary_pattern_data[(uint16_t)j<<4];
-        for(i=0u;i<16u && p[i]==packed[i];++i) {}
+        for(i=0u;i<16u && p[i]==s_work[i];++i) {}
         if(i==16u){
             *flip_out=flip;
             return j;
@@ -806,7 +799,7 @@ static uint8_t bc_pattern_index(uint8_t *flip_out)
     if(count>=TSP_BC_SLOTS) return 0xffu;
     {
         uint8_t *p=&g_tspf_boundary_pattern_data[(uint16_t)count<<4];
-        for(i=0u;i<16u;++i) p[i]=packed[i];
+        for(i=0u;i<16u;++i) p[i]=s_work[i];
     }
     s_pattern_hash[count]=h;
     g_tspf_boundary_pattern_count=(uint8_t)(count+1u);
@@ -873,48 +866,62 @@ static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
     }
 
     for(row=0u;row<9u;++row){
+        uint8_t hit[8]={0u,0u,0u,0u,0u,0u,0u,0u};
+        uint8_t line_start[8]={0u,0u,0u,0u,0u,0u,0u,0u};
+        uint8_t outm=0u,wallm=0u,active=0u;
         uint8_t all_out=1u,all_wall=1u,flip,index;
-        for(ly=0u;ly<8u;++ly){
-            uint8_t y=(uint8_t)(row*8u+ly);
-            uint8_t sem[8],outm=0u,wallm=0u;
-            for(lx=0u;lx<8u;++lx){
-                int8_t ty=top[lx];
-                uint8_t v;
-                if((int16_t)y<(int16_t)ty) v=0u;       /* ceiling */
-                else if((int16_t)y==(int16_t)ty) v=2u; /* black top edge */
-                else v=1u;                              /* wall */
-                sem[lx]=v;
-            }
-            for(e=first;e<=last;++e){
-                uint8_t split=(uint8_t)(g_tspf_seam_x[e]&7u);
-                if(split && (line_mask&(uint8_t)(1u<<split))){
-                    uint8_t a=sem[(uint8_t)(split-1u)],b=sem[split];
-                    /* A non-connected authored endpoint is an EXTERNAL
-                     * silhouette, not merely a top-edge discontinuity.  The
-                     * old true-X seam rung drew that line through ordinary
-                     * wall rows; preserve the same visual rule here at the
-                     * exact pixel X.  Do not extend it into ceiling above both
-                     * faces, and let the existing horizontal top edge own the
-                     * exact edge pixel itself. */
-                    if(a==1u || b==1u)
-                        sem[split]=2u;
-                }
-            }
-            for(lx=0u;lx<8u;++lx){
-                uint8_t bit=(uint8_t)(0x80u>>lx);
-                if(sem[lx]==0u) outm|=bit;
-                else if(sem[lx]==1u) wallm|=bit;
-                if(sem[lx]!=0u) all_out=0u;
-                if(sem[lx]!=1u) all_wall=0u;
-            }
-            s_work[(uint8_t)(ly*4u+0u)]=outm;
-            s_work[(uint8_t)(ly*4u+1u)]=0u;
-            s_work[(uint8_t)(ly*4u+2u)]=wallm;
-            s_work[(uint8_t)(ly*4u+3u)]=0u;
+        int16_t y0=(int16_t)((uint16_t)row<<3);
+
+        /* Build the complete 8-scanline tile from eight top-edge events rather
+         * than re-classifying all 64 pixels (then classifying them AGAIN into
+         * planar bytes). Each X contributes one transition: OUT -> black ->
+         * wall as Y advances. */
+        for(lx=0u;lx<8u;++lx){
+            uint8_t bit=(uint8_t)(0x80u>>lx);
+            int16_t ty=(int16_t)top[lx];
+            if(ty>y0) outm|=bit;
+            else if(ty<y0) wallm|=bit;
+            if(ty>=y0 && ty<(int16_t)(y0+8))
+                hit[(uint8_t)(ty-y0)]|=bit;
         }
 
-        /* Coarse materialization was forced for this column. Pure ceiling or
-         * pure wall cells are already correct and need no dynamic tile. */
+        /* External silhouettes are equally simple: each vertical line becomes
+         * active on the first scanline below either adjacent top edge, then
+         * remains active for the rest of the wall. */
+        for(e=first;e<=last;++e){
+            uint8_t split=(uint8_t)(g_tspf_seam_x[e]&7u);
+            if(split && (line_mask&(uint8_t)(1u<<split))){
+                int16_t a=(int16_t)top[(uint8_t)(split-1u)];
+                int16_t b=(int16_t)top[split];
+                int16_t sy=(int16_t)((a<b?a:b)+1);
+                uint8_t bit=(uint8_t)(0x80u>>split);
+                if(sy<=y0) active|=bit;
+                else if(sy<(int16_t)(y0+8))
+                    line_start[(uint8_t)(sy-y0)]|=bit;
+            }
+        }
+
+        for(ly=0u;ly<8u;++ly){
+            uint8_t o,w,kill;
+            active|=line_start[ly];
+            kill=(uint8_t)~active;
+            o=(uint8_t)(outm&kill);
+            w=(uint8_t)(wallm&kill);
+            s_work[(uint8_t)(ly+ly)]=o;
+            s_work[(uint8_t)(ly+ly+1u)]=w;
+            if(o!=0xffu) all_out=0u;
+            if(w!=0xffu) all_wall=0u;
+
+            /* Advance one scanline: today's black top-edge pixels become wall;
+             * pixels whose top lies on the NEXT scanline leave OUT and become
+             * black there. */
+            wallm|=hit[ly];
+            if(ly<7u) outm&=(uint8_t)~hit[(uint8_t)(ly+1u)];
+        }
+
+        /* Retained/coarse material is already a correct substrate. Only a cell
+         * whose actual pixels depend on the sub-tile handoff needs a dynamic
+         * pattern. */
         if(all_out || all_wall) continue;
 
         index=bc_pattern_index(&flip);
