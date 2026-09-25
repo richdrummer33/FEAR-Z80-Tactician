@@ -1,0 +1,86 @@
+name: Hero quantum dictionary experiment
+
+on:
+  push:
+    branches:
+      - experiment/hero-quantum-dictionary
+    paths:
+      - ".github/workflows/hero-quantum-dictionary-fast.yml"
+      - "tools/quantum_tile_dictionary.py"
+      - "tools/quantum_tile_qaoa_qiskit.py"
+      - "tests/test_quantum_tile_dictionary.py"
+      - "tools/analyze_doomguy_dense_corpus.py"
+      - "tools/analyze_sprite_resident_lod.py"
+      - "tools/resident_tile_dictionary.py"
+  workflow_dispatch:
+
+jobs:
+  hero-quantum-dictionary:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      ASSET: assets/gg-hero/FullDoomguyclassic-single-notex.glb
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit-test QC data and QUBO machinery
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p 'test_quantum_tile_dictionary.py' -v
+
+      - name: Install mesh tools
+        run: |
+          cd tools/glb_rmb
+          npm install --no-audit --no-fund
+
+      - name: Import Doomguy
+        run: |
+          set -euo pipefail
+          mkdir -p build/qdict/host tools/generated
+          node tools/glb_rmb/convert.mjs "$ASSET" tools/generated/doomguy_mesh.inc             --name doomguy --height 19 --up z             --visual-tris 5200 --shadow-tris 200 --recess-radius 0.5             > build/qdict/import.json
+
+      - name: Bake the established 32-angle dense corpus
+        run: |
+          set -euo pipefail
+          cc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror             -DROOM_BUNDLE_DOOMGUY_GENERATED -Isrc -Itools             tools/polar_baked_composite.c tools/room_mesh_bake.c             tools/room_bundle_poc_gen.c -lm -o build/qdict/corpus-bake
+          ROOM_BUNDLE_HERO_CORPUS=1           HERO_CORPUS_ANGLES=32           HERO_CORPUS_BANDS=24,28,32,36           HERO_CORPUS_PREVIEW_EVERY=0             build/qdict/corpus-bake build/qdict/host             | tee build/qdict/bake.txt
+
+      - name: Build QC corpus, classical controls, and QUBOs
+        run: |
+          set -euo pipefail
+          # Full observed corpus feeds the classical controls. The first compact
+          # QC artifact is prefilted to 18 candidates so CI can brute-force that
+          # QUBO exactly as a calibration/control.
+          python3 tools/quantum_tile_dictionary.py             build/qdict/host/doomguy_dense_corpus.dhc             build/qdict/quantum             --bands 2,3             --patterns 6             --weight-mode view             --candidate-limit 18             --assignment-top-l 6             --lloyd-iterations 4             --emit-assignment-qubo             --emit-qasm             --qaoa-reps 1             --exact-compact-max 20             | tee build/qdict/quantum.txt
+          grep -q '^HERO_QUANTUM_DICTIONARY_PASS$' build/qdict/quantum.txt
+
+      - name: Artifact inventory
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib
+          p=json.loads(pathlib.Path('build/qdict/quantum/result.json').read_text())
+          assert p['compact_qubo']['variables'] == 18
+          assert p['compact_qubo']['exact_control'] is not None
+          assert p['assignment_qubo']['variables'] > p['compact_qubo']['variables']
+          assert p['notes']['renderer_modified'] is False
+          print('compact vars:', p['compact_qubo']['variables'])
+          print('assignment vars:', p['assignment_qubo']['variables'])
+          print('targets:', p['corpus']['unique_targets'])
+          print('centroid mean cost:', p['classical_controls']['centroid_score']['mean_cost'])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hero-quantum-dictionary
+          path: |
+            build/qdict/bake.txt
+            build/qdict/quantum.txt
+            build/qdict/quantum/result.json
+            build/qdict/quantum/weighted_tile_corpus.json
+            build/qdict/quantum/classical_centroid_dictionary.json
+            build/qdict/quantum/compact_selection_qubo.json
+            build/qdict/quantum/compact_selection_ising.json
+            build/qdict/quantum/compact_qaoa_p1.qasm
+            build/qdict/quantum/assignment_facility_qubo.json
+          if-no-files-found: error
