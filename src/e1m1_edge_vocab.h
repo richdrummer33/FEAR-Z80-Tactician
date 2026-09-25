@@ -1,7 +1,7 @@
 #ifndef E1M1_EDGE_VOCAB_H
 #define E1M1_EDGE_VOCAB_H
 #include <stdint.h>
-/* Thin-face geometry vocabulary.
+/* Direct-mixed geometry vocabulary.
  *
  * The steep-edge census measured p95 |dy|=13, p99=28 and max=36 pixels per
  * 8px coarse column. R124 proved exact 0..28, but consumed every pattern slot.
