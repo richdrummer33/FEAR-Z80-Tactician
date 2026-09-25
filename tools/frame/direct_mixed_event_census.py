@@ -96,8 +96,7 @@ def main():
     with open(a.events,newline="") as f:
         for r in csv.DictReader(f):
             runtime[int(r["frame"])].append({
-                "x":int(r["x"]),"left":owner(r["left"]),"right":owner(r["right"]),
-                "vid":int(r["vid"])
+                "x":int(r["x"]),"left":owner(r["left"]),"right":owner(r["right"])
             })
 
     total=matched=missing=extra=reversed_pairs=0
@@ -118,11 +117,10 @@ def main():
                 ordered=r["left"]==e["left"] and r["right"]==e["right"]
                 rev=r["left"]==e["right"] and r["right"]==e["left"]
                 if not (ordered or rev):continue
-                vid_penalty=0 if e["vid"] is None or r["vid"]==e["vid"] else 1
-                cand.append((0 if ordered else 1,vid_penalty,abs(r["x"]-e["x"]),j,r))
+                cand.append((0 if ordered else 1,abs(r["x"]-e["x"]),j,r))
             if not cand:
                 missing+=1;continue
-            order_bad,vbad,dx,j,r=min(cand)
+            order_bad,dx,j,r=min(cand)
             used.add(j);matched+=1;fm+=1;reversed_pairs+=order_bad
             xerr.append(dx);worst.append((dx,fi,e,r))
         extra+=len(rt)-len(used)
@@ -140,7 +138,7 @@ def main():
     for dx,fi,e,r in sorted(worst,key=lambda z:z[0],reverse=True)[:12]:
         print(f"XOFFENDER frame={fi} err={dx:.3f}px exact_x={e['x']:.3f} runtime_x={r['x']} "
               f"exact={e['left']}->{e['right']} runtime={r['left']}->{r['right']} "
-              f"vid={e['vid']}->{r['vid']}")
+              f"oracle_vid={e['vid']}")
 
 if __name__=="__main__":
     main()

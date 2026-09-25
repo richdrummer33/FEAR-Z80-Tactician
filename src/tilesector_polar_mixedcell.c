@@ -38,11 +38,6 @@ uint8_t g_tspf_mixed_event_overflow;
 uint8_t g_tspf_mixed_event_x[32];
 uint8_t g_tspf_mixed_event_left[32];
 uint8_t g_tspf_mixed_event_right[32];
-#if TSPF_PROFILE_HOOKS
-/* Physical vertex identity is diagnostic-only; the shipping mixed kernel uses
- * the owner flags and exact X directly. */
-uint8_t g_tspf_mixed_event_vid[32];
-#endif
 uint8_t g_tspf_mixed_retire_bank0[TSP_ROWS];
 uint8_t g_tspf_mixed_retire_bank1[TSP_ROWS];
 /* Current-generation publication fence. The row uploader clears one byte only
@@ -471,23 +466,14 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
     for(i=1u;i<count;++i){
         uint8_t x=g_tspf_mixed_event_x[i],l=g_tspf_mixed_event_left[i];
         uint8_t r=g_tspf_mixed_event_right[i],j=i;
-#if TSPF_PROFILE_HOOKS
-        uint8_t v=g_tspf_mixed_event_vid[i];
-#endif
         while(j && g_tspf_mixed_event_x[(uint8_t)(j-1u)]>x){
             g_tspf_mixed_event_x[j]=g_tspf_mixed_event_x[(uint8_t)(j-1u)];
             g_tspf_mixed_event_left[j]=g_tspf_mixed_event_left[(uint8_t)(j-1u)];
             g_tspf_mixed_event_right[j]=g_tspf_mixed_event_right[(uint8_t)(j-1u)];
-#if TSPF_PROFILE_HOOKS
-            g_tspf_mixed_event_vid[j]=g_tspf_mixed_event_vid[(uint8_t)(j-1u)];
-#endif
             --j;
         }
         g_tspf_mixed_event_x[j]=x;g_tspf_mixed_event_left[j]=l;
         g_tspf_mixed_event_right[j]=r;
-#if TSPF_PROFILE_HOOKS
-        g_tspf_mixed_event_vid[j]=v;
-#endif
     }
 
     target=choose_bank();
