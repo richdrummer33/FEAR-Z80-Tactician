@@ -6,6 +6,9 @@
 #ifndef TSPF_PROFILE_HOOKS
 #define TSPF_PROFILE_HOOKS 1
 #endif
+#ifndef TSPF_DIRECT_MIXED
+#define TSPF_DIRECT_MIXED 0
+#endif
 
 #if defined(__SDCC)
 #include <gbdk/platform.h>
@@ -45,7 +48,8 @@
 #define TSP_TILE_FULL_BASE 3u
 #define TSP_TILE_EDGE_BASE (TSP_TILE_FULL_BASE + TSP_SHADE_COUNT*TSP_CAP_COUNT*TSP_BORDER_COUNT)
 #if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
-#define TSP_GENERATED_TILE_COUNT 448u
+/* p24 static geometry occupies IDs 0..411. Direct mixed cells own 412..447. */
+#define TSP_GENERATED_TILE_COUNT 412u
 #elif defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
 #define TSP_GENERATED_TILE_COUNT 435u
 #else

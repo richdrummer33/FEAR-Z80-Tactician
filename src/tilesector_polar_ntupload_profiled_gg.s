@@ -5,6 +5,8 @@
         .globl _g_map
         .globl _g_polar_nt_row_min
         .globl _g_polar_nt_row_max
+        .globl _g_tspf_mixed_retire_bank0
+        .globl _g_tspf_mixed_retire_bank1
         .globl _g_ts_dirty_words
 
 ; POLAR_STAGE20_ROW_EXTENTS
@@ -131,6 +133,19 @@ pe_count_ready$:
         ld      b, a
         otir
         ei
+
+        ; The authoritative row just reached the VDP. Any older dynamic bank
+        ; reference on this physical row is therefore retired now, not after an
+        ; arbitrary number of VBlanks.
+        ld      a, (#pe_row$)
+        ld      e, a
+        ld      d, #0
+        ld      hl, #_g_tspf_mixed_retire_bank0
+        add     hl, de
+        ld      (hl), #0
+        ld      hl, #_g_tspf_mixed_retire_bank1
+        add     hl, de
+        ld      (hl), #0
 
         ld      a, (#pe_budget$)
         dec     a

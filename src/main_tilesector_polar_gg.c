@@ -99,6 +99,10 @@ void tsp_polar_nt_upload_dirty_budgeted(void);
  * margin inside the ~4.3 ms post-effective-area safe interval even when the
  * renderer notices VBlank a little late. */
 volatile uint8_t g_ts_vblank_pending;
+#if TSPF_DIRECT_MIXED
+extern volatile uint8_t g_tspf_mixed_patterns_pending;
+void tsp_polar_mixed_upload(void) BANKED;
+#endif
 #if TSPF_PROFILE_HOOKS
 volatile uint16_t g_ts_vblank_bursts;
 volatile uint16_t g_ts_vblank_missed;
@@ -117,6 +121,17 @@ void tsp_polar_service_vblank(void) NONBANKED {
 #endif
         return;
     }
+#if TSPF_DIRECT_MIXED
+    /* Pattern pixels are a dependency of mixed name-table words. Publish the
+     * dynamic tile bank first; dirty rows may follow on the next safe burst. */
+    if(g_tspf_mixed_patterns_pending){
+        tsp_polar_mixed_upload();
+#if TSPF_PROFILE_HOOKS
+        ++g_ts_vblank_bursts;
+#endif
+        return;
+    }
+#endif
     tsp_polar_nt_upload_dirty_budgeted();
 #if TSPF_PROFILE_HOOKS
     ++g_ts_vblank_bursts;
@@ -207,7 +222,12 @@ void main(void){
      * visible name table in the non-overlapping 0x3800 region. The row uploader
      * targets the matching 0x38xx addresses. */
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
-    tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);upload_dirty_map();
+    tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
+#if TSPF_DIRECT_MIXED
+    /* Boot render occurs before the cooperative VBlank publisher exists. */
+    if(g_tspf_mixed_patterns_pending)tsp_polar_mixed_upload();
+#endif
+    upload_dirty_map();
     g_ts_vblank_pending=0u;
 #if TSPF_PROFILE_HOOKS
     g_ts_vblank_bursts=0u;g_ts_vblank_missed=0u;

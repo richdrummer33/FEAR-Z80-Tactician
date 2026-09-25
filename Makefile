@@ -81,7 +81,7 @@ endif
 # POLAR_EXTRA_OBJS lets a measurement build link one more object (a baked input
 # trace, for instance) without the shipping object list knowing about it.
 POLAR_EXTRA_OBJS ?=
-POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ) $(POLAR_EXTRA_OBJS)
+POLAR_GG_OBJS := build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o build/tilesector_polar_renderer_gg.o build/tilesector_polar_mixedcell_gg.o build/tilesector_polar_ntstate_gg.o build/tilesector_polar_materialize_gg.o $(POLAR_NTUPLOAD_OBJ) $(POLAR_EXTRA_OBJS)
 ifeq ($(POLAR_LOCAL_PROJECTION),1)
 POLAR_GG_OBJS += build/tilesector_polar_projection_gg.o $(POLAR_PROJ_OBJS)
 endif
@@ -414,6 +414,9 @@ build/tilesector_polar_motion_gg.o: src/tilesector_polar_motion.c | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_renderer_gg.o: src/tilesector_polar_renderer.c $(POLAR_PROJ_META) $(POLAR_DEPTHPLANE_HDR) | build
+	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
+
+build/tilesector_polar_mixedcell_gg.o: src/tilesector_polar_mixedcell.c $(POLAR_DEPTHPLANE_HDR) | build
 	$(LCC) $(POLAR_GGFLAGS) $(POLAR_CFLAGS) -c -o $@ $<
 
 build/tilesector_polar_frame_gg.o: src/tilesector_polar_frame_gg.s | build
