@@ -66,7 +66,11 @@ static uint8_t s_owner[8];
 static int8_t s_top[8];
 static uint8_t s_hit[8];
 static uint8_t s_line_start[8];
-static uint8_t s_prev_rows[TSP_ROWS];
+/* Previous dynamic cells, not merely rows. Retirement re-dirties these exact
+ * positions after the old bank is fenced, so an in-render VBlank can never
+ * falsely retire a bank after uploading some unrelated part of the row. */
+static uint8_t s_prev_pos[TSP_MIX_PATCH_MAX];
+static uint8_t s_prev_count;
 static uint8_t s_bank_used[2];
 static uint8_t s_prev_bank=0xffu;
 static uint8_t s_target_bank=0xffu;
@@ -125,7 +129,17 @@ static void retire_previous(void){
     uint8_t *p;
     if(s_prev_bank==0xffu)return;
     p=s_prev_bank?g_tspf_mixed_retire_bank1:g_tspf_mixed_retire_bank0;
-    for(i=0u;i<TSP_ROWS;++i)if(s_prev_rows[i])p[i]=1u;
+    for(i=0u;i<s_prev_count;++i){
+        uint8_t pos=s_prev_pos[i];
+        uint8_t row=(uint8_t)(pos/20u);
+        uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
+        uint8_t brow=(uint8_t)(17u-row);
+        p[row]=1u;p[brow]=1u;
+        /* This happens after all cooperative in-render uploads. Force one
+         * post-fence publication that covers every former dynamic cell. */
+        dirty_cell(row,col);
+        dirty_cell(brow,col);
+    }
 }
 static uint8_t choose_bank(void){
     uint8_t b;
@@ -285,20 +299,19 @@ void tsp_polar_mixed_reset(void) BANKED{
     g_tspf_mixed_skip_reason=0u;
     g_tspf_mixed_local_fallbacks=0u;
     g_tspf_mixed_unsupported_tiles=0u;
-    s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;
+    s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
     s_bank_used[0]=s_bank_used[1]=0u;
     clear_skip();
     for(i=0u;i<TSP_ROWS;++i){
-        s_prev_rows[i]=0u;
         g_tspf_mixed_retire_bank0[i]=0u;
         g_tspf_mixed_retire_bank1[i]=0u;
     }
 }
 
 void tsp_polar_mixed_begin_frame(void) BANKED{
-    /* Fence the bank visible at frame start BEFORE any cooperative VBlank can
-     * republish rows during coarse materialization. */
-    retire_previous();
+    /* Do not fence the visible bank yet: cooperative VBlank publication can
+     * happen inside the coarse renderer. Retirement is armed in apply(), after
+     * those yields, and every old dynamic position is explicitly re-dirtied. */
     g_tspf_mixed_event_count=0u;
     g_tspf_mixed_event_overflow=0u;
     g_tspf_mixed_last_patterns=0u;
@@ -393,10 +406,12 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
 
 void tsp_polar_mixed_apply(void) BANKED{
     uint8_t i;
+    /* No cooperative VBlank service occurs inside this banked commit. Fence
+     * the old bank NOW, then re-dirty every old dynamic position. Therefore a
+     * retire bit can clear only after an authoritative post-fence row upload. */
+    retire_previous();
+
     if(s_prepared){
-        /* Current frame now moves to the alternate bank. The old bank's row
-         * fences were installed in begin_frame and clear only after VDP OTIR. */
-        for(i=0u;i<TSP_ROWS;++i)s_prev_rows[i]=0u;
         for(i=0u;i<s_patch_count;++i){
             uint8_t pos=s_patch_pos[i];
             uint8_t row=(uint8_t)(pos/20u);
@@ -409,15 +424,14 @@ void tsp_polar_mixed_apply(void) BANKED{
             if(g_map[idx]!=word){g_map[idx]=word;dirty_cell(row,col);}
             if(g_map[bidx]!=bword){g_map[bidx]=bword;dirty_cell(brow,col);}
             own_cell(row,col);own_cell(brow,col);
-            s_prev_rows[row]=1u;s_prev_rows[brow]=1u;
+            s_prev_pos[i]=pos;
         }
+        s_prev_count=s_patch_count;
         s_bank_used[s_target_bank]=1u;
         s_prev_bank=s_target_bank;
     }else{
-        /* No direct cells this frame: coarse/NT reconciliation owns the map.
-         * Old-bank row fences were already installed at begin_frame. */
         s_prev_bank=0xffu;
-        for(i=0u;i<TSP_ROWS;++i)s_prev_rows[i]=0u;
+        s_prev_count=0u;
     }
     s_prepared=0u;
 }
