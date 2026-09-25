@@ -28,6 +28,9 @@ TRACES = {
     "corners": hold(UP, 20) + hold(UP | SL, 12) + hold(LEFT, 10) + hold(UP, 16) +
                hold(UP | SR, 12) + hold(RIGHT, 10) + hold(UP, 16) +
                hold(SL, 14) + hold(UP | LEFT, 18) + hold(SR, 14) + hold(UP | RIGHT, 18),
+    # Pixel-X control sweep: pure lateral motion out and back. Repeated poses
+    # make snapping or retained-state hysteresis directly measurable.
+    "proj_strafe": hold(SL, 40) + hold(SR, 80) + hold(SL, 40),
     # Not representative play: everything at once, to find the ceiling.
     "stress": alternate(UP | LEFT, UP | RIGHT, 120, 3) +
               alternate(UP | SL | LEFT, UP | SR | RIGHT, 120, 2),

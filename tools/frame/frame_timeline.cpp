@@ -167,6 +167,7 @@ int main(int argc, char** argv) {
     const unsigned target = argc > 4 ? (unsigned)std::strtoul(argv[4], nullptr, 0) : 180u;
     const unsigned warmup = argc > 5 ? (unsigned)std::strtoul(argv[5], nullptr, 0) : 8u;
     const char* map_dump_path = argc > 6 ? argv[6] : nullptr;
+    const char* mixed_event_dump_path = argc > 7 ? argv[7] : nullptr;
 
     u16 s_phase = 0, s_loop = 0;
     if (!find_symbol(noi, "_g_ts_prof_phase", s_phase) && !find_symbol(noi, "g_ts_prof_phase", s_phase)) {
@@ -181,6 +182,7 @@ int main(int argc, char** argv) {
     u16 s_mix_patterns=0, s_mix_patches=0, s_mix_skip=0;
     u16 s_mix_fallback=0, s_mix_unsupported=0, s_mix_any=0;
     u16 s_mix_pending=0, s_mix_events=0, s_mix_overflow=0;
+    u16 s_mix_x=0, s_mix_left=0, s_mix_right=0, s_mix_vid=0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
     const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
     const bool have_dirty_min =
@@ -204,6 +206,12 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_tspf_mixed_patterns_pending", s_mix_pending) || find_symbol(noi, "g_tspf_mixed_patterns_pending", s_mix_pending)) &&
         (find_symbol(noi, "_g_tspf_mixed_event_count", s_mix_events) || find_symbol(noi, "g_tspf_mixed_event_count", s_mix_events)) &&
         (find_symbol(noi, "_g_tspf_mixed_event_overflow", s_mix_overflow) || find_symbol(noi, "g_tspf_mixed_event_overflow", s_mix_overflow));
+    const bool have_mixed_events =
+        have_mixed_diag &&
+        (find_symbol(noi, "_g_tspf_mixed_event_x", s_mix_x) || find_symbol(noi, "g_tspf_mixed_event_x", s_mix_x)) &&
+        (find_symbol(noi, "_g_tspf_mixed_event_left", s_mix_left) || find_symbol(noi, "g_tspf_mixed_event_left", s_mix_left)) &&
+        (find_symbol(noi, "_g_tspf_mixed_event_right", s_mix_right) || find_symbol(noi, "g_tspf_mixed_event_right", s_mix_right)) &&
+        (find_symbol(noi, "_g_tspf_mixed_event_vid", s_mix_vid) || find_symbol(noi, "g_tspf_mixed_event_vid", s_mix_vid));
 
     /* PC ranges from the current link, one per fixed-bank symbol */
     unsigned rbank = 0;
@@ -268,6 +276,7 @@ int main(int argc, char** argv) {
         uint16_t join_anchor_sum_px;
         uint8_t mix_patterns,mix_patches,mix_skip,mix_fallback,mix_unsupported;
         uint8_t mix_any,mix_pending,mix_events,mix_overflow;
+        uint8_t mix_x[32],mix_left[32],mix_right[32],mix_vid[32];
     };
     std::vector<Frame> frames;
     std::vector<std::vector<uint8_t>> map_snaps;
@@ -354,6 +363,15 @@ int main(int argc, char** argv) {
                     cur.mix_pending=mem->DebugRetrieve(s_mix_pending);
                     cur.mix_events=mem->DebugRetrieve(s_mix_events);
                     cur.mix_overflow=mem->DebugRetrieve(s_mix_overflow);
+                    if(have_mixed_events){
+                        if(cur.mix_events>32u)cur.mix_events=32u;
+                        for(unsigned mi=0;mi<cur.mix_events;++mi){
+                            cur.mix_x[mi]=mem->DebugRetrieve((u16)(s_mix_x+mi));
+                            cur.mix_left[mi]=mem->DebugRetrieve((u16)(s_mix_left+mi));
+                            cur.mix_right[mi]=mem->DebugRetrieve((u16)(s_mix_right+mi));
+                            cur.mix_vid[mi]=mem->DebugRetrieve((u16)(s_mix_vid+mi));
+                        }
+                    }
                 }
                 if (seen_loops >= warmup) {
                     if (have_dirty_min) {
@@ -414,6 +432,21 @@ int main(int argc, char** argv) {
             for (const auto& snap : map_snaps)
                 std::fwrite(snap.data(), 1, snap.size(), mf);
             std::fclose(mf);
+        }
+    }
+    if(mixed_event_dump_path && have_mixed_events){
+        FILE* ef=std::fopen(mixed_event_dump_path,"w");
+        if(ef){
+            std::fprintf(ef,"frame,x_q4,y_q4,z_q4,yaw,event_i,x,left,right,vid\n");
+            for(size_t fi=0;fi<frames.size();++fi){
+                const Frame& f=frames[fi];
+                for(unsigned mi=0;mi<f.mix_events;++mi)
+                    std::fprintf(ef,"%zu,%d,%d,%d,%u,%u,%u,%u,%u,%u\n",
+                        fi,(int)f.x_q4,(int)f.y_q4,(int)f.z_q4,(unsigned)f.yaw,
+                        mi,(unsigned)f.mix_x[mi],(unsigned)f.mix_left[mi],
+                        (unsigned)f.mix_right[mi],(unsigned)f.mix_vid[mi]);
+            }
+            std::fclose(ef);
         }
     }
 
