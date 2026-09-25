@@ -91,7 +91,8 @@ extern uint8_t g_tspf_mixed_event_x[32];
 extern uint8_t g_tspf_mixed_event_left[32];
 extern uint8_t g_tspf_mixed_event_right[32];
 extern uint8_t g_tspf_mixed_event_vid[32];
-extern uint8_t g_tspf_mixed_border_clear[TSP_COLS];
+/* Per surface: bit0 suppress its snapped LEFT endpoint, bit1 RIGHT. */
+extern uint8_t g_tspf_mixed_border_clear_sid[32];
 #endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
@@ -1279,8 +1280,8 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
         }
 #endif
         /* Legacy coarse representation keeps one visible snapped seam.
-         * A successfully-built direct tile later suppresses both snapped sides
-         * through g_tspf_mixed_border_clear before materialization. */
+         * A successfully-built direct tile later suppresses the participating
+         * surface endpoints through g_tspf_mixed_border_clear_sid. */
         l->right_real=0u;
     }
 }
@@ -1423,9 +1424,9 @@ static void draw_run(uint16_t *out, TSPColumn *cols, const PolarRun *r, const TS
         g_polar_run_c1 = c1;
 #if TSPF_DIRECT_MIXED
         g_polar_run_left_real=(uint8_t)(r->left_real &&
-            !(g_tspf_mixed_border_clear[c0]&1u));
+            !(g_tspf_mixed_border_clear_sid[r->sid]&1u));
         g_polar_run_right_real=(uint8_t)(r->right_real &&
-            !(g_tspf_mixed_border_clear[c1]&2u));
+            !(g_tspf_mixed_border_clear_sid[r->sid]&2u));
 #else
         g_polar_run_left_real = r->left_real;
         g_polar_run_right_real = r->right_real;

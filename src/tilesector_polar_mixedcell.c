@@ -22,9 +22,11 @@
 
 /* Always-exported assembly bridge. Ordinary builds leave it zero. */
 uint8_t g_tspf_mixed_skip[TSP_COLS*3u];
-/* Per coarse hardware column: bit0 suppress snapped LEFT border, bit1 RIGHT.
- * Set only after the exact mixed tile for that handoff has built successfully. */
-uint8_t g_tspf_mixed_border_clear[TSP_COLS];
+/* Per authored surface: bit0 suppress snapped LEFT endpoint, bit1 RIGHT.
+ * Keying this by surface endpoint rather than coarse X is crucial: crowded
+ * cells can also contain a legitimate physical corner exactly on the nearby
+ * tile edge, which must not be erased by another sub-column transition. */
+uint8_t g_tspf_mixed_border_clear_sid[32];
 uint8_t g_tspf_mixed_any;
 uint8_t g_tspf_mixed_event_count;
 uint8_t g_tspf_mixed_event_overflow;
@@ -107,7 +109,7 @@ static uint8_t rev8(uint8_t x){
 static void clear_skip(void){
     uint8_t i;
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
-    for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_border_clear[i]=0u;
+    for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
     g_tspf_mixed_any=0u;
 }
 static void mark_skip(uint8_t row,uint8_t col){
@@ -381,15 +383,18 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
                 mark_skip(row,pc);
                 mark_skip((uint8_t)(17u-row),pc);
             }
-            /* The old coarse border can live on EITHER side of the snapped
-             * 8px handoff, including the adjacent tile. Remove both only after
-             * the true-X cell is guaranteed to publish; fallback keeps coarse. */
+            /* Remove only the exact participating endpoint(s). A coarse-X
+             * mask is unsafe in crowded cells: a different physical endpoint
+             * may legitimately live on that same 8px edge. The packed owner
+             * flags already identify which authored endpoint caused this
+             * transition, so use that information directly. */
             for(e=first;e<=last;++e){
-                uint8_t x=g_tspf_mixed_event_x[e];
-                uint8_t local=(uint8_t)(x&7u);
-                uint8_t snap=(uint8_t)((x>>3)+(local>=4u?1u:0u));
-                if(snap>0u)g_tspf_mixed_border_clear[(uint8_t)(snap-1u)]|=2u;
-                if(snap<TSP_COLS)g_tspf_mixed_border_clear[snap]|=1u;
+                uint8_t lo=g_tspf_mixed_event_left[e];
+                uint8_t ro=g_tspf_mixed_event_right[e];
+                if(lo!=0xffu && (lo&0x40u))
+                    g_tspf_mixed_border_clear_sid[lo&31u]|=2u;
+                if(ro!=0xffu && (ro&0x20u))
+                    g_tspf_mixed_border_clear_sid[ro&31u]|=1u;
             }
         }else{
             /* Transactional per-tile fallback: make speculative patterns and
@@ -488,7 +493,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_event_count=0u;
     g_tspf_mixed_event_overflow=0u;
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
-    for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_border_clear[i]=0u;
+    for(i=0u;i<32u;++i)g_tspf_mixed_border_clear_sid[i]=0u;
 }
 void tsp_polar_mixed_prepare(const TSPState *s) BANKED{(void)s;}
 void tsp_polar_mixed_apply(void) BANKED{}
