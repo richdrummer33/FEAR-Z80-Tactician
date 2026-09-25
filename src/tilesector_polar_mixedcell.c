@@ -55,6 +55,7 @@ extern volatile uint8_t g_tspf_appearance_mode;
 uint8_t g_tspf_mixed_pattern_data[TSP_MIX_SLOTS*16u];
 uint16_t g_tspf_mixed_pattern_base;
 uint8_t g_tspf_mixed_pattern_count;
+uint8_t g_tspf_mixed_upload_index;
 
 volatile uint8_t g_tspf_mixed_last_patterns;
 volatile uint8_t g_tspf_mixed_last_patches;
@@ -301,6 +302,7 @@ void tsp_polar_mixed_reset(void) BANKED{
     uint8_t i;
     g_tspf_mixed_patterns_pending=0u;
     g_tspf_mixed_pattern_count=0u;
+    g_tspf_mixed_upload_index=0u;
     g_tspf_mixed_event_count=0u;
     g_tspf_mixed_event_overflow=0u;
     g_tspf_mixed_last_patterns=0u;
@@ -410,6 +412,7 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
     s_prepared=1u;
     g_tspf_mixed_last_patterns=g_tspf_mixed_pattern_count;
     g_tspf_mixed_last_patches=s_patch_count;
+    g_tspf_mixed_upload_index=0u;
     g_tspf_mixed_patterns_pending=1u;
 }
 
@@ -446,10 +449,21 @@ void tsp_polar_mixed_apply(void) BANKED{
 }
 
 void tsp_polar_mixed_upload(void) BANKED{
-    uint8_t slot,y;
+    uint8_t slot,y,stop;
     uint8_t tile[32];
     if(!g_tspf_mixed_patterns_pending)return;
-    for(slot=0u;slot<g_tspf_mixed_pattern_count;++slot){
+
+    /* Bound pattern publication just like the row uploader. Eight 4-bpp
+     * patterns are 256 VDP data bytes: close to the already-proven six-row
+     * worst case (240 bytes), without letting a rare 18-pattern mixed frame
+     * monopolize an entire safe VBlank interval. Name-table rows remain
+     * blocked until every pattern in the bank is resident. */
+    slot=g_tspf_mixed_upload_index;
+    stop=(uint8_t)(slot+8u);
+    if(stop<slot || stop>g_tspf_mixed_pattern_count)
+        stop=g_tspf_mixed_pattern_count;
+
+    for(;slot<stop;++slot){
         const uint8_t *p=&g_tspf_mixed_pattern_data[(uint16_t)slot<<4];
         for(y=0u;y<8u;++y){
             tile[(uint8_t)(y*4u)]=p[(uint8_t)(y+y)];
@@ -459,7 +473,10 @@ void tsp_polar_mixed_upload(void) BANKED{
         }
         set_bkg_4bpp_data((uint16_t)(g_tspf_mixed_pattern_base+slot),1u,tile);
     }
-    g_tspf_mixed_patterns_pending=0u;
+
+    g_tspf_mixed_upload_index=slot;
+    if(slot>=g_tspf_mixed_pattern_count)
+        g_tspf_mixed_patterns_pending=0u;
 }
 
 #else

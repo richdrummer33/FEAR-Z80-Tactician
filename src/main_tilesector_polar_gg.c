@@ -220,8 +220,9 @@ void main(void){
     DISPLAY_OFF;__WRITE_VDP_REG(VDP_R2,R2_MAP_0x3800);HIDE_SPRITES;SET_BORDER_COLOR(C_BLACK);set_bkg_palette(0u,2u,k_palettes);init_tiles();
     tsp_reset(&g_state);tsp_polar_renderer_reset();g_tspf_appearance_mode=TSPF_DEFAULT_APPEARANCE;tsp_polar_nt_init();tsp_polar_render(&g_state,g_map,(TSPColumn *)0);
 #if TSPF_DIRECT_MIXED
-    /* Boot render occurs before the cooperative VBlank publisher exists. */
-    if(g_tspf_mixed_patterns_pending)tsp_polar_mixed_upload();
+    /* Boot render occurs with the display disabled, so drain every bounded
+     * pattern chunk before publishing name-table references to those IDs. */
+    while(g_tspf_mixed_patterns_pending)tsp_polar_mixed_upload();
 #endif
     upload_dirty_map();
     g_ts_vblank_pending=0u;
