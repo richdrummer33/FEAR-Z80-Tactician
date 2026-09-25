@@ -587,9 +587,6 @@ extern uint8_t g_polar_nt_row_max[TSP_ROWS];
 extern uint8_t g_tspf_boundary_dirty_by_col[TSP_COLS];
 extern uint8_t g_tspf_boundary_any_dirty;
 extern uint8_t g_e1env_program[];
-extern uint16_t g_corner_bearing_q12[32];
-extern uint8_t g_corner_bearing_valid[4];
-extern const uint8_t g_e1env_center_col_lut[1025];
 extern volatile uint8_t g_tspf_appearance_mode;
 extern volatile uint8_t g_tspf_boundary_publish_tick;
 
@@ -710,12 +707,6 @@ static void bc_mark_col(uint8_t bits[3],uint8_t col)
 static uint8_t bc_col_marked(const uint8_t bits[3],uint8_t col)
 {
     return (uint8_t)(bits[col>>3]&(uint8_t)(1u<<(col&7u)));
-}
-
-static int16_t bc_rel(uint16_t bearing,uint16_t yawq)
-{
-    uint16_t d=(uint16_t)((bearing-yawq)&4095u);
-    return (int16_t)(d>=2048u ? (int16_t)d-4096 : (int16_t)d);
 }
 
 static uint8_t bc_choose_bank(void)
@@ -960,8 +951,7 @@ void tsp_polar_boundary_reset(void) BANKED
 
 void tsp_polar_boundary_prepare(const TSPState *s) BANKED
 {
-    uint8_t i,n,count=0u;
-    uint16_t yawq;
+    uint8_t i,count=g_tspf_seam_desc_count;
     uint8_t target;
 
     s_prepared=0u;
@@ -975,7 +965,6 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
     g_tspf_boundary_skip_reason=0u;
     g_tspf_boundary_last_crowded=0u;
     g_tspf_boundary_last_local_fallbacks=0u;
-    g_tspf_seam_desc_count=0u;
     bc_clear3(s_exact_cols);
 
     /* Only PREVIOUS dynamic columns require forced coarse restoration. A new
@@ -1002,43 +991,9 @@ void tsp_polar_boundary_prepare(const TSPState *s) BANKED
         return;
     }
 
-    n=g_e1env_program[0];
-    if(!n || n>31u) return;
-    yawq=(uint16_t)s->yaw<<4;
-
-    /* Record the visible sub-tile ownership transitions.  Exact tile-edge
-     * transitions need no composite: the ordinary c0/c1 handoff is already at
-     * the right raster X. */
-    for(i=0u;i<n;++i){
-        uint8_t ni=(uint8_t)(i+1u<n?i+1u:0u);
-        uint8_t left=g_e1env_program[(uint8_t)(2u+(uint8_t)(i<<1))];
-        uint8_t right=g_e1env_program[(uint8_t)(2u+(uint8_t)(ni<<1))];
-        uint8_t vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
-        int16_t rel,x;
-        uint8_t code;
-
-        if(left==0xffu || right==0xffu) continue;
-        /* Packed owner bytes also carry endpoint/connected flags.  A flag
-         * change is NOT an ownership handoff; only a surface-ID change can
-         * create a mixed exact-X tile. */
-        if((left&31u)==(right&31u)) continue;
-        if(vid>=32u) continue;
-        if(!(g_corner_bearing_valid[vid>>3]&(uint8_t)(1u<<(vid&7u)))) continue;
-        rel=bc_rel(g_corner_bearing_q12[vid],yawq);
-        if(rel<=-512 || rel>=512) continue;
-        code=g_e1env_center_col_lut[(uint16_t)(rel+512)];
-        x=(int16_t)(((uint16_t)(code&31u)<<3)+(int16_t)((int8_t)(code>>5)-4));
-        if(x<0 || x>=160 || (((uint8_t)x&7u)==0u)) continue;
-        if(count>=32u){ g_tspf_boundary_skip_reason=3u; return; }
-        g_tspf_seam_x[count]=(uint8_t)x;
-        g_tspf_seam_vid[count]=left;
-        g_tspf_seam_vertex_half[count]=right;
-#if TSPF_PROFILE_HOOKS
-        g_tspf_boundary_vid[count]=vid;
-#endif
-        ++count;
-    }
-    g_tspf_seam_desc_count=count;
+    /* Exact-X events were streamed by the visible envelope walk. The banked
+     * compositor only sorts and consumes them; it no longer rescans the whole
+     * baked program or depends on which vertex bearings happened to be cached. */
     if(!count) return;
 
     /* Insertion sort: at most a few visible handoffs, and doing it here means

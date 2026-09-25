@@ -95,6 +95,13 @@ void tsp_polar_subcolumn_seams_fast(void) BANKED;
 #if TSPF_BOUNDARY_COMPOSITE
 void tsp_polar_boundary_prepare(const TSPState *s) BANKED;
 void tsp_polar_boundary_apply(void) BANKED;
+extern uint8_t g_tspf_seam_desc_count;
+extern uint8_t g_tspf_seam_x[32];
+extern uint8_t g_tspf_seam_vid[32];
+extern uint8_t g_tspf_seam_vertex_half[32];
+#if TSPF_PROFILE_HOOKS
+extern uint8_t g_tspf_boundary_vid[32];
+#endif
 #endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
@@ -1040,6 +1047,40 @@ static int8_t envelope_center_dx(int16_t rel)
     return (int8_t)((envelope_center_code(rel)>>5)-4);
 }
 
+#if TSPF_BOUNDARY_COMPOSITE
+/* Stream exact-X ownership handoffs while the monotonic envelope walk already
+ * has their camera-relative bearing. This deletes the later O(program) rescan,
+ * avoids re-reading/cross-checking the bearing cache, and records only
+ * boundaries the visible walk actually traversed. */
+static void envelope_record_boundary(uint8_t left_i,uint8_t n,int16_t rel)
+{
+    uint8_t ni,left,right,vid,code,bi;
+    int16_t x;
+
+    if(rel<=-512 || rel>=512) return;
+    ni=(uint8_t)(left_i+1u<n?left_i+1u:0u);
+    left=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
+    right=g_e1env_program[(uint8_t)(2u+(uint8_t)(ni<<1))];
+    if(left==0xffu || right==0xffu || (left&31u)==(right&31u)) return;
+    vid=g_e1env_program[(uint8_t)(1u+(uint8_t)(ni<<1))];
+    if(vid>=32u) return;
+
+    code=envelope_center_code(rel);
+    x=(int16_t)(((uint16_t)(code&31u)<<3)+(int16_t)((int8_t)(code>>5)-4));
+    if(x<0 || x>=160 || (((uint8_t)x&7u)==0u)) return;
+
+    bi=g_tspf_seam_desc_count;
+    if(bi>=32u) return;
+    g_tspf_seam_x[bi]=(uint8_t)x;
+    g_tspf_seam_vid[bi]=left;
+    g_tspf_seam_vertex_half[bi]=right;
+#if TSPF_PROFILE_HOOKS
+    g_tspf_boundary_vid[bi]=vid;
+#endif
+    g_tspf_seam_desc_count=(uint8_t)(bi+1u);
+}
+#endif
+
 #else
 static uint8_t envelope_center_col(int16_t rel)
 {
@@ -1605,6 +1646,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         memset(cols, 0, sizeof(TSPColumn) * TSP_COLS);
 #endif
     TSPF_SET_STAGE(2u);
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+    g_tspf_seam_desc_count=0u;
+#endif
 #if TSPF_PROFILE_HOOKS || !defined(__SDCC)
     g_tspf_selector_tests = 0u;
 #endif
@@ -1654,6 +1698,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
              * 8-pixel column-centre sample. Keep walking both directions;
              * 0xff means there is not yet a visible run to join against. */
             if(q==0u) goto e1full_candidates_ready;
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+            envelope_record_boundary(focus,n,rel1);
+#endif
 #if defined(__SDCC) && TSPF_THIN_FACE_SURVIVAL
             tsp_polar_record_subcolumn_boundary(focus,n,rel1);
 #endif
@@ -1679,6 +1726,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                                      (uint8_t)(rel1>=-512),
                                      (uint8_t)(nextrel<=512),s,&count);
                 if(q==0u) break;
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+                envelope_record_boundary(i,n,nextrel);
+#endif
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
                     if(last!=0xffu) envelope_join_connected(last,cur,envelope_center_dx(rel1));
@@ -1708,6 +1758,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                                      (uint8_t)(nextrel>=-512),
                                      (uint8_t)(rel0<=512),s,&count);
                 if(q==0u) break;
+#if defined(__SDCC) && TSPF_BOUNDARY_COMPOSITE
+                envelope_record_boundary(i,n,rel0);
+#endif
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
                     if(last!=0xffu) envelope_join_connected(cur,last,envelope_center_dx(rel0));
