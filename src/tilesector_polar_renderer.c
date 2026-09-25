@@ -1233,6 +1233,7 @@ static uint8_t envelope_emit_span(uint8_t i,uint8_t n,uint8_t c0,uint8_t cend,
  * authored walls. Suppress one of the two black borders only when BOTH spans
  * actually own adjacent coarse columns; a sub-column neighbor must not steal
  * the sole visible corner line. */
+#if !TSPF_DIRECT_MIXED
 static int16_t scale_step_subpx(int16_t step,uint8_t px)
 {
     /* px is only 0..4. Avoid a signed multiply/helper call: exact fractions
@@ -1244,6 +1245,7 @@ static int16_t scale_step_subpx(int16_t step,uint8_t px)
     if(px>=4u) return shr_signed(step,1u);
     return 0;
 }
+#endif
 
 static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
 {
@@ -1252,17 +1254,17 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
        l->right_real && r->left_real &&
        l->right_connected)
     {
-#if defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
-        /* The real authored corner lies up to four pixels either side of the
-         * snapped 8px ownership boundary.  Inverse depth is linear in screen X
-         * across a straight wall, so recover the corner from whichever face
-         * actually contains that pixel: exact left-run END when dx<0, exact
-         * right-run START when dx>=0.  Both faces then consume the same
-         * canonical half-height at the coarse handoff.
+#if !TSPF_DIRECT_MIXED && defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+        /* Legacy coarse-only correction. Before exact mixed cells existed, the
+         * true physical corner could sit several pixels away from the snapped
+         * ownership handoff. Canonicalizing both run heights at the snapped
+         * edge hid the resulting Y crack.
          *
-         * This fixes the remaining moderate-angle Y overshoot without needing
-         * a sub-tile two-face compositor yet. X is still coarse-snapped; only
-         * the corner's physically correct projected HEIGHT is restored here. */
+         * DIRECT_MIXED must NOT do this. Its mixed tile evaluates each wall at
+         * its own true screen X, and the neighboring coarse tile already has
+         * the correct wall-plane height at the hardware edge. Dragging the
+         * physical-corner height back onto that snapped edge is both redundant
+         * and geometrically wrong once X is exact. */
         int16_t q;
         uint8_t px=(uint8_t)(dx<0 ? -dx : dx);
         uint8_t inv,half,orig,d;
@@ -1277,18 +1279,16 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
         half=(uint8_t)(inv>>1);
         orig=(uint8_t)(l->inv1>>1);
         d=(uint8_t)(half>orig ? half-orig : orig-half);
-
-        /* At grazing angles a true sub-column correction can exceed what the
-         * current +/-7 edge vocabulary can draw in one tile. Leave those for
-         * the steep-edge rung rather than manufacture a spike here. */
         if(d<=4u){
-            l->inv_mid=half; l->depth_plane|=2u; /* canonical right endpoint */
-            r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
+            l->inv_mid=half; l->depth_plane|=2u;
+            r->inv0=half;    r->depth_plane|=1u;
         }
+#else
+        (void)dx;
 #endif
-        /* Legacy coarse representation keeps one visible snapped seam.
-         * A successfully-built direct tile later suppresses the participating
-         * surface endpoints through g_tspf_mixed_border_clear_sid. */
+        /* Keep one snapped connected border as the transactional coarse
+         * fallback. A successfully-built direct tile later suppresses the
+         * participating endpoints and draws the single crease at true X. */
         l->right_real=0u;
     }
 }
