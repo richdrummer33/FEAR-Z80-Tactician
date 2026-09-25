@@ -74,6 +74,7 @@ volatile uint8_t g_tspf_mixed_chain_fallbacks;
 volatile uint8_t g_tspf_mixed_unsupported_tiles;
 #if TSPF_PROFILE_HOOKS
 volatile uint8_t g_tspf_mixed_connected_elided;
+volatile uint8_t g_tspf_mixed_collinear_collapsed;
 volatile uint8_t g_tspf_mixed_silhouette_lines;
 #endif
 
@@ -304,6 +305,13 @@ static uint8_t same_owner(uint8_t a,uint8_t b){
     if(a==0xffu || b==0xffu)return (uint8_t)(a==b);
     return (uint8_t)((a&31u)==(b&31u));
 }
+static uint8_t same_depth_plane(uint8_t a,uint8_t b){
+    uint8_t sa,sb;
+    if(a==0xffu || b==0xffu)return 0u;
+    sa=(uint8_t)(a&31u);sb=(uint8_t)(b&31u);
+    return (uint8_t)(k_e1env_depth_axis[sa]==k_e1env_depth_axis[sb] &&
+                     k_e1env_plane_c[sa]==k_e1env_plane_c[sb]);
+}
 
 /* 1=exact tile built, 2=unsupported wall/void first rung,
  * 3=inconsistent quantized event chain, 0=capacity. */
@@ -337,11 +345,21 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
 #if TSPF_MIX_ELIDE_CONNECTED
         uint8_t connected=(uint8_t)(lo!=0xffu && ro!=0xffu &&
                                     (lo&0x80u) && (ro&0x20u));
+        uint8_t collinear=(uint8_t)(connected && same_depth_plane(lo,ro));
 #else
-        uint8_t connected=0u;
+        uint8_t connected=0u,collinear=0u;
 #endif
         if(!split)continue;
-        for(lx=split;lx<8u;++lx)s_owner[lx]=ro;
+        /* A connected collinear segment boundary has no visible geometry at
+         * all once its vertical crease is intentionally elided. Keep the left
+         * owner across that sub-range: its plane is bit-identical to the right
+         * owner's plane, so this also avoids a redundant fill_top/depth-bank
+         * evaluation and can make the entire mixed tile disappear. */
+        if(!collinear)
+            for(lx=split;lx<8u;++lx)s_owner[lx]=ro;
+#if TSPF_PROFILE_HOOKS
+        else ++g_tspf_mixed_collinear_collapsed;
+#endif
         if(physical && !connected){
             line_mask|=(uint8_t)(1u<<split);
 #if TSPF_PROFILE_HOOKS
@@ -432,6 +450,7 @@ void tsp_polar_mixed_reset(void) BANKED{
     g_tspf_mixed_unsupported_tiles=0u;
 #if TSPF_PROFILE_HOOKS
     g_tspf_mixed_connected_elided=0u;
+    g_tspf_mixed_collinear_collapsed=0u;
     g_tspf_mixed_silhouette_lines=0u;
 #endif
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
@@ -460,6 +479,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_unsupported_tiles=0u;
 #if TSPF_PROFILE_HOOKS
     g_tspf_mixed_connected_elided=0u;
+    g_tspf_mixed_collinear_collapsed=0u;
     g_tspf_mixed_silhouette_lines=0u;
 #endif
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
