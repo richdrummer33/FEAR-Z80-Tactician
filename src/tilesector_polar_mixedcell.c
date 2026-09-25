@@ -72,6 +72,10 @@ volatile uint8_t g_tspf_mixed_skip_reason;
 volatile uint8_t g_tspf_mixed_local_fallbacks;
 volatile uint8_t g_tspf_mixed_chain_fallbacks;
 volatile uint8_t g_tspf_mixed_unsupported_tiles;
+#if TSPF_PROFILE_HOOKS
+volatile uint8_t g_tspf_mixed_connected_elided;
+volatile uint8_t g_tspf_mixed_silhouette_lines;
+#endif
 
 static uint8_t s_pattern_hash[TSP_MIX_SLOTS];
 static uint8_t s_patch_pos[TSP_MIX_PATCH_MAX];
@@ -323,14 +327,26 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
         uint8_t lo=g_tspf_mixed_event_left[e],ro=g_tspf_mixed_event_right[e];
         uint8_t physical=(uint8_t)((lo!=0xffu && (lo&0x40u)) ||
                                    (ro!=0xffu && (ro&0x20u)));
+        /* Bit7 means the left wall's right physical endpoint is shared by the
+         * immediately-visible wall on the right. That is an INTERNAL corner
+         * of a continuous visible chain, not a silhouette/end-of-chain edge.
+         *
+         * Keep the exact ownership/top-edge handoff at true X, but omit the
+         * black vertical crease. Endpoints of the visible chain have bit7 clear
+         * and therefore still receive a silhouette line. */
+        uint8_t connected=(uint8_t)(lo!=0xffu && ro!=0xffu &&
+                                    (lo&0x80u) && (ro&0x20u));
         if(!split)continue;
         for(lx=split;lx<8u;++lx)s_owner[lx]=ro;
-        /* Physical corners remain visible as ONE vertical crease. The old
-         * coarse path suppressed only the duplicate border at connected
-         * corners; it never removed the corner itself. Since this direct tile
-         * later suppresses BOTH snapped coarse borders, the exact-X crease
-         * must live here for connected corners too. */
-        if(physical)line_mask|=(uint8_t)(1u<<split);
+        if(physical && !connected){
+            line_mask|=(uint8_t)(1u<<split);
+#if TSPF_PROFILE_HOOKS
+            ++g_tspf_mixed_silhouette_lines;
+#endif
+        }
+#if TSPF_PROFILE_HOOKS
+        else if(physical && connected) ++g_tspf_mixed_connected_elided;
+#endif
     }
 
     /* Wall/void needs a horizon-aware asymmetric bottom half. Keep that rare
@@ -348,7 +364,8 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
     for(row=0u;row<9u;++row){
         uint8_t outm=0u,wallm=0u,active=0u,all_out=1u,all_wall=1u,flip,index;
         int16_t y0=(int16_t)((uint16_t)row<<3);
-        for(ly=0u;ly<8u;++ly){s_hit[ly]=0u;s_line_start[ly]=0u;}
+        for(ly=0u;ly<8u;++ly)s_hit[ly]=0u;
+        if(line_mask)for(ly=0u;ly<8u;++ly)s_line_start[ly]=0u;
         for(lx=0u;lx<8u;++lx){
             uint8_t bit=(uint8_t)(0x80u>>lx);
             int16_t ty=(int16_t)s_top[lx];
@@ -356,7 +373,7 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
             else if(ty<y0)wallm|=bit;
             if(ty>=y0 && ty<(int16_t)(y0+8))s_hit[(uint8_t)(ty-y0)]|=bit;
         }
-        for(e=first;e<=last;++e){
+        if(line_mask)for(e=first;e<=last;++e){
             uint8_t split=(uint8_t)(g_tspf_mixed_event_x[e]&7u);
             if(split && (line_mask&(uint8_t)(1u<<split))){
                 int16_t a=(int16_t)s_top[(uint8_t)(split-1u)];
@@ -409,6 +426,10 @@ void tsp_polar_mixed_reset(void) BANKED{
     g_tspf_mixed_local_fallbacks=0u;
     g_tspf_mixed_chain_fallbacks=0u;
     g_tspf_mixed_unsupported_tiles=0u;
+#if TSPF_PROFILE_HOOKS
+    g_tspf_mixed_connected_elided=0u;
+    g_tspf_mixed_silhouette_lines=0u;
+#endif
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
     s_hold_previous=0u;
     s_bank_used[0]=s_bank_used[1]=0u;
@@ -433,6 +454,10 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_local_fallbacks=0u;
     g_tspf_mixed_chain_fallbacks=0u;
     g_tspf_mixed_unsupported_tiles=0u;
+#if TSPF_PROFILE_HOOKS
+    g_tspf_mixed_connected_elided=0u;
+    g_tspf_mixed_silhouette_lines=0u;
+#endif
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
     s_hold_previous=publication_pending();
     if(s_hold_previous){

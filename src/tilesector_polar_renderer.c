@@ -92,6 +92,9 @@ extern uint8_t g_tspf_mixed_event_left[32];
 extern uint8_t g_tspf_mixed_event_right[32];
 /* Per surface: bit0 suppress its snapped LEFT endpoint, bit1 RIGHT. */
 extern uint8_t g_tspf_mixed_border_clear_sid[32];
+#if TSPF_PROFILE_HOOKS
+extern volatile uint8_t g_tspf_mixed_connected_elided;
+#endif
 #endif
 #if TSPF_LOCAL_PROJECTION
 void tsp_polar_projection_eval_fast(void);
@@ -1290,10 +1293,24 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
 #else
         (void)dx;
 #endif
-        /* Keep one snapped connected border as the transactional coarse
-         * fallback. A successfully-built direct tile later suppresses the
-         * participating endpoints and draws the single crease at true X. */
+#if TSPF_DIRECT_MIXED
+        /* Both spans are simultaneously visible and physically connected, so
+         * this is an internal chain vertex. Direct mode uses the user's visual
+         * affordance: no vertical crease. For sub-tile corners the mixed-cell
+         * builder removes the snapped endpoints after successful preparation;
+         * for dx==0 there is no mixed tile, so remove both coarse borders here.
+         *
+         * If dx!=0, retain the right border transactionally until direct
+         * preparation succeeds; g_tspf_mixed_border_clear_sid then removes it. */
         l->right_real=0u;
+        if(dx==0) r->left_real=0u;
+#if TSPF_PROFILE_HOOKS
+        if(dx==0) ++g_tspf_mixed_connected_elided;
+#endif
+#else
+        /* Legacy coarse mode keeps one visible crease at a connected corner. */
+        l->right_real=0u;
+#endif
     }
 }
 #endif

@@ -181,6 +181,7 @@ int main(int argc, char** argv) {
     u16 s_join_count = 0, s_join_max = 0, s_join_sum = 0;
     u16 s_mix_patterns=0, s_mix_patches=0, s_mix_skip=0;
     u16 s_mix_fallback=0, s_mix_chain=0, s_mix_unsupported=0, s_mix_any=0;
+    u16 s_mix_elided=0, s_mix_silhouette=0;
     u16 s_mix_pending=0, s_mix_events=0, s_mix_overflow=0;
     u16 s_mix_x=0, s_mix_left=0, s_mix_right=0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
@@ -203,6 +204,8 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_tspf_mixed_local_fallbacks", s_mix_fallback) || find_symbol(noi, "g_tspf_mixed_local_fallbacks", s_mix_fallback)) &&
         (find_symbol(noi, "_g_tspf_mixed_chain_fallbacks", s_mix_chain) || find_symbol(noi, "g_tspf_mixed_chain_fallbacks", s_mix_chain)) &&
         (find_symbol(noi, "_g_tspf_mixed_unsupported_tiles", s_mix_unsupported) || find_symbol(noi, "g_tspf_mixed_unsupported_tiles", s_mix_unsupported)) &&
+        (find_symbol(noi, "_g_tspf_mixed_connected_elided", s_mix_elided) || find_symbol(noi, "g_tspf_mixed_connected_elided", s_mix_elided)) &&
+        (find_symbol(noi, "_g_tspf_mixed_silhouette_lines", s_mix_silhouette) || find_symbol(noi, "g_tspf_mixed_silhouette_lines", s_mix_silhouette)) &&
         (find_symbol(noi, "_g_tspf_mixed_any", s_mix_any) || find_symbol(noi, "g_tspf_mixed_any", s_mix_any)) &&
         (find_symbol(noi, "_g_tspf_mixed_patterns_pending", s_mix_pending) || find_symbol(noi, "g_tspf_mixed_patterns_pending", s_mix_pending)) &&
         (find_symbol(noi, "_g_tspf_mixed_event_count", s_mix_events) || find_symbol(noi, "g_tspf_mixed_event_count", s_mix_events)) &&
@@ -275,6 +278,7 @@ int main(int argc, char** argv) {
         uint8_t join_anchor_count, join_anchor_max_px;
         uint16_t join_anchor_sum_px;
         uint8_t mix_patterns,mix_patches,mix_skip,mix_fallback,mix_chain,mix_unsupported;
+        uint8_t mix_elided,mix_silhouette;
         uint8_t mix_any,mix_pending,mix_events,mix_overflow;
         uint8_t mix_x[32],mix_left[32],mix_right[32];
     };
@@ -371,6 +375,8 @@ int main(int argc, char** argv) {
                     cur.mix_fallback=mem->DebugRetrieve(s_mix_fallback);
                     cur.mix_chain=mem->DebugRetrieve(s_mix_chain);
                     cur.mix_unsupported=mem->DebugRetrieve(s_mix_unsupported);
+                    cur.mix_elided=mem->DebugRetrieve(s_mix_elided);
+                    cur.mix_silhouette=mem->DebugRetrieve(s_mix_silhouette);
                     cur.mix_any=mem->DebugRetrieve(s_mix_any);
                     cur.mix_pending=mem->DebugRetrieve(s_mix_pending);
                     cur.mix_events=mem->DebugRetrieve(s_mix_events);
@@ -416,7 +422,7 @@ int main(int argc, char** argv) {
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
         if (have_env_phase)
             for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%s",ENV_PHASE_NAME[e]);
-        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px,mixed_patterns,mixed_patches,mixed_skip,mixed_fallback,mixed_chain,mixed_unsupported,mixed_any,mixed_pending,mixed_events,mixed_overflow\n");
+        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px,mixed_patterns,mixed_patches,mixed_skip,mixed_fallback,mixed_chain,mixed_unsupported,mixed_connected_elided,mixed_silhouette_lines,mixed_any,mixed_pending,mixed_events,mixed_overflow\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -426,13 +432,14 @@ int main(int argc, char** argv) {
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
             if (have_env_phase)
                 for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%llu",(unsigned long long)f.envph[e]);
-            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
                 (unsigned long long)f.map_fnv64,
                 (unsigned)f.dirty_rows_pending, (unsigned)f.vblank_bursts, (unsigned)f.vblank_missed,
                 (unsigned)f.join_anchor_count, (unsigned)f.join_anchor_max_px, (unsigned)f.join_anchor_sum_px,
                 (unsigned)f.mix_patterns,(unsigned)f.mix_patches,(unsigned)f.mix_skip,
-                (unsigned)f.mix_fallback,(unsigned)f.mix_chain,(unsigned)f.mix_unsupported,(unsigned)f.mix_any,
+                (unsigned)f.mix_fallback,(unsigned)f.mix_chain,(unsigned)f.mix_unsupported,
+                (unsigned)f.mix_elided,(unsigned)f.mix_silhouette,(unsigned)f.mix_any,
                 (unsigned)f.mix_pending,(unsigned)f.mix_events,(unsigned)f.mix_overflow);
         }
         std::fclose(csv);
@@ -508,6 +515,7 @@ int main(int argc, char** argv) {
     if(have_mixed_diag){
         std::vector<uint64_t> pats,patches,events;
         unsigned exact=0u,fallback=0u,chain=0u,unsupported=0u,pending=0u,overflows=0u;
+        unsigned elided=0u,silhouette=0u;
         unsigned skip_hist[8]={0};
         double pm=0.0,wm=0.0,em=0.0;
         for(const auto& f:frames){
@@ -515,16 +523,19 @@ int main(int argc, char** argv) {
             pm+=f.mix_patterns;wm+=f.mix_patches;em+=f.mix_events;
             if(f.mix_any)++exact;
             fallback+=f.mix_fallback;chain+=f.mix_chain;unsupported+=f.mix_unsupported;
+            elided+=f.mix_elided;silhouette+=f.mix_silhouette;
             if(f.mix_pending)++pending;if(f.mix_overflow)++overflows;
             if(f.mix_skip<8u)++skip_hist[f.mix_skip];
         }
         pm/=frames.size();wm/=frames.size();em/=frames.size();
         std::printf("direct mixed: exact_updates=%.1f%% events mean=%.2f p95=%.0f worst=%.0f "
                     "patterns mean=%.2f p95=%.0f worst=%.0f patches mean=%.2f p95=%.0f worst=%.0f "
-                    "local_fallback_tiles=%u chain_fallback_tiles=%u unsupported_tiles=%u pending_updates=%.1f%% overflows=%u\n",
+                    "local_fallback_tiles=%u chain_fallback_tiles=%u unsupported_tiles=%u "
+                    "connected_lines_elided=%u silhouette_lines=%u pending_updates=%.1f%% overflows=%u\n",
                     100.0*exact/frames.size(),em,pct(events,.95),pct(events,1.0),
                     pm,pct(pats,.95),pct(pats,1.0),wm,pct(patches,.95),pct(patches,1.0),
-                    fallback,chain,unsupported,100.0*pending/frames.size(),overflows);
+                    fallback,chain,unsupported,elided,silhouette,
+                    100.0*pending/frames.size(),overflows);
         std::printf("direct mixed skips: none=%u eye=%u appearance=%u event_overflow=%u pending=%u bank_reuse=%u publish_hold=%u other=%u\n",
                     skip_hist[0],skip_hist[1],skip_hist[2],skip_hist[3],skip_hist[4],skip_hist[5],
                     skip_hist[6],skip_hist[7]);
