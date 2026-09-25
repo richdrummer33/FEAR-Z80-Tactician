@@ -289,6 +289,7 @@ int main(int argc, char** argv) {
     Frame cur{}; std::memset(&cur, 0, sizeof cur);
     uint64_t prev = core.GetMasterClockCycles();
     unsigned seen_loops = 0, last_loop = 0xFFFFu;
+    bool loop_started = false;
     uint16_t last_vblank_bursts = have_vblank_stats ? rd16(mem, s_vblank_bursts) : 0u;
     uint16_t last_vblank_missed = have_vblank_stats ? rd16(mem, s_vblank_missed) : 0u;
     uint64_t steps = 0;
@@ -302,6 +303,25 @@ int main(int argc, char** argv) {
         const uint64_t dt = now - prev;
         prev = now;
         const uint8_t ph = mem->DebugRetrieve(s_phase);
+        const unsigned lc = mem->DebugRetrieve(s_loop);
+
+        /* g_ts_loop_count is zero during ROM initialization as well as during
+         * logical update zero. With warmup=0, treating all of that startup as
+         * frame 0 produced the single ~46M-T "unmarked" monster seen in the
+         * projection trace. Arm the timeline only when the game loop first
+         * enters its explicit input/motion phase. */
+        if(!loop_started){
+            if(ph!=1u){
+                prev=now;
+                continue;
+            }
+            loop_started=true;
+            last_loop=lc;
+            std::memset(&cur,0,sizeof cur);
+            prev=now;
+            continue;
+        }
+
         const u16 pc = cpu->GetState()->PC->GetValue();
         if (ph < 6) cur.ph[ph] += dt;
         if (ph == 2) {
@@ -313,7 +333,6 @@ int main(int argc, char** argv) {
         }
         cur.total += dt;
 
-        const unsigned lc = mem->DebugRetrieve(s_loop);
         if (lc != last_loop) {
             if (last_loop != 0xFFFFu) {
                 /* Snapshot the completed logical UPDATE here, not a VBlank.
