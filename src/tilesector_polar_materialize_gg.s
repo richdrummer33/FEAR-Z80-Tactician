@@ -213,7 +213,7 @@ run_no_vblank_service$:
         add     hl, de
         ld      (#_g_polar_run_iq), hl
         ld      hl, (#r_ret_ptr$)
-        ld      de, #8
+        ld      de, #7
         add     hl, de
         ld      (#r_ret_ptr$), hl
 
@@ -1934,12 +1934,16 @@ ret_run_base$:
         ld      h, (hl)
         ld      l, a
         ld      (#r_ret_base$), hl
-        ; Column cursor: the run walks c0..c1 in order, so the slot address is
-        ; an add of eight per column rather than a multiply per column.
+        ; Column cursor: seven bytes are actually live (six key bytes plus the
+        ; patchable edge row). The previous 8-byte stride burned 640 bytes of
+        ; scarce 8 KiB WRAM only to make this once-per-run multiply a shift.
+        ; c0*7 = c0*8-c0; the hot per-column cursor is still one constant add.
         ld      a, (#_g_polar_run_c0)
+        ld      e, a
         add     a, a
         add     a, a
         add     a, a
+        sub     e
         ld      e, a
         ld      d, #0
         add     hl, de
@@ -2398,37 +2402,37 @@ ret_mask8$:
 
 polar_ret_index$:
         .dw polar_ret_store$+0
-        .dw polar_ret_store$+160
-        .dw polar_ret_store$+320
-        .dw polar_ret_store$+480
-        .dw polar_ret_store$+640
-        .dw polar_ret_store$+800
-        .dw polar_ret_store$+960
+        .dw polar_ret_store$+140
+        .dw polar_ret_store$+280
+        .dw polar_ret_store$+420
+        .dw polar_ret_store$+560
+        .dw polar_ret_store$+700
+        .dw polar_ret_store$+840
+        .dw polar_ret_store$+980
         .dw polar_ret_store$+1120
-        .dw polar_ret_store$+1280
-        .dw polar_ret_store$+1440
-        .dw polar_ret_store$+1600
-        .dw polar_ret_store$+1760
-        .dw polar_ret_store$+1920
-        .dw polar_ret_store$+2080
+        .dw polar_ret_store$+1260
+        .dw polar_ret_store$+1400
+        .dw polar_ret_store$+1540
+        .dw polar_ret_store$+1680
+        .dw polar_ret_store$+1820
+        .dw polar_ret_store$+1960
+        .dw polar_ret_store$+2100
         .dw polar_ret_store$+2240
-        .dw polar_ret_store$+2400
-        .dw polar_ret_store$+2560
-        .dw polar_ret_store$+2720
-        .dw polar_ret_store$+2880
-        .dw polar_ret_store$+3040
-        .dw polar_ret_store$+3200
+        .dw polar_ret_store$+2380
+        .dw polar_ret_store$+2520
+        .dw polar_ret_store$+2660
+        .dw polar_ret_store$+2800
+        .dw polar_ret_store$+2940
+        .dw polar_ret_store$+3080
+        .dw polar_ret_store$+3220
         .dw polar_ret_store$+3360
-        .dw polar_ret_store$+3520
-        .dw polar_ret_store$+3680
-        .dw polar_ret_store$+3840
-        .dw polar_ret_store$+4000
-        .dw polar_ret_store$+4160
-        .dw polar_ret_store$+4320
-        .dw polar_ret_store$+4480
-        .dw polar_ret_store$+4640
-        .dw polar_ret_store$+4800
-        .dw polar_ret_store$+4960
+        .dw polar_ret_store$+3500
+        .dw polar_ret_store$+3640
+        .dw polar_ret_store$+3780
+        .dw polar_ret_store$+3920
+        .dw polar_ret_store$+4060
+        .dw polar_ret_store$+4200
+        .dw polar_ret_store$+4340
 
         .area _DATA
 polar_ret_valid$:
@@ -2465,10 +2469,11 @@ r_ret_base$:
         .ds     2
 r_ret_ptr$:
         .ds     2
-; 32 surfaces x 20 coarse columns x 8 bytes. Six bytes carry the key; the
-; eighth-byte stride keeps the column index a shift rather than a multiply.
+; 32 surfaces x 20 coarse columns x 7 live bytes: six key bytes plus the
+; patchable previous edge-row byte. No padding: the 8-byte stride cost 640 B
+; of WRAM for a once-per-run shift optimization we can no longer justify.
 polar_ret_store$:
-        .ds     5120
+        .ds     4480
 r_run_col$:
         .ds     1
 r_run_invl$:
