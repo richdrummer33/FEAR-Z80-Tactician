@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -14,7 +15,6 @@ sys.modules.setdefault("analyze_resident_lod_dictionary", m)
 m = types.ModuleType("analyze_sprite_resident_lod"); m.build_groups = lambda *a, **k: ([], [])
 sys.modules.setdefault("analyze_sprite_resident_lod", m)
 
-# Minimal perceptual metric compatible with the production module interface.
 m = types.ModuleType("resident_tile_dictionary")
 class TileWeights:
     def __init__(self, silhouette=12.0, shade=1.0):
@@ -30,9 +30,9 @@ m.TileWeights=TileWeights; m.pixel_cost=pixel_cost; m.pattern_cost=pattern_cost
 sys.modules.setdefault("resident_tile_dictionary", m)
 
 from quantum_tile_dictionary import (
-    TargetClass, Qubo, add_cardinality_penalty, build_compact_qubo,
-    build_weighted_targets, centroid_refine, cost_matrix,
-    qubo_to_ising, weighted_centroid,
+    TargetClass, Qubo, add_cardinality_penalty, build_assignment_qubo,
+    build_compact_qubo, build_weighted_targets, centroid_refine, cost_matrix,
+    emit_qaoa_qasm3, qubo_to_ising, weighted_centroid,
 )
 
 
@@ -92,6 +92,28 @@ class QuantumTileDictionaryTests(unittest.TestCase):
         q=build_compact_qubo(targets,pats,2,mtx,w)
         self.assertEqual(len(q.variables),3)
         self.assertEqual(q.metadata["k"],2)
+
+    def test_assignment_qubo_encodes_select_plus_sparse_assignments(self):
+        w=TileWeights(12,1)
+        pats=[bytes([v]*64) for v in (1,2,3)]
+        targets=[TargetClass(p,1,1,1) for p in pats[:2]]
+        mtx=cost_matrix(targets,pats,w)
+        q=build_assignment_qubo(targets,pats,1,mtx,top_l=2)
+        self.assertEqual(len(q.variables), 3 + 2*2)
+        self.assertEqual(q.metadata["top_l"], 2)
+        self.assertTrue(any(name.startswith("assign[") for name in q.variables))
+
+    def test_qasm_emits_h_cost_and_mixer_layers(self):
+        q=Qubo(["a","b"], {0:-1.0}, {(0,1):0.5}, 0.0)
+        with tempfile.TemporaryDirectory() as td:
+            p=pathlib.Path(td)/"q.qasm"
+            emit_qaoa_qasm3(q,p,reps=1,gammas=[0.4],betas=[0.2])
+            text=p.read_text()
+            self.assertIn("OPENQASM 3.0;", text)
+            self.assertIn("h q[0];", text)
+            self.assertIn("cx q[0], q[1];", text)
+            self.assertIn("rx(", text)
+            self.assertIn("measure q[1]", text)
 
 if __name__ == "__main__":
     unittest.main()
