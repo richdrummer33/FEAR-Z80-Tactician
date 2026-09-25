@@ -334,8 +334,12 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
          * Keep the exact ownership/top-edge handoff at true X, but omit the
          * black vertical crease. Endpoints of the visible chain have bit7 clear
          * and therefore still receive a silhouette line. */
+#if TSPF_MIX_ELIDE_CONNECTED
         uint8_t connected=(uint8_t)(lo!=0xffu && ro!=0xffu &&
                                     (lo&0x80u) && (ro&0x20u));
+#else
+        uint8_t connected=0u;
+#endif
         if(!split)continue;
         for(lx=split;lx<8u;++lx)s_owner[lx]=ro;
         if(physical && !connected){

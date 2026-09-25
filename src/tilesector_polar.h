@@ -9,6 +9,12 @@
 #ifndef TSPF_DIRECT_MIXED
 #define TSPF_DIRECT_MIXED 0
 #endif
+#ifndef TSPF_MIX_ELIDE_CONNECTED
+/* Visual/perf affordance: internal vertices of a simultaneously-visible
+ * connected wall chain keep their exact ownership/top-edge handoff but omit
+ * the vertical black crease. Set to 0 for an immediate A/B build. */
+#define TSPF_MIX_ELIDE_CONNECTED 1
+#endif
 
 #if defined(__SDCC)
 #include <gbdk/platform.h>
