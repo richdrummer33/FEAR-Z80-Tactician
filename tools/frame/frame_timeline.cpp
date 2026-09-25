@@ -525,9 +525,9 @@ int main(int argc, char** argv) {
                     100.0*exact/frames.size(),em,pct(events,.95),pct(events,1.0),
                     pm,pct(pats,.95),pct(pats,1.0),wm,pct(patches,.95),pct(patches,1.0),
                     fallback,unsupported,100.0*pending/frames.size(),overflows);
-        std::printf("direct mixed skips: none=%u eye=%u appearance=%u event_overflow=%u pending=%u bank_reuse=%u other=%u\n",
+        std::printf("direct mixed skips: none=%u eye=%u appearance=%u event_overflow=%u pending=%u bank_reuse=%u publish_hold=%u other=%u\n",
                     skip_hist[0],skip_hist[1],skip_hist[2],skip_hist[3],skip_hist[4],skip_hist[5],
-                    skip_hist[6]+skip_hist[7]);
+                    skip_hist[6],skip_hist[7]);
     }
     std::printf("frame timeline: %zu frames (warmup %u discarded)\n", frames.size(), warmup);
     std::printf("Game Gear budget at 60 Hz is %.0f T-states a frame, %.0f at 30 Hz\n\n",
