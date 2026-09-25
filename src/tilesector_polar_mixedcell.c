@@ -149,6 +149,24 @@ static void prepare_restore_cols(void){
         g_tspf_mixed_force_col[col]=1u;
     }
 }
+static uint8_t row_is_direct(uint8_t row,uint8_t col){
+    return (uint8_t)(g_tspf_mixed_skip[(uint8_t)(col+col+col+(row>>3))] &
+                     (uint8_t)(1u<<(row&7u)));
+}
+static void refine_restore_cols(void){
+    uint8_t i;
+    /* If every previous dynamic word in a column is itself replaced by a new
+     * direct word this frame, there is no stale dynamic ID for coarse to erase.
+     * Avoid throwing the rest of that column off the retained fast path. */
+    for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
+    for(i=0u;i<s_prev_count;++i){
+        uint8_t pos=s_prev_pos[i];
+        uint8_t row=(uint8_t)(pos/20u);
+        uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
+        if(!row_is_direct(row,col))
+            g_tspf_mixed_force_col[col]=1u;
+    }
+}
 static void mark_skip(uint8_t row,uint8_t col){
     g_tspf_mixed_skip[(uint8_t)(col+col+col+(row>>3))]|=
         (uint8_t)(1u<<(row&7u));
@@ -496,6 +514,8 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
         }
         i=(uint8_t)(last+1u);
     }
+
+    refine_restore_cols();
 
     if(!s_patch_count || !g_tspf_mixed_pattern_count){
         /* A connected handoff can require ONLY removal of the old snapped
