@@ -379,7 +379,10 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
     }
 
     if(!s_patch_count || !g_tspf_mixed_pattern_count){
-        clear_skip();
+        /* A connected handoff can require ONLY removal of the old snapped
+         * border while every pixel remains ordinary wall fill. Keep the
+         * successful border-clear decision even when no dynamic pattern is
+         * needed; mixed-skip itself is already empty in that case. */
         return;
     }
     s_prepared=1u;
