@@ -103,10 +103,10 @@ static std::vector<std::pair<u16, std::string>> all_symbols(const char* path, un
 
 /* Which subsystem a renderer symbol belongs to. The groups are chosen so that
  * each one is a thing you could go and optimise independently. */
-enum Group { G_PROJ = 0, G_GEOM, G_MAT, G_RET, G_PATCH, G_NT, G_HELP, G_OTHER, G_NGROUP };
+enum Group { G_PROJ = 0, G_GEOM, G_MAT, G_RET, G_PATCH, G_NT, G_HELP, G_MIXED, G_OTHER, G_NGROUP };
 static const char* GNAME[G_NGROUP] = {
     "projection/setup", "geometry walk", "materializer", "retained gate",
-    "boundary patch", "nametable/VRAM", "arith helpers", "other render"
+    "boundary patch", "nametable/VRAM", "arith helpers", "direct mixed", "other render"
 };
 static Group classify(const std::string& raw) {
     /* SDCC writes C statics as Fmodule$name$0_0$0, so match on the bare name;
@@ -313,11 +313,22 @@ int main(int argc, char** argv) {
         const u16 pc = cpu->GetState()->PC->GetValue();
         if (ph < 6) cur.ph[ph] += dt;
         if (ph == 2) {
-            cur.grp[group_of_t(pc, seen_loops >= warmup ? dt : 0u)] += dt;
+            uint8_t ep=0u;
             if (have_env_phase) {
-                const uint8_t ep=mem->DebugRetrieve(s_env_phase);
+                ep=mem->DebugRetrieve(s_env_phase);
                 if (ep<ENV_PHASE_COUNT) cur.envph[ep]+=dt;
             }
+            /* prepare/apply execute from fixed bank 254, while the ordinary PC
+             * range table is intentionally built from renderer bank 255. Their
+             * 16-bit CPU addresses alias in the banked window; classifying
+             * those PCs as renderer symbols recreates the old multi-million-T
+             * phantom-function bug. Attribute the explicitly marked mixed
+             * phases directly instead of pretending a 16-bit PC identifies
+             * the ROM bank. */
+            if (ep==7u || ep==8u)
+                cur.grp[G_MIXED] += dt;
+            else
+                cur.grp[group_of_t(pc, seen_loops >= warmup ? dt : 0u)] += dt;
         }
         cur.total += dt;
 
