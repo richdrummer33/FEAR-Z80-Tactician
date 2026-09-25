@@ -1030,33 +1030,27 @@ static uint8_t envelope_center_code(int16_t rel)
 {
     return g_e1env_center_col_lut[(uint16_t)(rel+512)];
 }
-static uint8_t envelope_center_col(int16_t rel)
+static int8_t envelope_code_dx(uint8_t code)
 {
-    return (uint8_t)(envelope_center_code(rel)&31u);
-}
-static int8_t envelope_center_dx(int16_t rel)
-{
-    return (int8_t)((envelope_center_code(rel)>>5)-4);
+    return (int8_t)((code>>5)-4);
 }
 
 #if TSPF_DIRECT_MIXED
 /* The bake has already solved first-visible ownership. While the monotonic
  * envelope walk has each boundary bearing live, stream the exact pixel-X
  * handoff and its two owners into the direct mixed-cell builder. */
-static void envelope_record_mixed_boundary(uint8_t left_i,uint8_t n,int16_t rel)
+static void envelope_record_mixed_boundary(uint8_t left_i,uint8_t n,uint8_t code)
 {
-    uint8_t ni,left,right,code,bi;
+    uint8_t ni,left,right,bi;
     int16_t x;
 
-    if(rel<=-512 || rel>=512) return;
     ni=(uint8_t)(left_i+1u<n?left_i+1u:0u);
     left=g_e1env_program[(uint8_t)(2u+(uint8_t)(left_i<<1))];
     right=g_e1env_program[(uint8_t)(2u+(uint8_t)(ni<<1))];
     if(left==right) return;
     if(left!=0xffu && right!=0xffu && (left&31u)==(right&31u)) return;
 
-    code=envelope_center_code(rel);
-    x=(int16_t)(((uint16_t)(code&31u)<<3)+(int16_t)((int8_t)(code>>5)-4));
+    x=(int16_t)(((uint16_t)(code&31u)<<3)+(int16_t)envelope_code_dx(code));
     /* Exact hardware-tile edges already have a perfect ordinary handoff. */
     if(x<0 || x>=160 || (((uint8_t)x&7u)==0u)) return;
 
@@ -1664,6 +1658,9 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
         TSPF_ENV_PHASE(0u);
         if(n!=0xffu){
             uint8_t focus,step,i,q,last,focus_run,c0,cend,focus_c0;
+#ifdef __SDCC
+            uint8_t code0=0u,code1=0u,nextcode=0u;
+#endif
 #if defined(__SDCC) && TSPF_E1M1_LOCAL_BEARING_FIELD
             e1env_local_bearing_prepare(s);
 #endif
@@ -1689,8 +1686,15 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
             if(!len || len>=2048u || d>=len) goto e1full_candidates_ready;
             rel0=(int16_t)-(int16_t)d;
             rel1=(int16_t)((int16_t)len-(int16_t)d);
+#ifdef __SDCC
+            if(rel0<=-512)c0=0u;
+            else{code0=envelope_center_code(rel0);c0=(uint8_t)(code0&31u);}
+            if(rel1>=512)cend=TSP_COLS;
+            else{code1=envelope_center_code(rel1);cend=(uint8_t)(code1&31u);}
+#else
             c0=(uint8_t)(rel0<=-512 ? 0u : envelope_center_col(rel0));
             cend=(uint8_t)(rel1>=512 ? TSP_COLS : envelope_center_col(rel1));
+#endif
             focus_c0=c0;
 
             TSPF_ENV_PHASE(3u);
@@ -1702,7 +1706,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
              * 0xff means there is not yet a visible run to join against. */
             if(q==0u) goto e1full_candidates_ready;
 #if defined(__SDCC) && TSPF_DIRECT_MIXED
-            envelope_record_mixed_boundary(focus,n,rel1);
+            if(rel1<512)envelope_record_mixed_boundary(focus,n,code1);
 #endif
             focus_run=(uint8_t)(q==1u ? count-1u : 0xffu);
 
@@ -1718,21 +1722,33 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(!len || len>=2048u) break;
                 nextrel=(int16_t)(rel1+(int16_t)len);
                 c0=cend;
+#ifdef __SDCC
+                if(nextrel>=512)cend=TSP_COLS;
+                else{nextcode=envelope_center_code(nextrel);cend=(uint8_t)(nextcode&31u);}
+#else
                 cend=(uint8_t)(nextrel>=512 ? TSP_COLS : envelope_center_col(nextrel));
+#endif
                 q=envelope_emit_span(i,n,c0,cend,
                                      (uint8_t)(rel1>=-512),
                                      (uint8_t)(nextrel<=512),s,&count);
                 if(q==0u) break;
 #if defined(__SDCC) && TSPF_DIRECT_MIXED
-                envelope_record_mixed_boundary(i,n,nextrel);
+                if(nextrel<512)envelope_record_mixed_boundary(i,n,nextcode);
 #endif
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(last,cur,envelope_center_dx(rel1));
+#ifdef __SDCC
+                    if(last!=0xffu) envelope_join_connected(last,cur,envelope_code_dx(code1));
+#else
+                    if(last!=0xffu) envelope_join_connected(last,cur,0);
+#endif
                     last=cur;
                 }
                 a1=nexta;
                 rel1=nextrel;
+#ifdef __SDCC
+                code1=nextcode;
+#endif
             }
 
             last=focus_run;
@@ -1747,21 +1763,33 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
                 if(!len || len>=2048u) break;
                 nextrel=(int16_t)(rel0-(int16_t)len);
                 cend=c0;
+#ifdef __SDCC
+                if(nextrel<=-512)c0=0u;
+                else{nextcode=envelope_center_code(nextrel);c0=(uint8_t)(nextcode&31u);}
+#else
                 c0=(uint8_t)(nextrel<=-512 ? 0u : envelope_center_col(nextrel));
+#endif
                 q=envelope_emit_span(i,n,c0,cend,
                                      (uint8_t)(nextrel>=-512),
                                      (uint8_t)(rel0<=512),s,&count);
                 if(q==0u) break;
 #if defined(__SDCC) && TSPF_DIRECT_MIXED
-                envelope_record_mixed_boundary(i,n,rel0);
+                if(rel0>-512)envelope_record_mixed_boundary(i,n,code0);
 #endif
                 if(q==1u){
                     uint8_t cur=(uint8_t)(count-1u);
-                    if(last!=0xffu) envelope_join_connected(cur,last,envelope_center_dx(rel0));
+#ifdef __SDCC
+                    if(last!=0xffu) envelope_join_connected(cur,last,envelope_code_dx(code0));
+#else
+                    if(last!=0xffu) envelope_join_connected(cur,last,0);
+#endif
                     last=cur;
                 }
                 a0=nexta;
                 rel0=nextrel;
+#ifdef __SDCC
+                code0=nextcode;
+#endif
             }
             goto e1full_candidates_ready;
         }
