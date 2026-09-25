@@ -601,11 +601,21 @@ void tsp_polar_mixed_apply(void) BANKED{
             uint16_t idx=(uint16_t)pos;
             uint16_t bidx=(uint16_t)((uint16_t)brow*20u+col);
             uint16_t bword=(uint16_t)(word|TSP_ATTR_FLIPY|TSP_ATTR_PALETTE);
-            if(g_map[idx]!=word){g_map[idx]=word;dirty_cell(row,col);}
-            if(g_map[bidx]!=bword){g_map[bidx]=bword;dirty_cell(brow,col);}
+            /* A publication fence needs an acknowledgement only when the
+             * name-table word actually changed. If the VDP already references
+             * this exact dynamic ID, pattern publication alone is sufficient.
+             * Marking an unchanged row as awaiting publication can deadlock the
+             * hold state because there is no dirty interval to trigger an OTIR
+             * acknowledgement for that row. */
+            if(g_map[idx]!=word){
+                g_map[idx]=word;dirty_cell(row,col);
+                g_tspf_mixed_publish_rows[row]=1u;
+            }
+            if(g_map[bidx]!=bword){
+                g_map[bidx]=bword;dirty_cell(brow,col);
+                g_tspf_mixed_publish_rows[brow]=1u;
+            }
             own_cell(row,col);own_cell(brow,col);
-            g_tspf_mixed_publish_rows[row]=1u;
-            g_tspf_mixed_publish_rows[brow]=1u;
             s_prev_pos[i]=pos;
         }
         s_prev_count=s_patch_count;
