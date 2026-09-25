@@ -84,7 +84,10 @@ static uint8_t s_prev_bank=0xffu;
 static uint8_t s_target_bank=0xffu;
 static uint8_t s_prepared;
 
-static const uint8_t k_step[25][8]={
+/* Dynamic mixed tiles are not constrained by the static p24 vocabulary.
+ * Preserve the measured full steep-edge range (max |dy|=36) here; it costs
+ * only ROM bytes, not permanent VRAM pattern IDs. */
+static const uint8_t k_step[37][8]={
     {0,0,0,0,0,0,0,0},{0,0,0,0,1,1,1,1},
     {0,0,1,1,1,1,2,2},{0,0,1,1,2,2,3,3},
     {0,1,1,2,2,3,3,4},{0,1,1,2,3,4,4,5},
@@ -97,7 +100,13 @@ static const uint8_t k_step[25][8]={
     {0,3,5,8,10,13,15,18},{0,3,5,8,11,14,16,19},
     {0,3,6,9,11,14,17,20},{0,3,6,9,12,15,18,21},
     {0,3,6,9,13,16,19,22},{0,3,7,10,13,16,20,23},
-    {0,3,7,10,14,17,21,24}
+    {0,3,7,10,14,17,21,24},{0,4,7,11,14,18,21,25},
+    {0,4,7,11,15,19,22,26},{0,4,8,12,15,19,23,27},
+    {0,4,8,12,16,20,24,28},{0,4,8,12,17,21,25,29},
+    {0,4,9,13,17,21,26,30},{0,4,9,13,18,22,27,31},
+    {0,5,9,14,18,23,27,32},{0,5,9,14,19,24,28,33},
+    {0,5,10,15,19,24,29,34},{0,5,10,15,20,25,30,35},
+    {0,5,10,15,21,26,31,36}
 };
 static const uint8_t k_rev4[16]={
     0x0,0x8,0x4,0xc,0x2,0xa,0x6,0xe,0x1,0x9,0x5,0xd,0x3,0xb,0x7,0xf
@@ -178,7 +187,7 @@ static void fill_top(uint8_t owner,uint8_t col,const TSPState *s,
     tr=(int16_t)(71-(int16_t)(ir>>1));
     d=(int16_t)(tr-tl);
     mag=(uint8_t)(d<0?-d:d);
-    if(mag>24u)mag=24u;
+    if(mag>36u)mag=36u;
     if(d>=0){
         for(x=x0;x<=x1;++x)s_top[x]=(int8_t)(tl+(int16_t)k_step[mag][x]);
     }else{
