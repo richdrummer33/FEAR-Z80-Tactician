@@ -7,8 +7,11 @@ owner byte (surface IDs are <= 29) for facts the Z80 otherwise rediscovers:
 
   bit 5: left envelope boundary is a physical endpoint of this wall
   bit 6: right envelope boundary is a physical endpoint of this wall
-  bit 7: right endpoint is physically shared by the next wall. Runtime
-         suppresses the duplicate only if both spans own adjacent coarse cols.
+  bit 7: right endpoint is physically shared by the next visible wall.
+         Legacy coarse mode uses this to suppress one duplicate border. Direct
+         mixed mode can additionally omit the internal vertical crease while
+         preserving the exact-X ownership/top-edge transition; chain endpoints
+         remain distinguishable because bit 7 is clear there.
 
 NO_WALL remains 0xff.
 
