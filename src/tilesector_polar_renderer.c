@@ -1283,6 +1283,17 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
             l->inv_mid=half; l->depth_plane|=2u;
             r->inv0=half;    r->depth_plane|=1u;
         }
+#elif TSPF_DIRECT_MIXED && defined(__SDCC) && defined(TSPF_E1M1_FRONT_ENVELOPE_EXACT) && TSPF_E1M1_DEPTH_EDGE_LUT
+        /* If the physical corner is already exactly on the hardware edge,
+         * there is no mixed tile to synthesize. Preserve the tiny useful part
+         * of the old canonicalization: both walls share one independently
+         * rounded endpoint height. Do NOT drag a sub-tile corner back onto the
+         * snapped edge; those are owned by the exact-X tile. */
+        if(dx==0){
+            uint8_t half=(uint8_t)(l->inv1>>1);
+            l->inv_mid=half; l->depth_plane|=2u;
+            r->inv0=half;    r->depth_plane|=1u;
+        }
 #else
         (void)dx;
 #endif
