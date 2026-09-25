@@ -379,7 +379,10 @@ static void put_cell(uint16_t *out, uint8_t row, uint8_t col, uint16_t word)
 #endif
 }
 
-void tsp_polar_renderer_reset(void) BANKED
+/* Cold initialization deliberately lives in fixed HOME. GBDK's NONBANKED
+ * storage attribute overrides this source file's bank assignment, recovering
+ * renderer-bank headroom without moving a single hot-path instruction. */
+void tsp_polar_renderer_reset(void) NONBANKED
 {
 #if defined(__SDCC) && TSPF_LOCAL_PROJECTION
     g_proj_cached_gi = 0xffffu;

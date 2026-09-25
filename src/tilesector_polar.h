@@ -16,6 +16,9 @@
 #ifndef BANKED
 #define BANKED
 #endif
+#ifndef NONBANKED
+#define NONBANKED
+#endif
 #endif
 
 #define TSP_COLS 20u
@@ -114,7 +117,9 @@ extern volatile uint8_t g_tspf_appearance_mode;
 void tsp_reset(TSPState *s);
 void tsp_step(TSPState *s,uint8_t input);
 uint8_t tsp_is_walkable_q4(int16_t x_q4,int16_t y_q4);
-void tsp_polar_renderer_reset(void) BANKED;
+/* Reset is boot/cold-path work. Keep it in fixed HOME rather than spending
+ * scarce renderer-bank bytes on code that never executes during a frame. */
+void tsp_polar_renderer_reset(void) NONBANKED;
 void tsp_polar_render(const TSPState *s,uint16_t out_map[TSP_MAP_CELLS],TSPColumn cols[TSP_COLS]) BANKED;
 
 #endif
