@@ -178,6 +178,9 @@ int main(int argc, char** argv) {
     u16 s_state = 0, s_map = 0, s_env_phase = 0;
     u16 s_dirty_min = 0, s_vblank_bursts = 0, s_vblank_missed = 0;
     u16 s_join_count = 0, s_join_max = 0, s_join_sum = 0;
+    u16 s_mix_patterns=0, s_mix_patches=0, s_mix_skip=0;
+    u16 s_mix_fallback=0, s_mix_unsupported=0, s_mix_any=0;
+    u16 s_mix_pending=0, s_mix_events=0, s_mix_overflow=0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
     const bool have_map = find_symbol(noi, "_g_map", s_map) || find_symbol(noi, "g_map", s_map);
     const bool have_dirty_min =
@@ -191,6 +194,16 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_tspf_join_anchor_count", s_join_count) || find_symbol(noi, "g_tspf_join_anchor_count", s_join_count)) &&
         (find_symbol(noi, "_g_tspf_join_anchor_max_px", s_join_max) || find_symbol(noi, "g_tspf_join_anchor_max_px", s_join_max)) &&
         (find_symbol(noi, "_g_tspf_join_anchor_sum_px", s_join_sum) || find_symbol(noi, "g_tspf_join_anchor_sum_px", s_join_sum));
+    const bool have_mixed_diag =
+        (find_symbol(noi, "_g_tspf_mixed_last_patterns", s_mix_patterns) || find_symbol(noi, "g_tspf_mixed_last_patterns", s_mix_patterns)) &&
+        (find_symbol(noi, "_g_tspf_mixed_last_patches", s_mix_patches) || find_symbol(noi, "g_tspf_mixed_last_patches", s_mix_patches)) &&
+        (find_symbol(noi, "_g_tspf_mixed_skip_reason", s_mix_skip) || find_symbol(noi, "g_tspf_mixed_skip_reason", s_mix_skip)) &&
+        (find_symbol(noi, "_g_tspf_mixed_local_fallbacks", s_mix_fallback) || find_symbol(noi, "g_tspf_mixed_local_fallbacks", s_mix_fallback)) &&
+        (find_symbol(noi, "_g_tspf_mixed_unsupported_tiles", s_mix_unsupported) || find_symbol(noi, "g_tspf_mixed_unsupported_tiles", s_mix_unsupported)) &&
+        (find_symbol(noi, "_g_tspf_mixed_any", s_mix_any) || find_symbol(noi, "g_tspf_mixed_any", s_mix_any)) &&
+        (find_symbol(noi, "_g_tspf_mixed_patterns_pending", s_mix_pending) || find_symbol(noi, "g_tspf_mixed_patterns_pending", s_mix_pending)) &&
+        (find_symbol(noi, "_g_tspf_mixed_event_count", s_mix_events) || find_symbol(noi, "g_tspf_mixed_event_count", s_mix_events)) &&
+        (find_symbol(noi, "_g_tspf_mixed_event_overflow", s_mix_overflow) || find_symbol(noi, "g_tspf_mixed_event_overflow", s_mix_overflow));
 
     /* PC ranges from the current link, one per fixed-bank symbol */
     unsigned rbank = 0;
@@ -239,10 +252,11 @@ int main(int argc, char** argv) {
     Processor* cpu = core.GetProcessor();
 
     /* phase 1 input+motion, 2 render, 3 vsync, 4 VRAM upload, 5 loop tail */
-    static const unsigned ENV_PHASE_COUNT = 7;
+    static const unsigned ENV_PHASE_COUNT = 9;
     static const char* ENV_PHASE_NAME[ENV_PHASE_COUNT] = {
         "env_idle", "env_fetch", "env_focus", "env_walk",
-        "env_draw", "env_ret_end", "env_nt_end"
+        "env_draw", "env_ret_end", "env_nt_end",
+        "env_mixed_prepare", "env_mixed_apply"
     };
     struct Frame {
         uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t envph[ENV_PHASE_COUNT]; uint64_t total;
@@ -252,6 +266,8 @@ int main(int argc, char** argv) {
         uint16_t vblank_bursts, vblank_missed;
         uint8_t join_anchor_count, join_anchor_max_px;
         uint16_t join_anchor_sum_px;
+        uint8_t mix_patterns,mix_patches,mix_skip,mix_fallback,mix_unsupported;
+        uint8_t mix_any,mix_pending,mix_events,mix_overflow;
     };
     std::vector<Frame> frames;
     std::vector<std::vector<uint8_t>> map_snaps;
@@ -259,6 +275,7 @@ int main(int argc, char** argv) {
     Frame cur{}; std::memset(&cur, 0, sizeof cur);
     uint64_t prev = core.GetMasterClockCycles();
     unsigned seen_loops = 0, last_loop = 0xFFFFu;
+    bool loop_started = false;
     uint16_t last_vblank_bursts = have_vblank_stats ? rd16(mem, s_vblank_bursts) : 0u;
     uint16_t last_vblank_missed = have_vblank_stats ? rd16(mem, s_vblank_missed) : 0u;
     uint64_t steps = 0;
@@ -272,6 +289,18 @@ int main(int argc, char** argv) {
         const uint64_t dt = now - prev;
         prev = now;
         const uint8_t ph = mem->DebugRetrieve(s_phase);
+        const unsigned lc = mem->DebugRetrieve(s_loop);
+        if(!loop_started){
+            if(ph!=1u){
+                prev=now;
+                continue;
+            }
+            loop_started=true;
+            last_loop=lc;
+            std::memset(&cur,0,sizeof cur);
+            prev=now;
+            continue;
+        }
         const u16 pc = cpu->GetState()->PC->GetValue();
         if (ph < 6) cur.ph[ph] += dt;
         if (ph == 2) {
@@ -283,7 +312,6 @@ int main(int argc, char** argv) {
         }
         cur.total += dt;
 
-        const unsigned lc = mem->DebugRetrieve(s_loop);
         if (lc != last_loop) {
             if (last_loop != 0xFFFFu) {
                 /* Snapshot the completed logical UPDATE here, not a VBlank.
@@ -315,6 +343,17 @@ int main(int argc, char** argv) {
                     cur.vblank_missed = (uint16_t)(vm - last_vblank_missed);
                     last_vblank_bursts = vb;
                     last_vblank_missed = vm;
+                }
+                if (have_mixed_diag) {
+                    cur.mix_patterns=mem->DebugRetrieve(s_mix_patterns);
+                    cur.mix_patches=mem->DebugRetrieve(s_mix_patches);
+                    cur.mix_skip=mem->DebugRetrieve(s_mix_skip);
+                    cur.mix_fallback=mem->DebugRetrieve(s_mix_fallback);
+                    cur.mix_unsupported=mem->DebugRetrieve(s_mix_unsupported);
+                    cur.mix_any=mem->DebugRetrieve(s_mix_any);
+                    cur.mix_pending=mem->DebugRetrieve(s_mix_pending);
+                    cur.mix_events=mem->DebugRetrieve(s_mix_events);
+                    cur.mix_overflow=mem->DebugRetrieve(s_mix_overflow);
                 }
                 if (seen_loops >= warmup) {
                     if (have_dirty_min) {
@@ -348,7 +387,7 @@ int main(int argc, char** argv) {
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
         if (have_env_phase)
             for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%s",ENV_PHASE_NAME[e]);
-        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px\n");
+        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px,mixed_patterns,mixed_patches,mixed_skip,mixed_fallback,mixed_unsupported,mixed_any,mixed_pending,mixed_events,mixed_overflow\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -358,11 +397,14 @@ int main(int argc, char** argv) {
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
             if (have_env_phase)
                 for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%llu",(unsigned long long)f.envph[e]);
-            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u\n",
+            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
                 (unsigned long long)f.map_fnv64,
                 (unsigned)f.dirty_rows_pending, (unsigned)f.vblank_bursts, (unsigned)f.vblank_missed,
-                (unsigned)f.join_anchor_count, (unsigned)f.join_anchor_max_px, (unsigned)f.join_anchor_sum_px);
+                (unsigned)f.join_anchor_count, (unsigned)f.join_anchor_max_px, (unsigned)f.join_anchor_sum_px,
+                (unsigned)f.mix_patterns,(unsigned)f.mix_patches,(unsigned)f.mix_skip,
+                (unsigned)f.mix_fallback,(unsigned)f.mix_unsupported,(unsigned)f.mix_any,
+                (unsigned)f.mix_pending,(unsigned)f.mix_events,(unsigned)f.mix_overflow);
         }
         std::fclose(csv);
     }
@@ -419,6 +461,30 @@ int main(int argc, char** argv) {
                     (double)joins/frames.size(), joins ? (double)sum_px/joins : 0.0,
                     worst_px, 100.0*nonzero/frames.size());
     }
+    if(have_mixed_diag){
+        std::vector<uint64_t> pats,patches,events;
+        unsigned exact=0u,fallback=0u,unsupported=0u,pending=0u,overflows=0u;
+        unsigned skip_hist[8]={0};
+        double pm=0.0,wm=0.0,em=0.0;
+        for(const auto& f:frames){
+            pats.push_back(f.mix_patterns);patches.push_back(f.mix_patches);events.push_back(f.mix_events);
+            pm+=f.mix_patterns;wm+=f.mix_patches;em+=f.mix_events;
+            if(f.mix_any)++exact;
+            fallback+=f.mix_fallback;unsupported+=f.mix_unsupported;
+            if(f.mix_pending)++pending;if(f.mix_overflow)++overflows;
+            if(f.mix_skip<8u)++skip_hist[f.mix_skip];
+        }
+        pm/=frames.size();wm/=frames.size();em/=frames.size();
+        std::printf("direct mixed: exact_updates=%.1f%% events mean=%.2f p95=%.0f worst=%.0f "
+                    "patterns mean=%.2f p95=%.0f worst=%.0f patches mean=%.2f p95=%.0f worst=%.0f "
+                    "local_fallback_tiles=%u unsupported_tiles=%u pending_updates=%.1f%% overflows=%u\n",
+                    100.0*exact/frames.size(),em,pct(events,.95),pct(events,1.0),
+                    pm,pct(pats,.95),pct(pats,1.0),wm,pct(patches,.95),pct(patches,1.0),
+                    fallback,unsupported,100.0*pending/frames.size(),overflows);
+        std::printf("direct mixed skips: none=%u eye=%u appearance=%u event_overflow=%u pending=%u bank_reuse=%u other=%u\n",
+                    skip_hist[0],skip_hist[1],skip_hist[2],skip_hist[3],skip_hist[4],skip_hist[5],
+                    skip_hist[6]+skip_hist[7]);
+    }
     std::printf("frame timeline: %zu frames (warmup %u discarded)\n", frames.size(), warmup);
     std::printf("Game Gear budget at 60 Hz is %.0f T-states a frame, %.0f at 30 Hz\n\n",
                 FRAME_T_60, 2 * FRAME_T_60);
@@ -450,6 +516,17 @@ int main(int argc, char** argv) {
         if (m < 1.0) continue;
         std::printf("  %-17s %10.0f %10.0f %10.0f %10.0f  %5.2f%%\n", GNAME[g], m,
                     pct(v, .50), pct(v, .95), pct(v, 1.0), 100.0 * m / mean);
+    }
+    if(have_env_phase){
+        std::printf("\n  envelope phase     %10s %10s %10s %10s   share\n","mean","p50","p95","worst");
+        for(unsigned e=1;e<ENV_PHASE_COUNT;++e){
+            std::vector<uint64_t> v;double m=0.0;
+            for(const auto& f:frames){v.push_back(f.envph[e]);m+=(double)f.envph[e];}
+            m/=v.size();
+            if(m<1.0)continue;
+            std::printf("  %-17s %10.0f %10.0f %10.0f %10.0f  %5.2f%%\n",
+                        ENV_PHASE_NAME[e],m,pct(v,.50),pct(v,.95),pct(v,1.0),100.0*m/mean);
+        }
     }
     {
         std::vector<size_t> idx;
