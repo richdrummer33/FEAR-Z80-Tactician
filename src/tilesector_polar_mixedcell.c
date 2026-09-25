@@ -278,7 +278,11 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
             if(split && (line_mask&(uint8_t)(1u<<split))){
                 int16_t a=(int16_t)s_top[(uint8_t)(split-1u)];
                 int16_t b=(int16_t)s_top[split];
-                int16_t sy=(int16_t)((a<b?a:b)+1);
+                /* The vertical crease owns the boundary pixel itself.
+                 * Starting one row below min(topA,topB) leaves a one-pixel
+                 * pinhole whenever the nearer face's horizontal edge ends at
+                 * split-1. Overlap with an equal-height top edge is harmless. */
+                int16_t sy=(int16_t)(a<b?a:b);
                 uint8_t bit=(uint8_t)(0x80u>>split);
                 if(sy<=y0)active|=bit;
                 else if(sy<(int16_t)(y0+8))s_line_start[(uint8_t)(sy-y0)]|=bit;
