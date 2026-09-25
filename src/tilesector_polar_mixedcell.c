@@ -221,12 +221,16 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
     for(e=first;e<=last;++e){
         uint8_t split=(uint8_t)(g_tspf_mixed_event_x[e]&7u);
         uint8_t lo=g_tspf_mixed_event_left[e],ro=g_tspf_mixed_event_right[e];
-        uint8_t connected=(uint8_t)(lo!=0xffu && ro!=0xffu && (lo&0x80u));
         uint8_t physical=(uint8_t)((lo!=0xffu && (lo&0x40u)) ||
                                    (ro!=0xffu && (ro&0x20u)));
         if(!split)continue;
         for(lx=split;lx<8u;++lx)s_owner[lx]=ro;
-        if(physical && !connected)line_mask|=(uint8_t)(1u<<split);
+        /* Physical corners remain visible as ONE vertical crease. The old
+         * coarse path suppressed only the duplicate border at connected
+         * corners; it never removed the corner itself. Since this direct tile
+         * later suppresses BOTH snapped coarse borders, the exact-X crease
+         * must live here for connected corners too. */
+        if(physical)line_mask|=(uint8_t)(1u<<split);
     }
 
     /* Wall/void needs a horizon-aware asymmetric bottom half. Keep that rare
