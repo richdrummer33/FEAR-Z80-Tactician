@@ -75,6 +75,7 @@ volatile uint8_t g_tspf_mixed_unsupported_tiles;
 #if TSPF_PROFILE_HOOKS
 volatile uint8_t g_tspf_mixed_connected_elided;
 volatile uint8_t g_tspf_mixed_collinear_collapsed;
+volatile uint8_t g_tspf_mixed_collinear_tile_noops;
 volatile uint8_t g_tspf_mixed_silhouette_lines;
 #endif
 
@@ -314,9 +315,10 @@ static uint8_t same_depth_plane(uint8_t a,uint8_t b){
 }
 
 /* 1=exact tile built, 2=unsupported wall/void first rung,
- * 3=inconsistent quantized event chain, 0=capacity. */
+ * 3=inconsistent quantized event chain, 4=visually identical to coarse after
+ * connected/collinear elision, 0=capacity. */
 static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState *s){
-    uint8_t line_mask=0u,lx,e,row,ly;
+    uint8_t line_mask=0u,lx,e,row,ly,all_collinear=1u;
 
     /* Multiple visibility transitions can quantize into one 8px tile. Never
      * invent a pixel ownership order if their streamed left->right chain does
@@ -355,8 +357,10 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
          * owner across that sub-range: its plane is bit-identical to the right
          * owner's plane, so this also avoids a redundant fill_top/depth-bank
          * evaluation and can make the entire mixed tile disappear. */
-        if(!collinear)
+        if(!collinear){
+            all_collinear=0u;
             for(lx=split;lx<8u;++lx)s_owner[lx]=ro;
+        }
 #if TSPF_PROFILE_HOOKS
         else ++g_tspf_mixed_collinear_collapsed;
 #endif
@@ -370,6 +374,15 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
         else if(physical && connected) ++g_tspf_mixed_connected_elided;
 #endif
     }
+
+#if TSPF_MIX_ELIDE_CONNECTED
+    /* If every event in this hardware tile is merely a collinear segment
+     * handoff, there is literally no pixel-level geometry left to synthesize:
+     * same plane, same FULL material, no internal crease. The ordinary coarse
+     * kernel already draws the correct edge/fill vocabulary. Return success
+     * without a dynamic pattern; prepare() still removes endpoint borders. */
+    if(all_collinear)return 4u;
+#endif
 
     /* Wall/void needs a horizon-aware asymmetric bottom half. Keep that rare
      * case on the normal renderer until that direct kernel is added. */
@@ -451,6 +464,7 @@ void tsp_polar_mixed_reset(void) BANKED{
 #if TSPF_PROFILE_HOOKS
     g_tspf_mixed_connected_elided=0u;
     g_tspf_mixed_collinear_collapsed=0u;
+    g_tspf_mixed_collinear_tile_noops=0u;
     g_tspf_mixed_silhouette_lines=0u;
 #endif
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
@@ -480,6 +494,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
 #if TSPF_PROFILE_HOOKS
     g_tspf_mixed_connected_elided=0u;
     g_tspf_mixed_collinear_collapsed=0u;
+    g_tspf_mixed_collinear_tile_noops=0u;
     g_tspf_mixed_silhouette_lines=0u;
 #endif
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
@@ -539,15 +554,18 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
               (uint8_t)(g_tspf_mixed_event_x[(uint8_t)(last+1u)]>>3)==col)++last;
 
         result=build_tile(first,last,col,s);
-        if(result==1u){
+        if(result==1u || result==4u){
             uint8_t e;
-            for(k=p0;k<s_patch_count;++k){
+            if(result==1u)for(k=p0;k<s_patch_count;++k){
                 uint8_t pos=s_patch_pos[k];
                 uint8_t row=(uint8_t)(pos/20u);
                 uint8_t pc=(uint8_t)(pos-(uint8_t)(row*20u));
                 mark_skip(row,pc);
                 mark_skip((uint8_t)(17u-row),pc);
             }
+#if TSPF_PROFILE_HOOKS
+            if(result==4u)++g_tspf_mixed_collinear_tile_noops;
+#endif
             /* Remove only the exact participating endpoint(s). A coarse-X
              * mask is unsafe in crowded cells: a different physical endpoint
              * may legitimately live on that same 8px edge. The packed owner
