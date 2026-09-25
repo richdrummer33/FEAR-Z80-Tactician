@@ -1277,8 +1277,16 @@ static void envelope_join_connected(uint8_t li,uint8_t ri,int8_t dx)
             r->inv0=half;    r->depth_plane|=1u; /* canonical left endpoint */
         }
 #endif
-        /* Preserve the existing single visible vertical seam on the right run. */
+#if TSPF_DIRECT_MIXED
+        /* The shared connected corner is represented by the two exact-X
+         * horizontal edge slices. Do not leave either old snapped tile-edge
+         * border behind in otherwise-solid rows of the boundary cell. */
         l->right_real=0u;
+        r->left_real=0u;
+#else
+        /* Legacy coarse representation keeps one visible snapped seam. */
+        l->right_real=0u;
+#endif
     }
 }
 #endif
