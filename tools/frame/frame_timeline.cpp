@@ -567,6 +567,17 @@ int main(int argc, char** argv) {
         std::printf("  %-17s %10.0f %10.0f %10.0f %10.0f  %5.2f%%\n", GNAME[g], m,
                     pct(v, .50), pct(v, .95), pct(v, 1.0), 100.0 * m / mean);
     }
+    if (have_env_phase) {
+        std::printf("\n  envelope phase     %10s %10s %10s %10s   share\n", "mean", "p50", "p95", "worst");
+        for (unsigned e=1;e<ENV_PHASE_COUNT;++e) {
+            std::vector<uint64_t> v; double m=0.0;
+            for (const auto& f:frames) { v.push_back(f.envph[e]); m+=(double)f.envph[e]; }
+            m/=v.size();
+            if (m < 1.0) continue;
+            std::printf("  %-17s %10.0f %10.0f %10.0f %10.0f  %5.2f%%\n",
+                        ENV_PHASE_NAME[e],m,pct(v,.50),pct(v,.95),pct(v,1.0),100.0*m/mean);
+        }
+    }
     {
         std::vector<size_t> idx;
         for (size_t i = 0; i < ranges.size(); ++i)

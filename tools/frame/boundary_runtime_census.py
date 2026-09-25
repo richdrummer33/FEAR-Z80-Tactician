@@ -44,7 +44,7 @@ def main():
                 "right":int(r["right"]) & 31,
             })
 
-    exact_total=matched=missing=extra=owner_mismatch=same_owner=0
+    exact_total=matched=missing=extra=owner_mismatch=owner_reversed=same_owner=0
     xerr=[]
     phase_err=[]
     crowded_exact=crowded_runtime=0
@@ -82,22 +82,30 @@ def main():
             for j,r in enumerate(rt):
                 if j in used:
                     continue
-                owner_ok=(r["left"]==e["left"] and r["right"]==e["right"])
-                # Shared authored corners have an unambiguous vertex ID; a
-                # one-sided silhouette/occlusion handoff does not, so match it
-                # by owner ordering and X instead of calling it an "extra".
-                vid_bad=(e["vid"] is not None and r["vid"]!=e["vid"])
-                candidates.append((0 if owner_ok else 1,0 if not vid_bad else 1,
+                ordered=(r["left"]==e["left"] and r["right"]==e["right"])
+                reversed_pair=(r["left"]==e["right"] and r["right"]==e["left"])
+                if e["vid"] is not None:
+                    # Shared physical corner: vertex identity is authoritative.
+                    # Keep bad owner ordering visible as a diagnostic rather
+                    # than matching this corner to some unrelated nearby event.
+                    if r["vid"]!=e["vid"]:
+                        continue
+                else:
+                    # Occlusion/silhouette handoff has no shared authored
+                    # vertex. Its owner pair plus X is the stable identity.
+                    if not (ordered or reversed_pair):
+                        continue
+                candidates.append((0 if ordered else (1 if reversed_pair else 2),
                                    abs(r["x"]-e["x"]),j,r))
-            
             if not candidates:
                 missing+=1
                 continue
-            bad,vbad,dx,j,r=min(candidates)
+            order_kind,dx,j,r=min(candidates)
             used.add(j)
             matched+=1
             fm+=1
-            owner_mismatch+=bad
+            owner_reversed+=int(order_kind==1)
+            owner_mismatch+=int(order_kind==2)
             xerr.append(dx)
             # Distance to the exact event's sub-tile phase is the quantity that
             # would turn a smooth 1px handoff back into an 8px ownership snap.
@@ -110,7 +118,8 @@ def main():
     print(f"BOUNDARY_RUNTIME_CENSUS label={a.label} frames={len(frames)}")
     print(f"events exact={exact_total} matched={matched} missing={missing} extra={extra} "
           f"recall={(100.0*matched/exact_total if exact_total else 100.0):.2f}% "
-          f"owner_mismatch={owner_mismatch} same_owner_runtime={same_owner}")
+          f"owner_reversed={owner_reversed} owner_mismatch={owner_mismatch} "
+          f"same_owner_runtime={same_owner}")
     if xerr:
         print(f"x_abs_error n={len(xerr)} mean={statistics.fmean(xerr):.3f}px "
               f"p50={pct(xerr,.50):.3f}px p95={pct(xerr,.95):.3f}px max={max(xerr):.3f}px")
@@ -119,7 +128,7 @@ def main():
     print(f"frame_recall mean={statistics.fmean(per_frame_recall):.2f}% "
           f"p05={pct(per_frame_recall,.05):.2f}%")
     print(f"crowded_tiles_3plus exact={crowded_exact} runtime={crowded_runtime}")
-    for rec in sorted(worst,reverse=True)[:12]:
+    for rec in sorted(worst,key=lambda r:r[0],reverse=True)[:12]:
         dx,fi,vid,ex,rx,el,er,rl,rr=rec
         print(f"XOFFENDER frame={fi} vid={vid} err={dx:.3f}px exact_x={ex:.3f} runtime_x={rx} "
               f"exact={el}->{er} runtime={rl}->{rr}")
