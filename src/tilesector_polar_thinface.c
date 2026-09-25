@@ -646,6 +646,12 @@ static uint8_t s_patch_pos[TSP_BC_PATCH_MAX];
 static uint16_t s_patch_word[TSP_BC_PATCH_MAX];
 static uint8_t s_patch_count;
 static uint8_t s_work[16];
+/* Static bank-local scratch avoids rebuilding small automatic arrays on the
+ * Z80 stack for every mixed boundary tile. This pass is non-reentrant. */
+static uint8_t s_bc_owner[8];
+static int8_t s_bc_top[8];
+static uint8_t s_bc_hit[8];
+static uint8_t s_bc_line_start[8];
 /* Only columns that actually received dynamic words need forced coarse
  * restoration next update. Candidate/crowded columns are allowed to remain on
  * the normal retained coarse path. */
@@ -852,10 +858,9 @@ static void bc_own_cell(uint8_t row,uint8_t col)
 static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
                              const TSPState *s)
 {
-    uint8_t owner[8],line_mask=0u,lx,e,row,ly;
-    int8_t top[8];
+    uint8_t line_mask=0u,lx,e,row,ly;
 
-    for(lx=0u;lx<8u;++lx) owner[lx]=g_tspf_seam_vid[first];
+    for(lx=0u;lx<8u;++lx) s_bc_owner[lx]=g_tspf_seam_vid[first];
 
     for(e=first;e<=last;++e){
         uint8_t split=(uint8_t)(g_tspf_seam_x[e]&7u);
@@ -864,7 +869,7 @@ static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
         uint8_t physical=(uint8_t)((lo!=0xffu && (lo&0x40u)) ||
                                    (ro!=0xffu && (ro&0x20u)));
         if(!split) continue;
-        for(lx=split;lx<8u;++lx) owner[lx]=ro;
+        for(lx=split;lx<8u;++lx) s_bc_owner[lx]=ro;
         if(physical && !connected) line_mask|=(uint8_t)(1u<<split);
     }
 
@@ -873,22 +878,25 @@ static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
      * needs a special row-9 horizon composite rather than blindly VFLIPing row
      * 8, so leave it on the proven coarse fallback for now. */
     for(lx=0u;lx<8u;++lx)
-        if(owner[lx]==0xffu) return 1u;
+        if(s_bc_owner[lx]==0xffu) return 1u;
 
     lx=0u;
     while(lx<8u){
         uint8_t x1=lx;
-        while(x1<7u && owner[(uint8_t)(x1+1u)]==owner[lx]) ++x1;
-        bc_fill_top(owner[lx],col,s,lx,x1,top);
+        while(x1<7u && s_bc_owner[(uint8_t)(x1+1u)]==s_bc_owner[lx]) ++x1;
+        bc_fill_top(s_bc_owner[lx],col,s,lx,x1,s_bc_top);
         lx=(uint8_t)(x1+1u);
     }
 
     for(row=0u;row<9u;++row){
-        uint8_t hit[8]={0u,0u,0u,0u,0u,0u,0u,0u};
-        uint8_t line_start[8]={0u,0u,0u,0u,0u,0u,0u,0u};
         uint8_t outm=0u,wallm=0u,active=0u;
         uint8_t all_out=1u,all_wall=1u,flip,index;
         int16_t y0=(int16_t)((uint16_t)row<<3);
+
+        for(ly=0u;ly<8u;++ly){
+            s_bc_hit[ly]=0u;
+            s_bc_line_start[ly]=0u;
+        }
 
         /* Build the complete 8-scanline tile from eight top-edge events rather
          * than re-classifying all 64 pixels (then classifying them AGAIN into
@@ -896,11 +904,11 @@ static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
          * wall as Y advances. */
         for(lx=0u;lx<8u;++lx){
             uint8_t bit=(uint8_t)(0x80u>>lx);
-            int16_t ty=(int16_t)top[lx];
+            int16_t ty=(int16_t)s_bc_top[lx];
             if(ty>y0) outm|=bit;
             else if(ty<y0) wallm|=bit;
             if(ty>=y0 && ty<(int16_t)(y0+8))
-                hit[(uint8_t)(ty-y0)]|=bit;
+                s_bc_hit[(uint8_t)(ty-y0)]|=bit;
         }
 
         /* External silhouettes are equally simple: each vertical line becomes
@@ -909,19 +917,19 @@ static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
         for(e=first;e<=last;++e){
             uint8_t split=(uint8_t)(g_tspf_seam_x[e]&7u);
             if(split && (line_mask&(uint8_t)(1u<<split))){
-                int16_t a=(int16_t)top[(uint8_t)(split-1u)];
-                int16_t b=(int16_t)top[split];
+                int16_t a=(int16_t)s_bc_top[(uint8_t)(split-1u)];
+                int16_t b=(int16_t)s_bc_top[split];
                 int16_t sy=(int16_t)((a<b?a:b)+1);
                 uint8_t bit=(uint8_t)(0x80u>>split);
                 if(sy<=y0) active|=bit;
                 else if(sy<(int16_t)(y0+8))
-                    line_start[(uint8_t)(sy-y0)]|=bit;
+                    s_bc_line_start[(uint8_t)(sy-y0)]|=bit;
             }
         }
 
         for(ly=0u;ly<8u;++ly){
             uint8_t o,w,kill;
-            active|=line_start[ly];
+            active|=s_bc_line_start[ly];
             kill=(uint8_t)~active;
             o=(uint8_t)(outm&kill);
             w=(uint8_t)(wallm&kill);
@@ -933,8 +941,8 @@ static uint8_t bc_build_tile(uint8_t first,uint8_t last,uint8_t col,
             /* Advance one scanline: today's black top-edge pixels become wall;
              * pixels whose top lies on the NEXT scanline leave OUT and become
              * black there. */
-            wallm|=hit[ly];
-            if(ly<7u) outm&=(uint8_t)~hit[(uint8_t)(ly+1u)];
+            wallm|=s_bc_hit[ly];
+            if(ly<7u) outm&=(uint8_t)~s_bc_hit[(uint8_t)(ly+1u)];
         }
 
         /* Retained/coarse material is already a correct substrate. Only a cell
