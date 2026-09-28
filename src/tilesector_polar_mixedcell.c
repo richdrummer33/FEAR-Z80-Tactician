@@ -401,7 +401,8 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
 
     {
         int16_t min_top=(int16_t)s_top[0],max_top=(int16_t)s_top[0];
-        uint8_t line_active=0u;
+        uint8_t line_active=0u,fastline_valid=0u;
+        uint16_t fastline_word=0u;
         for(lx=1u;lx<8u;++lx){
             int16_t ty=(int16_t)s_top[lx];
             if(ty<min_top)min_top=ty;
@@ -449,21 +450,25 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
              * that 16-byte tile directly instead of rediscovering it with
              * 8x8 threshold/update loops. */
             if(active && !line_starts && max_top<y0){
-                uint8_t wall=(uint8_t)~active;
-                for(ly=0u;ly<8u;++ly){
-                    s_work[(uint8_t)(ly+ly)]=0u;
-                    s_work[(uint8_t)(ly+ly+1u)]=wall;
-                }
 #if TSPF_PROFILE_HOOKS
                 ++g_tspf_mixed_rows_fastline;
 #endif
-                index=pattern_index(&flip);
-                if(index==0xffu)return 0u;
-                {
-                    uint16_t word=(uint16_t)(g_tspf_mixed_pattern_base+index);
-                    if(flip)word|=TSP_ATTR_FLIPX;
-                    if(!add_patch(row,col,word))return 0u;
+                /* Every later top-half row has the identical pure-wall +
+                 * already-active silhouette pattern. Hash/canonicalize it once
+                 * per hardware tile, then reuse the final name-table word. */
+                if(!fastline_valid){
+                    uint8_t wall=(uint8_t)~active;
+                    for(ly=0u;ly<8u;++ly){
+                        s_work[(uint8_t)(ly+ly)]=0u;
+                        s_work[(uint8_t)(ly+ly+1u)]=wall;
+                    }
+                    index=pattern_index(&flip);
+                    if(index==0xffu)return 0u;
+                    fastline_word=(uint16_t)(g_tspf_mixed_pattern_base+index);
+                    if(flip)fastline_word|=TSP_ATTR_FLIPX;
+                    fastline_valid=1u;
                 }
+                if(!add_patch(row,col,fastline_word))return 0u;
                 line_active=active;
                 continue;
             }
