@@ -77,6 +77,9 @@ volatile uint8_t g_tspf_mixed_connected_elided;
 volatile uint8_t g_tspf_mixed_collinear_collapsed;
 volatile uint8_t g_tspf_mixed_collinear_tile_noops;
 volatile uint8_t g_tspf_mixed_silhouette_lines;
+volatile uint8_t g_tspf_mixed_rows_generic;
+volatile uint8_t g_tspf_mixed_rows_fastline;
+volatile uint8_t g_tspf_mixed_rows_skipped;
 #endif
 
 static uint8_t s_pattern_hash[TSP_MIX_SLOTS];
@@ -396,53 +399,109 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
         lx=(uint8_t)(x1+1u);
     }
 
-    for(row=0u;row<9u;++row){
-        uint8_t outm=0u,wallm=0u,active=0u,all_out=1u,all_wall=1u,flip,index;
-        int16_t y0=(int16_t)((uint16_t)row<<3);
-        for(ly=0u;ly<8u;++ly)s_hit[ly]=0u;
-        if(line_mask)for(ly=0u;ly<8u;++ly)s_line_start[ly]=0u;
-        for(lx=0u;lx<8u;++lx){
-            uint8_t bit=(uint8_t)(0x80u>>lx);
+    {
+        int16_t min_top=(int16_t)s_top[0],max_top=(int16_t)s_top[0];
+        uint8_t line_active=0u;
+        for(lx=1u;lx<8u;++lx){
             int16_t ty=(int16_t)s_top[lx];
-            if(ty>y0)outm|=bit;
-            else if(ty<y0)wallm|=bit;
-            if(ty>=y0 && ty<(int16_t)(y0+8))s_hit[(uint8_t)(ty-y0)]|=bit;
+            if(ty<min_top)min_top=ty;
+            if(ty>max_top)max_top=ty;
         }
-        if(line_mask)for(e=first;e<=last;++e){
-            uint8_t split=(uint8_t)(g_tspf_mixed_event_x[e]&7u);
-            if(split && (line_mask&(uint8_t)(1u<<split))){
-                int16_t a=(int16_t)s_top[(uint8_t)(split-1u)];
-                int16_t b=(int16_t)s_top[split];
-                /* The vertical crease owns the boundary pixel itself.
-                 * Starting one row below min(topA,topB) leaves a one-pixel
-                 * pinhole whenever the nearer face's horizontal edge ends at
-                 * split-1. Overlap with an equal-height top edge is harmless. */
-                int16_t sy=(int16_t)(a<b?a:b);
-                uint8_t bit=(uint8_t)(0x80u>>split);
-                if(sy<=y0)active|=bit;
-                else if(sy<(int16_t)(y0+8))s_line_start[(uint8_t)(sy-y0)]|=bit;
+
+        for(row=0u;row<9u;++row){
+            uint8_t outm=0u,wallm=0u,active=line_active,all_out=1u,all_wall=1u;
+            uint8_t flip,index,line_starts=0u;
+            int16_t y0=(int16_t)((uint16_t)row<<3);
+
+            /* Resolve vertical-line starts first. This lets the overwhelmingly
+             * common pure ceiling/floor/full-wall rows bypass the 8-pixel
+             * threshold scan entirely. */
+            if(line_mask){
+                for(ly=0u;ly<8u;++ly)s_line_start[ly]=0u;
+                for(e=first;e<=last;++e){
+                    uint8_t split=(uint8_t)(g_tspf_mixed_event_x[e]&7u);
+                    if(split && (line_mask&(uint8_t)(1u<<split))){
+                        int16_t a=(int16_t)s_top[(uint8_t)(split-1u)];
+                        int16_t b=(int16_t)s_top[split];
+                        int16_t sy=(int16_t)(a<b?a:b);
+                        uint8_t bit=(uint8_t)(0x80u>>split);
+                        if(sy<=y0)active|=bit;
+                        else if(sy<(int16_t)(y0+8)){
+                            s_line_start[(uint8_t)(sy-y0)]|=bit;
+                            line_starts=1u;
+                        }
+                    }
+                }
             }
-        }
-        for(ly=0u;ly<8u;++ly){
-            uint8_t o,w,kill;
-            active|=s_line_start[ly];
-            kill=(uint8_t)~active;
-            o=(uint8_t)(outm&kill);
-            w=(uint8_t)(wallm&kill);
-            s_work[(uint8_t)(ly+ly)]=o;
-            s_work[(uint8_t)(ly+ly+1u)]=w;
-            if(o!=0xffu)all_out=0u;
-            if(w!=0xffu)all_wall=0u;
-            wallm|=s_hit[ly];
-            if(ly<7u)outm&=(uint8_t)~s_hit[(uint8_t)(ly+1u)];
-        }
-        if(all_out || all_wall)continue;
-        index=pattern_index(&flip);
-        if(index==0xffu)return 0u;
-        {
-            uint16_t word=(uint16_t)(g_tspf_mixed_pattern_base+index);
-            if(flip)word|=TSP_ATTR_FLIPX;
-            if(!add_patch(row,col,word))return 0u;
+
+            /* No top edge enters this tile row and no vertical line is visible:
+             * it is provably one of the existing pure OUT/WALL tiles. */
+            if(!active && !line_starts &&
+               (min_top>=(int16_t)(y0+8) || max_top<y0)){
+#if TSPF_PROFILE_HOOKS
+                ++g_tspf_mixed_rows_skipped;
+#endif
+                continue;
+            }
+
+            /* Below every wall top, an already-active silhouette is just the
+             * same black column repeated for all eight scanlines. Construct
+             * that 16-byte tile directly instead of rediscovering it with
+             * 8x8 threshold/update loops. */
+            if(active && !line_starts && max_top<y0){
+                uint8_t wall=(uint8_t)~active;
+                for(ly=0u;ly<8u;++ly){
+                    s_work[(uint8_t)(ly+ly)]=0u;
+                    s_work[(uint8_t)(ly+ly+1u)]=wall;
+                }
+#if TSPF_PROFILE_HOOKS
+                ++g_tspf_mixed_rows_fastline;
+#endif
+                index=pattern_index(&flip);
+                if(index==0xffu)return 0u;
+                {
+                    uint16_t word=(uint16_t)(g_tspf_mixed_pattern_base+index);
+                    if(flip)word|=TSP_ATTR_FLIPX;
+                    if(!add_patch(row,col,word))return 0u;
+                }
+                line_active=active;
+                continue;
+            }
+
+#if TSPF_PROFILE_HOOKS
+            ++g_tspf_mixed_rows_generic;
+#endif
+            for(ly=0u;ly<8u;++ly)s_hit[ly]=0u;
+            for(lx=0u;lx<8u;++lx){
+                uint8_t bit=(uint8_t)(0x80u>>lx);
+                int16_t ty=(int16_t)s_top[lx];
+                if(ty>y0)outm|=bit;
+                else if(ty<y0)wallm|=bit;
+                if(ty>=y0 && ty<(int16_t)(y0+8))
+                    s_hit[(uint8_t)(ty-y0)]|=bit;
+            }
+            for(ly=0u;ly<8u;++ly){
+                uint8_t o,w,kill;
+                if(line_mask)active|=s_line_start[ly];
+                kill=(uint8_t)~active;
+                o=(uint8_t)(outm&kill);
+                w=(uint8_t)(wallm&kill);
+                s_work[(uint8_t)(ly+ly)]=o;
+                s_work[(uint8_t)(ly+ly+1u)]=w;
+                if(o!=0xffu)all_out=0u;
+                if(w!=0xffu)all_wall=0u;
+                wallm|=s_hit[ly];
+                if(ly<7u)outm&=(uint8_t)~s_hit[(uint8_t)(ly+1u)];
+            }
+            line_active=active;
+            if(all_out || all_wall)continue;
+            index=pattern_index(&flip);
+            if(index==0xffu)return 0u;
+            {
+                uint16_t word=(uint16_t)(g_tspf_mixed_pattern_base+index);
+                if(flip)word|=TSP_ATTR_FLIPX;
+                if(!add_patch(row,col,word))return 0u;
+            }
         }
     }
     return 1u;
@@ -466,6 +525,9 @@ void tsp_polar_mixed_reset(void) BANKED{
     g_tspf_mixed_collinear_collapsed=0u;
     g_tspf_mixed_collinear_tile_noops=0u;
     g_tspf_mixed_silhouette_lines=0u;
+    g_tspf_mixed_rows_generic=0u;
+    g_tspf_mixed_rows_fastline=0u;
+    g_tspf_mixed_rows_skipped=0u;
 #endif
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
     s_hold_previous=0u;
@@ -496,6 +558,9 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_collinear_collapsed=0u;
     g_tspf_mixed_collinear_tile_noops=0u;
     g_tspf_mixed_silhouette_lines=0u;
+    g_tspf_mixed_rows_generic=0u;
+    g_tspf_mixed_rows_fastline=0u;
+    g_tspf_mixed_rows_skipped=0u;
 #endif
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
     s_hold_previous=publication_pending();
