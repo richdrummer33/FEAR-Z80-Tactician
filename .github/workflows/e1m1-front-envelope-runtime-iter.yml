@@ -185,6 +185,29 @@ jobs:
           cp build/gg-tilesector-polar.sym "$ROOT/focused.sym"
           cp build/gg-tilesector-polar.map "$ROOT/focused.map"
 
+      - name: Build same-source direct-mixed OFF control
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          ENVOBJS="$(cat "$ROOT/env-objs.txt")"
+          # frame_trace.c is still the exact same cruise trace used by focused.
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_mixedcell_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
+            POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DIRECT_MIXED=0 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar 2>&1 | tee "$ROOT/direct-off-build.txt"
+          cp build/gg-tilesector-polar.gg "$ROOT/direct-off.gg"
+          cp build/gg-tilesector-polar.noi "$ROOT/direct-off.noi"
+          cp build/gg-tilesector-polar.sym "$ROOT/direct-off.sym"
+          cp build/gg-tilesector-polar.map "$ROOT/direct-off.map"
+
       - name: Measure PVS baseline and focused envelope
         shell: bash
         run: |
@@ -192,6 +215,8 @@ jobs:
           ROOT=build/e1env-iter
           ./build/frame_timeline "$ROOT/pvs.gg" "$ROOT/pvs.noi" "$ROOT/pvs.csv" 180 8 "$ROOT/pvs-map.bin" \
             | tee "$ROOT/pvs-timeline.txt"
+          ./build/frame_timeline "$ROOT/direct-off.gg" "$ROOT/direct-off.noi" "$ROOT/direct-off.csv" 180 8 "$ROOT/direct-off-map.bin" \
+            | tee "$ROOT/direct-off-timeline.txt"
           ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 "$ROOT/focused-map.bin" \
             | tee "$ROOT/focused-timeline.txt"
 
@@ -213,7 +238,8 @@ jobs:
           root=Path("build/e1env-iter")
           a=list(csv.DictReader((root/"pvs.csv").open()))
           b=list(csv.DictReader((root/"focused.csv").open()))
-          n=min(len(a),len(b))
+          c=list(csv.DictReader((root/"direct-off.csv").open()))
+          n=min(len(a),len(b),len(c))
           def vals(rows,k): return [int(r[k]) for r in rows[:n]]
           def mean(x): return statistics.fmean(x)
           def pct(x,p):
@@ -222,8 +248,8 @@ jobs:
           state_same=sum(state(x)==state(y) for x,y in zip(a[:n],b[:n]))
           map_same=sum(x["map_fnv64"]==y["map_fnv64"] for x,y in zip(a[:n],b[:n]))
           bad=[i for i,(x,y) in enumerate(zip(a[:n],b[:n])) if x["map_fnv64"]!=y["map_fnv64"]]
-          at,bt=vals(a,"total"),vals(b,"total")
-          ar,br=vals(a,"render"),vals(b,"render")
+          at,bt,ct=vals(a,"total"),vals(b,"total"),vals(c,"total")
+          ar,br,cr=vals(a,"render"),vals(b,"render"),vals(c,"render")
           clock=3579545.0
           print("E1ENV_FOCUS_AB")
           print(f"updates={n} state_equal={state_same}/{n} map_equal={map_same}/{n} mismatches={n-map_same}")
@@ -335,11 +361,17 @@ jobs:
           if bank_bytes is not None:
               print(f"RENDERER_BANK_BYTES used={bank_bytes} headroom={16384-bank_bytes}")
           print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
+          print(f"DIRECT_OFF total mean={mean(ct):.0f} p50={pct(ct,.5)} p95={pct(ct,.95)} fps={clock/mean(ct):.2f}")
           print(f"FOCUS total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
+          print(f"DIRECT_MIXED_OVERHEAD total_mean={mean(bt)-mean(ct):+.0f}T "
+                f"({100*(mean(bt)/mean(ct)-1):+.1f}%) p95_delta={pct(bt,.95)-pct(ct,.95):+.0f}T")
+          print(f"DIRECT_MIXED_OVERHEAD render_mean={mean(br)-mean(cr):+.0f}T "
+                f"({100*(mean(br)/mean(cr)-1):+.1f}%)")
           p95b=pct(bt,.95); worstb=max(bt); budget10=clock/10.0
           print(f"FOCUS_10FPS_MARGIN p95={budget10-p95b:+.0f}T worst={budget10-worstb:+.0f}T budget={budget10:.0f}T")
           print(f"delta total={mean(bt)-mean(at):+.0f} ({100*(mean(bt)/mean(at)-1):+.1f}%)")
           print(f"PVS render mean={mean(ar):.0f} p95={pct(ar,.95)}")
+          print(f"DIRECT_OFF render mean={mean(cr):.0f} p95={pct(cr,.95)}")
           print(f"FOCUS render mean={mean(br):.0f} p95={pct(br,.95)}")
           print(f"delta render={mean(br)-mean(ar):+.0f} ({100*(mean(br)/mean(ar)-1):+.1f}%)")
           for k in ("projection/setup","geometry walk","materializer","retained gate","boundary patch","nametable/VRAM","arith helpers","other render",
