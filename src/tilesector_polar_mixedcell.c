@@ -151,7 +151,7 @@ static uint16_t static_line_word(uint8_t active){
     if(active==0x04u)return (uint16_t)(TSP_MIX_LINE_BASE+1u)|TSP_ATTR_FLIPX;
     if(active==0x10u)return (uint16_t)(TSP_MIX_LINE_BASE+2u);
     if(active==0x08u)return (uint16_t)(TSP_MIX_LINE_BASE+2u)|TSP_ATTR_FLIPX;
-    if(active==0x01u)return (uint16_t)(TSP_TILE_FULL_COMPACT_BASE+2u);
+    if(active==0x01u)return (uint16_t)(TSP_TILE_FULL_BASE+2u);
     return 0xffffu; /* multiple simultaneous silhouette columns */
 }
 static void clear_skip_bits(void){
