@@ -128,6 +128,34 @@ typedef struct TSPColumn {
     int8_t bottom_step;
 } TSPColumn;
 
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+/* Native exact-envelope span geometry. DIRECT_MIXED consumes this exact same
+ * solved run state: the critical cell changes ownership at true X, but each
+ * side's Y plane must agree with the coarse run at the hardware-cell edges. */
+typedef struct TSPPolarRun {
+    uint8_t sid;
+    uint8_t v0;
+    uint8_t v1;
+    uint8_t x0;
+    uint8_t x1;
+    uint8_t inv0;
+    uint8_t inv1;
+    uint8_t inv_mid;
+    uint8_t left_real;
+    uint8_t right_real;
+    uint8_t c0;
+    uint8_t c1;
+    uint8_t depth_plane;
+    uint8_t right_connected;
+    int16_t iq;
+    int16_t step;
+} TSPPolarRun;
+#if TSPF_DIRECT_MIXED
+extern TSPPolarRun g_tspf_runs[];
+extern uint8_t g_tspf_mixed_run_count;
+#endif
+#endif
+
 extern volatile uint8_t g_tspf_stage;
 extern volatile uint8_t g_tspf_active_runs;
 extern volatile uint8_t g_tspf_selector_tests;

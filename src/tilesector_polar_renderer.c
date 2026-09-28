@@ -174,6 +174,9 @@ static const uint8_t k_col_recip_q8[21] = {
     0, 255, 128, 85, 64, 51, 43, 36, 32, 28, 26, 23, 21, 20, 18, 17, 16, 15, 14, 13, 13};
 #endif
 
+#if defined(TSPF_E1M1_FRONT_ENVELOPE)
+typedef TSPPolarRun PolarRun;
+#else
 typedef struct PolarRun
 {
     uint8_t sid;
@@ -189,14 +192,17 @@ typedef struct PolarRun
     uint8_t c0;
     uint8_t c1;
     uint8_t depth_plane;
-#if defined(TSPF_E1M1_FRONT_ENVELOPE)
-    uint8_t right_connected;
-#endif
     int16_t iq;
     int16_t step;
 } PolarRun;
+#endif
 
+#if TSPF_DIRECT_MIXED && defined(TSPF_E1M1_FRONT_ENVELOPE)
+TSPPolarRun g_tspf_runs[TSPF_MAX_ACTIVE];
+#define g_runs g_tspf_runs
+#else
 static PolarRun g_runs[TSPF_MAX_ACTIVE];
+#endif
 static uint8_t g_run_order[TSPF_MAX_ACTIVE];
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 static uint8_t g_e1env_program[E1ENV_MAX_PROGRAM_BYTES];
@@ -1829,6 +1835,7 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #if defined(TSPF_E1M1_FRONT_ENVELOPE)
 e1full_candidates_ready:
 #if defined(__SDCC) && TSPF_DIRECT_MIXED
+    g_tspf_mixed_run_count=count;
     TSPF_ENV_PHASE(7u);
     tsp_polar_mixed_prepare(s);
 #endif

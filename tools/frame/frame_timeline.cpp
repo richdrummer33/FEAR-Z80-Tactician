@@ -183,6 +183,7 @@ int main(int argc, char** argv) {
     u16 s_mix_fallback=0, s_mix_chain=0, s_mix_unsupported=0, s_mix_any=0;
     u16 s_mix_elided=0, s_mix_collinear=0, s_mix_collinear_noop=0, s_mix_silhouette=0;
     u16 s_mix_rows_generic=0, s_mix_rows_fastline=0, s_mix_rows_skipped=0;
+    u16 s_mix_run_hits=0, s_mix_run_fallbacks=0;
     u16 s_mix_pending=0, s_mix_events=0, s_mix_overflow=0;
     u16 s_mix_x=0, s_mix_left=0, s_mix_right=0;
     const bool have_state = find_symbol(noi, "_g_state", s_state) || find_symbol(noi, "g_state", s_state);
@@ -212,6 +213,8 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_tspf_mixed_rows_generic", s_mix_rows_generic) || find_symbol(noi, "g_tspf_mixed_rows_generic", s_mix_rows_generic)) &&
         (find_symbol(noi, "_g_tspf_mixed_rows_fastline", s_mix_rows_fastline) || find_symbol(noi, "g_tspf_mixed_rows_fastline", s_mix_rows_fastline)) &&
         (find_symbol(noi, "_g_tspf_mixed_rows_skipped", s_mix_rows_skipped) || find_symbol(noi, "g_tspf_mixed_rows_skipped", s_mix_rows_skipped)) &&
+        (find_symbol(noi, "_g_tspf_mixed_run_geom_hits", s_mix_run_hits) || find_symbol(noi, "g_tspf_mixed_run_geom_hits", s_mix_run_hits)) &&
+        (find_symbol(noi, "_g_tspf_mixed_run_geom_fallbacks", s_mix_run_fallbacks) || find_symbol(noi, "g_tspf_mixed_run_geom_fallbacks", s_mix_run_fallbacks)) &&
         (find_symbol(noi, "_g_tspf_mixed_any", s_mix_any) || find_symbol(noi, "g_tspf_mixed_any", s_mix_any)) &&
         (find_symbol(noi, "_g_tspf_mixed_patterns_pending", s_mix_pending) || find_symbol(noi, "g_tspf_mixed_patterns_pending", s_mix_pending)) &&
         (find_symbol(noi, "_g_tspf_mixed_event_count", s_mix_events) || find_symbol(noi, "g_tspf_mixed_event_count", s_mix_events)) &&
@@ -286,6 +289,7 @@ int main(int argc, char** argv) {
         uint8_t mix_patterns,mix_patches,mix_skip,mix_fallback,mix_chain,mix_unsupported;
         uint8_t mix_elided,mix_collinear,mix_collinear_noop,mix_silhouette;
         uint8_t mix_rows_generic,mix_rows_fastline,mix_rows_skipped;
+        uint8_t mix_run_hits,mix_run_fallbacks;
         uint8_t mix_any,mix_pending,mix_events,mix_overflow;
         uint8_t mix_x[32],mix_left[32],mix_right[32];
     };
@@ -389,6 +393,8 @@ int main(int argc, char** argv) {
                     cur.mix_rows_generic=mem->DebugRetrieve(s_mix_rows_generic);
                     cur.mix_rows_fastline=mem->DebugRetrieve(s_mix_rows_fastline);
                     cur.mix_rows_skipped=mem->DebugRetrieve(s_mix_rows_skipped);
+                    cur.mix_run_hits=mem->DebugRetrieve(s_mix_run_hits);
+                    cur.mix_run_fallbacks=mem->DebugRetrieve(s_mix_run_fallbacks);
                     cur.mix_any=mem->DebugRetrieve(s_mix_any);
                     cur.mix_pending=mem->DebugRetrieve(s_mix_pending);
                     cur.mix_events=mem->DebugRetrieve(s_mix_events);
@@ -434,7 +440,7 @@ int main(int argc, char** argv) {
         for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%s", GNAME[g]);
         if (have_env_phase)
             for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%s",ENV_PHASE_NAME[e]);
-        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px,mixed_patterns,mixed_patches,mixed_skip,mixed_fallback,mixed_chain,mixed_unsupported,mixed_connected_elided,mixed_collinear_collapsed,mixed_collinear_tile_noops,mixed_silhouette_lines,mixed_rows_generic,mixed_rows_fastline,mixed_rows_skipped,mixed_any,mixed_pending,mixed_events,mixed_overflow\n");
+        std::fprintf(csv, ",x_q4,y_q4,z_q4,yaw,map_fnv64,dirty_rows_pending,vblank_bursts,vblank_missed,join_anchor_count,join_anchor_max_px,join_anchor_sum_px,mixed_patterns,mixed_patches,mixed_skip,mixed_fallback,mixed_chain,mixed_unsupported,mixed_connected_elided,mixed_collinear_collapsed,mixed_collinear_tile_noops,mixed_silhouette_lines,mixed_rows_generic,mixed_rows_fastline,mixed_rows_skipped,mixed_run_geom_hits,mixed_run_geom_fallbacks,mixed_any,mixed_pending,mixed_events,mixed_overflow\n");
         for (size_t i = 0; i < frames.size(); ++i) {
             const Frame& f = frames[i];
             std::fprintf(csv, "%zu,%llu,%llu,%llu,%llu,%llu", i,
@@ -444,7 +450,7 @@ int main(int argc, char** argv) {
             for (int g = 0; g < G_NGROUP; ++g) std::fprintf(csv, ",%llu", (unsigned long long)f.grp[g]);
             if (have_env_phase)
                 for (unsigned e=1;e<ENV_PHASE_COUNT;++e) std::fprintf(csv,",%llu",(unsigned long long)f.envph[e]);
-            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+            std::fprintf(csv, ",%d,%d,%d,%u,%016llx,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                 (int)f.x_q4, (int)f.y_q4, (int)f.z_q4, (unsigned)f.yaw,
                 (unsigned long long)f.map_fnv64,
                 (unsigned)f.dirty_rows_pending, (unsigned)f.vblank_bursts, (unsigned)f.vblank_missed,
@@ -453,8 +459,8 @@ int main(int argc, char** argv) {
                 (unsigned)f.mix_fallback,(unsigned)f.mix_chain,(unsigned)f.mix_unsupported,
                 (unsigned)f.mix_elided,(unsigned)f.mix_collinear,(unsigned)f.mix_collinear_noop,
                 (unsigned)f.mix_silhouette,(unsigned)f.mix_rows_generic,(unsigned)f.mix_rows_fastline,
-                (unsigned)f.mix_rows_skipped,(unsigned)f.mix_any,
-                (unsigned)f.mix_pending,(unsigned)f.mix_events,(unsigned)f.mix_overflow);
+                (unsigned)f.mix_rows_skipped,(unsigned)f.mix_run_hits,(unsigned)f.mix_run_fallbacks,
+                (unsigned)f.mix_any,(unsigned)f.mix_pending,(unsigned)f.mix_events,(unsigned)f.mix_overflow);
         }
         std::fclose(csv);
     }
@@ -531,6 +537,7 @@ int main(int argc, char** argv) {
         unsigned exact=0u,fallback=0u,chain=0u,unsupported=0u,pending=0u,overflows=0u;
         unsigned elided=0u,collinear=0u,collinear_noop=0u,silhouette=0u;
         unsigned row_generic=0u,row_fastline=0u,row_skipped=0u;
+        unsigned run_hits=0u,run_fallbacks=0u;
         unsigned skip_hist[8]={0};
         double pm=0.0,wm=0.0,em=0.0;
         for(const auto& f:frames){
@@ -541,6 +548,7 @@ int main(int argc, char** argv) {
             elided+=f.mix_elided;collinear+=f.mix_collinear;
             collinear_noop+=f.mix_collinear_noop;silhouette+=f.mix_silhouette;
             row_generic+=f.mix_rows_generic;row_fastline+=f.mix_rows_fastline;row_skipped+=f.mix_rows_skipped;
+            run_hits+=f.mix_run_hits;run_fallbacks+=f.mix_run_fallbacks;
             if(f.mix_pending)++pending;if(f.mix_overflow)++overflows;
             if(f.mix_skip<8u)++skip_hist[f.mix_skip];
         }
@@ -550,11 +558,11 @@ int main(int argc, char** argv) {
                     "local_fallback_tiles=%u chain_fallback_tiles=%u unsupported_tiles=%u "
                     "connected_lines_elided=%u collinear_joins_collapsed=%u collinear_tile_noops=%u "
                     "silhouette_lines=%u rows_generic=%u rows_fastline=%u rows_skipped=%u "
-                    "pending_updates=%.1f%% overflows=%u\n",
+                    "run_geom_hits=%u run_geom_fallbacks=%u pending_updates=%.1f%% overflows=%u\n",
                     100.0*exact/frames.size(),em,pct(events,.95),pct(events,1.0),
                     pm,pct(pats,.95),pct(pats,1.0),wm,pct(patches,.95),pct(patches,1.0),
                     fallback,chain,unsupported,elided,collinear,collinear_noop,silhouette,
-                    row_generic,row_fastline,row_skipped,
+                    row_generic,row_fastline,row_skipped,run_hits,run_fallbacks,
                     100.0*pending/frames.size(),overflows);
         std::printf("direct mixed skips: none=%u eye=%u appearance=%u event_overflow=%u pending=%u bank_reuse=%u publish_hold=%u other=%u\n",
                     skip_hist[0],skip_hist[1],skip_hist[2],skip_hist[3],skip_hist[4],skip_hist[5],

@@ -38,6 +38,7 @@ uint8_t g_tspf_mixed_event_overflow;
 uint8_t g_tspf_mixed_event_x[32];
 uint8_t g_tspf_mixed_event_left[32];
 uint8_t g_tspf_mixed_event_right[32];
+uint8_t g_tspf_mixed_run_count;
 uint8_t g_tspf_mixed_retire_bank0[TSP_ROWS];
 uint8_t g_tspf_mixed_retire_bank1[TSP_ROWS];
 /* Current-generation publication fence. The row uploader clears one byte only
@@ -77,6 +78,8 @@ volatile uint8_t g_tspf_mixed_silhouette_lines;
 volatile uint8_t g_tspf_mixed_rows_generic;
 volatile uint8_t g_tspf_mixed_rows_fastline;
 volatile uint8_t g_tspf_mixed_rows_skipped;
+volatile uint8_t g_tspf_mixed_run_geom_hits;
+volatile uint8_t g_tspf_mixed_run_geom_fallbacks;
 #endif
 
 static uint8_t s_pattern_hash[TSP_MIX_SLOTS_MAX];
@@ -257,20 +260,37 @@ static uint8_t inv_q6(int16_t q){
     if(v>255)return 255u;
     return (uint8_t)v;
 }
-static void fill_top(uint8_t owner,uint8_t col,const TSPState *s,
-                     uint8_t x0,uint8_t x1){
-    uint8_t x,sid,axis,il,ir,mag;
-    int16_t dq4,tl,tr,d;
-    sid=(uint8_t)(owner&31u);
-    axis=k_e1env_depth_axis[sid];
-    dq4=(int16_t)(k_e1env_plane_c[sid]-(axis?s->y_q4:s->x_q4));
-    if(axis==0u)e1env_depth_edges_0(s->yaw,col,col,dq4);
-    else e1env_depth_edges_1(s->yaw,col,col,dq4);
-    il=inv_q6(g_e1env_depth_iq);
-    ir=g_e1env_depth_end_inv;
-    tl=(int16_t)(71-(int16_t)(il>>1));
-    tr=(int16_t)(71-(int16_t)(ir>>1));
-    d=(int16_t)(tr-tl);
+static const TSPPolarRun *find_run_geom(uint8_t sid,uint8_t col){
+    uint8_t i;
+    for(i=0u;i<g_tspf_mixed_run_count;++i){
+        const TSPPolarRun *r=&g_tspf_runs[i];
+        if(r->sid!=sid)continue;
+        /* A true-X handoff can invade only the coarse cell immediately beside
+         * the owner's sampled run. Accept that one-cell extrapolation as well
+         * as cells already inside the run. */
+        if((uint8_t)(col+1u)>=r->c0 && col<=(uint8_t)(r->c1+1u))
+            return r;
+    }
+    return (const TSPPolarRun *)0;
+}
+static int16_t run_q_at_edge(const TSPPolarRun *r,uint8_t edge){
+    int16_t q;
+    uint8_t n;
+    if(edge==r->c0)return r->iq;
+    if(edge==(uint8_t)(r->c1+1u))return (int16_t)((uint16_t)r->inv1<<6);
+    if(edge<r->c0)return (int16_t)(r->iq-r->step); /* only c0-1 is admitted */
+    if(edge>(uint8_t)(r->c1+1u))
+        return (int16_t)(((uint16_t)r->inv1<<6)+r->step); /* only +1 */
+    q=r->iq;
+    n=(uint8_t)(edge-r->c0);
+    while(n--){q=(int16_t)(q+r->step);}
+    return q;
+}
+static void fill_top_from_q(int16_t ql,int16_t qr,uint8_t x0,uint8_t x1){
+    uint8_t x,il=inv_q6(ql),ir=inv_q6(qr),mag;
+    int16_t tl=(int16_t)(71-(int16_t)(il>>1));
+    int16_t tr=(int16_t)(71-(int16_t)(ir>>1));
+    int16_t d=(int16_t)(tr-tl);
     mag=(uint8_t)(d<0?-d:d);
     if(mag>36u)mag=36u;
     if(d>=0){
@@ -278,6 +298,34 @@ static void fill_top(uint8_t owner,uint8_t col,const TSPState *s,
     }else{
         for(x=x0;x<=x1;++x)
             s_top[x]=(int8_t)(tr+(int16_t)k_step[mag][(uint8_t)(7u-x)]);
+    }
+}
+static void fill_top(uint8_t owner,uint8_t col,const TSPState *s,
+                     uint8_t x0,uint8_t x1){
+    uint8_t sid=(uint8_t)(owner&31u);
+    const TSPPolarRun *r=find_run_geom(sid,col);
+    if(r){
+        /* Reuse the SAME Q6 plane the coarse materializer consumes. This is
+         * both cheaper and more correct at the tile edges than independently
+         * re-projecting the wall a second time in bank254. */
+        fill_top_from_q(run_q_at_edge(r,col),run_q_at_edge(r,(uint8_t)(col+1u)),x0,x1);
+#if TSPF_PROFILE_HOOKS
+        ++g_tspf_mixed_run_geom_hits;
+#endif
+        return;
+    }
+    {
+        /* Rare narrow span: it was visible in the baked envelope but owned no
+         * 8px centre sample, so envelope_emit_span intentionally produced no
+         * run geometry. Keep the exact banked evaluator as correctness fallback. */
+        uint8_t axis=k_e1env_depth_axis[sid];
+        int16_t dq4=(int16_t)(k_e1env_plane_c[sid]-(axis?s->y_q4:s->x_q4));
+        if(axis==0u)e1env_depth_edges_0(s->yaw,col,col,dq4);
+        else e1env_depth_edges_1(s->yaw,col,col,dq4);
+        fill_top_from_q(g_e1env_depth_iq,(int16_t)((uint16_t)g_e1env_depth_end_inv<<6),x0,x1);
+#if TSPF_PROFILE_HOOKS
+        ++g_tspf_mixed_run_geom_fallbacks;
+#endif
     }
 }
 static uint8_t pattern_index(uint8_t *flip_out){
@@ -549,6 +597,8 @@ void tsp_polar_mixed_reset(void) BANKED{
     g_tspf_mixed_rows_generic=0u;
     g_tspf_mixed_rows_fastline=0u;
     g_tspf_mixed_rows_skipped=0u;
+    g_tspf_mixed_run_geom_hits=0u;
+    g_tspf_mixed_run_geom_fallbacks=0u;
 #endif
     s_prev_bank=0xffu;s_target_bank=0xffu;s_prepared=0u;s_prev_count=0u;
     s_hold_previous=0u;
@@ -582,6 +632,8 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_rows_generic=0u;
     g_tspf_mixed_rows_fastline=0u;
     g_tspf_mixed_rows_skipped=0u;
+    g_tspf_mixed_run_geom_hits=0u;
+    g_tspf_mixed_run_geom_fallbacks=0u;
 #endif
     s_patch_count=0u;s_target_bank=0xffu;s_prepared=0u;
     s_hold_previous=publication_pending();
@@ -811,6 +863,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
     g_tspf_mixed_any=0u;
     g_tspf_mixed_event_count=0u;
     g_tspf_mixed_event_overflow=0u;
+    g_tspf_mixed_run_count=0u;
     for(i=0u;i<TSP_COLS*3u;++i)g_tspf_mixed_skip[i]=0u;
     g_tspf_mixed_force_any=0u;
     for(i=0u;i<TSP_COLS;++i)g_tspf_mixed_force_col[i]=0u;
