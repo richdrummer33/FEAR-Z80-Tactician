@@ -50,10 +50,7 @@ volatile uint8_t g_tspf_mixed_patterns_pending;
 #include "e1env_depth_edges_bank.h"
 #include "e1env_plane_meta.h"
 
-#define TSP_MIX_SLOTS 18u
 #define TSP_MIX_PATCH_MAX 32u
-#define TSP_MIX_BASE0 412u
-#define TSP_MIX_BASE1 430u
 
 extern uint16_t g_map[TSP_MAP_CELLS];
 extern uint8_t g_polar_nt_cov_cur[TSP_COLS*3u];
@@ -61,7 +58,7 @@ extern uint8_t g_polar_nt_row_min[TSP_ROWS];
 extern uint8_t g_polar_nt_row_max[TSP_ROWS];
 extern volatile uint8_t g_tspf_appearance_mode;
 
-uint8_t g_tspf_mixed_pattern_data[TSP_MIX_SLOTS*16u];
+uint8_t g_tspf_mixed_pattern_data[TSP_MIX_SLOTS_MAX*16u];
 uint16_t g_tspf_mixed_pattern_base;
 uint8_t g_tspf_mixed_pattern_count;
 uint8_t g_tspf_mixed_upload_index;
@@ -82,7 +79,8 @@ volatile uint8_t g_tspf_mixed_rows_fastline;
 volatile uint8_t g_tspf_mixed_rows_skipped;
 #endif
 
-static uint8_t s_pattern_hash[TSP_MIX_SLOTS];
+static uint8_t s_pattern_hash[TSP_MIX_SLOTS_MAX];
+static uint8_t s_slot_limit;
 static uint8_t s_patch_pos[TSP_MIX_PATCH_MAX];
 static uint16_t s_patch_word[TSP_MIX_PATCH_MAX];
 static uint8_t s_patch_count;
@@ -132,6 +130,18 @@ static const uint8_t k_rev4[16]={
 
 static uint8_t rev8(uint8_t x){
     return (uint8_t)((k_rev4[x&15u]<<4)|k_rev4[x>>4]);
+}
+static uint16_t static_line_word(uint8_t active){
+    /* active is a screen-space pixel bit (0x80 >> split). H-flip pairs:
+     * x1<->x6, x2<->x5, x3<->x4. x7 is the existing compact right border. */
+    if(active==0x40u)return (uint16_t)(TSP_MIX_LINE_BASE+0u);
+    if(active==0x02u)return (uint16_t)(TSP_MIX_LINE_BASE+0u)|TSP_ATTR_FLIPX;
+    if(active==0x20u)return (uint16_t)(TSP_MIX_LINE_BASE+1u);
+    if(active==0x04u)return (uint16_t)(TSP_MIX_LINE_BASE+1u)|TSP_ATTR_FLIPX;
+    if(active==0x10u)return (uint16_t)(TSP_MIX_LINE_BASE+2u);
+    if(active==0x08u)return (uint16_t)(TSP_MIX_LINE_BASE+2u)|TSP_ATTR_FLIPX;
+    if(active==0x01u)return (uint16_t)(TSP_TILE_FULL_COMPACT_BASE+2u);
+    return 0xffffu; /* multiple simultaneous silhouette columns */
 }
 static void clear_skip_bits(void){
     uint8_t i;
@@ -217,17 +227,18 @@ static uint8_t bank_retired(uint8_t bank){
 }
 static void retire_previous(void){
     uint8_t i;
-    uint8_t *p;
-    if(s_prev_bank==0xffu)return;
-    p=s_prev_bank?g_tspf_mixed_retire_bank1:g_tspf_mixed_retire_bank0;
+    uint8_t *p=(uint8_t *)0;
+    if(s_prev_bank!=0xffu)
+        p=s_prev_bank?g_tspf_mixed_retire_bank1:g_tspf_mixed_retire_bank0;
     for(i=0u;i<s_prev_count;++i){
         uint8_t pos=s_prev_pos[i];
         uint8_t row=(uint8_t)(pos/20u);
         uint8_t col=(uint8_t)(pos-(uint8_t)(row*20u));
         uint8_t brow=(uint8_t)(17u-row);
-        p[row]=1u;p[brow]=1u;
-        /* This happens after all cooperative in-render uploads. Force one
-         * post-fence publication that covers every former dynamic cell. */
+        if(p){p[row]=1u;p[brow]=1u;}
+        /* Permanent direct templates also leave literal non-coarse words in
+         * g_map. Re-dirty every former direct cell; only transient banks need
+         * the additional bank-retirement fence. */
         dirty_cell(row,col);
         dirty_cell(brow,col);
     }
@@ -286,7 +297,7 @@ static uint8_t pattern_index(uint8_t *flip_out){
         for(i=0u;i<16u && p[i]==s_work[i];++i){}
         if(i==16u){*flip_out=flip;return j;}
     }
-    if(count>=TSP_MIX_SLOTS)return 0xffu;
+    if(count>=s_slot_limit)return 0xffu;
     {
         uint8_t *p=&g_tspf_mixed_pattern_data[(uint16_t)count<<4];
         for(i=0u;i<16u;++i)p[i]=s_work[i];
@@ -453,19 +464,24 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
 #if TSPF_PROFILE_HOOKS
                 ++g_tspf_mixed_rows_fastline;
 #endif
-                /* Every later top-half row has the identical pure-wall +
-                 * already-active silhouette pattern. Hash/canonicalize it once
-                 * per hardware tile, then reuse the final name-table word. */
+                /* The silhouette body is not dynamic geometry. Single columns
+                 * use one of three permanent templates (+ H-flip), so only the
+                 * one/two tile rows where the horizontal top actually crosses
+                 * need transient pattern synthesis. Multi-line crowded cells
+                 * retain the generic dynamic fallback. */
                 if(!fastline_valid){
-                    uint8_t wall=(uint8_t)~active;
-                    for(ly=0u;ly<8u;++ly){
-                        s_work[(uint8_t)(ly+ly)]=0u;
-                        s_work[(uint8_t)(ly+ly+1u)]=wall;
+                    fastline_word=static_line_word(active);
+                    if(fastline_word==0xffffu){
+                        uint8_t wall=(uint8_t)~active;
+                        for(ly=0u;ly<8u;++ly){
+                            s_work[(uint8_t)(ly+ly)]=0u;
+                            s_work[(uint8_t)(ly+ly+1u)]=wall;
+                        }
+                        index=pattern_index(&flip);
+                        if(index==0xffu)return 0u;
+                        fastline_word=(uint16_t)(g_tspf_mixed_pattern_base+index);
+                        if(flip)fastline_word|=TSP_ATTR_FLIPX;
                     }
-                    index=pattern_index(&flip);
-                    if(index==0xffu)return 0u;
-                    fastline_word=(uint16_t)(g_tspf_mixed_pattern_base+index);
-                    if(flip)fastline_word|=TSP_ATTR_FLIPX;
                     fastline_valid=1u;
                 }
                 if(!add_patch(row,col,fastline_word))return 0u;
@@ -613,7 +629,13 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
     target=choose_bank();
     if(target==0xffu){g_tspf_mixed_skip_reason=5u;return;}
     s_target_bank=target;
-    g_tspf_mixed_pattern_base=(uint16_t)(target?TSP_MIX_BASE1:TSP_MIX_BASE0);
+    if(target){
+        g_tspf_mixed_pattern_base=TSP_MIX_BASE1;
+        s_slot_limit=TSP_MIX_SLOTS1;
+    }else{
+        g_tspf_mixed_pattern_base=TSP_MIX_BASE0;
+        s_slot_limit=TSP_MIX_SLOTS0;
+    }
     g_tspf_mixed_pattern_count=0u;
 
     i=0u;
@@ -665,18 +687,19 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
 
     refine_restore_cols();
 
-    if(!s_patch_count || !g_tspf_mixed_pattern_count){
+    if(!s_patch_count){
         /* A connected handoff can require ONLY removal of the old snapped
-         * border while every pixel remains ordinary wall fill. Keep the
-         * successful border-clear decision even when no dynamic pattern is
-         * needed; mixed-skip itself is already empty in that case. */
+         * border while every pixel remains ordinary wall fill. Keep that
+         * endpoint-clear decision even when no direct cell word is required. */
         return;
     }
     s_prepared=1u;
     g_tspf_mixed_last_patterns=g_tspf_mixed_pattern_count;
     g_tspf_mixed_last_patches=s_patch_count;
-    g_tspf_mixed_upload_index=0u;
-    g_tspf_mixed_patterns_pending=1u;
+    if(g_tspf_mixed_pattern_count){
+        g_tspf_mixed_upload_index=0u;
+        g_tspf_mixed_patterns_pending=1u;
+    }
 }
 
 void tsp_polar_mixed_apply(void) BANKED{
@@ -731,8 +754,12 @@ void tsp_polar_mixed_apply(void) BANKED{
             s_prev_pos[i]=pos;
         }
         s_prev_count=s_patch_count;
-        s_bank_used[s_target_bank]=1u;
-        s_prev_bank=s_target_bank;
+        if(g_tspf_mixed_pattern_count){
+            s_bank_used[s_target_bank]=1u;
+            s_prev_bank=s_target_bank;
+        }else{
+            s_prev_bank=0xffu;
+        }
     }else{
         s_prev_bank=0xffu;
         s_prev_count=0u;

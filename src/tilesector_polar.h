@@ -51,6 +51,20 @@
 #define TSP_ATTR_PALETTE 0x0800u
 #define TSP_TILE_ID_MASK 0x01ffu
 
+#if TSPF_DIRECT_MIXED && defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+/* IDs 412..447 are the only pattern space before the 0x3800 name table.
+ * Three permanent MID-wall internal-line templates cover split pixels 1..6
+ * using H-flip pairs. Pixel 7 reuses the ordinary FULL right-border tile.
+ * The remaining 33 IDs form asymmetric 17/16 transient banks. */
+#define TSP_MIX_LINE_BASE        412u
+#define TSP_MIX_LINE_COUNT       3u
+#define TSP_MIX_BASE0            415u
+#define TSP_MIX_SLOTS0           17u
+#define TSP_MIX_BASE1            432u
+#define TSP_MIX_SLOTS1           16u
+#define TSP_MIX_SLOTS_MAX        17u
+#endif
+
 #define TSP_TILE_CEILING 0u
 #define TSP_TILE_FLOOR   1u
 #define TSP_TILE_HORIZON 2u

@@ -143,6 +143,15 @@ static void emit_horizon(void){uint8_t x,y;clear_tile();for(y=0;y<8u;++y)for(x=0
 static uint8_t side_border(uint8_t border,uint8_t x){return (uint8_t)(((border&1u)&&x==0u)||((border&2u)&&x==7u));}
 static void emit_full_at(uint16_t id,uint8_t shade,uint8_t cap,uint8_t border){uint8_t x,y,color=shade_color(shade);clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){uint8_t black=side_border(border,x);if(cap==TSP_CAP_TOP&&y==0u)black=1u;if(cap==TSP_CAP_BOTTOM&&y==7u)black=1u;paint_pixel(x,y,black?C_BLACK:color);}set_bkg_4bpp_data(id,1u,g_tile);}
 static void emit_full(uint8_t shade,uint8_t cap,uint8_t border){emit_full_at(TSP_TILE_FULL(shade,cap,border),shade,cap,border);}
+#if TSPF_DIRECT_MIXED && defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
+static void emit_mixed_internal_line(uint16_t id,uint8_t line_x){
+    uint8_t x,y;
+    clear_tile();
+    for(y=0u;y<8u;++y)for(x=0u;x<8u;++x)
+        paint_pixel(x,y,(uint8_t)(x==line_x?C_BLACK:C_MID));
+    set_bkg_4bpp_data(id,1u,g_tile);
+}
+#endif
 static void emit_edge_at(uint16_t id,uint8_t shade,uint8_t oi,uint8_t si,uint8_t border){uint8_t x,y,color=shade_color(shade);int8_t off=(int8_t)TSP_EDGE_OFF_MIN+(int8_t)oi;clear_tile();for(y=0;y<8u;++y)for(x=0;x<8u;++x){int8_t line=(int8_t)(off+k_edge_lut[si][x]);uint8_t c=(int8_t)y<line?C_OUT:((int8_t)y==line?C_BLACK:color);if(side_border(border,x))c=C_BLACK;paint_pixel(x,y,c);}set_bkg_4bpp_data(id,1u,g_tile);}
 static void emit_edge(uint8_t shade,uint8_t oi,uint8_t si){emit_edge_at(TSP_TILE_EDGE(shade,oi,si),shade,oi,si,0u);}
 #if defined(TSPF_E1M1_P99_EDGE_VOCAB) && TSPF_E1M1_P99_EDGE_VOCAB
@@ -168,6 +177,13 @@ static void init_tiles(void){uint8_t s,c,b,o,m;emit_solid(TSP_TILE_CEILING,C_OUT
      * to an earlier ID, while first occurrences were assigned in ID order. */
     for(m=0u;m<=TSP_P99_EDGE_MAX;++m)for(o=0u;o<37u;++o){uint16_t id=p99_edge_id(m,o);if(id==next_id){off=(int8_t)o-28;emit_edge_p99_at(id,off,m,0u);++next_id;}}
     for(b=1u;b<3u;++b)for(o=0u;o<16u;++o)for(m=0u;m<8u;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=p99_border_id(b,sem);if(id==next_id){emit_edge_p99_at(id,(int8_t)o-7,m,b);++next_id;}}
+#if TSPF_DIRECT_MIXED
+    /* x=1/2/3 plus H-flip cover x=6/5/4. x=7 is the existing FULL right
+     * border tile, so the long silhouette body never needs transient pixels. */
+    emit_mixed_internal_line(TSP_MIX_LINE_BASE+0u,1u);
+    emit_mixed_internal_line(TSP_MIX_LINE_BASE+1u,2u);
+    emit_mixed_internal_line(TSP_MIX_LINE_BASE+2u,3u);
+#endif
 #elif defined(TSPF_E1M1_EDGE_VOCAB) && TSPF_E1M1_EDGE_VOCAB
     for(s=0;s<TSP_SHADE_COUNT;++s)for(c=0;c<TSP_CAP_COUNT;++c)for(b=0;b<TSP_BORDER_COUNT;++b)emit_full(s,c,b);
     for(s=0;s<TSP_SHADE_COUNT;++s)for(o=0;o<TSP_EDGE_OFF_COUNT;++o)for(m=0;m<TSP_EDGE_SLOPE_COUNT;++m){uint8_t sem=(uint8_t)(o*8u+m);uint16_t id=(uint16_t)(TSP_TILE_EDGE_COMPACT_BASE+(uint16_t)s*TSP_TILE_EDGE_COMPACT_SHADE_STRIDE+g_tsp_edge_unique_idx_home[sem]);emit_edge_at(id,s,o,m,0u);}
