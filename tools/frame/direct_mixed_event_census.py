@@ -100,6 +100,9 @@ def main():
             })
 
     total=matched=missing=extra=reversed_pairs=0
+    edge_band=1.5
+    interior_total=interior_match=interior_missing=0
+    edge_missing=edge_extra=interior_extra=0
     xerr=[];recall=[];crowd_o=crowd_r=0;worst=[]
     for fi,fr in enumerate(frames):
         ex=oracle_events(fr,vx,vy,segs);rt=runtime.get(fi,[])
@@ -111,6 +114,9 @@ def main():
         crowd_r+=sum(1 for n in rg.values() if n>=3)
         used=set();fm=0
         for e in ex:
+            ed=min(e["x"]%8.0,8.0-(e["x"]%8.0))
+            is_interior=ed>edge_band
+            if is_interior: interior_total+=1
             cand=[]
             for j,r in enumerate(rt):
                 if j in used:continue
@@ -119,17 +125,31 @@ def main():
                 if not (ordered or rev):continue
                 cand.append((0 if ordered else 1,abs(r["x"]-e["x"]),j,r))
             if not cand:
-                missing+=1;continue
+                missing+=1
+                if is_interior: interior_missing+=1
+                else: edge_missing+=1
+                continue
             order_bad,dx,j,r=min(cand)
             used.add(j);matched+=1;fm+=1;reversed_pairs+=order_bad
+            if is_interior: interior_match+=1
             xerr.append(dx);worst.append((dx,fi,e,r))
-        extra+=len(rt)-len(used)
+        for j,r in enumerate(rt):
+            if j in used: continue
+            extra+=1
+            rd=min(float(r["x"]%8),float(8-(r["x"]%8)))
+            if rd<=edge_band: edge_extra+=1
+            else: interior_extra+=1
         recall.append(100.0*fm/len(ex) if ex else 100.0)
 
     print(f"DIRECT_MIXED_EVENT_CENSUS label={a.label} frames={len(frames)}")
     print(f"events oracle={total} matched={matched} missing={missing} extra={extra} "
           f"recall={(100.0*matched/total if total else 100.0):.2f}% "
           f"reversed_owner_pairs={reversed_pairs}")
+    print(f"edge_equivalence_band={edge_band:.1f}px "
+          f"edge_missing={edge_missing} edge_extra={edge_extra} "
+          f"interior_oracle={interior_total} interior_matched={interior_match} "
+          f"interior_missing={interior_missing} interior_extra={interior_extra} "
+          f"interior_recall={(100.0*interior_match/interior_total if interior_total else 100.0):.2f}%")
     if xerr:
         print(f"x_abs_error n={len(xerr)} mean={statistics.fmean(xerr):.3f}px "
               f"p50={pct(xerr,.50):.3f}px p95={pct(xerr,.95):.3f}px max={max(xerr):.3f}px")
