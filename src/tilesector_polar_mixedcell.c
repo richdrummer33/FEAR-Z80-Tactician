@@ -330,6 +330,18 @@ static void fill_top(uint8_t owner,uint8_t col,const TSPState *s,
 }
 static uint8_t pattern_index(uint8_t *flip_out){
     uint8_t i,j,h=0x5du,flip=0u,count=g_tspf_mixed_pattern_count;
+    if(s_target_bank==0xffu){
+        uint8_t target=choose_bank();
+        if(target==0xffu)return 0xffu;
+        s_target_bank=target;
+        if(target){
+            g_tspf_mixed_pattern_base=TSP_MIX_BASE1;
+            s_slot_limit=TSP_MIX_SLOTS1;
+        }else{
+            g_tspf_mixed_pattern_base=TSP_MIX_BASE0;
+            s_slot_limit=TSP_MIX_SLOTS0;
+        }
+    }
     for(i=0u;i<16u;++i){
         uint8_t r=rev8(s_work[i]);
         if(r==s_work[i])continue;
@@ -654,7 +666,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
 }
 
 void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
-    uint8_t i,count=g_tspf_mixed_event_count,target;
+    uint8_t i,count=g_tspf_mixed_event_count;
 #if defined(TSPF_OPTIMIZED_MAP)
     if(s->z_q4!=TSP_OPT_EYE_Q4){g_tspf_mixed_skip_reason=1u;return;}
 #endif
@@ -678,16 +690,11 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
         g_tspf_mixed_event_right[j]=r;
     }
 
-    target=choose_bank();
-    if(target==0xffu){g_tspf_mixed_skip_reason=5u;return;}
-    s_target_bank=target;
-    if(target){
-        g_tspf_mixed_pattern_base=TSP_MIX_BASE1;
-        s_slot_limit=TSP_MIX_SLOTS1;
-    }else{
-        g_tspf_mixed_pattern_base=TSP_MIX_BASE0;
-        s_slot_limit=TSP_MIX_SLOTS0;
-    }
+    /* Do not reserve a transient bank yet. Permanent-line-only transitions
+     * need no dynamic VRAM at all. The first genuinely composite top-edge row
+     * claims a safe bank lazily inside pattern_index(); if none is available,
+     * only that tile falls back while static direct transitions still survive. */
+    s_target_bank=0xffu;
     g_tspf_mixed_pattern_count=0u;
 
     i=0u;
@@ -732,6 +739,7 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
             else{
                 ++g_tspf_mixed_local_fallbacks;
                 if(result==3u)++g_tspf_mixed_chain_fallbacks;
+                if(result==0u && s_target_bank==0xffu)g_tspf_mixed_skip_reason=5u;
             }
         }
         i=(uint8_t)(last+1u);
