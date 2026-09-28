@@ -40,7 +40,9 @@ static void save_ppm(const char* path,const std::vector<u8>& fb,int w,int h) {
     FILE* f=std::fopen(path,"wb"); if(!f){std::perror("fopen");std::exit(6);}
     std::fprintf(f,"P6\n%d %d\n255\n",w,h);
     for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
-        const u8* p=&fb[(y*GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN+x)*4];
+        /* Gearsystem's GG render buffer is packed at runtime width (160),
+         * despite the caller allocating the maximum 320x288 backing store. */
+        const u8* p=&fb[(y*w+x)*4];
         std::fwrite(p,1,3,f);
     }
     std::fclose(f);
@@ -161,7 +163,132 @@ static int vblank_sequence(int argc,char**argv) {
     return 0;
 }
 
+
+struct SettledPose {
+    int16_t xq=0,yq=0,zq=0;
+    uint8_t yaw=0;
+};
+static bool same_pose(const SettledPose& a,const SettledPose& b) {
+    return a.xq==b.xq && a.yq==b.yq && a.zq==b.zq && a.yaw==b.yaw;
+}
+static bool already_captured(const std::vector<SettledPose>& v,const SettledPose& p) {
+    for(const auto& q:v) if(same_pose(q,p)) return true;
+    return false;
+}
+
+static int settled_trace_capture(int argc,char**argv) {
+    if(argc<8) {
+        std::fprintf(stderr,
+            "usage: %s rom.gg rom.sym --settled-trace out_dir target_captures max_vblanks stable_updates\n",
+            argv[0]);
+        return 2;
+    }
+    const char* rom=argv[1];
+    const char* sym=argv[2];
+    const std::string out_dir=argv[4];
+    const unsigned target=(unsigned)std::strtoul(argv[5],nullptr,0);
+    const unsigned max_vblanks=(unsigned)std::strtoul(argv[6],nullptr,0);
+    const unsigned stable_need=(unsigned)std::strtoul(argv[7],nullptr,0);
+    if(!target || !max_vblanks || !stable_need) return 2;
+
+    u16 state_addr=0,loops=0,row_min=0,mix_pending=0,mix_publish=0,opt_layout=0;
+    if(!any_symbol(sym,"_g_state","g_state",state_addr) ||
+       !any_symbol(sym,"_g_ts_loop_count","g_ts_loop_count",loops) ||
+       !any_symbol(sym,"_g_polar_nt_row_min","g_polar_nt_row_min",row_min)) {
+        std::fprintf(stderr,"settled trace required state/loop/dirty-row symbols missing\n");
+        return 3;
+    }
+    const bool opt_state=any_symbol(sym,"_g_opt_state_layout","g_opt_state_layout",opt_layout);
+    const bool have_mix_pending=
+        any_symbol(sym,"_g_tspf_mixed_patterns_pending","g_tspf_mixed_patterns_pending",mix_pending);
+    const bool have_mix_publish=
+        any_symbol(sym,"_g_tspf_mixed_publish_rows","g_tspf_mixed_publish_rows",mix_publish);
+
+    GearsystemCore core; core.Init(GS_PIXEL_RGBA8888);
+    if(!core.LoadROM(rom)){std::fprintf(stderr,"LoadROM failed\n");return 4;}
+    std::vector<u8> fb(GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN*GS_RESOLUTION_MAX_HEIGHT_WITH_OVERSCAN*4);
+    std::vector<s16> audio(16384); int samples=0;
+    Memory* mem=core.GetMemory();
+    GS_RuntimeInfo ri{}; core.GetRuntimeInfo(ri);
+
+    auto read_pose=[&]() {
+        SettledPose p;
+        p.xq=(int16_t)rd16(mem,state_addr+0u);
+        p.yq=(int16_t)rd16(mem,(u16)(state_addr+2u));
+        p.zq=opt_state?(int16_t)rd16(mem,(u16)(state_addr+4u)):0;
+        p.yaw=mem->DebugRetrieve((u16)(state_addr+(opt_state?6u:4u)));
+        return p;
+    };
+    auto publication_clear=[&]() {
+        for(unsigned r=0;r<18u;++r)
+            if(mem->DebugRetrieve((u16)(row_min+r))!=0xffu) return false;
+        if(have_mix_pending && mem->DebugRetrieve(mix_pending)) return false;
+        if(have_mix_publish)
+            for(unsigned r=0;r<18u;++r)
+                if(mem->DebugRetrieve((u16)(mix_publish+r))) return false;
+        return true;
+    };
+
+    /* Wait for the profiled main loop, not an arbitrary VBlank count. */
+    unsigned vb=0u;
+    while(vb<1200u && rd16(mem,loops)<2u) {
+        samples=0; core.RunToVBlank(fb.data(),audio.data(),&samples,nullptr,true); ++vb;
+    }
+    if(rd16(mem,loops)<2u) {
+        std::fprintf(stderr,"settled trace never reached main loop\n");
+        return 5;
+    }
+
+    std::string csv_path=out_dir+"/poses.csv";
+    std::ofstream csv(csv_path,std::ios::trunc);
+    if(!csv){std::fprintf(stderr,"cannot open %s\n",csv_path.c_str());return 6;}
+    csv<<"capture,file,vblank,loop_count,x_q4,y_q4,z_q4,yaw\n";
+
+    uint16_t last_loop=rd16(mem,loops);
+    SettledPose last_pose=read_pose();
+    unsigned same_updates=1u;
+    std::vector<SettledPose> captured;
+
+    while(vb<max_vblanks && captured.size()<target) {
+        samples=0;
+        core.RunToVBlank(fb.data(),audio.data(),&samples,nullptr,true);
+        ++vb;
+        const uint16_t lc=rd16(mem,loops);
+        if(lc!=last_loop) {
+            const SettledPose p=read_pose();
+            if(same_pose(p,last_pose)) ++same_updates;
+            else { last_pose=p; same_updates=1u; }
+            last_loop=lc;
+        }
+
+        if(same_updates>=stable_need && publication_clear() &&
+           !already_captured(captured,last_pose)) {
+            char name[64];
+            std::snprintf(name,sizeof(name),"pose-%02u.ppm",(unsigned)captured.size());
+            std::string path=out_dir+"/"+name;
+            save_ppm(path.c_str(),fb,ri.screen_width,ri.screen_height);
+            csv<<captured.size()<<','<<name<<','<<vb<<','<<last_loop<<','
+               <<last_pose.xq<<','<<last_pose.yq<<','<<last_pose.zq<<','
+               <<(unsigned)last_pose.yaw<<'\n';
+            captured.push_back(last_pose);
+            std::printf("SETTLED_CAPTURE idx=%zu pose=(%d,%d,%d,%u) vblank=%u loop=%u file=%s\n",
+                captured.size()-1,(int)last_pose.xq,(int)last_pose.yq,(int)last_pose.zq,
+                (unsigned)last_pose.yaw,vb,(unsigned)last_loop,path.c_str());
+        }
+    }
+
+    std::printf("SETTLED_TRACE captures=%zu target=%u vblanks=%u screen=%dx%d csv=%s\n",
+        captured.size(),target,vb,ri.screen_width,ri.screen_height,csv_path.c_str());
+    if(captured.size()<target) {
+        std::fprintf(stderr,"only %zu/%u settled poses captured\n",captured.size(),target);
+        return 7;
+    }
+    return 0;
+}
+
 int main(int argc,char**argv) {
+    if(argc>=4 && std::strcmp(argv[3],"--settled-trace")==0)
+        return settled_trace_capture(argc,argv);
     if(argc>=4 && std::strcmp(argv[3],"--vblank-sequence")==0)
         return vblank_sequence(argc,argv);
     if(argc<5) {

@@ -32,7 +32,10 @@ on:
       - src/e1env_local_bearing_eval_gg.s
       - tools/frame/frame_timeline.cpp
       - tools/frame/direct_mixed_event_census.py
+      - tools/frame/visual_diff.py
       - tools/frame/gen_traces.py
+      - tools/tilesector_state_capture.cpp
+      - tools/gearsystem_core_runner_native.cpp
       - tools/frame/mat_census.cpp
       - tools/build_gearsystem_tools.sh
       - .github/actions/gearsystem-tools/action.yml
@@ -374,6 +377,48 @@ jobs:
             --map-inc "$GEN/optimized_renderer_map_data.inc" \
             --frames "$ROOT/direct-strafe.csv" --events "$ROOT/direct-strafe-events.csv" \
             --label proj_strafe | tee "$ROOT/direct-strafe-event-census.txt"
+
+      - name: Pixel-level visual correctness A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          ENVOBJS="$(cat "$ROOT/env-objs.txt")"
+          mkdir -p "$ROOT/visual-ref" "$ROOT/visual-direct" "$ROOT/visual-diff"
+          python3 tools/frame/gen_traces.py visual_check build/frame_trace.c
+
+          build_visual_variant() {
+            local name="$1"
+            local direct="$2"
+            rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+              build/tilesector_polar_renderer_gg.o build/tilesector_polar_mixedcell_gg.o build/tilesector_polar_ntstate_gg.o \
+              build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+              build/frame_trace_gg.o build/gg-tilesector-polar.*
+            make GBDK_HOME="$PWD/.toolchain/gbdk" \
+              POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+              POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
+              POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
+              TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DIRECT_MIXED=$direct -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+              gg-tilesector-polar
+            cp build/gg-tilesector-polar.gg "$ROOT/visual-$name.gg"
+            cp build/gg-tilesector-polar.sym "$ROOT/visual-$name.sym"
+          }
+
+          build_visual_variant ref 0
+          ./build/tilesector_state_capture "$ROOT/visual-ref.gg" "$ROOT/visual-ref.sym" \
+            --settled-trace "$ROOT/visual-ref" 6 4000 2 \
+            | tee "$ROOT/visual-ref/capture.txt"
+
+          build_visual_variant direct 1
+          ./build/tilesector_state_capture "$ROOT/visual-direct.gg" "$ROOT/visual-direct.sym" \
+            --settled-trace "$ROOT/visual-direct" 6 4000 2 \
+            | tee "$ROOT/visual-direct/capture.txt"
+
+          python3 tools/frame/visual_diff.py \
+            --reference "$ROOT/visual-ref" --direct "$ROOT/visual-direct" \
+            --out "$ROOT/visual-diff" --min-matches 4 \
+            | tee "$ROOT/visual-diff/summary.txt"
 
       - name: Bottom-up focused-envelope profile
         shell: bash

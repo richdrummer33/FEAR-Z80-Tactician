@@ -13,7 +13,8 @@ static void save_ppm(const char* path, const std::vector<u8>& fb, int w, int h) 
     FILE* f=fopen(path,"wb"); if(!f){perror("fopen"); return;}
     fprintf(f,"P6\n%d %d\n255\n",w,h);
     for(int y=0;y<h;y++) for(int x=0;x<w;x++) {
-        const u8* p=&fb[(y*GS_RESOLUTION_MAX_WIDTH_WITH_OVERSCAN + x)*4];
+        // Game Gear pixels are packed at runtime width (160), not max-width 320.
+        const u8* p=&fb[(y*w + x)*4];
         // GS_PIXEL_RGBA8888 buffer is byte R,G,B,A on this build.
         fwrite(p,1,3,f);
     }

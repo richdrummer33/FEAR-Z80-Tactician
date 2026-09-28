@@ -31,6 +31,17 @@ TRACES = {
     # Pixel-X control sweep: pure lateral motion out and back. Repeated poses
     # make snapping or retained-state hysteresis directly measurable.
     "proj_strafe": hold(SL, 40) + hold(SR, 80) + hold(SL, 40),
+    # Screenshot oracle trace. First input forces manual mode; each short move
+    # is followed by enough zero-input logical updates for velocity/turn slew to
+    # reach exactly zero, producing deterministic settled poses in both slow and
+    # fast renderer builds.
+    "visual_check": hold(SL, 2) + hold(0, 6) +
+                    hold(SL, 8) + hold(0, 14) +
+                    hold(UP, 8) + hold(0, 14) +
+                    hold(LEFT, 6) + hold(0, 6) +
+                    hold(UP | SR, 8) + hold(0, 14) +
+                    hold(RIGHT, 6) + hold(0, 6) +
+                    hold(SL, 8) + hold(0, 14),
     # Not representative play: everything at once, to find the ceiling.
     "stress": alternate(UP | LEFT, UP | RIGHT, 120, 3) +
               alternate(UP | SL | LEFT, UP | SR | RIGHT, 120, 2),
