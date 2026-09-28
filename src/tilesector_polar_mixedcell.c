@@ -80,6 +80,10 @@ volatile uint8_t g_tspf_mixed_rows_fastline;
 volatile uint8_t g_tspf_mixed_rows_skipped;
 volatile uint8_t g_tspf_mixed_run_geom_hits;
 volatile uint8_t g_tspf_mixed_run_geom_fallbacks;
+volatile uint8_t g_tspf_mixed_phase;
+#define TSPF_MIX_PHASE(v) (g_tspf_mixed_phase=(v))
+#else
+#define TSPF_MIX_PHASE(v) ((void)0)
 #endif
 
 static uint8_t s_pattern_hash[TSP_MIX_SLOTS_MAX];
@@ -393,6 +397,7 @@ static uint8_t same_depth_plane(uint8_t a,uint8_t b){
  * connected/collinear elision, 0=capacity. */
 static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState *s){
     uint8_t line_mask=0u,lx,e,row,ly,all_collinear=1u;
+    TSPF_MIX_PHASE(2u);
 
     /* Multiple visibility transitions can quantize into one 8px tile. Never
      * invent a pixel ownership order if their streamed left->right chain does
@@ -462,6 +467,7 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
      * case on the normal renderer until that direct kernel is added. */
     for(lx=0u;lx<8u;++lx)if(s_owner[lx]==0xffu)return 2u;
 
+    TSPF_MIX_PHASE(3u);
     lx=0u;
     while(lx<8u){
         uint8_t x1=lx;
@@ -470,6 +476,7 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
         lx=(uint8_t)(x1+1u);
     }
 
+    TSPF_MIX_PHASE(4u);
     {
         int16_t min_top=(int16_t)s_top[0],max_top=(int16_t)s_top[0];
         uint8_t line_active=0u,fastline_valid=0u;
@@ -537,7 +544,9 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
                             s_work[(uint8_t)(ly+ly)]=0u;
                             s_work[(uint8_t)(ly+ly+1u)]=wall;
                         }
+                        TSPF_MIX_PHASE(5u);
                         index=pattern_index(&flip);
+                        TSPF_MIX_PHASE(4u);
                         if(index==0xffu)return 0u;
                         fastline_word=(uint16_t)(g_tspf_mixed_pattern_base+index);
                         if(flip)fastline_word|=TSP_ATTR_FLIPX;
@@ -576,7 +585,9 @@ static uint8_t build_tile(uint8_t first,uint8_t last,uint8_t col,const TSPState 
             }
             line_active=active;
             if(all_out || all_wall)continue;
+            TSPF_MIX_PHASE(5u);
             index=pattern_index(&flip);
+            TSPF_MIX_PHASE(4u);
             if(index==0xffu)return 0u;
             {
                 uint16_t word=(uint16_t)(g_tspf_mixed_pattern_base+index);
@@ -667,6 +678,7 @@ void tsp_polar_mixed_begin_frame(void) BANKED{
 
 void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
     uint8_t i,count=g_tspf_mixed_event_count;
+    TSPF_MIX_PHASE(1u);
 #if defined(TSPF_OPTIMIZED_MAP)
     if(s->z_q4!=TSP_OPT_EYE_Q4){g_tspf_mixed_skip_reason=1u;return;}
 #endif
@@ -764,6 +776,7 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
 
 void tsp_polar_mixed_apply(void) BANKED{
     uint8_t i;
+    TSPF_MIX_PHASE(6u);
 
     if(s_hold_previous){
         /* Keep the CPU map and coverage coherent with the still-being-published
@@ -778,6 +791,7 @@ void tsp_polar_mixed_apply(void) BANKED{
             own_cell((uint8_t)(17u-row),col);
         }
         s_prepared=0u;
+        TSPF_MIX_PHASE(0u);
         return;
     }
 
@@ -825,6 +839,7 @@ void tsp_polar_mixed_apply(void) BANKED{
         s_prev_count=0u;
     }
     s_prepared=0u;
+    TSPF_MIX_PHASE(0u);
 }
 
 void tsp_polar_mixed_boot_published(void) BANKED{

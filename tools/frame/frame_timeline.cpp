@@ -176,7 +176,7 @@ int main(int argc, char** argv) {
     if (!find_symbol(noi, "_g_ts_loop_count", s_loop) && !find_symbol(noi, "g_ts_loop_count", s_loop)) {
         std::fprintf(stderr, "no _g_ts_loop_count\n"); return 3;
     }
-    u16 s_state = 0, s_map = 0, s_env_phase = 0;
+    u16 s_state = 0, s_map = 0, s_env_phase = 0, s_mix_phase = 0;
     u16 s_dirty_min = 0, s_vblank_bursts = 0, s_vblank_missed = 0;
     u16 s_join_count = 0, s_join_max = 0, s_join_sum = 0;
     u16 s_mix_patterns=0, s_mix_patches=0, s_mix_skip=0;
@@ -195,6 +195,8 @@ int main(int argc, char** argv) {
         (find_symbol(noi, "_g_ts_vblank_missed", s_vblank_missed) || find_symbol(noi, "g_ts_vblank_missed", s_vblank_missed));
     const bool have_env_phase =
         find_symbol(noi, "_g_tspf_env_phase", s_env_phase) || find_symbol(noi, "g_tspf_env_phase", s_env_phase);
+    const bool have_mix_phase =
+        find_symbol(noi, "_g_tspf_mixed_phase", s_mix_phase) || find_symbol(noi, "g_tspf_mixed_phase", s_mix_phase);
     const bool have_join_anchor =
         (find_symbol(noi, "_g_tspf_join_anchor_count", s_join_count) || find_symbol(noi, "g_tspf_join_anchor_count", s_join_count)) &&
         (find_symbol(noi, "_g_tspf_join_anchor_max_px", s_join_max) || find_symbol(noi, "g_tspf_join_anchor_max_px", s_join_max)) &&
@@ -273,13 +275,19 @@ int main(int argc, char** argv) {
 
     /* phase 1 input+motion, 2 render, 3 vsync, 4 VRAM upload, 5 loop tail */
     static const unsigned ENV_PHASE_COUNT = 9;
+    static const unsigned MIX_PHASE_COUNT = 7;
+    static const char* MIX_PHASE_NAME[MIX_PHASE_COUNT] = {
+        "mix_idle", "mix_setup_sort", "mix_topology", "mix_depth_reuse",
+        "mix_row_raster", "mix_pattern_index", "mix_apply"
+    };
     static const char* ENV_PHASE_NAME[ENV_PHASE_COUNT] = {
         "env_idle", "env_fetch", "env_focus", "env_walk",
         "env_draw", "env_ret_end", "env_nt_end",
         "env_mixed_prepare", "env_mixed_apply"
     };
     struct Frame {
-        uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t envph[ENV_PHASE_COUNT]; uint64_t total;
+        uint64_t ph[6]; uint64_t grp[G_NGROUP]; uint64_t envph[ENV_PHASE_COUNT];
+        uint64_t mixph[MIX_PHASE_COUNT]; uint64_t total;
         int16_t x_q4, y_q4, z_q4; uint8_t yaw;
         uint64_t map_fnv64;
         uint8_t dirty_rows_pending;
@@ -332,6 +340,10 @@ int main(int argc, char** argv) {
             if (have_env_phase) {
                 ep=mem->DebugRetrieve(s_env_phase);
                 if (ep<ENV_PHASE_COUNT) cur.envph[ep]+=dt;
+            }
+            if (have_mix_phase && (ep==7u || ep==8u)) {
+                const uint8_t mp=mem->DebugRetrieve(s_mix_phase);
+                if(mp<MIX_PHASE_COUNT)cur.mixph[mp]+=dt;
             }
             /* prepare/apply execute from fixed bank 254, while the ordinary PC
              * range table is intentionally built from renderer bank 255. Their
@@ -599,6 +611,17 @@ int main(int argc, char** argv) {
         if (m < 1.0) continue;
         std::printf("  %-17s %10.0f %10.0f %10.0f %10.0f  %5.2f%%\n", GNAME[g], m,
                     pct(v, .50), pct(v, .95), pct(v, 1.0), 100.0 * m / mean);
+    }
+    if(have_mix_phase){
+        std::printf("\n  direct-mixed subphase %10s %10s %10s %10s   share\n","mean","p50","p95","worst");
+        for(unsigned m=1u;m<MIX_PHASE_COUNT;++m){
+            std::vector<uint64_t> v;double mm=0.0;
+            for(const auto& f:frames){v.push_back(f.mixph[m]);mm+=(double)f.mixph[m];}
+            mm/=v.size();
+            if(mm<1.0)continue;
+            std::printf("  %-20s %10.0f %10.0f %10.0f %10.0f  %5.2f%%\n",
+                        MIX_PHASE_NAME[m],mm,pct(v,.50),pct(v,.95),pct(v,1.0),100.0*mm/mean);
+        }
     }
     if(have_env_phase){
         std::printf("\n  envelope phase     %10s %10s %10s %10s   share\n","mean","p50","p95","worst");
