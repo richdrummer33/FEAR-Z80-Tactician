@@ -93,6 +93,10 @@ static uint16_t s_patch_word[TSP_MIX_PATCH_MAX];
 static uint8_t s_patch_count;
 static uint8_t s_work[16];
 static uint8_t s_owner[8];
+/* Current envelope emits at most one coarse-owning run per surface in this
+ * first-hit wall course. Build a 32-byte SID->run index once per prepared
+ * generation so each critical transition reuses solved geometry in O(1). */
+static uint8_t s_run_by_sid[32];
 static int8_t s_top[8];
 static uint8_t s_hit[8];
 static uint8_t s_line_start[8];
@@ -265,16 +269,15 @@ static uint8_t inv_q6(int16_t q){
     return (uint8_t)v;
 }
 static const TSPPolarRun *find_run_geom(uint8_t sid,uint8_t col){
-    uint8_t i;
-    for(i=0u;i<g_tspf_mixed_run_count;++i){
-        const TSPPolarRun *r=&g_tspf_runs[i];
-        if(r->sid!=sid)continue;
-        /* A true-X handoff can invade only the coarse cell immediately beside
-         * the owner's sampled run. Accept that one-cell extrapolation as well
-         * as cells already inside the run. */
-        if((uint8_t)(col+1u)>=r->c0 && col<=(uint8_t)(r->c1+1u))
-            return r;
-    }
+    uint8_t ri=s_run_by_sid[sid];
+    const TSPPolarRun *r;
+    if(ri==0xffu)return (const TSPPolarRun *)0;
+    r=&g_tspf_runs[ri];
+    /* A true-X handoff can invade only the coarse cell immediately beside
+     * the owner's sampled run. Accept that one-cell extrapolation as well
+     * as cells already inside the run. */
+    if((uint8_t)(col+1u)>=r->c0 && col<=(uint8_t)(r->c1+1u))
+        return r;
     return (const TSPPolarRun *)0;
 }
 static int16_t run_q_at_edge(const TSPPolarRun *r,uint8_t edge){
@@ -701,6 +704,14 @@ void tsp_polar_mixed_prepare(const TSPState *s) BANKED{
         g_tspf_mixed_event_x[j]=x;g_tspf_mixed_event_left[j]=l;
         g_tspf_mixed_event_right[j]=r;
     }
+
+    /* Index the envelope geometry we already solved in bank255. Duplicate SIDs
+     * are not expected in this orthogonal first-hit envelope; should one ever
+     * appear, the later adjacency guard in find_run_geom() safely falls back
+     * rather than using a non-neighbouring run. */
+    for(i=0u;i<32u;++i)s_run_by_sid[i]=0xffu;
+    for(i=0u;i<g_tspf_mixed_run_count;++i)
+        s_run_by_sid[g_tspf_runs[i].sid]=i;
 
     /* Do not reserve a transient bank yet. Permanent-line-only transitions
      * need no dynamic VRAM at all. The first genuinely composite top-edge row
