@@ -212,6 +212,28 @@ jobs:
           cp build/gg-tilesector-polar.sym "$ROOT/direct-off.sym"
           cp build/gg-tilesector-polar.map "$ROOT/direct-off.map"
 
+      - name: Build same-source retained-cold control
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$PWD/build/e1env-iter"
+          GEN="$ROOT/generated"
+          ENVOBJS="$(cat "$ROOT/env-objs.txt")"
+          rm -f build/main_tilesector_polar_gg.o build/tilesector_polar_motion_gg.o \
+            build/tilesector_polar_renderer_gg.o build/tilesector_polar_mixedcell_gg.o build/tilesector_polar_ntstate_gg.o \
+            build/tilesector_polar_materialize_gg.o build/tilesector_polar_ntupload_*_gg.o \
+            build/frame_trace_gg.o build/gg-tilesector-polar.*
+          make GBDK_HOME="$PWD/.toolchain/gbdk" \
+            POLAR_PROFILE_HOOKS=1 POLAR_LOCAL_PROJECTION=0 POLAR_SCREEN_DEPTH_PLANE=0 \
+            POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
+            POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
+            TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DIRECT_MIXED=0 -DTSPF_DIAG_RET_COLD=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
+            gg-tilesector-polar 2>&1 | tee "$ROOT/ret-cold-build.txt"
+          cp build/gg-tilesector-polar.gg "$ROOT/ret-cold.gg"
+          cp build/gg-tilesector-polar.noi "$ROOT/ret-cold.noi"
+          cp build/gg-tilesector-polar.sym "$ROOT/ret-cold.sym"
+          cp build/gg-tilesector-polar.map "$ROOT/ret-cold.map"
+
       - name: Measure PVS baseline and focused envelope
         shell: bash
         run: |
@@ -221,6 +243,8 @@ jobs:
             | tee "$ROOT/pvs-timeline.txt"
           ./build/frame_timeline "$ROOT/direct-off.gg" "$ROOT/direct-off.noi" "$ROOT/direct-off.csv" 180 8 "$ROOT/direct-off-map.bin" \
             | tee "$ROOT/direct-off-timeline.txt"
+          ./build/frame_timeline "$ROOT/ret-cold.gg" "$ROOT/ret-cold.noi" "$ROOT/ret-cold.csv" 180 8 "$ROOT/ret-cold-map.bin" \
+            | tee "$ROOT/ret-cold-timeline.txt"
           ./build/frame_timeline "$ROOT/focused.gg" "$ROOT/focused.noi" "$ROOT/focused.csv" 180 8 "$ROOT/focused-map.bin" \
             | tee "$ROOT/focused-timeline.txt"
 
@@ -243,7 +267,8 @@ jobs:
           a=list(csv.DictReader((root/"pvs.csv").open()))
           b=list(csv.DictReader((root/"focused.csv").open()))
           c=list(csv.DictReader((root/"direct-off.csv").open()))
-          n=min(len(a),len(b),len(c))
+          d=list(csv.DictReader((root/"ret-cold.csv").open()))
+          n=min(len(a),len(b),len(c),len(d))
           def vals(rows,k): return [int(r[k]) for r in rows[:n]]
           def mean(x): return statistics.fmean(x)
           def pct(x,p):
@@ -252,8 +277,8 @@ jobs:
           state_same=sum(state(x)==state(y) for x,y in zip(a[:n],b[:n]))
           map_same=sum(x["map_fnv64"]==y["map_fnv64"] for x,y in zip(a[:n],b[:n]))
           bad=[i for i,(x,y) in enumerate(zip(a[:n],b[:n])) if x["map_fnv64"]!=y["map_fnv64"]]
-          at,bt,ct=vals(a,"total"),vals(b,"total"),vals(c,"total")
-          ar,br,cr=vals(a,"render"),vals(b,"render"),vals(c,"render")
+          at,bt,ct,dt=vals(a,"total"),vals(b,"total"),vals(c,"total"),vals(d,"total")
+          ar,br,cr,dr=vals(a,"render"),vals(b,"render"),vals(c,"render"),vals(d,"render")
           clock=3579545.0
           print("E1ENV_FOCUS_AB")
           print(f"updates={n} state_equal={state_same}/{n} map_equal={map_same}/{n} mismatches={n-map_same}")
@@ -366,6 +391,7 @@ jobs:
               print(f"RENDERER_BANK_BYTES used={bank_bytes} headroom={16384-bank_bytes}")
           print(f"PVS total mean={mean(at):.0f} p50={pct(at,.5)} p95={pct(at,.95)} fps={clock/mean(at):.2f}")
           print(f"DIRECT_OFF total mean={mean(ct):.0f} p50={pct(ct,.5)} p95={pct(ct,.95)} fps={clock/mean(ct):.2f}")
+          print(f"RET_COLD total mean={mean(dt):.0f} p50={pct(dt,.5)} p95={pct(dt,.95)} fps={clock/mean(dt):.2f}")
           print(f"FOCUS total mean={mean(bt):.0f} p50={pct(bt,.5)} p95={pct(bt,.95)} fps={clock/mean(bt):.2f}")
           print(f"DIRECT_MIXED_OVERHEAD total_mean={mean(bt)-mean(ct):+.0f}T "
                 f"({100*(mean(bt)/mean(ct)-1):+.1f}%) p95_delta={pct(bt,.95)-pct(ct,.95):+.0f}T")
@@ -386,15 +412,22 @@ jobs:
                   out.append(cnt)
               return out
           dg=geom_counts(root/"direct-off-map.bin")
+          rg=geom_counts(root/"ret-cold-map.bin")
           fg=geom_counts(root/"focused-map.bin")
+          ret_state_same=sum(state(x)==state(y) for x,y in zip(c[:n],d[:n]))
+          ret_map_same=sum(x["map_fnv64"]==y["map_fnv64"] for x,y in zip(c[:n],d[:n]))
+          print(f"RETENTION_PARITY state_equal={ret_state_same}/{n} map_equal={ret_map_same}/{n} "
+                f"mismatches={n-ret_map_same}")
           print(f"COARSE_MAP_HEALTH direct_off_mean={mean(dg):.1f} "
                 f"p05={pct(dg,.05)} p50={pct(dg,.5)} zero_frames={sum(x==0 for x in dg)}/{len(dg)} "
-                f"focused_mean={mean(fg):.1f}")
+                f"ret_cold_mean={mean(rg):.1f} ret_cold_p05={pct(rg,.05)} "
+                f"ret_cold_zero={sum(x==0 for x in rg)}/{len(rg)} focused_mean={mean(fg):.1f}")
           p95b=pct(bt,.95); worstb=max(bt); budget10=clock/10.0
           print(f"FOCUS_10FPS_MARGIN p95={budget10-p95b:+.0f}T worst={budget10-worstb:+.0f}T budget={budget10:.0f}T")
           print(f"delta total={mean(bt)-mean(at):+.0f} ({100*(mean(bt)/mean(at)-1):+.1f}%)")
           print(f"PVS render mean={mean(ar):.0f} p95={pct(ar,.95)}")
           print(f"DIRECT_OFF render mean={mean(cr):.0f} p95={pct(cr,.95)}")
+          print(f"RET_COLD render mean={mean(dr):.0f} p95={pct(dr,.95)}")
           print(f"FOCUS render mean={mean(br):.0f} p95={pct(br,.95)}")
           print(f"delta render={mean(br)-mean(ar):+.0f} ({100*(mean(br)/mean(ar)-1):+.1f}%)")
           for k in ("projection/setup","geometry walk","materializer","retained gate","boundary patch","nametable/VRAM","arith helpers","other render",
