@@ -1639,6 +1639,12 @@ void tsp_polar_render(const TSPState *s, uint16_t out_map[TSP_MAP_CELLS], TSPCol
 #ifdef __SDCC
     tsp_polar_nt_begin_frame();
     tsp_polar_ret_begin_frame();
+#if defined(TSPF_DIAG_RET_COLD) && TSPF_DIAG_RET_COLD
+    /* Diagnostic semantic oracle: same renderer with the retained cache made
+     * cold every logical update. Any name-table difference from the normal
+     * build proves a retained-cache coherence bug, not a geometry difference. */
+    tsp_polar_ret_invalidate();
+#endif
 #if TSPF_DIRECT_MIXED
     tsp_polar_mixed_begin_frame();
 #endif
