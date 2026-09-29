@@ -132,15 +132,24 @@ def main():
     report={"reference":str(refd),"direct":str(dird),"matched_poses":len(keys),"poses":[]}
     montage=[]; mw=mh=None
     total_changed=0;total_pixels=0
+    ref_geometry_pixels=0;direct_geometry_pixels=0
+    # Geometry-only palette background: ceiling, floor and black horizon/edges.
+    # Any other RGB is wall material. This is a sanity gate, not the visual
+    # oracle itself: a completely background-only "reference" must never make
+    # a large A/B diff look like an exact-X correctness result.
+    background={(17,17,51),(34,34,51),(0,0,0)}
     for pi,k in enumerate(keys):
         rr=ref[k];dr=direct[k]
         w,h,rgb0=read_ppm(refd/rr["file"]);w1,h1,rgb1=read_ppm(dird/dr["file"])
         if (w,h)!=(w1,h1): raise SystemExit("capture dimensions differ")
         mask=bytearray(w*h); changed=[]
         pairs=Counter();cols=Counter();rows=Counter();xmod=Counter();ymod=Counter()
+        pose_ref_geom=pose_direct_geom=0
         for p in range(w*h):
             i=p*3
             a0=tuple(rgb0[i:i+3]);b0=tuple(rgb1[i:i+3])
+            pose_ref_geom += int(a0 not in background)
+            pose_direct_geom += int(b0 not in background)
             if a0!=b0:
                 mask[p]=1;changed.append(p);pairs[(a0,b0)]+=1
                 x=p%w;y=p//w;cols[x]+=1;rows[y]+=1;xmod[x&7]+=1;ymod[y&7]+=1
@@ -150,11 +159,15 @@ def main():
             xs=[p%w for p in changed];ys=[p//w for p in changed]
             bbox=[min(xs),min(ys),max(xs),max(ys)]
         total_changed+=len(changed);total_pixels+=w*h
+        ref_geometry_pixels+=pose_ref_geom
+        direct_geometry_pixels+=pose_direct_geom
         rec={
           "index":pi,"state":{"x_q4":k[0],"y_q4":k[1],"z_q4":k[2],"yaw":k[3]},
           "reference_file":rr["file"],"direct_file":dr["file"],
           "changed_pixels":len(changed),"total_pixels":w*h,
           "changed_pct":round(100.0*len(changed)/(w*h),4),
+          "reference_geometry_pixels":pose_ref_geom,
+          "direct_geometry_pixels":pose_direct_geom,
           "bbox":bbox,
           "components":comps[:30],
           "component_count":len(comps),
@@ -174,8 +187,8 @@ def main():
         report["poses"].append(rec)
         montage.append(img);mw=tw;mh=th
         print(f"VISUAL_POSE index={pi} state={k} changed={len(changed)}/{w*h} "
-              f"({rec['changed_pct']:.3f}%) components={len(comps)} bbox={bbox} "
-              f"largest={rec['largest_component_pixels']}")
+              f"({rec['changed_pct']:.3f}%) ref_geom={pose_ref_geom} direct_geom={pose_direct_geom} "
+              f"components={len(comps)} bbox={bbox} largest={rec['largest_component_pixels']}")
 
     spacer=4
     H=len(montage)*mh+(len(montage)-1)*spacer
@@ -187,6 +200,12 @@ def main():
     write_png(outd/"visual-diff-montage.png",mw,H,bytes(mb))
     report["total_changed_pixels"]=total_changed
     report["total_compared_pixels"]=total_pixels
+    report["reference_geometry_pixels"]=ref_geometry_pixels
+    report["direct_geometry_pixels"]=direct_geometry_pixels
+    if ref_geometry_pixels==0:
+        raise SystemExit("VISUAL_DIFF invalid reference: all matched poses are background-only")
+    if direct_geometry_pixels==0:
+        raise SystemExit("VISUAL_DIFF invalid direct build: all matched poses are background-only")
     report["overall_changed_pct"]=round(100.0*total_changed/total_pixels,4)
     report["montage"]="visual-diff-montage.png"
     (outd/"visual-diff.json").write_text(json.dumps(report,indent=2))
