@@ -53,6 +53,27 @@ volatile uint8_t g_tspf_mixed_patterns_pending;
 
 #define TSP_MIX_PATCH_MAX 32u
 
+/* Permanent MID-wall internal-line body tiles.
+ * 4-bpp row layout is plane0,plane1,plane2,plane3. MID=4 therefore has only
+ * plane2 set; the line pixel is black (all planes zero). x=1/2/3 plus H-flip
+ * cover x=6/5/4. Keep these bytes in bank254 instead of synthesizing them from
+ * the HOME boot renderer: Run 279 showed HOME had spilled 22 bytes into bank1. */
+static const uint8_t k_tspf_mixed_line_tiles[TSP_MIX_LINE_COUNT*32u]={
+    /* x=1: plane2 0xff ^ 0x40 = 0xbf */
+    0,0,0xbf,0, 0,0,0xbf,0, 0,0,0xbf,0, 0,0,0xbf,0,
+    0,0,0xbf,0, 0,0,0xbf,0, 0,0,0xbf,0, 0,0,0xbf,0,
+    /* x=2: plane2 0xff ^ 0x20 = 0xdf */
+    0,0,0xdf,0, 0,0,0xdf,0, 0,0,0xdf,0, 0,0,0xdf,0,
+    0,0,0xdf,0, 0,0,0xdf,0, 0,0,0xdf,0, 0,0,0xdf,0,
+    /* x=3: plane2 0xff ^ 0x10 = 0xef */
+    0,0,0xef,0, 0,0,0xef,0, 0,0,0xef,0, 0,0,0xef,0,
+    0,0,0xef,0, 0,0,0xef,0, 0,0,0xef,0, 0,0,0xef,0
+};
+
+void tsp_polar_mixed_init_static_tiles(void) BANKED{
+    set_bkg_4bpp_data(TSP_MIX_LINE_BASE,TSP_MIX_LINE_COUNT,k_tspf_mixed_line_tiles);
+}
+
 extern uint16_t g_map[TSP_MAP_CELLS];
 extern uint8_t g_polar_nt_cov_cur[TSP_COLS*3u];
 extern uint8_t g_polar_nt_row_min[TSP_ROWS];
