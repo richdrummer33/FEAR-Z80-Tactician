@@ -436,6 +436,29 @@ polar_endpoint_rows_ready$:
         ld      (#r_mixed_col$), a
         ld      (#r_force_col$), a
 
+        ; A retained key belongs to a SURFACE, but g_map is shared screen
+        ; substrate. Another surface (or stale-cell reconciliation) can replace
+        ; this column while the old surface key itself remains numerically
+        ; unchanged. Never let such a stale key suppress the real raster.
+        ;
+        ; owner[col] stores sid+1 for the surface that last materialized the
+        ; coarse substrate; zero means unknown. Reuse r_force_col so an owner
+        ; mismatch bypasses BOTH the retained patch and exact-key skip.
+        ld      a, (#_g_polar_run_sid)
+        inc     a
+        ld      c, a
+        ld      a, b
+        ld      e, a
+        ld      d, #0
+        ld      hl, #polar_ret_owner_col$
+        add     hl, de
+        ld      a, (hl)
+        cp      c
+        jr      z, ret_owner_ready$
+        ld      a, #1
+        ld      (#r_force_col$), a
+ret_owner_ready$:
+
         ; A previous dynamic tile may still be the literal word in g_map.
         ; The overwhelmingly common path has none, so gate the indexed lookup
         ; behind one byte just like current direct ownership.
@@ -1852,6 +1875,17 @@ ret_inval_r1$:
         ld      (hl), #0
         inc     hl
         djnz    ret_inval_r1$
+
+        ; The private geometry keys and the shared substrate owner tags form
+        ; one cache-coherence unit. Invalidate both together.
+        ld      hl, #polar_ret_owner_col$
+        ld      b, #20
+        xor     a
+ret_inval_owner$:
+        ld      (hl), a
+        inc     hl
+        djnz    ret_inval_owner$
+
         pop     hl
         pop     bc
         ; fall through to clear live/poison and disable the direct path
@@ -2400,6 +2434,19 @@ ret_record_clean$:
 _tsp_h_ret_record_clean::
         push    bc
         push    hl
+
+        ; Full raster just committed this surface's coarse substrate. This
+        ; ownership stamp is what makes next frame's retained key coherent
+        ; with the shared g_map, not merely with its private geometry key.
+        ld      a, (#_g_polar_mat_col)
+        ld      l, a
+        ld      h, #0
+        ld      bc, #polar_ret_owner_col$
+        add     hl, bc
+        ld      a, (#_g_polar_run_sid)
+        inc     a
+        ld      (hl), a
+
         ld      hl, (#r_ret_base$)
         ld      a, h
         or      l
@@ -2475,6 +2522,10 @@ polar_ret_pc0$:
         .ds     32
 polar_ret_pc1$:
         .ds     32
+; Shared-name-table substrate owner by hardware column. Value is sid+1 so
+; zero remains "unknown / no trusted coarse substrate".
+polar_ret_owner_col$:
+        .ds     20
 r_ret_pc0$:
         .ds     1
 r_ret_pc1$:

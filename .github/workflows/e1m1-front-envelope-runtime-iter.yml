@@ -371,6 +371,25 @@ jobs:
                 f"({100*(mean(bt)/mean(ct)-1):+.1f}%) p95_delta={pct(bt,.95)-pct(ct,.95):+.0f}T")
           print(f"DIRECT_MIXED_OVERHEAD render_mean={mean(br)-mean(cr):+.0f}T "
                 f"({100*(mean(br)/mean(cr)-1):+.1f}%)")
+          # Coarse-substrate sanity. Tile IDs 0/1/2 are the static
+          # ceiling/floor/horizon; every other ID is visible geometry in this
+          # exact-envelope P99 build. A suspiciously fast blank control was the
+          # Run-281 failure mode, so report it explicitly.
+          def geom_counts(path):
+              raw=path.read_bytes(); fb=20*18*2; out=[]
+              for fi in range(min(n,len(raw)//fb)):
+                  fr=raw[fi*fb:(fi+1)*fb]
+                  cnt=0
+                  for j in range(0,fb,2):
+                      w=(fr[j]|(fr[j+1]<<8))&0x1ff
+                      cnt += int(w>2)
+                  out.append(cnt)
+              return out
+          dg=geom_counts(root/"direct-off-map.bin")
+          fg=geom_counts(root/"focused-map.bin")
+          print(f"COARSE_MAP_HEALTH direct_off_mean={mean(dg):.1f} "
+                f"p05={pct(dg,.05)} p50={pct(dg,.5)} zero_frames={sum(x==0 for x in dg)}/{len(dg)} "
+                f"focused_mean={mean(fg):.1f}")
           p95b=pct(bt,.95); worstb=max(bt); budget10=clock/10.0
           print(f"FOCUS_10FPS_MARGIN p95={budget10-p95b:+.0f}T worst={budget10-worstb:+.0f}T budget={budget10:.0f}T")
           print(f"delta total={mean(bt)-mean(at):+.0f} ({100*(mean(bt)/mean(at)-1):+.1f}%)")
