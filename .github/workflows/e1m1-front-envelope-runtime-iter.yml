@@ -180,6 +180,10 @@ jobs:
             POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DIRECT_MIXED=1 -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/build.txt"
+          if grep -Eq 'Possible overflow from Bank 0|Multiple write.*0x40[0-9A-Fa-f]{2}' "$ROOT/build.txt"; then
+            echo "FATAL: fixed HOME bank crossed 0x4000 in focused build"
+            exit 9
+          fi
           cp build/gg-tilesector-polar.gg "$ROOT/focused.gg"
           cp build/gg-tilesector-polar.noi "$ROOT/focused.noi"
           cp build/gg-tilesector-polar.sym "$ROOT/focused.sym"
@@ -432,7 +436,11 @@ jobs:
               POLAR_PROJ_GEN_DIR="$GEN" POLAR_ROM_BANKS=256 \
               POLAR_EXTRA_OBJS="build/frame_trace_gg.o build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
               TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DIRECT_MIXED=$direct -DTSPF_DEFAULT_APPEARANCE=0u -DTSPF_TRACE_INPUT=1" \
-              gg-tilesector-polar
+              gg-tilesector-polar 2>&1 | tee "$ROOT/visual-$name-build.txt"
+            if grep -Eq 'Possible overflow from Bank 0|Multiple write.*0x40[0-9A-Fa-f]{2}' "$ROOT/visual-$name-build.txt"; then
+              echo "FATAL: fixed HOME bank crossed 0x4000 in visual-$name build"
+              exit 9
+            fi
             cp build/gg-tilesector-polar.gg "$ROOT/visual-$name.gg"
             cp build/gg-tilesector-polar.sym "$ROOT/visual-$name.sym"
           }
@@ -478,6 +486,10 @@ jobs:
             POLAR_EXTRA_OBJS="build/e1env_center_col_gg.o build/e1env_local_bearing_eval_gg.o $ENVOBJS" \
             TILESECTOR_FASTFLAGS="-Wf--opt-code-speed -DTSPF_OPTIMIZED_MAP=1 -DTSPF_E1M1_FULL_ONLY=1 -DTSPF_E1M1_FRONT_ENVELOPE=1 -DTSPF_E1M1_FRONT_ENVELOPE_EXACT=1 -DTSPF_E1M1_BEARING_LUT=1 -DTSPF_E1M1_DEPTH_EDGE_LUT=1 -DTSPF_E1M1_LOCAL_BEARING_FIELD=1 -DTSPF_E1M1_PLANE_META=1 -DTSPF_E1M1_P99_EDGE_VOCAB=1 -DTSPF_DIRECT_MIXED=1 -DTSPF_DEFAULT_APPEARANCE=0u" \
             gg-tilesector-polar 2>&1 | tee "$ROOT/clean-build.txt"
+          if grep -Eq 'Possible overflow from Bank 0|Multiple write.*0x40[0-9A-Fa-f]{2}' "$ROOT/clean-build.txt"; then
+            echo "FATAL: fixed HOME bank crossed 0x4000 in zero-hook build"
+            exit 9
+          fi
           cp build/gg-tilesector-polar.gg "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.gg"
           cp build/gg-tilesector-polar.sym "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.sym"
           cp build/gg-tilesector-polar.map "$ROOT/GG-E1M1-Exact-Q4-Focused-Envelope.map"
